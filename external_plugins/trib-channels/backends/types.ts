@@ -1,0 +1,470 @@
+/**
+ * ChannelBackend — abstract interface for messaging platform integrations.
+ *
+ * Each backend (Discord, Slack, etc.) implements this interface
+ * to provide a unified messaging layer to the MCP server.
+ */
+
+// ── Inbound message from a messaging platform ──────────────────────────
+
+export interface AttachmentInfo {
+  name: string
+  contentType: string
+  /** Size in bytes */
+  size: number
+}
+
+export interface InboundMessage {
+  chatId: string
+  messageId: string
+  user: string
+  userId: string
+  text: string
+  /** ISO 8601 timestamp */
+  ts: string
+  attachments: AttachmentInfo[]
+  /** Local file path of an inline image */
+  imagePath?: string
+}
+
+// ── Outbound types ─────────────────────────────────────────────────────
+
+export interface SendOptions {
+  /** Message ID to thread/reply under */
+  replyTo?: string
+  /** Absolute file paths to attach */
+  files?: string[]
+  /** Discord embed objects (passed directly to Discord API) */
+  embeds?: Record<string, unknown>[]
+  /** Discord message components (Action Row, Button, Select Menu, etc.) */
+  components?: Record<string, unknown>[]
+}
+
+export interface SendResult {
+  /** IDs of sent message(s) — may be split into multiple chunks */
+  sentIds: string[]
+}
+
+export interface FetchedMessage {
+  id: string
+  user: string
+  text: string
+  /** ISO 8601 timestamp */
+  ts: string
+  isMe: boolean
+  attachmentCount: number
+}
+
+export interface DownloadedFile {
+  path: string
+  name: string
+  contentType: string
+  /** Size in bytes */
+  size: number
+}
+
+// ── Backend interface ──────────────────────────────────────────────────
+
+export interface ChannelBackend {
+  /** Backend identifier (e.g. "discord") */
+  readonly name: string
+
+  /**
+   * Connect to the messaging platform.
+   * Must be called before any other method.
+   */
+  connect(): Promise<void>
+
+  /**
+   * Gracefully disconnect from the platform.
+   */
+  disconnect(): Promise<void>
+
+  /**
+   * Send a message to a chat. Long messages are automatically chunked
+   * per platform limits. Returns IDs of all sent message parts.
+   */
+  sendMessage(chatId: string, text: string, opts?: SendOptions): Promise<SendResult>
+
+  /**
+   * Fetch recent messages from a channel, oldest first.
+   */
+  fetchMessages(channelId: string, limit: number): Promise<FetchedMessage[]>
+
+  /**
+   * Add an emoji reaction to a message.
+   */
+  react(chatId: string, messageId: string, emoji: string): Promise<void>
+
+  /**
+   * Remove the bot's emoji reaction from a message.
+   */
+  removeReaction(chatId: string, messageId: string, emoji: string): Promise<void>
+
+  /**
+   * Edit a previously sent message. Returns the edited message ID.
+   * Supports text, embeds, and components for GUI-style interactions.
+   */
+  editMessage(chatId: string, messageId: string, text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }): Promise<string>
+
+  /**
+   * Delete a message by ID.
+   */
+  deleteMessage(chatId: string, messageId: string): Promise<void>
+
+  /**
+   * Download all attachments from a message. Returns local file paths.
+   */
+  downloadAttachment(chatId: string, messageId: string): Promise<DownloadedFile[]>
+
+  /**
+   * Validate that an outbound message to this chat is allowed.
+   * Throws if the channel is not in the allowlist.
+   */
+  validateChannel(chatId: string): Promise<void>
+
+  /**
+   * Reset the outbound send counter. Called on new inbound turn.
+   */
+  resetSendCount(): void
+
+  /**
+   * Start the typing indicator for a channel.
+   * Sends the initial typing event and sets up a repeating interval.
+   */
+  startTyping(channelId: string): void
+
+  /**
+   * Stop the typing indicator for a channel.
+   * Clears the repeating interval if active.
+   */
+  stopTyping(channelId: string): void
+
+  /**
+   * Callback invoked when an inbound message passes the access gate.
+   * Set by the MCP server to route messages as notifications.
+   */
+  onMessage: ((msg: InboundMessage) => void) | null
+
+  /**
+   * Callback invoked when a Discord interaction (button click, select menu) occurs.
+   */
+  onInteraction: ((interaction: { type: string; customId: string; userId: string; channelId: string; values?: string[]; message?: { id: string } }) => void) | null
+
+  /**
+   * Callback invoked when a functional command (/bot, /profile) is detected.
+   * The replyFn sends the response back to the same channel.
+   */
+  onCustomCommand: ((text: string, channelId: string, userId: string, replyFn: (text: string, opts?: { embeds?: Record<string, unknown>[]; components?: Record<string, unknown>[] }) => Promise<void>) => void) | null
+
+  /** Callback for button interactions that need to show a Modal */
+  onModalRequest: ((interaction: any) => void) | null
+}
+
+// ── Channel types ─────────────────────────────────────────────────────
+
+export interface ChannelEntry {
+  /** Platform-specific channel ID */
+  id: string
+  /** "interactive" = listen + respond, "monitor" = listen only, report to main */
+  mode: 'interactive' | 'monitor'
+}
+
+export interface ChannelsConfig {
+  /** Label of the main channel (key in channels map) */
+  main: string
+  /** Named channels — key is a human-readable label, value has id + mode */
+  channels: Record<string, ChannelEntry>
+}
+
+// ── Access types ──────────────────────────────────────────────────────
+
+export interface ChannelAccessPolicy {
+  /** Whether the bot requires an @mention to respond */
+  requireMention: boolean
+  /** User IDs allowed to interact; empty = everyone */
+  allowFrom: string[]
+}
+
+export interface AccessPendingEntry {
+  senderId: string
+  chatId: string
+  createdAt: number
+  expiresAt: number
+  replies: number
+}
+
+export interface AccessConfig {
+  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
+  allowFrom: string[]
+  channels: Record<string, ChannelAccessPolicy>
+  pending?: Record<string, AccessPendingEntry>
+  mentionPatterns?: string[]
+  ackReaction?: string
+  replyToMode?: 'off' | 'first' | 'all'
+  textChunkLimit?: number
+  chunkMode?: 'length' | 'newline'
+}
+
+// ── Voice types ───────────────────────────────────────────────────────
+
+export interface VoiceConfig {
+  /** Whisper binary name or absolute path (default: auto-detect whisper-cli) */
+  command?: string
+  /** GGML model file path (omit to use whisper's built-in default) */
+  model?: string
+  /** BCP-47 language code or "auto" for auto-detect (default: "auto") */
+  language?: string
+}
+
+// ── Backend config types ───────────────────────────────────────────────
+
+export interface DiscordBackendConfig {
+  token: string
+  stateDir?: string
+  accessMode?: 'static' | 'dynamic'
+  configPath?: string
+  access?: AccessConfig
+}
+
+export interface PluginConfig {
+  backend: 'discord'
+  discord?: DiscordBackendConfig
+  access?: AccessConfig
+  /** Named channel configuration */
+  channelsConfig?: ChannelsConfig
+  /** MD file paths to inject as additional context into instructions */
+  contextFiles?: string[]
+  /** Spawns a separate claude -p session at the scheduled time */
+  nonInteractive?: TimedSchedule[]
+  /** Injects prompt into the current session at the scheduled time */
+  interactive?: TimedSchedule[]
+  /** Bot-initiated conversation based on frequency and idle guard */
+  proactive?: ProactiveConfig
+  /** Directory containing prompt .md files */
+  promptsDir?: string
+  /** Voice message transcription settings */
+  voice?: VoiceConfig
+  /** UI / response language override (e.g. "ko", "en", "ja") */
+  language?: string
+  /** Webhook receiver configuration */
+  webhook?: WebhookConfig
+  /** Event automation system */
+  events?: EventsConfig
+  /** Embedding provider configuration */
+  embedding?: {
+    provider?: 'local' | 'ollama'
+    ollamaModel?: string
+  }
+  /** Memory cycle configuration */
+  memory?: {
+    cycle1?: {
+      /** Extraction interval: "immediate", "5m", "10m", "30m", "1h" */
+      interval?: string
+      timeout?: number
+      maxCandidatesPerBatch?: number
+      maxBatches?: number
+      /** LLM provider for extraction */
+      provider?: {
+        connection: 'codex' | 'cli' | 'ollama' | 'api'
+        model?: string
+        effort?: string
+        fast?: boolean
+        baseUrl?: string
+      }
+    }
+    cycle2?: {
+      /** Time of day to run consolidation "HH:MM" (e.g. "03:00") */
+      schedule?: string
+      /** Auto-trigger consolidation when pending candidates exceed this count */
+      maxCandidates?: number
+      /** LLM provider for consolidation */
+      provider?: {
+        connection: 'codex' | 'cli' | 'ollama' | 'api'
+        model?: string
+        effort?: string
+        fast?: boolean
+        baseUrl?: string
+      }
+    }
+    cycle3?: {
+      /** Time of day to run weekly decay "HH:MM" (e.g. "03:00") */
+      schedule?: string
+      /** Day of week: "monday" | "tuesday" | ... | "sunday" */
+      day?: string
+      /** Heat score threshold below which items are deprecated (default: 0.3) */
+      threshold?: number
+      /** Days to keep deprecated items before hard delete (default: 30) */
+      graceDays?: number
+    }
+  }
+}
+
+// ── Bot config (bot.json) ─────────────────────────────────────────────
+
+export interface QuietConfig {
+  /** Quiet hours for timed schedules "HH:MM-HH:MM" (e.g. "23:00-07:00") */
+  schedule?: string
+  /** Quiet hours for autotalk/proactive "HH:MM-HH:MM" (e.g. "23:00-09:00") */
+  autotalk?: string
+  /** ISO 3166-1 alpha-2 country code for public holiday lookup (e.g. "KR") */
+  holidays?: string
+  /** IANA timezone for date evaluation (e.g. "Asia/Seoul"). Default: system tz */
+  timezone?: string
+}
+
+export interface AutotalkConfig {
+  /** Frequency level 1-5 */
+  freq?: number
+  /** Whether autotalk is enabled */
+  enabled?: boolean
+}
+
+export interface BotConfig {
+  quiet?: QuietConfig
+  autotalk?: AutotalkConfig
+  sleepEnabled?: boolean
+  sleepTime?: string
+  displayMode?: 'view' | 'hide'
+}
+
+// ── Profile config (profile.json) ────────────────────────────────────
+
+export interface ProfileConfig {
+  name?: string
+  role?: string
+  lang?: string
+  tone?: string
+  [key: string]: string | undefined
+}
+
+// ── Schedule types ─────────────────────────────────────────────────────
+
+/** Shared shape for non-interactive and interactive schedules */
+export interface TimedSchedule {
+  /** Unique name (kebab-case), also used as prompt filename */
+  name: string
+  /** "HH:MM" (24h), "hourly", or interval like "every5m", "every10m", "every30m" */
+  time: string
+  /** "daily", "weekday" (Mon-Fri), "weekend" (Sat-Sun), or comma-separated days "mon,wed,fri". Default: "daily" */
+  days?: 'daily' | 'weekday' | 'weekend' | string
+  /** Respect global quiet hours (quiet.schedule). true = skip during DND, false/undefined = ignore DND */
+  dnd?: boolean
+  /** Skip on public holidays. true = skip, false/undefined = run normally */
+  skipHolidays?: boolean
+  /** Target channel label (resolved to ID via channelsConfig) */
+  channel: string
+  /** Prompt file path relative to promptsDir, or absolute path */
+  prompt?: string
+  /** Whether this schedule is enabled (default: true) */
+  enabled?: boolean
+  /** Execution mode: 'prompt' (default), 'script', or 'script+prompt' */
+  exec?: 'prompt' | 'script' | 'script+prompt'
+  /** Script filename in scripts directory (e.g. 'market.js') */
+  script?: string
+}
+
+/** A single proactive conversation topic */
+export interface ProactiveItem {
+  /** Topic name — also used as prompt filename ({topic}.md) */
+  topic: string
+  /** Target channel label (resolved to ID via channelsConfig) */
+  channel: string
+}
+
+/** Configuration for bot-initiated proactive conversations */
+export interface ProactiveConfig {
+  /** Frequency level 1-5 (1 = ~1/day, 2 = ~2/day, 3 = ~4/day, 4 = ~7/day, 5 = ~10/day) */
+  frequency: number
+  /** Whether to append proactive-feedback.md to prompts */
+  feedback: boolean
+  /** Topic items — each gets its own prompt file */
+  items: ProactiveItem[]
+  /** Do-not-disturb start time "HH:MM" (e.g. "23:00") */
+  dndStart?: string
+  /** Do-not-disturb end time "HH:MM" (e.g. "07:00") */
+  dndEnd?: string
+}
+
+// ── Event system types ────────────────────────────────────────────────
+
+export interface EventRule {
+  /** Unique name for this rule */
+  name: string
+  /** Event source type */
+  source: 'webhook' | 'watcher' | 'file'
+  /** Built-in parser: 'github', 'sentry', 'generic', or omit for raw */
+  parser?: 'github' | 'sentry' | 'generic'
+  /** Filter expression (e.g. "event == 'pull_request'") */
+  filter?: string
+  /** Regex pattern for watcher source */
+  match?: string
+  /** File path or glob for file source */
+  path?: string
+  /** Output template with {{field}} placeholders */
+  execute: string
+  /** Priority: high (next tick), normal (idle), low (batch) */
+  priority: 'high' | 'normal' | 'low'
+  /** Execution type */
+  exec: 'interactive' | 'non-interactive' | 'script'
+  /** Target channel label */
+  channel: string
+  /** Script filename for exec: 'script' mode */
+  script?: string
+  /** Whether this rule is enabled (default: true) */
+  enabled?: boolean
+}
+
+export interface EventQueueConfig {
+  /** Queue processor tick interval in seconds (default: 60) */
+  tickInterval?: number
+  /** Max concurrent non-interactive executions (default: 2) */
+  maxConcurrent?: number
+  /** Batch interval in minutes for low priority (default: 30) */
+  batchInterval?: number
+}
+
+export interface EventsConfig {
+  rules: EventRule[]
+  webhook?: WebhookServerConfig
+  queue?: EventQueueConfig
+}
+
+export interface WebhookServerConfig {
+  enabled: boolean
+  /** HTTP server port (default: 3333) */
+  port: number
+  /** ngrok fixed domain for external access */
+  ngrokDomain?: string
+}
+
+// ── Webhook endpoint types ────────────────────────────────────────────
+
+export interface WebhookEndpoint {
+  /** Built-in parser: 'github', 'sentry', 'generic', or omit for raw */
+  parser?: 'github' | 'sentry' | 'generic'
+  /** Filter expression (e.g. "event == 'pull_request'") — unmatched events are silently dropped */
+  filter?: string
+  /** Output template with {{field}} placeholders, or {{raw}} for full JSON body */
+  execute: string
+  /** 'immediate' fires instantly, 'batch' queues for periodic processing */
+  mode: 'immediate' | 'batch'
+  /** Execution type: inject into session, spawn claude -p, or run a script */
+  exec: 'interactive' | 'non-interactive' | 'script'
+  /** Target channel label (resolved via channelsConfig) */
+  channel: string
+  /** Script filename for exec: 'script' mode */
+  script?: string
+}
+
+export interface WebhookConfig {
+  enabled: boolean
+  /** HTTP server port (default: 3333) */
+  port: number
+  /** ngrok fixed domain for external access */
+  ngrokDomain?: string
+  /** Named webhook endpoints */
+  endpoints: Record<string, WebhookEndpoint>
+  /** Batch processing interval in minutes (default: 30) */
+  batchInterval: number
+}

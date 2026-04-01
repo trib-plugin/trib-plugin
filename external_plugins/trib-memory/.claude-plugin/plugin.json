@@ -1,0 +1,9 @@
+{
+  "name": "trib-memory",
+  "description": "Persistent memory MCP server with hybrid RAG retrieval, 3-cycle memory processing, and automatic context injection.",
+  "version": "0.0.1",
+  "author": {
+    "name": "TRIBGAMES",
+    "email": "dev@tribgames.com"
+  }
+}

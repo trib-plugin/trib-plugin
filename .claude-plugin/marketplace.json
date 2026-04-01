@@ -1,0 +1,28 @@
+{
+  "name": "tribgames",
+  "description": "TRIBGAMES plugin ecosystem — channels, memory, search",
+  "owner": {
+    "name": "TRIBGAMES",
+    "email": "dev@tribgames.com"
+  },
+  "plugins": [
+    {
+      "name": "trib-channels",
+      "description": "Discord channel plugin with scheduler, voice transcription, and proactive chat",
+      "category": "productivity",
+      "source": "./external_plugins/trib-channels"
+    },
+    {
+      "name": "trib-memory",
+      "description": "Persistent memory MCP server with hybrid RAG retrieval and 3-cycle processing",
+      "category": "productivity",
+      "source": "./external_plugins/trib-memory"
+    },
+    {
+      "name": "trib-search",
+      "description": "Search plugin with raw search, AI search, scrape, map, crawl",
+      "category": "productivity",
+      "source": "./external_plugins/trib-search"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# trib-search Default Rules
+
+- Default to `search` for all queries. Only use `ai_search` when the user explicitly requests AI-powered answers or when a summarized answer is more appropriate than raw search results.
+- `search` is the unified search tool. Use the `mode` parameter to control strategy:
+  - `search_first` (default): Raw search providers first, automatic fallback to AI search if all raw providers fail.
+  - `ai_first`: AI search providers first, automatic fallback to raw search if all AI providers fail.
+- Raw search providers are auto-selected based on configured `rawSearch.priority`. Use `/config` or `/setup` to change priority.
+- AI search providers are auto-selected based on configured `aiSearch.priority`. Use `/config` or `/setup` to change priority.
+- `search` does not accept a `providers` parameter. Provider selection is fully automatic.
+- `search` does not accept `provider` or `model` parameters for AI mode. Provider and model selection is fully automatic.
+- Raw search uses fallback mode: providers are tried in priority order, the first success is returned immediately.
+- AI search uses a priority-based fallback chain. Providers are tried in the configured `aiSearch.priority` order until one succeeds.
+- `x.com` must be routed to `xai` raw search with `x_search`.
+- `scrape` is for known URL content extraction.
+- `map` is for link discovery.
+- `crawl` is for multi-page collection.
+- `x.com` is not a reliable scrape target. Route both search and scrape to `x_search` via `xai`.
+- GitHub repository, code, or issue searches must be routed to `github` provider with the appropriate `github_type`.
+- GitHub code search requires GITHUB_TOKEN. If unavailable, use `serper` or `brave` with `site:github.com` instead.
+- GitHub repository and issue searches work without authentication.
+- GitHub code search has a strict rate limit of 10 requests per minute.
+- If all raw search providers fail, the system automatically falls back to AI search providers in priority order.
+- If all AI search providers fail, the system falls back to raw search providers in priority order.
+- Cross-fallback is skipped when a siteRule explicitly routes the request (e.g. x.com → xai).
+- If no compatible `trib-search` provider is available for a request, do not loop on the same tool call. Fall back to the host model's native web/search/browser tools when they exist.
+- If the host model has no native search capability either, explain which provider credential is missing and stop.
+- `github` is not included in the default raw search priority. It is only used when explicitly routed via `site:github.com` or siteRules.
+- `batch` combines multiple search, scrape, and map actions into a single request. All items run in parallel. Crawl is not supported in batch.
+- In batch mode, search items with `mode: "ai_first"` follow the same AI priority-based fallback chain as standalone calls.
+- Prefer short-lived cache reuse before re-querying the same request:
+  - `search(web)`: 30 minutes
+  - `search(news)`: 20 minutes
+  - `search(images)`: 60 minutes
+  - `search(mode: ai_first)`: 20 minutes
+  - `x_search` or `x.com` routes: 10 minutes
+  - `scrape`: 60 minutes
