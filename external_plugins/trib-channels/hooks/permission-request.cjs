@@ -19,6 +19,13 @@ if (!DATA_DIR) process.exit(0);
 const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-channels');
 const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
 
+// Skip when channels are not enabled in this session.
+const SESSION_SIGNAL_FILE = path.join(RUNTIME_ROOT, 'session-signal.json');
+try {
+  const sig = JSON.parse(fs.readFileSync(SESSION_SIGNAL_FILE, 'utf8'));
+  if (sig.channelsEnabled === false) process.exit(0);
+} catch {}
+
 const POLL_INTERVAL = 2000;
 const TIMEOUT = 900000; // 15 minutes
 const STALE_THRESHOLD = 30 * 60 * 1000; // 30 minutes
