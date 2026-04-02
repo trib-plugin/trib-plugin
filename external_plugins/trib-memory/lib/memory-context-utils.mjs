@@ -19,10 +19,13 @@ export function formatHintAge(ts, nowTs = Date.now()) {
 }
 
 export function computeHintRelevance(item, _options = {}) {
-  // RRF + semantic scoring: classification ~0.15-0.40, episode ~0.01-0.04
+  // RRF + semantic: classification ~0.15-0.40, episode ~0.01-0.04
+  // normalize to 0-1 per type
   const weighted = Number(item?.weighted_score)
   if (Number.isFinite(weighted) && weighted > 0) {
-    return clamp01(Math.min(1, weighted / 0.4))
+    const type = String(item?.type ?? '')
+    const scale = type === 'classification' ? 0.4 : 0.05
+    return clamp01(weighted / scale)
   }
   return 0
 }
