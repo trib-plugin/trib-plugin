@@ -1073,7 +1073,7 @@ export class MemoryStore {
   buildContextText() {
     const parts = []
 
-    // Long-term memory: only high-importance classifications (tag_factor <= 0.2)
+    // Core Memory: high-importance classifications (tag_factor <= 0.2)
     const allClassifications = this.db.prepare(`
       SELECT id, classification, topic, element, state, importance
       FROM classifications
@@ -1088,7 +1088,7 @@ export class MemoryStore {
         const tag = String(row.importance || '').split(',')[0].trim()
         return `- [${tag}] ${row.topic} — ${row.element}`
       })
-      parts.push(`## Long-Term Memory\n${lines.join('\n')}`)
+      parts.push(`## Core Memory\n${lines.join('\n')}`)
     }
 
     // ## Bot — bot.md + tone/style signals
@@ -1100,18 +1100,38 @@ export class MemoryStore {
       if (botContent) parts.push(botContent)
     }
 
-    // Recent: last 10 user episodes
-    const recentUserEpisodes = this.db.prepare(`
+    // Decisions: recent important but not core (factor > 0.2 && < 1.0, e.g. incident)
+    const recentDecisions = allClassifications
+      .filter(row => {
+        const f = getTagFactor(row.importance)
+        return f > 0.2 && f < 1.0
+      })
+      .slice(0, 5)
+
+    if (recentDecisions.length > 0) {
+      const lines = recentDecisions.map(row => {
+        const tag = String(row.importance || '').split(',')[0].trim()
+        return `- [${tag}] ${row.topic} — ${row.element}`
+      })
+      parts.push(`## Recent Decisions\n${lines.join('\n')}`)
+    }
+
+    // Recent: last 3~5 turns (user + assistant, ~10 episodes)
+    const recentEpisodes = this.db.prepare(`
       SELECT role, content FROM episodes
-      WHERE kind = 'message' AND role = 'user'
+      WHERE kind = 'message'
+        AND role IN ('user', 'assistant')
         AND content NOT LIKE 'You are%'
         AND LENGTH(content) BETWEEN 5 AND 300
       ORDER BY ts DESC, id DESC
-      LIMIT 5
+      LIMIT 10
     `).all().reverse()
 
-    if (recentUserEpisodes.length > 0) {
-      const body = recentUserEpisodes.map(row => `- ${row.content.slice(0, 100)}`).join('\n')
+    if (recentEpisodes.length > 0) {
+      const body = recentEpisodes.map(row => {
+        const prefix = row.role === 'user' ? 'u' : 'a'
+        return `${prefix}: ${row.content.slice(0, 100)}`
+      }).join('\n')
       parts.push(`## Recent\n${body}`)
     }
 
