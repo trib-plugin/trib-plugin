@@ -105,6 +105,24 @@ const MEMORY_FLUSH_DEFAULT_MIN_PENDING = 8
 const AUTO_FLUSH_THRESHOLD = 15
 const AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1000  // 2 hours
 
+function resolveCycleBackfillLimit(mainConfig, fallback) {
+  return Math.max(1, Number(mainConfig?.memory?.runtime?.startup?.backfill?.limit ?? fallback))
+}
+
+function resolveEmbeddingRefreshOptions(mainConfig = {}, kind = 'cycle2') {
+  const cycleConfig = mainConfig?.memory?.[kind] ?? {}
+  const refreshConfig = cycleConfig?.embeddingRefresh ?? {}
+  const contextualizeItems = Math.max(
+    4,
+    Number(refreshConfig.contextualizeItems ?? MAX_MEMORY_CONTEXTUALIZE_ITEMS),
+  )
+  const perTypeLimit = Math.max(
+    4,
+    Number(refreshConfig.perTypeLimit ?? Math.max(16, Math.floor(contextualizeItems / 2))),
+  )
+  return { contextualizeItems, perTypeLimit }
+}
+
 function getStore() {
   const mainConfig = readMainConfig()
   const embeddingConfig = mainConfig?.embedding ?? {}
@@ -308,6 +326,7 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
   const maxBatches = Math.max(1, Number(options.maxBatches ?? MAX_MEMORY_CONSOLIDATE_BATCHES_PER_DAY))
   const provider = options.provider ?? readMainConfig()?.memory?.cycle2?.provider ?? null
   let processed = 0, mergedFacts = 0, mergedTasks = 0, mergedSignals = 0
+  let linksDirty = false
 
   const promptPath = join(resourceDir(), 'defaults', 'memory-consolidate-prompt.md')
   const template = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : 'Output JSON only with facts/tasks/signals.'
@@ -352,7 +371,7 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
       store.upsertTasks(parsed.tasks ?? [], ts, srcEp)
       store.upsertSignals(parsed.signals ?? [], srcEp, ts)
       store.upsertRelations(parsed.relations ?? [], ts, srcEp)
-      store.rebuildEntityLinks()
+      linksDirty = true
       store.markCandidateIdsConsolidated(candidates.map(item => item.id))
       processed += candidates.length
       mergedFacts += (parsed.facts ?? []).length
@@ -360,6 +379,7 @@ export async function consolidateCandidateDay(dayKey, ws, options = {}) {
       mergedSignals += (parsed.signals ?? []).length
     } catch (e) { process.stderr.write(`[memory-cycle] consolidate ${dayKey} failed: ${e.message}\n`); break }
   }
+  if (linksDirty) store.rebuildEntityLinks()
   if (processed > 0) process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${processed}, facts=${mergedFacts}, tasks=${mergedTasks}, signals=${mergedSignals}\n`)
 }
 
@@ -373,13 +393,15 @@ async function refreshEmbeddings(ws, options = {}) {
   const mainConfig = readMainConfig()
   const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
   const contextualizeProvider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  const kind = options.kind ?? 'cycle2'
+  const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
   let contextMap = new Map()
 
   // Contextualize items for better embeddings (skipped when embedding.contextualize === false)
   if (contextualizeEnabled) {
     const promptPath = join(resourceDir(), 'defaults', 'memory-contextualize-prompt.md')
     if (existsSync(promptPath)) {
-      const items = store.getEmbeddableItems({ perTypeLimit: Math.floor(MAX_MEMORY_CONTEXTUALIZE_ITEMS / 2) }).slice(0, MAX_MEMORY_CONTEXTUALIZE_ITEMS)
+      const items = store.getEmbeddableItems({ perTypeLimit: refreshOptions.perTypeLimit }).slice(0, refreshOptions.contextualizeItems)
       if (items.length > 0) {
         const template = readFileSync(promptPath, 'utf8')
         const itemsText = items.map((item, i) => [`#${i + 1}`, `key=${item.key}`, `type=${item.entityType}`, item.subtype ? `subtype=${item.subtype}` : '', `content=${item.content}`].filter(Boolean).join('\n')).join('\n\n')
@@ -401,7 +423,7 @@ async function refreshEmbeddings(ws, options = {}) {
     process.stderr.write('[memory-cycle] contextualize disabled by config (embedding.contextualize=false), embedding raw content\n')
   }
 
-  const updated = await store.ensureEmbeddings({ perTypeLimit: Math.max(16, Math.floor(MAX_MEMORY_CONTEXTUALIZE_ITEMS / 2)), contextMap })
+  const updated = await store.ensureEmbeddings({ perTypeLimit: refreshOptions.perTypeLimit, contextMap })
   process.stderr.write(`[memory-cycle] embeddings refreshed: ${updated}\n`)
 }
 
@@ -418,20 +440,23 @@ async function sleepCycleImpl(ws) {
   const mainConfig = readMainConfig()
   const cycle2Config = mainConfig?.memory?.cycle2 ?? {}
   const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'context.md'))
+  const backfillLimit = resolveCycleBackfillLimit(mainConfig, 120)
 
   process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
-  store.backfillProject(ws, { limit: 120 })
+  store.backfillProject(ws, { limit: backfillLimit })
 
   // 1. Consolidation (pass cycle2 provider if configured)
-  const MAX_DAYS = 7
+  const MAX_DAYS = Math.max(1, Number(cycle2Config.maxDays ?? 7))
   const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort()
   const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER }
   await consolidateRecent(pendingDays, ws, consolidateOpts)
 
   // 2. Sync + embeddings + context
   store.syncHistoryFromFiles()
-  await refreshEmbeddings(ws)
-  store.writeContextFile()
+  if (pendingDays.length > 0 || isFirstRun) {
+    await refreshEmbeddings(ws, { kind: 'cycle2' })
+    store.writeContextFile()
+  }
 
   // 3. Save timestamp
   writeCycleConfig({ ...config, lastSleepAt: now })
@@ -450,15 +475,16 @@ export async function sleepCycle(ws) {
 
 export async function summarizeOnly(ws) {
   const store = getStore()
-  store.backfillProject(ws, { limit: 120 })
+  const mainConfig = readMainConfig()
+  store.backfillProject(ws, { limit: resolveCycleBackfillLimit(mainConfig, 120) })
   const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort()
   if (pendingDays.length > 0) {
-    const provider = readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+    const provider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
     await consolidateRecent(pendingDays, ws, { provider })
+    await refreshEmbeddings(ws, { kind: 'cycle2' })
+    store.writeContextFile()
   }
-  await refreshEmbeddings(ws)
   store.syncHistoryFromFiles()
-  store.writeContextFile()
 }
 
 async function memoryFlushImpl(ws, options = {}) {
@@ -483,15 +509,16 @@ export async function memoryFlush(ws, options = {}) {
 
 async function rebuildAllImpl(ws) {
   const store = getStore()
-  store.backfillProject(ws, { limit: 400 })
+  const mainConfig = readMainConfig()
+  store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 400) })
   store.syncHistoryFromFiles()
   store.resetConsolidatedMemory()
   const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  const provider = readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  const provider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
   store.syncHistoryFromFiles()
-  await refreshEmbeddings(ws)
+  await refreshEmbeddings(ws, { kind: 'cycle2' })
   store.writeContextFile()
   process.stderr.write(`[memory-cycle] rebuilt ${dayKeys.length} day(s).\n`)
 }
@@ -502,16 +529,17 @@ export async function rebuildAll(ws) {
 
 async function rebuildRecentImpl(ws, options = {}) {
   const store = getStore()
-  store.backfillProject(ws, { limit: 240 })
+  const mainConfig = readMainConfig()
+  store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 240) })
   store.syncHistoryFromFiles()
   const maxDays = Math.max(1, Number(options.maxDays ?? 2))
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.resetConsolidatedMemoryForDays(dayKeys)
-  const mergedOptions = options.provider ? options : { ...options, provider: readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER }
+  const mergedOptions = options.provider ? options : { ...options, provider: mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER }
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
-  await refreshEmbeddings(ws)
+  await refreshEmbeddings(ws, { kind: 'cycle2' })
   store.writeContextFile()
   process.stderr.write(`[memory-cycle] rebuilt recent ${dayKeys.length} day(s).\n`)
 }
@@ -522,13 +550,14 @@ export async function rebuildRecent(ws, options = {}) {
 
 async function pruneToRecentImpl(ws, options = {}) {
   const store = getStore()
-  store.backfillProject(ws, { limit: 240 })
+  const mainConfig = readMainConfig()
+  store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 240) })
   store.syncHistoryFromFiles()
   const maxDays = Math.max(1, Number(options.maxDays ?? 5))
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.pruneConsolidatedMemoryOutsideDays(dayKeys)
-  await refreshEmbeddings(ws)
+  await refreshEmbeddings(ws, { kind: 'cycle2' })
   store.writeContextFile()
   process.stderr.write(`[memory-cycle] pruned to ${dayKeys.join(', ')}.\n`)
 }
@@ -651,6 +680,7 @@ async function runCycle1Impl(ws, config, options = {}) {
 
   let totalExtracted = 0, totalFacts = 0, totalTasks = 0, totalSignals = 0
   const cycle2Provider = config?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  let linksDirty = false
 
   for (let batch = 0; batch < maxBatches && allCandidates.length > 0; batch++) {
     const start = batch * maxPerBatch
@@ -718,7 +748,7 @@ async function runCycle1Impl(ws, config, options = {}) {
     if (parsed.tasks) store.upsertTasks(parsed.tasks, ts, srcEp)
     if (parsed.signals) store.upsertSignals(parsed.signals, srcEp, ts)
     if (parsed.relations) store.upsertRelations(parsed.relations, ts, srcEp)
-    store.rebuildEntityLinks()
+    linksDirty = true
 
     // cycle1이 처리한 에피소드의 candidate를 consolidated로 마킹 (cycle2 중복 방지)
     const processedEpisodeIds = candidates.map(c => c.id).filter(id => id != null)
@@ -755,8 +785,9 @@ async function runCycle1Impl(ws, config, options = {}) {
   }
 
   if (totalExtracted > 0 || pendingDays.length > 0) {
+    if (linksDirty) store.rebuildEntityLinks()
     store.syncHistoryFromFiles()
-    await refreshEmbeddings(ws, { store })
+    await refreshEmbeddings(ws, { store, kind: 'cycle1' })
     store.writeContextFile()
   }
 

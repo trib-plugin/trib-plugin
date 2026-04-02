@@ -34,10 +34,17 @@ import {
   pruneToRecent,
   getCycleStatus,
   runCycle1,
+  autoFlush,
   buildSemanticDayPlan,
   readMainConfig,
 } from '../lib/memory-cycle.mjs'
 import { localNow, localDateStr } from '../lib/memory-text-utils.mjs'
+import {
+  readMemoryOpsPolicy,
+  buildStartupBackfillOptions,
+  resolveStartupEmbeddingOptions,
+  shouldRunCycleCatchUp,
+} from '../lib/memory-ops-policy.mjs'
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -84,6 +91,7 @@ if (mlPython) {
 // ── Store initialization ─────────────────────────────────────────────
 
 const mainConfig = readMainConfig()
+const opsPolicy = readMemoryOpsPolicy(mainConfig)
 const embeddingConfig = mainConfig?.embedding
 if (embeddingConfig?.provider || embeddingConfig?.ollamaModel) {
   configureEmbedding({
@@ -101,15 +109,47 @@ store.syncHistoryFromFiles()
 // This works on macOS, Windows, and WSL without slug-to-path conversion issues.
 const WORKSPACE_PATH = process.env.TRIB_MEMORY_WORKSPACE || process.cwd()
 
-if (store.countEpisodes() === 0) {
+function getPendingCandidateCount() {
   try {
-    const n = store.backfillAllProjects({ limit: 80 })
-    if (n > 0) process.stderr.write(`[memory-service] initial backfill: ${n} episodes\n`)
-  } catch { /* best effort */ }
+    return store.getPendingCandidateDays(100, 1).reduce((sum, item) => sum + Number(item?.n ?? 0), 0)
+  } catch {
+    return 0
+  }
 }
-void store.warmupEmbeddings()
-  .then(() => store.ensureEmbeddings({ perTypeLimit: 12 }))
-  .catch(err => process.stderr.write(`[memory-service] embedding warmup failed: ${err}\n`))
+
+function getPendingEmbedCount() {
+  try {
+    return Number(store.db.prepare('SELECT COUNT(*) AS n FROM pending_embeds').get()?.n ?? 0)
+  } catch {
+    return 0
+  }
+}
+
+const startupBackfill = buildStartupBackfillOptions(opsPolicy, store)
+if (startupBackfill) {
+  try {
+    const n = startupBackfill.scope === 'workspace'
+      ? store.backfillProject(WORKSPACE_PATH, startupBackfill)
+      : store.backfillAllProjects(startupBackfill)
+    if (n > 0) {
+      process.stderr.write(
+        `[memory-service] startup backfill (${startupBackfill.scope}/${startupBackfill.sinceMs ? 'windowed' : 'all'}): ${n} episodes\n`,
+      )
+    }
+  } catch (e) {
+    process.stderr.write(`[memory-service] startup backfill failed: ${e.message}\n`)
+  }
+}
+
+const startupEmbedding = resolveStartupEmbeddingOptions(opsPolicy)
+if (startupEmbedding) {
+  let startupEmbeddingJob = Promise.resolve()
+  if (startupEmbedding.warmup) {
+    startupEmbeddingJob = startupEmbeddingJob.then(() => store.warmupEmbeddings())
+  }
+  startupEmbeddingJob = startupEmbeddingJob.then(() => store.ensureEmbeddings({ perTypeLimit: startupEmbedding.perTypeLimit }))
+  void startupEmbeddingJob.catch(err => process.stderr.write(`[memory-service] startup embedding catch-up failed: ${err}\n`))
+}
 
 // ── Cycle schedulers ─────────────────────────────────────────────────
 
@@ -135,35 +175,74 @@ function getCycleLastRun() {
   } catch { return { cycle1: 0, cycle2: 0 } }
 }
 
-async function checkCycles() {
+async function checkCycles(options = {}) {
+  const startup = options.startup === true
   const now = Date.now()
   const last = getCycleLastRun()
+  const pendingCandidates = getPendingCandidateCount()
+  const pendingEmbeds = getPendingEmbedCount()
+  const cycle1Due = now - last.cycle1 >= cycle1Ms
+  const cycle2Due = now - last.cycle2 >= cycle2Ms
 
   // cycle1: lastRunAt + interval elapsed
-  if (now - last.cycle1 >= cycle1Ms) {
+  if (
+    startup
+      ? shouldRunCycleCatchUp('cycle1', opsPolicy, {
+          due: cycle1Due,
+          lastRunAt: last.cycle1 || null,
+          pendingCandidates,
+          pendingEmbeds,
+        })
+      : cycle1Due
+  ) {
     try {
-      await runCycle1(WORKSPACE_PATH, mainConfig)
-      process.stderr.write(`[cycle1] completed at ${localNow()}\n`)
+      const result = await runCycle1(WORKSPACE_PATH, mainConfig)
+      process.stderr.write(
+        `[cycle1] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''} extracted=${Number(result?.extracted ?? 0)}\n`,
+      )
     } catch (e) {
       process.stderr.write(`[cycle1] error: ${e.message}\n`)
     }
   }
 
   // cycle2: lastSleepAt + 24h elapsed
-  if (now - last.cycle2 >= cycle2Ms) {
+  if (
+    startup
+      ? shouldRunCycleCatchUp('cycle2', opsPolicy, {
+          due: cycle2Due,
+          lastRunAt: last.cycle2 || null,
+          pendingCandidates,
+        })
+      : cycle2Due
+  ) {
     try {
       await sleepCycle(WORKSPACE_PATH)
-      process.stderr.write(`[cycle2] completed at ${localNow()}\n`)
+      process.stderr.write(`[cycle2] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''}\n`)
     } catch (e) {
       process.stderr.write(`[cycle2] error: ${e.message}\n`)
     }
   }
+
+  try {
+    const flushResult = await autoFlush(WORKSPACE_PATH)
+    if (flushResult?.flushed) {
+      process.stderr.write(
+        `[cycle1-auto] flushed pending=${Number(flushResult?.candidates ?? 0)} at ${localNow()}\n`,
+      )
+    }
+  } catch (e) {
+    process.stderr.write(`[cycle1-auto] error: ${e.message}\n`)
+  }
 }
 
 // Check every minute, run if due
-setInterval(checkCycles, 60_000)
+setInterval(() => { void checkCycles() }, opsPolicy.scheduler.checkIntervalMs)
 // Initial check after warmup (catches overdue cycles immediately)
-setTimeout(checkCycles, 5000)
+const startupDelayMs = Math.max(
+  Number(opsPolicy.startup.cycle1CatchUp.delayMs ?? 0),
+  Number(opsPolicy.startup.cycle2CatchUp.delayMs ?? 0),
+)
+setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
 
 // Ensure context.md exists (empty template if first run)
 const contextPath = path.join(DATA_DIR, 'history', 'context.md')

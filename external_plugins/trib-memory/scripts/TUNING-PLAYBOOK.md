@@ -68,6 +68,12 @@
 - ML service는 기본 후순위가 아니라 opt-in이어야 합니다.
 - `--refresh-copy`로 tmp mirror를 사용합니다.
 - cycle/catch-up과 interactive path는 분리해서 생각합니다.
+- live startup 정책은 `memory.runtime.startup`에서 관리합니다.
+  - `backfill`: `if-empty/always/off` + `7d/30d/all`
+  - `embeddings`: `off/light/full`
+  - `cycle1CatchUp`, `cycle2CatchUp`: `off/light/full`
+- 주기 체크는 `memory.runtime.scheduler.checkIntervalMs`로 조절합니다.
+- cycle 실행 비용은 `memory.cycle1.maxCandidatesPerBatch`, `memory.cycle1.maxBatches`, `memory.cycle1.embeddingRefresh.*`, `memory.cycle2.maxDays`, `memory.cycle2.embeddingRefresh.*`로 조절합니다.
 
 ## 반복 실행
 
@@ -98,6 +104,13 @@ node /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/cycle1
   --cases-file /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/benchmarks/cycle1-sample-cases.jsonl
 ```
 
+Cycle1 extended benchmark:
+
+```bash
+node /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/cycle1-benchmark.mjs \
+  --cases-file /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/benchmarks/cycle1-extended-cases.jsonl
+```
+
 Cycle1 loop:
 
 ```bash
@@ -105,6 +118,14 @@ node /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/cycle1
   --cases-file /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/benchmarks/cycle1-sample-cases.jsonl \
   --max-iterations 10 \
   --patience 3
+```
+
+Reranker latency:
+
+```bash
+node /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/measure-reranker-latency.mjs \
+  --models Xenova/bge-reranker-large \
+  --pairs-file /Users/jyp/Project/trib-plugins/external_plugins/trib-memory/scripts/benchmarks/reranker-latency-sample.jsonl
 ```
 
 ## 종료 기준

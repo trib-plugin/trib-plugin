@@ -6,6 +6,8 @@ let _loading = null
 let _loadedModelId = null
 const _scoreCache = new Map()
 const SCORE_CACHE_LIMIT = 2000
+const MAX_QUERY_CHARS = 192
+const MAX_TEXT_CHARS = 240
 
 const DEFAULT_MODEL_ID = 'Xenova/bge-reranker-large'
 
@@ -13,8 +15,15 @@ export function getRerankerModelId() {
   return process.env.TRIB_MEMORY_RERANKER_MODEL_ID || DEFAULT_MODEL_ID
 }
 
+function normalizeRerankText(value, maxChars) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars)
+}
+
 function scoreCacheKey(query, text) {
-  return `${getRerankerModelId()}\n${String(query)}\n${String(text)}`
+  return `${getRerankerModelId()}\n${normalizeRerankText(query, MAX_QUERY_CHARS)}\n${normalizeRerankText(text, MAX_TEXT_CHARS)}`
 }
 
 function getCachedScore(query, text) {
@@ -40,6 +49,14 @@ export function clearRerankerCache() {
   _scoreCache.clear()
 }
 
+export function resetRerankerState() {
+  _tokenizer = null
+  _model = null
+  _loading = null
+  _loadedModelId = null
+  clearRerankerCache()
+}
+
 async function ensureModel() {
   const modelId = getRerankerModelId()
   if (_loadedModelId && _loadedModelId !== modelId) {
@@ -63,17 +80,18 @@ async function ensureModel() {
 export async function crossEncoderRerank(query, candidates, options = {}) {
   const limit = Math.min(Number(options.limit ?? 5), candidates.length)
   if (limit === 0) return []
+  const queryText = normalizeRerankText(query, MAX_QUERY_CHARS)
 
   const items = candidates
     .slice(0, limit)
-    .map(item => ({ item, text: String(item.content ?? item.text ?? '').slice(0, 300) }))
+    .map(item => ({ item, text: normalizeRerankText(item.content ?? item.text ?? '', MAX_TEXT_CHARS) }))
     .filter(entry => entry.text)
   if (items.length === 0) return []
 
   const scored = []
   const uncached = []
   for (const entry of items) {
-    const cached = getCachedScore(query, entry.text)
+    const cached = getCachedScore(queryText, entry.text)
     if (cached == null) {
       uncached.push(entry)
     } else {
@@ -87,7 +105,7 @@ export async function crossEncoderRerank(query, candidates, options = {}) {
   if (uncached.length > 0) {
     await ensureModel()
     const inputs = await _tokenizer(
-      new Array(uncached.length).fill(query),
+      new Array(uncached.length).fill(queryText),
       {
         text_pair: uncached.map(entry => entry.text),
         padding: true,
@@ -100,7 +118,7 @@ export async function crossEncoderRerank(query, candidates, options = {}) {
     for (let index = 0; index < uncached.length; index += 1) {
       const entry = uncached[index]
       const score = Number(logits[index] ?? logits[0] ?? Number.NEGATIVE_INFINITY)
-      setCachedScore(query, entry.text, score)
+      setCachedScore(queryText, entry.text, score)
       scored.push({
         ...entry.item,
         reranker_score: score,

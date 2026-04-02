@@ -2475,6 +2475,7 @@ export class MemoryStore {
 
   backfillProject(workspacePath, options = {}) {
     const limit = Number(options.limit ?? 50)
+    const sinceMs = Number.isFinite(Number(options.sinceMs)) ? Number(options.sinceMs) : null
     const projectDir = join(homedir(), '.claude', 'projects', workspaceToProjectSlug(workspacePath))
     if (!existsSync(projectDir)) return this.backfillAllProjects(options)
     const files = readdirSync(projectDir)
@@ -2483,6 +2484,7 @@ export class MemoryStore {
         path: join(projectDir, file),
         mtime: statSync(join(projectDir, file)).mtimeMs,
       }))
+      .filter(item => !sinceMs || item.mtime >= sinceMs)
       .sort((a, b) => b.mtime - a.mtime)
       .slice(0, limit)
       .map(item => item.path)
@@ -2497,6 +2499,7 @@ export class MemoryStore {
    */
   backfillAllProjects(options = {}) {
     const limit = Number(options.limit ?? 50)
+    const sinceMs = Number.isFinite(Number(options.sinceMs)) ? Number(options.sinceMs) : null
     const projectsRoot = join(homedir(), '.claude', 'projects')
     if (!existsSync(projectsRoot)) return 0
     const allFiles = []
@@ -2509,7 +2512,9 @@ export class MemoryStore {
           for (const f of readdirSync(full)) {
             if (!f.endsWith('.jsonl') || f.startsWith('agent-')) continue
             const fp = join(full, f)
-            allFiles.push({ path: fp, mtime: statSync(fp).mtimeMs })
+            const mtime = statSync(fp).mtimeMs
+            if (sinceMs && mtime < sinceMs) continue
+            allFiles.push({ path: fp, mtime })
           }
         } catch {}
       }
@@ -3308,33 +3313,31 @@ export class MemoryStore {
     if (tuning.reranker?.enabled !== false &&
         (finalResults.length === 0 || (finalResults.length > 0 && Number(finalResults[0]?.weighted_score ?? 0) > (tuning.reranker?.triggerThreshold ?? -0.4)))) {
       try {
-        const { crossEncoderRerank, isRerankerAvailable } = await import('./reranker.mjs')
-        if (isRerankerAvailable()) {
-          const pool = collapseClaimSurfaceDuplicates([
-            ...finalResults,
-            ...activePass.exactResults,
-          ], 'weighted_score').slice(0, Math.max(limit, tuning.reranker?.maxCandidates ?? 5))
-          if (pool.length > 0) {
-            rerankDebug.attempted = true
-            rerankDebug.input_top = summarizeItems(pool)
-            const maxCandidates = tuning.reranker?.maxCandidates ?? 5
-            const minScore = tuning.reranker?.minRerankerScore ?? -2
-            const reranked = await crossEncoderRerank(clean, pool, { limit: maxCandidates })
-            rerankDebug.output_top = summarizeItems(reranked)
-            if (reranked.length > 0 && reranked[0].reranker_score > minScore) {
-              // Only adopt reranked results if top item improves or stays same
-              const prevTopId = Number(finalResults[0]?.entity_id ?? 0)
-              const rerankedTopId = Number(reranked[0]?.entity_id ?? 0)
+        const { crossEncoderRerank } = await import('./reranker.mjs')
+        const pool = collapseClaimSurfaceDuplicates([
+          ...finalResults,
+          ...activePass.exactResults,
+        ], 'weighted_score').slice(0, Math.max(limit, tuning.reranker?.maxCandidates ?? 5))
+        if (pool.length > 0) {
+          rerankDebug.attempted = true
+          rerankDebug.input_top = summarizeItems(pool)
+          const maxCandidates = tuning.reranker?.maxCandidates ?? 5
+          const minScore = tuning.reranker?.minRerankerScore ?? -2
+          const reranked = await crossEncoderRerank(clean, pool, { limit: maxCandidates })
+          rerankDebug.output_top = summarizeItems(reranked)
+          if (reranked.length > 0 && reranked[0].reranker_score > minScore) {
+            // Only adopt reranked results if top item improves or stays same
+            const prevTopId = Number(finalResults[0]?.entity_id ?? 0)
+            const rerankedTopId = Number(reranked[0]?.entity_id ?? 0)
 
-              const rerankedTopCE = Number(reranked[0]?.reranker_score ?? -Infinity)
-              // Accept if: same top item, or reranker is very confident (score > 0)
-              if (prevTopId === rerankedTopId || rerankedTopCE > 0) {
-                finalResults = reranked.slice(0, limit)
-              }
+            const rerankedTopCE = Number(reranked[0]?.reranker_score ?? -Infinity)
+            // Accept if: same top item, or reranker is very confident (score > 0)
+            if (prevTopId === rerankedTopId || rerankedTopCE > 0) {
+              finalResults = reranked.slice(0, limit)
             }
           }
         }
-      } catch {} // reranker not loaded yet — use heuristic results
+      } catch {} // reranker load/inference failure — use heuristic results
     }
     if (debugStages) {
       debugStages.refinement = refinementDebug
