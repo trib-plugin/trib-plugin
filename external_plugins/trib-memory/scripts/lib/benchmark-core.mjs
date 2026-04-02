@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { buildTemporalOverride, parseTimerange } from './benchmark-runtime.mjs'
+import { cleanMemoryText } from '../../lib/memory-extraction.mjs'
 
 export function normalizeCase(raw, defaults = {}) {
   const expectedAny = []
@@ -66,9 +67,10 @@ function itemContent(item) {
     item?.topic ?? '',
     item?.element ?? '',
     item?.state ?? '',
+    item?.importance ?? '',
     item?.episode_content ?? '',
   ]
-  return parts.join(' ').toLowerCase()
+  return cleanMemoryText(parts.join(' ')).toLowerCase()
 }
 
 function matchesExpectation(item, testCase) {
@@ -77,8 +79,8 @@ function matchesExpectation(item, testCase) {
   if (testCase.expected_id != null && Number(item?.entity_id ?? item?.id) !== Number(testCase.expected_id)) return false
   if (testCase.expected_type.length > 0 && !testCase.expected_type.includes(String(item?.type ?? ''))) return false
   if (testCase.expected_subtype.length > 0 && !testCase.expected_subtype.includes(String(item?.subtype ?? ''))) return false
-  if (testCase.expected_all.length > 0 && !testCase.expected_all.every(token => content.includes(String(token).toLowerCase()))) return false
-  if (testCase.expected_any.length > 0 && !testCase.expected_any.some(token => content.includes(String(token).toLowerCase()))) return false
+  if (testCase.expected_all.length > 0 && !testCase.expected_all.every(token => content.includes(cleanMemoryText(token).toLowerCase()))) return false
+  if (testCase.expected_any.length > 0 && !testCase.expected_any.some(token => content.includes(cleanMemoryText(token).toLowerCase()))) return false
   return true
 }
 
