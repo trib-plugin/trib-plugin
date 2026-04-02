@@ -60,7 +60,15 @@ export function loadCases(filePath, defaults = {}) {
 }
 
 function itemContent(item) {
-  return String(item?.content ?? item?.text ?? '').toLowerCase()
+  const parts = [
+    item?.content ?? item?.text ?? '',
+    item?.classification ?? '',
+    item?.topic ?? '',
+    item?.element ?? '',
+    item?.state ?? '',
+    item?.episode_content ?? '',
+  ]
+  return parts.join(' ').toLowerCase()
 }
 
 function matchesExpectation(item, testCase) {

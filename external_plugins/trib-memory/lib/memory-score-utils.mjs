@@ -11,9 +11,9 @@
 
 const DEFAULT_SCORING = {
   semantic: {
-    w_class: 0.15,
-    w_topic: 0.55,
-    w_element: 0.30,
+    w_class: 0.10,
+    w_topic: 0.30,
+    w_element: 0.60,
     gain: 0.5,
     vectorThreshold: 0.45,
   },
