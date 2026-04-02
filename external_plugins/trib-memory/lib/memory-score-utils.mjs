@@ -15,6 +15,7 @@ const DEFAULT_SCORING = {
     w_element: 0.70,
     gain: 0.5,
     vectorThreshold: 0.45,
+    maxBonusRatio: 1.0,
   },
   state: {
     '진행 중': 1.1,
@@ -149,9 +150,6 @@ export function computeLanguageFactor(itemLang, queryLang, config = DEFAULT_SCOR
 
 export function computeFinalScore(baseScore, item, query, options = {}) {
   const config = options.config ?? DEFAULT_SCORING
-  const semanticBonus = item.type === 'classification'
-    ? (computeSemanticFactor(item, query, config, { queryVector: options.queryVector }) - 1)
-    : 0
   const importanceBoost = computeImportanceBoost(item.importance)
-  return (baseScore + semanticBonus) * importanceBoost
+  return baseScore * importanceBoost
 }
