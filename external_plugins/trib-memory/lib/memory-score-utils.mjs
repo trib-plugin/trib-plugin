@@ -23,11 +23,9 @@ const DEFAULT_SCORING = {
     default: 1.0,
   },
   time: {
-    decayPerDay: 0.02,
-    min: 0.8,
-    max: 1.4,
-    recentBoostDays: 3,
-    recentBoost: 1.2,
+    halfLifeDays: 30,
+    alpha: 0.3,
+    min: 0.5,
   },
   language: {
     match: 1.05,
@@ -101,11 +99,13 @@ export function computeStateFactor(state, config = DEFAULT_SCORING) {
 // ── Time factor ──────────────────────────────────────────────────────
 
 export function computeTimeFactor(ts, config = DEFAULT_SCORING) {
-  if (!ts) return config.time.default ?? 1.0
+  if (!ts) return 1.0
   const ageDays = Math.max(0, (Date.now() - new Date(ts).getTime()) / 86400000)
-  if (ageDays <= config.time.recentBoostDays) return config.time.recentBoost
-  const decay = 1.0 - ageDays * config.time.decayPerDay
-  return Math.max(config.time.min, Math.min(config.time.max, decay))
+  // power-law decay: 1 / (1 + age/halfLife)^alpha
+  const halfLife = config.time.halfLifeDays ?? 7
+  const alpha = config.time.alpha ?? 0.5
+  const decay = 1 / Math.pow(1 + ageDays / halfLife, alpha)
+  return Math.max(config.time.min ?? 0.2, decay)
 }
 
 // ── Language factor ──────────────────────────────────────────────────
