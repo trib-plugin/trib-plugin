@@ -1081,7 +1081,7 @@ export class MemoryStore {
       ORDER BY updated_at DESC
     `).all()
 
-    const promoted = allClassifications.filter(row => getTagFactor(row.importance) <= 0.2)
+    const promoted = allClassifications.filter(row => getTagFactor(row.importance) <= 0.2).slice(0, 5)
 
     if (promoted.length > 0) {
       const lines = promoted.map(row => {
@@ -1100,21 +1100,19 @@ export class MemoryStore {
       if (botContent) parts.push(botContent)
     }
 
-    // Fallback — all sections empty → recent dialogues
-    if (parts.length === 0) {
-      const recentEpisodes = this.db.prepare(`
-        SELECT DISTINCT role, content
-        FROM episodes
-        WHERE kind = 'message'
-        ORDER BY ts DESC, id DESC
-        LIMIT 12
-      `).all().reverse()
-      if (recentEpisodes.length > 0) {
-        const body = recentEpisodes
-          .map(row => `${row.role === 'user' ? 'u' : 'a'}: ${row.content}`)
-          .join('\n')
-        parts.push(`## Recent Dialogues\n${body}`)
-      }
+    // Recent: last 10 user episodes
+    const recentUserEpisodes = this.db.prepare(`
+      SELECT role, content FROM episodes
+      WHERE kind = 'message' AND role = 'user'
+        AND content NOT LIKE 'You are%'
+        AND LENGTH(content) BETWEEN 5 AND 300
+      ORDER BY ts DESC, id DESC
+      LIMIT 5
+    `).all().reverse()
+
+    if (recentUserEpisodes.length > 0) {
+      const body = recentUserEpisodes.map(row => `- ${row.content.slice(0, 100)}`).join('\n')
+      parts.push(`## Recent\n${body}`)
     }
 
     return parts.join('\n\n').trim()
