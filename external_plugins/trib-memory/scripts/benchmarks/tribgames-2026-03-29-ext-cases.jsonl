@@ -1,0 +1,20 @@
+{"label":"장기기억 최종검토","query":"오늘클로드2봇 장기기억관련작업했는데 최종검토좀해줘","timerange":"2026-03-30","expected_any":["장기기억","최종검토","서머라이즈 사이클"],"expected_type":["episode"]}
+{"label":"장기기억 압축 방식","query":"장기기억압축은어떻게하는거","timerange":"2026-03-30","expected_any":["장기기억압축"],"expected_type":["episode"]}
+{"label":"레타 vs 우리 RAG 차이","query":"레타쪽이랑우리랑 차이는뭐야 rag자체도","timerange":"2026-03-30","expected_any":["레타","rag","차이"],"expected_type":["episode"]}
+{"label":"LLM 장기기억 컨셉","query":"llm으로 장기기억핸들링하는건 요즘컨셉이비슷하네","timerange":"2026-03-30","expected_any":["장기기억 핸들링","rag에 추가로 llm투입"],"expected_type":["episode"]}
+{"label":"스킬 md로만 존재","query":"스킬은슬래시커맨드안만들고 md로만존재할수있나","timerange":"2026-03-30","expected_any":["스킬","슬래시커맨드","md로만 존재"],"expected_type":["episode"]}
+{"label":"bash 스킬 강제실행","query":"bash실행을스킬에서강제시킬수있나","timerange":"2026-03-30","expected_any":["bash","스킬","강제"],"expected_type":["episode"]}
+{"label":"codex 테스트","query":"일단저거테스트를 codex넣어볼까","timerange":"2026-03-30","expected_any":["codex","테스트"],"expected_type":["episode"]}
+{"label":"데일리 도움 여부","query":"아데일리가실제로도움이되고있었던거야","timerange":"2026-03-30","expected_any":["데일리","도움"],"expected_type":["episode"]}
+{"label":"consolidation 데일리 교정","query":"consolidation하고 이걸 데일리때교정하는게베스트아닌가","timerange":"2026-03-30","expected_any":["consolidation","데일리","교정"],"expected_type":["episode"]}
+{"label":"하이브리드 검색 효율","query":"하이브리드검색 Dense+Sparse+Temporal+Seed 효율적인지궁금","timerange":"2026-03-30","expected_any":["하이브리드 검색","Dense","Sparse","효율"],"expected_type":["episode"]}
+{"label":"유사도 판단 기준","query":"유사도가이미비슷한것들만판단하고합치는거지","timerange":"2026-03-30","expected_any":["유사도","비슷한것들","합치는"],"expected_type":["episode"]}
+{"label":"오픈클로 플러그인 소스","query":"디스코드오피셜 클로드코드플러그인 오픈클로소스리버싱해봐","timerange":"2026-03-30","expected_any":["오피셜 클로드코드플러그인 오픈클로같은거","오픈클로같은거 어떻게처리"],"expected_type":["episode"]}
+{"label":"플러그인 깃기준 설치","query":"로컬경로로깔았지 플러그인이거 깃기준으로깔아야할듯","timerange":"2026-03-30","expected_any":["로컬경로","깃기준","플러그인"],"expected_type":["episode"]}
+{"label":"채널md 지워라","query":"채널md지우라고 그거완전다르다고","timerange":"2026-03-30","expected_any":["채널md지우라고 그거 완전다르다고","채널md지우"],"expected_type":["episode"]}
+{"label":"메인세션 두개 띄우면","query":"메인세션두개띄우면어떻게되냐","timerange":"2026-03-29","expected_any":["메인세션두개띄우면","메인세션 두개"],"expected_type":["episode"]}
+{"label":"싱글톤 필요한가","query":"싱글톤자체가필요한가 mcp를너무피곤하게쓰는거아닌가","timerange":"2026-03-29","expected_any":["싱글톤","피곤","mcp"],"expected_type":["episode"]}
+{"label":"MCP 싱글톤 큐 릴레이","query":"mcp자체를싱글톤으로 호출결과를큐에담아주면 메인mcp가릴레이","timerange":"2026-03-29","expected_any":["싱글톤","큐에담아","릴레이"],"expected_type":["episode"]}
+{"label":"Codex 연동 상황","query":"Codex연동상황알려줘","timerange":"2026-03-29","expected_any":["Codex 연동","Codex"],"expected_type":["episode"]}
+{"label":"모델선택 가능한 코드냐","query":"지금모델선택이가능한코드냐 라우팅이아니라","timerange":"2026-03-29","expected_any":["모델 선택","라우팅"],"expected_type":["episode"]}
+{"label":"명령어 맛이감","query":"아니근데우리명령어자체가좀맛이가듯","timerange":"2026-03-29","expected_any":["명령어","맛이가"],"expected_type":["episode"]}

@@ -34,6 +34,7 @@ import {
   propositionSubjectTokens,
   shortTokenMatchScore,
   tokenizeMemoryText,
+  extractKoCompoundTokens,
   generateQueryVariants,
   localNow,
   localDateStr,
@@ -56,6 +57,12 @@ import {
   isRuleQuery,
   parseTemporalHint,
 } from './memory-query-plan.mjs'
+import {
+  detectArchitectureQuery,
+  detectOperationalIssueQuery,
+  detectStandaloneMemoryQuery,
+} from './memory-query-cues.mjs'
+import { buildCandidateRows } from './memory-candidate-utils.mjs'
 import {
   applyExactHistorySelection,
   buildHybridRetrievalInputs,
@@ -1890,6 +1897,9 @@ export class MemoryStore {
   async applyVerifiedFactCorrection(query, results = [], options = {}) {
     if (!query || results.length === 0) return results
     const primaryIntent = options.intent?.primary ?? 'decision'
+    const operationalIssueCue =
+      /\b(channel|discord|binding|sync|inbound|access config|channel id|message|delay|lag|restart|resume|session|restore|mapping)\b/.test(String(query).toLowerCase()) ||
+      /채널|디스코드|바인딩|동기|인바운드|채널 ?id|채널아이디|메세지|메시지|지연|리스타트|재시작|리쥼|세션|복원|매핑/.test(String(query))
     const topType = String(results[0]?.type ?? '')
     const shouldVerify = topType === 'task' || primaryIntent === 'decision' || primaryIntent === 'policy' || primaryIntent === 'profile'
     if (!shouldVerify) return results
@@ -1916,6 +1926,13 @@ export class MemoryStore {
     const existing = results.find(item => item.type === 'fact' && Number(item.entity_id) === Number(best.id))
     const factRow = existing ?? this.getFactRecallRowById(best.id)
     if (!factRow) return results
+    const factSubtype = String(factRow?.subtype ?? factRow?.fact_type ?? '').toLowerCase()
+    if (primaryIntent === 'task' && factSubtype && factSubtype !== 'decision' && factSubtype !== 'constraint') {
+      return results
+    }
+    if (operationalIssueCue && factSubtype === 'preference') {
+      return results
+    }
 
     const queryTokenCount = Math.max(1, tokenizeMemoryText(query).length)
     const overlapCount = Math.max(
@@ -2886,6 +2903,8 @@ export class MemoryStore {
     }
 
     applyLexicalIntentHints(clean, scores)
+    const operationalIssueCue = detectOperationalIssueQuery(clean)
+    const standaloneMemoryCue = detectStandaloneMemoryQuery(clean)
     const devBias = detectDevQueryBias(clean)
     const devBiasConfig = tuning?.devBias ?? DEFAULT_MEMORY_TUNING.devBias
     if (devBias > 0) {
@@ -2893,6 +2912,19 @@ export class MemoryStore {
       scores.decision += devBias * Number(devBiasConfig.decisionBoost ?? 0.15)
       scores.profile = Math.max(0, scores.profile - devBias * Number(devBiasConfig.profileSuppress ?? 0.15))
       scores.event = Math.max(0, scores.event - devBias * Number(devBiasConfig.eventSuppress ?? 0.08))
+    }
+    if (operationalIssueCue) {
+      scores.task = Number((scores.task + 0.36).toFixed(4))
+      scores.decision = Number((scores.decision + 0.12).toFixed(4))
+      scores.history = Math.max(0, scores.history - 0.12)
+      scores.event = Math.max(0, scores.event - 0.12)
+      scores.profile = Math.max(0, scores.profile - 0.06)
+    }
+    if (standaloneMemoryCue) {
+      scores.decision = Number((scores.decision + 0.30).toFixed(4))
+      scores.task = Number((scores.task + 0.18).toFixed(4))
+      scores.history = Math.max(0, scores.history - 0.20)
+      scores.event = Math.max(0, scores.event - 0.18)
     }
     const profileSlot = detectProfileQuerySlot(clean)
     const scopedEntities = this.resolveQueryEntityScope(clean)
@@ -3064,96 +3096,267 @@ export class MemoryStore {
   async searchRelevantHybrid(query, limit = 8, options = {}) {
     const clean = cleanMemoryText(query)
     if (!clean) return []
-    const shouldRecordRetrieval = options.recordRetrieval !== false
+    const stageOrder = ['intent', 'plan', 'candidates', 'combined', 'exact', 'verified', 'rerank', 'final']
+    const normalizeStage = (value) => {
+      const normalized = String(value ?? '').trim().toLowerCase()
+      return stageOrder.includes(normalized) ? normalized : null
+    }
+    const summarizeItem = (item) => ({
+      type: item?.type ?? null,
+      subtype: item?.subtype ?? null,
+      entity_id: item?.entity_id ?? null,
+      status: item?.status ?? null,
+      score: item?.score ?? item?.weighted_score ?? null,
+      weighted_score: item?.weighted_score ?? null,
+      rerank_score: item?.rerank_score ?? null,
+      overlap: item?.overlapCount ?? null,
+      content: String(item?.content ?? item?.text ?? '').slice(0, 160),
+      source_ts: item?.source_ts ?? null,
+    })
+    const summarizeItems = (items = [], maxItems = Math.max(limit, 8)) => items.slice(0, maxItems).map(summarizeItem)
+    const summarizePlan = (plan) => ({
+      retriever: plan?.retriever ?? null,
+      intent: plan?.intent?.primary ?? null,
+      includeDoneTasks: Boolean(plan?.includeDoneTasks),
+      preferActiveTasks: Boolean(plan?.preferActiveTasks),
+      explicitRelationQuery: Boolean(plan?.explicitRelationQuery),
+      preferRelations: Boolean(plan?.preferRelations),
+      isHistoryExact: Boolean(plan?.isHistoryExact),
+      temporal: plan?.temporal ?? null,
+      filters: plan?.filters ?? null,
+      entityScope: (plan?.queryEntities ?? []).map(item => ({
+        id: item.id,
+        name: item.name,
+        type: item.entity_type,
+      })),
+    })
+    const untilStage = normalizeStage(options.untilStage)
+    const shouldReturnDebug = Boolean(options.debug || untilStage)
+    const shouldReturnStageResults = Boolean(options.returnStageResults)
+    const shouldRecordRetrieval = !untilStage && options.recordRetrieval !== false
     const tuning = options.tuning ?? this.getRetrievalTuning()
     const queryVector = options.queryVector ?? await embedText(clean)
-    const intent = options.intent ?? await this.classifyQueryIntent(clean, queryVector, { tuning })
+    const baseIntent = options.intent ?? await this.classifyQueryIntent(clean, queryVector, { tuning })
     const focusVector = options.focusVector ?? await this.buildRecentFocusVector({
       channelId: options.channelId,
       userId: options.userId,
     })
-    const plan = buildMemoryQueryPlan(clean, intent, {
-      limit,
-      queryEntities: options.queryEntities ?? this.resolveQueryEntityScope(clean),
-      filters: options.filters,
-    })
-    const { sparse, dense } = await buildHybridRetrievalInputs(this, plan, queryVector, focusVector)
-    // Multi-query: 변형 쿼리로 추가 검색
+    const queryEntities = options.queryEntities ?? this.resolveQueryEntityScope(clean)
+    const filters = options.filters
+    const temporal = options.temporal ?? null
     const variants = generateQueryVariants(clean)
-    if (variants.length > 1) {
-      for (const variant of variants.slice(1)) {
-        const variantVector = await embedText(variant)
-        const variantSparse = this.searchRelevantSparse(variant, limit)
-        const variantDense = await this.searchRelevantDense(variant, limit, variantVector, focusVector, {
-          includeDoneTasks: plan.includeDoneTasks,
-        })
-        sparse.push(...variantSparse)
-        dense.push(...variantDense)
+    const operationalIssueCue = detectOperationalIssueQuery(clean)
+    const standaloneMemoryCue = detectStandaloneMemoryQuery(clean)
+    const debugStages = shouldReturnDebug ? {
+      intent: {
+        primary: baseIntent?.primary ?? null,
+        topScore: baseIntent?.topScore ?? null,
+        secondScore: baseIntent?.secondScore ?? null,
+        weakPrediction: Boolean(baseIntent?.weakPrediction),
+        devBias: baseIntent?.devBias ?? null,
+        scores: baseIntent?.scores ?? {},
+      },
+    } : null
+    if (untilStage === 'intent') {
+      return {
+        results: [],
+        debug: {
+          stopped_at: 'intent',
+          stages: debugStages,
+        },
       }
     }
-    const combined = this.combineRetrievalResults(clean, sparse, dense, limit, intent, plan.queryEntities, {
-      graphFirst: plan.graphFirst,
-      tuning,
-      preferActiveTasks: plan.preferActiveTasks,
-    })
-    const exactResults = applyExactHistorySelection(plan, combined, limit, { tuning })
-    let finalResults = await this.applyVerifiedFactCorrection(clean, exactResults, {
+
+    const runRetrievalPass = async (intent) => {
+      const plan = buildMemoryQueryPlan(clean, intent, {
+        limit,
+        temporal,
+        queryEntities,
+        filters,
+      })
+      const { sparse, dense } = await buildHybridRetrievalInputs(this, plan, queryVector, focusVector)
+      if (variants.length > 1) {
+        for (const variant of variants.slice(1)) {
+          const variantVector = await embedText(variant)
+          const variantSparse = await this.applyMetadataFilters(this.searchRelevantSparse(variant, limit), plan.filters)
+          const variantDense = await this.applyMetadataFilters(
+            await this.searchRelevantDense(variant, limit, variantVector, focusVector, {
+              includeDoneTasks: plan.includeDoneTasks,
+            }),
+            plan.filters,
+          )
+          sparse.push(...variantSparse)
+          dense.push(...variantDense)
+        }
+      }
+      const candidateRows = buildCandidateRows(clean, intent, plan, sparse, dense)
+      const combined = this.combineRetrievalResults(clean, sparse, dense, limit, intent, plan.queryEntities, {
+        graphFirst: plan.graphFirst,
+        tuning,
+        preferActiveTasks: plan.preferActiveTasks,
+      })
+      const exactResults = applyExactHistorySelection(plan, combined, limit, { tuning })
+      const finalResults = await this.applyVerifiedFactCorrection(clean, exactResults, {
+        limit,
+        intent,
+        queryVector,
+      })
+      return { intent, plan, sparse, dense, candidateRows, combined, exactResults, finalResults }
+    }
+
+    const basePlan = buildMemoryQueryPlan(clean, baseIntent, {
       limit,
-      intent,
-      queryVector,
+      temporal,
+      queryEntities,
+      filters,
     })
+    if (debugStages) debugStages.plan = summarizePlan(basePlan)
+    if (untilStage === 'plan') {
+      return {
+        results: [],
+        debug: {
+          stopped_at: 'plan',
+          stages: debugStages,
+        },
+      }
+    }
+
+    let activePass = await runRetrievalPass(baseIntent)
+    if (debugStages) {
+      debugStages.candidates = {
+        sparse_count: activePass.sparse.length,
+        dense_count: activePass.dense.length,
+        top: summarizeItems(activePass.candidateRows),
+      }
+      debugStages.combined = summarizeItems(activePass.combined)
+      debugStages.exact = summarizeItems(activePass.exactResults)
+      debugStages.verified = summarizeItems(activePass.finalResults)
+    }
+    if (untilStage === 'candidates' || untilStage === 'combined' || untilStage === 'exact' || untilStage === 'verified') {
+      const stageResults =
+        untilStage === 'candidates' ? activePass.candidateRows :
+        untilStage === 'combined' ? activePass.combined :
+        untilStage === 'exact' ? activePass.exactResults :
+        activePass.finalResults
+      return {
+        results: stageResults,
+        debug: {
+          stopped_at: untilStage,
+          stages: debugStages,
+        },
+      }
+    }
+    let finalResults = activePass.finalResults
+    let refinementDebug = {
+      attempted: false,
+      selected: false,
+      from_intent: activePass.intent.primary,
+      to_intent: null,
+      base_verified_top: summarizeItems(activePass.finalResults, 5),
+      refined_verified_top: [],
+    }
     // Candidate-based intent refinement: if results are weak, retry with adjusted intent
     if (finalResults.length === 0 || (finalResults.length > 0 && Number(finalResults[0]?.weighted_score ?? 0) > -0.35)) {
       const typeDistribution = {}
-      for (const item of [...sparse, ...dense].slice(0, 20)) {
+      for (const item of [...activePass.sparse, ...activePass.dense].slice(0, 20)) {
         typeDistribution[item.type ?? 'unknown'] = (typeDistribution[item.type ?? 'unknown'] ?? 0) + 1
       }
       const dominantType = Object.entries(typeDistribution).sort((a, b) => b[1] - a[1])[0]?.[0]
       const typeToIntent = { fact: 'decision', task: 'task', signal: 'profile', profile: 'profile', episode: 'history', entity: 'decision', relation: 'decision', proposition: 'decision' }
       const refinedIntent = typeToIntent[dominantType] ?? 'decision'
-      if (refinedIntent !== intent.primary) {
+      const skipHistoryRefine = refinedIntent === 'history' && (operationalIssueCue || standaloneMemoryCue)
+      if (refinedIntent !== activePass.intent.primary && !skipHistoryRefine) {
+        refinementDebug.attempted = true
+        refinementDebug.to_intent = refinedIntent
         try {
-          const refinedPlan = buildMemoryQueryPlan(clean, { ...intent, primary: refinedIntent }, {
-            limit, queryEntities: options.queryEntities ?? this.resolveQueryEntityScope(clean), filters: options.filters,
-          })
-          const { sparse: sparse2, dense: dense2 } = await buildHybridRetrievalInputs(this, refinedPlan, queryVector, focusVector)
-          const combined2 = this.combineRetrievalResults(clean, sparse2, dense2, limit, { ...intent, primary: refinedIntent }, refinedPlan.queryEntities, {
-            graphFirst: refinedPlan.graphFirst, tuning, preferActiveTasks: refinedPlan.preferActiveTasks,
-          })
-          const exactResults2 = applyExactHistorySelection(refinedPlan, combined2, limit, { tuning })
-          const refined2 = await this.applyVerifiedFactCorrection(clean, exactResults2, { limit, intent: { ...intent, primary: refinedIntent }, queryVector })
+          const refinedPass = await runRetrievalPass({ ...activePass.intent, primary: refinedIntent })
+          refinementDebug.refined_verified_top = summarizeItems(refinedPass.finalResults, 5)
           const firstScore = Number(finalResults[0]?.weighted_score ?? 0)
-          const secondScore = Number(refined2[0]?.weighted_score ?? 0)
-          if (refined2.length > 0 && (finalResults.length === 0 || secondScore < firstScore)) {
-            finalResults = refined2
+          const secondScore = Number(refinedPass.finalResults[0]?.weighted_score ?? 0)
+          if (refinedPass.finalResults.length > 0 && (finalResults.length === 0 || secondScore < firstScore)) {
+            activePass = refinedPass
+            finalResults = activePass.finalResults
+            refinementDebug.selected = true
+            if (debugStages) {
+              debugStages.plan = summarizePlan(activePass.plan)
+              debugStages.candidates = {
+                sparse_count: activePass.sparse.length,
+                dense_count: activePass.dense.length,
+                top: summarizeItems(activePass.candidateRows),
+              }
+              debugStages.combined = summarizeItems(activePass.combined)
+              debugStages.exact = summarizeItems(activePass.exactResults)
+              debugStages.verified = summarizeItems(activePass.finalResults)
+            }
           }
         } catch {}
       }
     }
     // Cross-encoder rerank: only when heuristic results are weak
+    let rerankDebug = {
+      attempted: false,
+      input_top: [],
+      output_top: [],
+    }
+    const buildStageResults = () => ({
+      candidates: activePass.candidateRows,
+      combined: activePass.combined,
+      exact: activePass.exactResults,
+      verified: activePass.finalResults,
+      final: finalResults,
+    })
     if (tuning.reranker?.enabled !== false &&
         (finalResults.length === 0 || (finalResults.length > 0 && Number(finalResults[0]?.weighted_score ?? 0) > (tuning.reranker?.triggerThreshold ?? -0.4)))) {
       try {
         const { crossEncoderRerank, isRerankerAvailable } = await import('./reranker.mjs')
         if (isRerankerAvailable()) {
-          const pool = [...new Map([...sparse, ...dense].map(item => [
-            `${item.type}:${item.entity_id}`, item
-          ])).values()].slice(0, 8)
+          const pool = collapseClaimSurfaceDuplicates([
+            ...finalResults,
+            ...activePass.exactResults,
+          ], 'weighted_score').slice(0, Math.max(limit, tuning.reranker?.maxCandidates ?? 5))
           if (pool.length > 0) {
+            rerankDebug.attempted = true
+            rerankDebug.input_top = summarizeItems(pool)
             const maxCandidates = tuning.reranker?.maxCandidates ?? 5
             const minScore = tuning.reranker?.minRerankerScore ?? -2
             const reranked = await crossEncoderRerank(clean, pool, { limit: maxCandidates })
+            rerankDebug.output_top = summarizeItems(reranked)
             if (reranked.length > 0 && reranked[0].reranker_score > minScore) {
-              finalResults = reranked.slice(0, limit)
+              // Only adopt reranked results if top item improves or stays same
+              const prevTopId = Number(finalResults[0]?.entity_id ?? 0)
+              const rerankedTopId = Number(reranked[0]?.entity_id ?? 0)
+
+              const rerankedTopCE = Number(reranked[0]?.reranker_score ?? -Infinity)
+              // Accept if: same top item, or reranker is very confident (score > 0)
+              if (prevTopId === rerankedTopId || rerankedTopCE > 0) {
+                finalResults = reranked.slice(0, limit)
+              }
             }
           }
         }
       } catch {} // reranker not loaded yet — use heuristic results
     }
+    if (debugStages) {
+      debugStages.refinement = refinementDebug
+      debugStages.rerank = rerankDebug
+      debugStages.final = summarizeItems(finalResults)
+    }
+    if (untilStage === 'rerank') {
+      return {
+        results: finalResults,
+        stage_results: shouldReturnStageResults ? buildStageResults() : undefined,
+        debug: {
+          stopped_at: 'rerank',
+          stages: debugStages,
+        },
+      }
+    }
     if (shouldRecordRetrieval) this.recordRetrieval(finalResults)
-    const debugSummary = summarizeRetrieverDebug(plan, sparse, dense, finalResults)
-    const traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    let debugSummary = null
+    let traceId = ''
     if (options.trace || options.debug) {
+      debugSummary = summarizeRetrieverDebug(activePass.plan, activePass.sparse, activePass.dense, finalResults)
+      traceId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       this.appendRetrievalTrace({
         trace_id: traceId,
         ts: localNow(),
@@ -3164,8 +3367,29 @@ export class MemoryStore {
     if (options.debug) {
       return {
         results: finalResults,
+        stage_results: shouldReturnStageResults ? buildStageResults() : undefined,
         debug: {
           trace_id: traceId,
+          stopped_at: untilStage ?? 'final',
+          stages: debugStages,
+          ...debugSummary,
+        },
+      }
+    }
+    if (shouldReturnStageResults) {
+      return {
+        results: finalResults,
+        stage_results: buildStageResults(),
+      }
+    }
+    if (untilStage) {
+      return {
+        results: finalResults,
+        stage_results: shouldReturnStageResults ? buildStageResults() : undefined,
+        debug: {
+          trace_id: traceId,
+          stopped_at: untilStage,
+          stages: debugStages,
           ...debugSummary,
         },
       }
@@ -3523,6 +3747,7 @@ export class MemoryStore {
           SELECT 'fact' AS type, f.fact_type AS subtype, f.id AS entity_id, f.text AS content,
                  unixepoch(f.last_seen) AS updated_at, f.retrieval_count AS retrieval_count,
                  f.source_episode_id AS source_episode_id,
+                 e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
           FROM facts f
@@ -3537,6 +3762,7 @@ export class MemoryStore {
                  trim(t.title || CASE WHEN t.details != '' THEN ' — ' || t.details ELSE '' END) AS content,
                  unixepoch(t.last_seen) AS updated_at, t.retrieval_count AS retrieval_count,
                  t.source_episode_id AS source_episode_id,
+                 e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
           FROM tasks t
@@ -3550,6 +3776,7 @@ export class MemoryStore {
           SELECT 'signal' AS type, s.kind AS subtype, s.id AS entity_id, s.value AS content,
                  unixepoch(s.last_seen) AS updated_at, s.retrieval_count AS retrieval_count,
                  s.source_episode_id AS source_episode_id,
+                 e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
           FROM signals s
@@ -3564,6 +3791,7 @@ export class MemoryStore {
                  unixepoch(p.last_seen) AS updated_at, p.retrieval_count AS retrieval_count,
                  p.source_fact_id AS source_fact_id,
                  p.source_episode_id AS source_episode_id,
+                 e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
           FROM propositions p
@@ -3576,6 +3804,7 @@ export class MemoryStore {
         return this.db.prepare(`
           SELECT 'episode' AS type, e.role AS subtype, e.id AS entity_id, e.content,
                  e.created_at AS updated_at, 0 AS retrieval_count,
+                 e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json
           FROM episodes e JOIN memory_vectors mv ON mv.entity_type = 'episode' AND mv.entity_id = e.id AND mv.model = ?
@@ -3737,6 +3966,7 @@ export class MemoryStore {
           graphFirst: Boolean(options.graphFirst),
           isHistoryExact: Boolean(parseTemporalHint(query)?.exact) && (primaryIntent === 'history' || primaryIntent === 'event'),
           exactDate: parseTemporalHint(query)?.start ?? '',
+          query,
         }),
       }))
       .sort((a, b) => Number(a.second_stage_score) - Number(b.second_stage_score))

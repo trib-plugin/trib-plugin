@@ -1,0 +1,1 @@
+{"label":"운영 규칙과 작업 분리","today":"2026-04-01","candidates":[{"role":"user","content":"디스코드 승인 동기 문제 확인해주고 채널 자동 바인딩이 재시작 후에도 유지되는지 봐줘"},{"role":"assistant","content":"승인 동기와 자동 바인딩 문제를 확인하겠습니다."}],"expected_tasks":["디스코드 승인 동기 문제 확인","채널 자동 바인딩"],"expected_facts":["승인 상태와 버튼 동작은 PC와 Discord 양쪽에서 서로 동기화"]}

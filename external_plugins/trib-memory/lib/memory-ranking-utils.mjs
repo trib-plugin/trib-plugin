@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import { cleanMemoryText, isProfileRelatedText } from './memory-extraction.mjs'
+import { detectOperationalIssueQuery, detectStandaloneMemoryQuery } from './memory-query-cues.mjs'
 
 export function isProfileIntent(intent) {
   return intent === 'profile'
@@ -36,12 +37,46 @@ export const SECOND_STAGE_THRESHOLD = Object.freeze({
   graph: -0.32,
 })
 
+function isGenericAssistantEpisode(item) {
+  if (String(item?.type ?? '') !== 'episode') return false
+  if (String(item?.subtype ?? '').toLowerCase() !== 'assistant') return false
+  const clean = cleanMemoryText(item?.content ?? '')
+  if (!clean) return false
+  if (clean.length <= 18) return true
+  return (
+    /^네[, ]/.test(clean) ||
+    /어떤 작업.*할까요|진행 중이던 작업|말씀해 주세요|확인하겠습니다|어떻게 도와|도와드릴까요/i.test(clean)
+  )
+}
+
+function hasStandaloneTaskSignal(item) {
+  const text = cleanMemoryText(item?.content ?? '').toLowerCase()
+  return /\b(standalone|independent|separate|split|detached|plugin)\b/.test(text) || /단독|독립|분리|따로/.test(text)
+}
+
+function isStandaloneCompatibilityFact(item) {
+  const text = cleanMemoryText(item?.content ?? '').toLowerCase()
+  return (
+    String(item?.type ?? '') === 'fact' &&
+    String(item?.subtype ?? '').toLowerCase() === 'constraint' &&
+    (/\b(folder|path|compatib|os|user path|blocking)\b/.test(text) || /폴더|경로|호환|차단|사용자별/.test(text))
+  )
+}
+
+function isGenericVerificationTask(item) {
+  const text = cleanMemoryText(item?.content ?? '').toLowerCase()
+  if (String(item?.type ?? '') !== 'task') return false
+  return (
+    /최신 로그|스크린샷|이미지 확인|마지막 상태|latest logs|screenshot|last state/.test(text)
+  )
+}
+
 export function getIntentTypeCaps(intent, options = {}) {
   const hasTaskCandidate = Boolean(options.hasTaskCandidate)
   const hasCoreResult = Boolean(options.hasCoreResult)
   const conciseQuery = Boolean(options.conciseQuery)
   if (isProfileIntent(intent)) return new Map([['fact', 3], ['proposition', 2], ['task', 0], ['signal', 2], ['profile', 3], ['episode', 0]])
-  if (intent === 'task') return new Map([['fact', 1], ['proposition', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', 1]])
+  if (intent === 'task') return new Map([['fact', 1], ['proposition', 1], ['task', hasTaskCandidate ? 4 : 2], ['signal', 0], ['episode', hasTaskCandidate ? 0 : 1]])
   if (isPolicyIntent(intent)) return new Map([['fact', 4], ['proposition', 3], ['task', 1], ['signal', 1], ['episode', 0]])
   if (intent === 'graph') return new Map([['relation', 4], ['entity', 3], ['fact', 2], ['proposition', 1], ['task', 1], ['episode', 0]])
   if (intent === 'event') return new Map([['fact', 1], ['proposition', 2], ['task', 1], ['signal', 0], ['episode', 4], ['entity', 1], ['relation', 1]])
@@ -69,7 +104,11 @@ export function getIntentSubtypeBonus(intent, item) {
     )
   }
   if (intent === 'task') {
-    return item.type === 'task' ? -0.10 : 0
+    return (
+      item.type === 'task' ? -0.18 :
+      isGenericAssistantEpisode(item) ? 0.32 :
+      0
+    )
   }
   if (isPolicyIntent(intent)) {
     return (
@@ -95,9 +134,13 @@ export function getIntentSubtypeBonus(intent, item) {
   )
   if (intent === 'history') return item.type === 'episode' ? -0.08 : 0
   return (
+    item.type === 'entity' && item.subtype === 'system' ? -0.12 :
+    item.type === 'fact' && item.subtype === 'preference' ? 0.10 :
+    item.type === 'proposition' && item.subtype === 'engineering_style' ? 0.06 :
     item.type === 'fact' && item.subtype === 'decision' ? -0.06 :
     item.type === 'relation' ? -0.06 :
     item.type === 'entity' ? -0.04 :
+    isGenericAssistantEpisode(item) ? 0.18 :
     0
   )
 }
@@ -202,6 +245,11 @@ export function computeSecondStageRerankScore(intent, item, options = {}) {
   const sourceTs = String(item?.source_ts ?? item?.updated_at ?? '')
   const sameDay = exactDate && sourceTs.startsWith(exactDate)
   const stage = String(item?.stage ?? item?.subtype ?? '').toLowerCase()
+  const normalizedQuery = cleanMemoryText(options.query ?? '').toLowerCase()
+  const normalizedContent = cleanMemoryText(item?.content ?? '').toLowerCase()
+  const directEcho = Boolean(normalizedQuery) && normalizedContent.includes(normalizedQuery)
+  const operationalIssueQuery = detectOperationalIssueQuery(normalizedQuery)
+  const standaloneMemoryQuery = detectStandaloneMemoryQuery(normalizedQuery)
 
   let bonus = 0
   if (graphFirst) {
@@ -224,15 +272,60 @@ export function computeSecondStageRerankScore(intent, item, options = {}) {
     if (item?.type === 'signal') bonus += 0.04
   }
   if ((intent === 'decision' || intent === 'task') && item?.type === 'task') {
-    if (stage === 'planned') bonus += 0.10
-    else if (stage === 'investigating') bonus += 0.04
-    else if (stage === 'implementing') bonus -= 0.04
-    else if (stage === 'wired') bonus -= 0.03
-    else if (stage === 'verified') bonus -= 0.02
+    if (stage === 'planned') bonus += 0.12
+    else if (stage === 'investigating') bonus += 0.06
+    else if (stage === 'implementing') bonus -= 0.12
+    else if (stage === 'wired') bonus -= 0.08
+    else if (stage === 'verified') bonus -= 0.06
+    if (intent === 'task') {
+      if (item?.status === 'in_progress') bonus -= 0.08
+      else if (item?.status === 'active') bonus -= 0.05
+    }
   }
   if (intent === 'decision') {
+    if (item?.type === 'episode') bonus += 0.42
+    if (item?.type === 'episode' && directEcho) bonus += 0.18
     if (item?.type === 'task' && Number(item?.overlapCount ?? 0) > 0) bonus += 0.26
+    if (item?.type === 'task' && Number(item?.overlapCount ?? 0) === 0) bonus += 0.16
     if (item?.type === 'fact' && item?.subtype === 'decision' && Number(item?.overlapCount ?? 0) > 0) bonus -= 0.14
+    if (item?.type === 'fact' && item?.subtype === 'preference') bonus += 0.14
+    if (item?.type === 'proposition' && item?.subtype === 'engineering_style') bonus += 0.08
+    if (item?.type === 'entity' && item?.subtype === 'system') bonus -= 0.08
+    if (isGenericAssistantEpisode(item)) bonus += 0.18
+    if (operationalIssueQuery) {
+      if (item?.type === 'task' && Number(item?.overlapCount ?? 0) > 0) bonus -= 0.18
+      if (item?.type === 'task' && Number(item?.overlapCount ?? 0) === 0) bonus -= 0.06
+      if (item?.type === 'fact' && item?.subtype === 'preference') bonus += 0.28
+      if (item?.type === 'proposition' && /notification|visibility|format/.test(String(item?.subtype ?? '').toLowerCase())) bonus += 0.24
+      if (item?.type === 'episode' && String(item?.subtype ?? '').toLowerCase() === 'user' && /\?/.test(String(item?.content ?? ''))) bonus += 0.16
+    }
+    if (standaloneMemoryQuery) {
+      if (item?.type === 'entity' && (String(item?.subtype ?? '').toLowerCase() === 'project' || String(item?.subtype ?? '').toLowerCase() === 'system')) bonus -= 0.14
+      if (item?.type === 'task') bonus -= 0.12
+      if (hasStandaloneTaskSignal(item)) bonus -= 0.18
+      if (item?.type === 'episode' && directEcho) bonus += 0.28
+      if (isStandaloneCompatibilityFact(item)) bonus += 0.34
+      if (item?.type === 'fact' && item?.subtype === 'preference') bonus += 0.24
+      if (item?.type === 'proposition' && /notification|visibility|format/.test(String(item?.subtype ?? '').toLowerCase())) bonus += 0.22
+    }
+  }
+  if (intent === 'task' && isGenericAssistantEpisode(item)) {
+    bonus += 0.45
+  }
+  if (intent === 'task' && item?.type === 'episode' && directEcho) {
+    bonus += 0.18
+  }
+  if (intent === 'task' && operationalIssueQuery) {
+    if (item?.type === 'fact' && item?.subtype === 'preference') bonus += 0.34
+    if (item?.type === 'proposition' && /notification|visibility|format/.test(String(item?.subtype ?? '').toLowerCase())) bonus += 0.28
+    if (item?.type === 'task' && Number(item?.overlapCount ?? 0) > 0) bonus -= 0.08
+    if ((item?.type === 'fact' || item?.type === 'proposition') && /memory 폴더|디프|표기|드러나지|visibility|format/i.test(String(item?.content ?? ''))) {
+      bonus += 0.26
+    }
+    if (isGenericVerificationTask(item)) bonus += 0.24
+    if (item?.type === 'task' && /channel|binding|access config|mapping|채널|바인딩|매핑|수신 채널/i.test(String(item?.content ?? ''))) {
+      bonus -= 0.12
+    }
   }
   return Number(item?.rerank_score ?? item?.weighted_score ?? 0) + bonus
 }

@@ -20,6 +20,8 @@ let extractorPromise = null
 let cachedDims = null
 let lastProviderSwitch = null
 let mlServiceAvailable = null  // null = unknown, true/false = tested
+const queryEmbeddingCache = new Map()
+const QUERY_EMBEDDING_CACHE_LIMIT = 1000
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -49,11 +51,37 @@ function fallbackToLocal(reason, error = null) {
   process.stderr.write(`[embed] ${reason}; falling back to local ${LOCAL_MODEL}${suffix}\n`)
 }
 
+function cacheEmbedding(key, vector) {
+  if (queryEmbeddingCache.has(key)) queryEmbeddingCache.delete(key)
+  queryEmbeddingCache.set(key, vector)
+  if (queryEmbeddingCache.size > QUERY_EMBEDDING_CACHE_LIMIT) {
+    const oldestKey = queryEmbeddingCache.keys().next().value
+    if (oldestKey) queryEmbeddingCache.delete(oldestKey)
+  }
+}
+
+function getCachedEmbedding(key) {
+  if (!queryEmbeddingCache.has(key)) return null
+  const value = queryEmbeddingCache.get(key)
+  queryEmbeddingCache.delete(key)
+  queryEmbeddingCache.set(key, value)
+  return value
+}
+
+function shouldForceLocalEmbedding() {
+  return process.env.TRIB_MEMORY_FORCE_LOCAL_EMBEDDING === '1'
+}
+
 export function configureEmbedding(config = {}) {
   // Reset cached state — ML service port may have changed
   extractorPromise = null
   cachedDims = null
   mlServiceAvailable = null
+  queryEmbeddingCache.clear()
+}
+
+export function clearEmbeddingCache() {
+  queryEmbeddingCache.clear()
 }
 
 async function loadExtractor() {
@@ -103,6 +131,13 @@ export function consumeProviderSwitchEvent() {
 }
 
 export async function warmupEmbeddingProvider() {
+  if (shouldForceLocalEmbedding()) {
+    fallbackToLocal('forced local embedding')
+    const extractor = await loadExtractor()
+    await extractor('warmup', { pooling: 'mean', normalize: true })
+    cachedDims = LOCAL_DIMS
+    return true
+  }
   // Try ML service first
   for (let attempt = 1; attempt <= ML_WARMUP_RETRIES; attempt += 1) {
     try {
@@ -130,6 +165,19 @@ export async function warmupEmbeddingProvider() {
 export async function embedText(text) {
   const clean = String(text ?? '').trim()
   if (!clean) return []
+  const cacheKey = `${getEmbeddingModelId()}\n${clean}`
+  const cached = getCachedEmbedding(cacheKey)
+  if (cached) return [...cached]
+
+  if (shouldForceLocalEmbedding()) {
+    if (mlServiceAvailable !== false) fallbackToLocal('forced local embedding')
+    const extractor = await loadExtractor()
+    const output = await extractor(clean, { pooling: 'mean', normalize: true })
+    cachedDims = LOCAL_DIMS
+    const vector = Array.from(output.data ?? [])
+    cacheEmbedding(cacheKey, vector)
+    return vector
+  }
 
   // Try ML service if available (or unknown)
   if (mlServiceAvailable !== false) {
@@ -137,7 +185,9 @@ export async function embedText(text) {
       const vec = await mlEmbed(clean)
       if (!cachedDims && vec.length > 0) cachedDims = vec.length
       mlServiceAvailable = true
-      return Array.from(vec)
+      const vector = Array.from(vec)
+      cacheEmbedding(cacheKey, vector)
+      return vector
     } catch (e) {
       fallbackToLocal('ML service embedding request failed', e)
     }
@@ -147,5 +197,7 @@ export async function embedText(text) {
   const extractor = await loadExtractor()
   const output = await extractor(clean, { pooling: 'mean', normalize: true })
   cachedDims = LOCAL_DIMS
-  return Array.from(output.data ?? [])
+  const vector = Array.from(output.data ?? [])
+  cacheEmbedding(cacheKey, vector)
+  return vector
 }

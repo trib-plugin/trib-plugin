@@ -25,12 +25,23 @@ async function getEpisodeSessionId(store, sourceEpisodeId, cache) {
   }
 }
 
+function parseComparableTime(value) {
+  if (value == null || value === '') return null
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value
+  }
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 export async function applyMetadataFilters(store, rows = [], filters = {}) {
   const memoryKind = String(filters.memory_kind ?? '').trim()
   const taskStatus = String(filters.task_status ?? '').trim()
   const sourceType = String(filters.source_type ?? '').trim().toLowerCase()
   const sessionId = String(filters.session_id ?? '').trim()
-  if (!memoryKind && !taskStatus && !sourceType && !sessionId) return rows
+  const startTs = parseComparableTime(filters.start_ts ?? '')
+  const endTs = parseComparableTime(filters.end_ts ?? '')
+  if (!memoryKind && !taskStatus && !sourceType && !sessionId && startTs == null && endTs == null) return rows
   const sessionCache = new Map()
   const filtered = []
   for (const row of rows) {
@@ -44,6 +55,12 @@ export async function applyMetadataFilters(store, rows = [], filters = {}) {
     if (sessionId) {
       const matchedSessionId = await getEpisodeSessionId(store, row?.source_episode_id ?? row?.entity_id, sessionCache)
       if (matchedSessionId !== sessionId) continue
+    }
+    if (startTs != null || endTs != null) {
+      const rowTs = parseComparableTime(row?.source_ts ?? row?.updated_at ?? '')
+      if (rowTs == null) continue
+      if (startTs != null && rowTs < startTs) continue
+      if (endTs != null && rowTs > endTs) continue
     }
     filtered.push(row)
   }

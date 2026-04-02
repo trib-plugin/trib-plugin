@@ -6,7 +6,15 @@ import { cleanMemoryText } from './memory-extraction.mjs'
 import { buildHintKey, formatHintTag, shouldInjectHint } from './memory-context-utils.mjs'
 import { decayConfidence, decaySignalScore } from './memory-decay-utils.mjs'
 import { detectProfileQuerySlot } from './memory-profile-utils.mjs'
+import { parseTemporalHint } from './memory-query-plan.mjs'
 import { looksLowSignalQuery, tokenizeMemoryText } from './memory-text-utils.mjs'
+
+function nextDateStr(value) {
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return ''
+  date.setDate(date.getDate() + 1)
+  return date.toISOString().slice(0, 10)
+}
 
 export async function buildInboundMemoryContext(store, query, options = {}) {
   const clean = cleanMemoryText(query)
@@ -251,23 +259,29 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
   // Intent-based episode injection: event/history intents get recent episodes
   if (lines.length === 0 && (intent.primary === 'event' || intent.primary === 'history')) {
     try {
-      // Try temporal parser for precise date extraction
       let startDate = null
       let endDate = null
-      try {
-        const mlPort = fs.readFileSync(path.join(os.tmpdir(), 'trib-memory', 'ml-port'), 'utf8').trim()
-        const res = await fetch(`http://localhost:${mlPort}/temporal`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: clean, lang: 'ko' }),
-          signal: AbortSignal.timeout(1000),
-        })
-        const data = await res.json()
-        if (data.parsed?.length > 0) {
-          startDate = data.parsed[0].start
-          endDate = data.parsed[0].end || new Date(new Date(startDate).getTime() + 86400000).toISOString().slice(0, 10)
-        }
-      } catch {}
+      const parsedTemporal = parseTemporalHint(clean)
+      if (parsedTemporal?.start) {
+        startDate = parsedTemporal.start
+        endDate = nextDateStr(parsedTemporal.end ?? parsedTemporal.start)
+      }
+      if (!startDate) {
+        try {
+          const temporalPort = fs.readFileSync(path.join(os.tmpdir(), 'trib-memory', 'temporal-port'), 'utf8').trim()
+          const res = await fetch(`http://localhost:${temporalPort}/temporal`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: clean, lang: 'ko' }),
+            signal: AbortSignal.timeout(1000),
+          })
+          const data = await res.json()
+          if (data.parsed?.length > 0) {
+            startDate = data.parsed[0].start
+            endDate = nextDateStr(data.parsed[0].end || data.parsed[0].start)
+          }
+        } catch {}
+      }
 
       // Fallback: history=3 days, event=7 days
       const fallbackDays = intent.primary === 'event' ? '-7 days' : '-3 days'

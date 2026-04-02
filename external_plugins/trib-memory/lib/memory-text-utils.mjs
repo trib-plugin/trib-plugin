@@ -129,6 +129,32 @@ export function tokenizeMemoryText(text) {
     .slice(0, 24)
 }
 
+// Extract normalized tokens from Korean compound words (for query-side overlap boost)
+const KO_COMPOUND_KEYWORDS = [
+  '스트럭쳐드', '싱글톤', '디스코드', '벤치마크', '아웃풋', '플러그인',
+  '바인딩', '리스타트', '프로바이더', '슬래시커맨드', '스케쥴러',
+  '임베딩', '임베드', '포워더', '포워드', '리트리벌', '아키텍처',
+  '인젝션', '트리거', '컨솔리', '메모리', '메시지', '메세지',
+  '타이밍', '리콜', '채널', '동기화', '세션', '승인', '동기',
+  '수신', '즉시', '인라인', '클리어', '결과', '처리', '기준',
+  '비교', '구조', '역할', '훅', '설정', '검색', '저장', '삭제',
+  '복원', '테스트',
+].sort((a, b) => b.length - a.length)
+
+export function extractKoCompoundTokens(text) {
+  const lower = cleanMemoryText(text).toLowerCase()
+  const tokens = []
+  for (const kw of KO_COMPOUND_KEYWORDS) {
+    if (lower.includes(kw)) {
+      const normalized = normalizeMemoryToken(kw)
+      if (normalized.length >= 2 && !MEMORY_TOKEN_STOPWORDS.has(normalized)) {
+        tokens.push(normalized)
+      }
+    }
+  }
+  return tokens
+}
+
 export function extractExplicitDate(text) {
   const clean = cleanMemoryText(text)
   const isoDateMatch = clean.match(/(\d{4})[-.](\d{2})[-.](\d{2})/)
@@ -281,7 +307,7 @@ export function generateQueryVariants(query) {
   const clean = cleanMemoryText(query)
   if (!clean) return [clean]
 
-  const variants = [clean]
+  const baseVariants = [clean]
   const tokens = tokenizeMemoryText(clean)
 
   // 1. Token alias 적용 버전 (한→영)
@@ -290,7 +316,7 @@ export function generateQueryVariants(query) {
     return alias && alias !== t ? alias : t
   })
   const aliased = aliasedTokens.join(' ')
-  if (aliased !== tokens.join(' ')) variants.push(aliased)
+  const aliasVariants = aliased !== tokens.join(' ') ? [aliased] : []
 
   // 2. 한국어 조사 제거 + 영문 키워드 보강
   const koToEn = {
@@ -304,10 +330,40 @@ export function generateQueryVariants(query) {
     '캐주얼': 'casual informal', '누적': 'accumulate',
   }
   const translated = tokens.map(t => koToEn[t] ?? t).join(' ')
-  if (translated !== tokens.join(' ')) variants.push(translated)
+  const translatedVariants = translated !== tokens.join(' ') ? [translated] : []
+
+  // 3. Phrase-level architectural / operational expansions
+  const phraseExpansions = []
+  if (/단독|독립|분리|standalone|independent|separate/i.test(clean)) {
+    phraseExpansions.push(`${clean} standalone independent separate plugin`)
+  }
+  if (/동작가능|동작 가능|작동가능|작동 가능|가능해|가능하/i.test(clean)) {
+    phraseExpansions.push(`${clean} supported capability standalone`)
+  }
+  if (/채널 ?id|채널아이디|channel id|mapping|매핑/i.test(clean)) {
+    phraseExpansions.push(`${clean} channel id mapping access config inbound`)
+  }
+  if (/자동바인딩|자동 바인딩|binding|바인딩/i.test(clean)) {
+    phraseExpansions.push(`${clean} automatic binding reconnect restore discord`)
+  }
+  if (/인바운드|inbound/i.test(clean)) {
+    phraseExpansions.push(`${clean} inbound delivery binding discord channel receive`)
+  }
+  if (/메세지안옴|메시지안옴|message.*not|안옴|안 와|안와/i.test(clean)) {
+    phraseExpansions.push(`${clean} message delivery inbound discord notification`)
+  }
+  if ((/임베드|embed|embedding/i.test(clean)) && (/즉시|timing|immediate/i.test(clean))) {
+    phraseExpansions.push(`${clean} inline embedding immediate timing`)
+  }
+  const variants = [
+    ...baseVariants,
+    ...phraseExpansions,
+    ...aliasVariants,
+    ...translatedVariants,
+  ]
 
   // 중복 제거
-  return [...new Set(variants)].slice(0, 3)
+  return [...new Set(variants)].slice(0, 5)
 }
 
 /**

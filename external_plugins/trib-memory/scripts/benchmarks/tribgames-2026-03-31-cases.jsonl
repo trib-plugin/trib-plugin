@@ -1,0 +1,20 @@
+{"label":"RAG 구현 검토","query":"클로드2봇 rag 구현중인데 검토좀해주라","timerange":"2026-03-31","expected_any":["RAG 리팩토링 최종 검토","claude2bot의 RAG를 분리 관점에서 재평가하고 개선안을 정리한다","claude2bot RAG 개선 진행"],"expected_type":["task"]}
+{"label":"자가수정 시뮬레이터","query":"그럼저거계속무한대로돌리면서 자가수정하면서 시뮬레이터로 만들어서 최적값찾을수넚나","timerange":"2026-03-31","expected_any":["시뮬레이터","최적값"],"expected_type":["episode","task","fact"]}
+{"label":"결과 벤치마크","query":"결과 벤치마크가없긴하잖아지금","timerange":"2026-03-31","expected_any":["결과 벤치마크"],"expected_type":["episode","task","fact"]}
+{"label":"성능검증 방법","query":"성능검증은이제 어떻게해보통 그냥노가다냐","timerange":"2026-03-31","expected_any":["성능검증"],"expected_type":["episode","task","fact"]}
+{"label":"자동 바인딩","query":"자동바인딩안되냐 디스코드랑","timerange":"2026-03-31","expected_any":["Fix claude2bot automatic Discord binding on restart","채널 싱글톤 처리와 승인 동기 흐름을 검증하고 보강한다"],"expected_type":["task","fact","proposition"]}
+{"label":"PID 세션 추적","query":"pid 기준으로 세션을 추적","timerange":"2026-03-31","expected_any":["세션 전환 시 transcript 바인딩 갱신 로직을 정리한다","PID 기반 세션 추적 방식을 유지"],"expected_type":["task","fact","proposition"]}
+{"label":"트랜스크립트 폴백","query":"트랜스크립트가 30초 이상 안 변하면","timerange":"2026-03-31","expected_any":["30초 이상 안 변하면","최근 .jsonl로 폴백"],"expected_type":["fact","proposition","episode"]}
+{"label":"큐잉 필요성","query":"큐잉하면되는거아님","timerange":"2026-03-31","expected_any":["큐잉"],"expected_type":["episode","task","fact"]}
+{"label":"임베드 타이밍","query":"아웃풋포워드고 임베드타이밍즉시냐고","timerange":"2026-03-31","expected_any":["인라인 임베딩","즉시 생성"],"expected_type":["task","fact","episode"]}
+{"label":"session clear/new","query":"session 클리어 뉴","timerange":"2026-03-31","expected_any":["새로운 세션에서 MCP 도구가 붙지 않는 문제를 재현·수정한다","trib-memory를 claude2bot와 분리된 상태로 동작하게 만든다"],"expected_type":["task"]}
+{"label":"search mode 포함","query":"서치에모드가포함되면","timerange":"2026-03-31","expected_any":["서치에모드가포함되면"],"expected_type":["episode","fact","proposition"]}
+{"label":"리콜메모리 더 찾아봐","query":"리콜메모리좀더찾아봐","timerange":"2026-03-31","expected_any":["리콜메모리"],"expected_type":["episode","task","fact"]}
+{"label":"인바운드 불능","query":"인바운드아예안되네","timerange":"2026-03-31","expected_any":["Fix Discord inbound delivery into Claude Code terminal in trib-channels","Fix Discord inbound message delivery","Fix inbound notification delivery from Discord to Claude Code terminal"],"expected_type":["task"]}
+{"label":"메세지 안가 버그","query":"메세지가안가냐 버그있어","timerange":"2026-03-31","expected_any":["Fix Discord inbound delivery into Claude Code terminal in trib-channels","Fix Discord inbound message delivery"],"expected_type":["task"]}
+{"label":"채널 연결 이상","query":"채널연결이이상하지","timerange":"2026-03-31","expected_any":["채널 관련 최종 리뷰","Discord에서 보낸 메시지가 Claude Code 터미널로 도달하지 않는 인바운드"],"expected_type":["fact","proposition","episode"]}
+{"label":"초기화 문제 체크","query":"초기화문제체크좀해줘","timerange":"2026-03-31","expected_any":["초기화문제체크좀해줘"],"expected_type":["episode","fact","proposition"]}
+{"label":"훅이아니라 포워더","query":"훅이아니라 포워더","timerange":"2026-03-31","expected_any":["Discord 포워더/채널 연동 버그를 수정한다"],"expected_type":["task","episode"]}
+{"label":"아웃풋 렌더러 지연","query":"아웃풋랜더러지연있나","timerange":"2026-03-31","expected_any":["output-forwarder","Discord inbound delivery"],"expected_type":["task","fact"]}
+{"label":"디스코드 채널 연동 불능","query":"디스코드채널과 연동이안돼","timerange":"2026-03-31","expected_any":["디스코드채널과 연동이안돼","Discord에서 보낸 메시지가 Claude Code 터미널로 도달하지 않는 인바운드"],"expected_type":["episode","proposition","fact"]}
+{"label":"컨피그 복원","query":"컨피그의값그대로복원해야지","timerange":"2026-03-31","expected_any":["재시작 후 플러그인과 훅의 정상 동작을 다시 검증한다","컨피그"],"expected_type":["task","episode","fact"]}

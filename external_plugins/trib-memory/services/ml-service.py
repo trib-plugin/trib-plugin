@@ -11,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import dateparser
 
-PORT_FILE = os.path.join(tempfile.gettempdir(), 'trib-memory', 'ml-port')
+PORT_FILE = os.path.join(tempfile.gettempdir(), 'trib-memory', 'temporal-port')
 BASE_PORT = 3360
 MAX_PORT = 3367
 

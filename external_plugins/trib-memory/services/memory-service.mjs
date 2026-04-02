@@ -235,6 +235,15 @@ function parseTimerange(timerangeArg) {
   return { trStart: null, trEnd: null }
 }
 
+function buildTemporalOverride(trStart, trEnd) {
+  if (!trStart || !trEnd) return null
+  return {
+    start: trStart,
+    end: trEnd,
+    exact: trStart === trEnd,
+  }
+}
+
 function buildSourceParts(row) {
   return [
     row.source_ref ? String(row.source_ref) : null,
@@ -288,10 +297,14 @@ async function handleRecall(args) {
     task_status: args.task_status,
     source_type: args.source_type,
     session_id: args.session_id,
+    start_ts: args.start_ts,
+    end_ts: args.end_ts,
   }
   const useCompact = args.compact !== false
+  const stageDebug = Boolean(args.until_stage)
 
   const { trStart, trEnd } = parseTimerange(args.timerange)
+  const temporalOverride = buildTemporalOverride(trStart, trEnd)
   const queryLower = query.toLowerCase().trim()
   const ftsQuery = query.replace(/['"*\-(){}[\]^~:]/g, ' ').replace(/\b(OR|AND|NOT|NEAR)\b/gi, '').trim()
 
@@ -329,6 +342,7 @@ async function handleRecall(args) {
     const hybrid = await store.searchRelevantHybrid(query || '', limit, {
       intent: { primary: 'policy', scores: {} },
       filters: metadataFilters,
+      temporal: temporalOverride,
       recordRetrieval: false,
     })
     const rows = Array.isArray(hybrid) ? hybrid : (hybrid?.results ?? [])
@@ -566,7 +580,13 @@ async function handleRecall(args) {
     return { text: formatDirectRows(directRows) }
   }
 
-  const hybrid = await store.searchRelevantHybrid(query, limit * 2, { debug, trace, filters: metadataFilters })
+  const hybrid = await store.searchRelevantHybrid(query, limit * 2, {
+    debug: debug || stageDebug,
+    trace,
+    filters: metadataFilters,
+    temporal: temporalOverride,
+    untilStage: args.until_stage,
+  })
   const results = Array.isArray(hybrid) ? hybrid : (hybrid?.results ?? [])
   const debugPayload = !Array.isArray(hybrid) ? hybrid?.debug : null
 
@@ -647,7 +667,7 @@ async function handleRecall(args) {
     ? `${formatted}\n\n${contextEpisodes.join('\n')}`
     : formatted
 
-  const finalText = debug && debugPayload
+  const finalText = (debug || stageDebug) && debugPayload
     ? `${output || '(no matching memories found)'}\n\n--- debug ---\n${JSON.stringify(debugPayload, null, useCompact ? 0 : 2)}`
     : (output || '(no matching memories found)')
 
@@ -744,8 +764,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           task_status: { type: 'string', enum: ['active', 'in_progress', 'paused', 'done'], description: 'Optional metadata filter for task status.' },
           source_type: { type: 'string', description: 'Optional metadata filter for source kind/backend, e.g. message, transcript, discord, claude-session.' },
           session_id: { type: 'string', description: 'Optional metadata filter for a specific source session id.' },
+          start_ts: { type: 'string', description: 'Optional timestamp lower bound for search results, e.g. "2026-04-01T09:00:00".' },
+          end_ts: { type: 'string', description: 'Optional timestamp upper bound for search results, e.g. "2026-04-01T18:00:00".' },
           trace: { type: 'boolean', default: false, description: 'Persist a retrieval trace JSONL record under history for later inspection.' },
           debug: { type: 'boolean', default: false, description: 'Include query plan / candidate / rerank debug summary for inspection.' },
+          until_stage: { type: 'string', enum: ['intent', 'plan', 'candidates', 'combined', 'exact', 'verified', 'rerank', 'final'], description: 'Stop the hybrid recall pipeline after the specified stage and return stage debug payload.' },
           hints: { type: 'array', items: { type: 'string' }, description: 'Bulk-only: hint list to verify.' },
         },
         required: [],
