@@ -179,13 +179,12 @@ function parseClassificationCsv(text) {
     }
     parts.push(cur.trim())
     if (parts.length < 3) continue
-    // case_id,text,classification,topic,element,state
+    // case_id,text,topic,element,state
     items.push({
       case_id: parts[0],
-      classification: parts[2] || '',
-      topic: parts[3] || '',
-      element: parts[4] || '',
-      state: parts[5] || '',
+      topic: parts[2] || '',
+      element: parts[3] || '',
+      state: parts[4] || '',
     })
   }
   return items.length > 0 ? { items } : null
@@ -568,7 +567,7 @@ function csvEscape(value) {
 function buildCycle1ClassificationRows(candidates = []) {
   return candidates.map(candidate => {
     const text = csvEscape(candidate.content?.slice(0, 150) || '')
-    return [candidate.episode_id, text, '', '', '', ''].join(',')
+    return [candidate.episode_id, text, '', '', ''].join(',')
   }).join('\n')
 }
 
@@ -645,7 +644,7 @@ async function runCycle1Impl(ws, config, options = {}) {
     const classificationRows = Array.isArray(parsed.items)
       ? parsed.items.map(item => ({
           episode_id: Number(item?.case_id ?? 0),
-          classification: String(item?.classification ?? '').trim(),
+          classification: String(item?.classification ?? '').trim() || '-',
           topic: String(item?.topic ?? '').trim(),
           element: String(item?.element ?? '').trim(),
           state: String(item?.state ?? '').trim(),

@@ -576,7 +576,7 @@ export class MemoryStore {
     `)
     this.listDenseClassificationRowsStmt = this.db.prepare(`
       SELECT 'classification' AS type, c.classification AS subtype, c.id AS entity_id,
-             trim(c.element || ' | ' || c.topic || ' | ' || c.classification || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
+             trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
              c.updated_at AS updated_at, c.retrieval_count AS retrieval_count,
              c.confidence AS quality_score,
              e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
@@ -1145,7 +1145,7 @@ export class MemoryStore {
         entityType: 'classification',
         entityId: row.id,
         subtype: row.classification,
-        content: [row.element, row.topic, row.classification, row.state].filter(Boolean).join(' | '),
+        content: [row.element, row.topic, row.state].filter(Boolean).join(' | '),
       })
     }
 
@@ -1561,7 +1561,7 @@ export class MemoryStore {
       try {
       const classificationHits = this.db.prepare(`
         SELECT 'classification' AS type, c.classification AS subtype, CAST(c.id AS TEXT) AS ref,
-               trim(c.element || ' | ' || c.topic || ' | ' || c.classification || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
+               trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
                bm25(classifications_fts) AS score, c.updated_at AS updated_at, c.id AS entity_id,
                c.confidence AS quality_score, c.retrieval_count AS retrieval_count,
                e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend
@@ -1615,7 +1615,7 @@ export class MemoryStore {
       try {
         const likeClassifications = this.db.prepare(`
           SELECT 'classification' AS type, c.classification AS subtype, CAST(c.id AS TEXT) AS ref,
-                 trim(c.element || ' | ' || c.topic || ' | ' || c.classification || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
+                 trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
                  0 AS score, c.updated_at AS updated_at, c.id AS entity_id,
                  c.confidence AS quality_score, c.retrieval_count AS retrieval_count,
                  e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend
@@ -1753,7 +1753,7 @@ export class MemoryStore {
       if (entityType === 'classification') {
         return this.db.prepare(`
           SELECT 'classification' AS type, c.classification AS subtype, c.id AS entity_id,
-                 trim(c.element || ' | ' || c.topic || ' | ' || c.classification || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
+                 trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
                  c.updated_at AS updated_at, c.retrieval_count AS retrieval_count,
                  c.confidence AS quality_score,
                  e.source_ref AS source_ref, e.ts AS source_ts,

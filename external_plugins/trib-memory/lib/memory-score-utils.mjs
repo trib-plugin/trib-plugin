@@ -11,9 +11,8 @@
 
 const DEFAULT_SCORING = {
   semantic: {
-    w_class: 0.10,
     w_topic: 0.30,
-    w_element: 0.60,
+    w_element: 0.70,
     gain: 0.5,
     vectorThreshold: 0.45,
   },
@@ -65,10 +64,9 @@ export function computeSemanticFactor(item, query, config = DEFAULT_SCORING, opt
     } catch {}
   }
   // fallback: 텍스트 매칭
-  const classMatch = fuzzyFieldMatch(item.classification, query)
   const topicMatch = fuzzyFieldMatch(item.topic, query)
   const elementMatch = fuzzyFieldMatch(item.element, query)
-  const raw = sem.w_class * classMatch + sem.w_topic * topicMatch + sem.w_element * elementMatch
+  const raw = sem.w_topic * topicMatch + sem.w_element * elementMatch
   return 1 + raw * sem.gain
 }
 

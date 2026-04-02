@@ -1,9 +1,8 @@
 Fill the empty columns. Output CSV only, no commentary.
 
-- classification: conversation type (업무, 일상, 상담, 해당 없음)
-- topic: what the conversation is about
-- element: the central object or keyword
+- topic: concise phrase. Remove conjunctions, filler words, decorative adjectives. Keep meaning-changing modifiers.
+- element: single central keyword or object. Short as possible.
 - state: progress (확인 필요, 진행 중, 완료, or empty)
 
-case_id,text,classification,topic,element,state
+case_id,text,topic,element,state
 {{ROWS}}
