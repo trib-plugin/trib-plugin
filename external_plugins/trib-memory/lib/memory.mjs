@@ -61,6 +61,7 @@ import {
 } from './memory-maintenance-store.mjs'
 import { buildInboundMemoryContext as buildInboundMemoryContextImpl } from './memory-context-builder.mjs'
 import { DEFAULT_MEMORY_TUNING, mergeMemoryTuning } from './memory-tuning.mjs'
+import { getTagFactor } from './memory-score-utils.mjs'
 import { readMemoryFeatureFlags } from './memory-ops-policy.mjs'
 import { detectDevQueryBias } from './memory-dev-utils.mjs'
 import { applyLexicalIntentHints, detectProfileQuerySlot } from './memory-profile-utils.mjs'
@@ -523,8 +524,8 @@ export class MemoryStore {
       VALUES (?, ?, ?, ?, ?, ?)
     `)
     this.upsertClassificationStmt = this.db.prepare(`
-      INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, confidence, status, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch())
+      INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, importance, confidence, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch())
       ON CONFLICT(episode_id) DO UPDATE SET
         ts = excluded.ts,
         day_key = excluded.day_key,
@@ -532,6 +533,7 @@ export class MemoryStore {
         topic = excluded.topic,
         element = excluded.element,
         state = excluded.state,
+        importance = excluded.importance,
         confidence = MAX(classifications.confidence, excluded.confidence),
         status = 'active',
         updated_at = unixepoch()
@@ -586,7 +588,7 @@ export class MemoryStore {
       SELECT 'classification' AS type, c.classification AS subtype, c.id AS entity_id,
              trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
              c.updated_at AS updated_at, c.retrieval_count AS retrieval_count,
-             c.confidence AS quality_score,
+             c.confidence AS quality_score, c.importance AS importance,
              e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
       FROM memory_vectors mv
       JOIN classifications c ON c.id = mv.entity_id
@@ -971,6 +973,7 @@ export class MemoryStore {
       const topic = cleanMemoryText(row?.topic)
       const element = cleanMemoryText(row?.element)
       const state = cleanMemoryText(row?.state)
+      const importance = String(row?.importance ?? '').trim() || null
       const confidence = Number(row?.confidence ?? 0.6)
       if (!classification || !topic || !element) continue
       this.upsertClassificationStmt.run(
@@ -981,6 +984,7 @@ export class MemoryStore {
         topic,
         element,
         state || null,
+        importance,
         confidence,
       )
       const id = this.getClassificationByEpisodeStmt.get(episodeId)?.id
@@ -1069,16 +1073,20 @@ export class MemoryStore {
   buildContextText() {
     const parts = []
 
-    const classifications = this.getClassificationRows(12)
-    if (classifications.length > 0) {
-      const lines = classifications.map(row => {
-        const fields = [
-          `분류=${row.classification}`,
-          `주제=${row.topic}`,
-          `요소=${row.element}`,
-          row.state ? `상태=${row.state}` : null,
-        ].filter(Boolean)
-        return `- ${fields.join(' | ')}`
+    // Long-term memory: only high-importance classifications (tag_factor <= 0.2)
+    const allClassifications = this.db.prepare(`
+      SELECT id, classification, topic, element, state, importance
+      FROM classifications
+      WHERE status = 'active' AND importance IS NOT NULL AND importance != ''
+      ORDER BY updated_at DESC
+    `).all()
+
+    const promoted = allClassifications.filter(row => getTagFactor(row.importance) < 1.0)
+
+    if (promoted.length > 0) {
+      const lines = promoted.map(row => {
+        const tag = String(row.importance || '').split(',')[0].trim()
+        return `- [${tag}] ${row.topic} — ${row.element}`
       })
       parts.push(`## Long-Term Memory\n${lines.join('\n')}`)
     }
@@ -1173,13 +1181,15 @@ export class MemoryStore {
       LIMIT ?
     `).all(episodeLimit)
     for (const row of episodeRows) {
+      const cls = this.db.prepare('SELECT element FROM classifications WHERE episode_id = ?').get(row.id)
+      const prefix = cls?.element ? cls.element + ' | ' : ''
       items.push({
         key: embeddingItemKey('episode', row.id),
         entityType: 'episode',
         entityId: row.id,
         subtype: row.subtype,
         ref: row.ref,
-        content: row.content,
+        content: prefix + row.content,
       })
     }
 
@@ -1571,7 +1581,7 @@ export class MemoryStore {
         SELECT 'classification' AS type, c.classification AS subtype, CAST(c.id AS TEXT) AS ref,
                trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
                bm25(classifications_fts) AS score, c.updated_at AS updated_at, c.id AS entity_id,
-               c.confidence AS quality_score, c.retrieval_count AS retrieval_count,
+               c.confidence AS quality_score, c.importance AS importance, c.retrieval_count AS retrieval_count,
                e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend
         FROM classifications_fts
         JOIN classifications c ON c.id = classifications_fts.rowid
@@ -1625,7 +1635,7 @@ export class MemoryStore {
           SELECT 'classification' AS type, c.classification AS subtype, CAST(c.id AS TEXT) AS ref,
                  trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
                  0 AS score, c.updated_at AS updated_at, c.id AS entity_id,
-                 c.confidence AS quality_score, c.retrieval_count AS retrieval_count,
+                 c.confidence AS quality_score, c.importance AS importance, c.retrieval_count AS retrieval_count,
                  e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend
           FROM classifications c
           LEFT JOIN episodes e ON e.id = c.episode_id
@@ -1763,7 +1773,7 @@ export class MemoryStore {
           SELECT 'classification' AS type, c.classification AS subtype, c.id AS entity_id,
                  trim(c.element || ' | ' || c.topic || CASE WHEN c.state IS NOT NULL AND c.state != '' THEN ' | ' || c.state ELSE '' END) AS content,
                  c.updated_at AS updated_at, c.retrieval_count AS retrieval_count,
-                 c.confidence AS quality_score,
+                 c.confidence AS quality_score, c.importance AS importance,
                  e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
                  mv.vector_json

@@ -75,6 +75,33 @@ When multiple tags present, use the **lowest tag_factor** (most important wins).
 tag_factor = min(factors for all tags)
 ```
 
+## Importance Boost (Search Time)
+
+Importance tags also apply a small boost at search time, separate from decay.
+More important memories rank slightly higher when scores are close.
+
+```
+importance_boost = 1 + (1 - tag_factor) * 0.1
+```
+
+| Tag | tag_factor | boost |
+|-----|-----------|-------|
+| rule | 0.0 | 1.10 |
+| directive | 0.1 | 1.09 |
+| preference | 0.15 | 1.085 |
+| decision | 0.2 | 1.08 |
+| incident | 0.5 | 1.05 |
+| (default) | 1.0 | 1.00 |
+| transient | 1.5 | 0.95 |
+
+Applied as multiplier to final_score:
+
+```
+final_score = (base_rrf + semantic_bonus) * time_factor * importance_boost
+```
+
+Intentionally small (max 10%) to avoid overriding relevance.
+
 ## Context.md Promotion
 
 When cycle1 produces a tag with factor < 0.5 (rule/directive/decision/preference/incident):

@@ -96,16 +96,46 @@ export function computeStateFactor(state, config = DEFAULT_SCORING) {
   return config.state[s] ?? config.state.default ?? 1.0
 }
 
+// ── Importance tag factors (MEMORY-DECAY-PLAN.md) ───────────────────
+
+const TAG_FACTORS = {
+  rule: 0.0,
+  directive: 0.1,
+  preference: 0.15,
+  decision: 0.2,
+  incident: 0.5,
+  transient: 1.5,
+}
+
+export function getTagFactor(importance) {
+  if (!importance) return 1.0
+  const tags = String(importance).split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+  if (tags.length === 0) return 1.0
+  const factors = tags.map(t => TAG_FACTORS[t] ?? 1.0)
+  return Math.min(...factors)
+}
+
 // ── Time factor ──────────────────────────────────────────────────────
 
-export function computeTimeFactor(ts, config = DEFAULT_SCORING) {
+export function computeTimeFactor(ts, config = DEFAULT_SCORING, importance = null) {
   if (!ts) return 1.0
   const ageDays = Math.max(0, (Date.now() - new Date(ts).getTime()) / 86400000)
   // power-law decay: 1 / (1 + age/halfLife)^alpha
-  const halfLife = config.time.halfLifeDays ?? 7
-  const alpha = config.time.alpha ?? 0.5
+  const halfLife = config.time.halfLifeDays ?? 30
+  const alpha = config.time.alpha ?? 0.3
   const decay = 1 / Math.pow(1 + ageDays / halfLife, alpha)
-  return Math.max(config.time.min ?? 0.2, decay)
+  // tag-based decay modulation: loss * tag_factor
+  const tagFactor = getTagFactor(importance)
+  const loss = 1 - decay
+  const actualLoss = loss * tagFactor
+  return Math.max(config.time.min ?? 0.2, 1 - actualLoss)
+}
+
+// ── Importance boost (search time) ──────────────────────────────────
+
+export function computeImportanceBoost(importance) {
+  const tagFactor = getTagFactor(importance)
+  return 1 + (1 - tagFactor) * 0.1
 }
 
 // ── Language factor ──────────────────────────────────────────────────
@@ -122,9 +152,6 @@ export function computeFinalScore(baseScore, item, query, options = {}) {
   const semanticBonus = item.type === 'classification'
     ? (computeSemanticFactor(item, query, config, { queryVector: options.queryVector }) - 1)
     : 0
-  const stateFactor = computeStateFactor(item.state, config)
-  const timeFactor = computeTimeFactor(item.source_ts ?? item.updated_at, config)
-  const langFactor = computeLanguageFactor(options.itemLang, options.queryLang, config)
-  // base (RRF ~0.03) + semantic bonus (~0~0.03) then multiply by state/time/language
-  return (baseScore + semanticBonus) * stateFactor * timeFactor * langFactor
+  const importanceBoost = computeImportanceBoost(item.importance)
+  return (baseScore + semanticBonus) * importanceBoost
 }
