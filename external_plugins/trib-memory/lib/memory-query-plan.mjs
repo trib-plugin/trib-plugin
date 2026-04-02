@@ -32,11 +32,36 @@ export function parseTemporalHint(query) {
   if (/오늘/.test(query)) return { start: today, end: today, exact: true }
   if (/이번 ?주/.test(query)) return { start: daysAgo(weekdayOffset), end: today, exact: false }
   if (/지난 ?주/.test(query)) return { start: daysAgo(7), end: daysAgo(1), exact: false }
+  if (/최근|요즘/.test(query)) return { start: daysAgo(3), end: today, exact: false }
+  if (/방금|아까|조금 ?전/.test(query)) return { start: today, end: today, exact: false }
+  if (/엊그제|엊그저께/.test(query)) return { start: daysAgo(3), end: daysAgo(2), exact: false }
+
+  // 한국어 요일: "지난 수요일", "이번 금요일"
+  const weekdayMap = { 일: 0, 월: 1, 화: 2, 수: 3, 목: 4, 금: 5, 토: 6 }
+  const korWeekdayMatch = query.match(/지난\s*([일월화수목금토])요일/)
+  if (korWeekdayMatch) {
+    const target = weekdayMap[korWeekdayMatch[1]]
+    if (target != null) {
+      const diff = ((now.getDay() - target) + 7) % 7 || 7
+      return { start: daysAgo(diff), end: daysAgo(diff), exact: true }
+    }
+  }
+
+  // N주 전
+  const weeksAgoMatch = query.match(/(\d+)\s*주\s*전/)
+  if (weeksAgoMatch) {
+    const weeks = Number(weeksAgoMatch[1])
+    if (weeks > 0) return { start: daysAgo(weeks * 7 + 6), end: daysAgo((weeks - 1) * 7), exact: false }
+  }
+
+  // ISO: 2026-04-01
   const isoDateMatch = query.match(/(\d{4})[-.](\d{2})[-.](\d{2})/)
   if (isoDateMatch) {
     const date = `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`
     return { start: date, end: date, exact: true }
   }
+
+  // 2026-04 (월)
   const monthMatch = query.match(/(\d{4})[-.](\d{2})(?![-.]\d{2})/)
   if (monthMatch) {
     const year = Number(monthMatch[1])
@@ -48,18 +73,28 @@ export function parseTemporalHint(query) {
       return { start, end: localDate(nextMonth), exact: false }
     }
   }
-  const koreanDateMatch = query.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)
-  if (koreanDateMatch) {
-    const date = `${koreanDateMatch[1]}-${String(koreanDateMatch[2]).padStart(2, '0')}-${String(koreanDateMatch[3]).padStart(2, '0')}`
+
+  // 한국어: 2026년 4월 1일
+  const korFullDateMatch = query.match(/(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/)
+  if (korFullDateMatch) {
+    const date = `${korFullDateMatch[1]}-${pad(korFullDateMatch[2])}-${pad(korFullDateMatch[3])}`
     return { start: date, end: date, exact: true }
   }
-  const dateMatch = query.match(/(\d{1,2})\/(\d{1,2})/)
-  if (dateMatch) {
-    const m = String(dateMatch[1]).padStart(2, '0')
-    const d = String(dateMatch[2]).padStart(2, '0')
-    const date = `${now.getFullYear()}-${m}-${d}`
+
+  // 한국어: 4월 1일, 3월 30일 (연도 생략 → 올해)
+  const korMonthDayMatch = query.match(/(\d{1,2})월\s*(\d{1,2})일/)
+  if (korMonthDayMatch) {
+    const date = `${now.getFullYear()}-${pad(korMonthDayMatch[1])}-${pad(korMonthDayMatch[2])}`
     return { start: date, end: date, exact: true }
   }
+
+  // 슬래시: 3/30, 4/1
+  const slashDateMatch = query.match(/(\d{1,2})\/(\d{1,2})/)
+  if (slashDateMatch) {
+    const date = `${now.getFullYear()}-${pad(slashDateMatch[1])}-${pad(slashDateMatch[2])}`
+    return { start: date, end: date, exact: true }
+  }
+
   return null
 }
 

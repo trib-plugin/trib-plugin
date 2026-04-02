@@ -1456,10 +1456,33 @@ export class MemoryStore {
     const clean = cleanMemoryText(query)
     if (!clean) return []
 
+    // ── Temporal parsing: "어제", "3월 30일", "지난주" → date range ──
+    const temporal = options.temporal ?? (() => {
+      const hint = parseTemporalHint(clean)
+      if (!hint) return null
+      return { start: hint.start, end: hint.end ?? hint.start, exact: hint.start === (hint.end ?? hint.start) }
+    })()
+
     // ── Stage 1: base scores (keyword + embedding + time) ──
     const queryVector = options.queryVector ?? await embedText(clean)
-    const sparse = this.searchRelevantSparse(clean, limit * 3)
-    const dense = await this.searchRelevantDense(clean, limit * 3, queryVector, null, {})
+    let sparse = this.searchRelevantSparse(clean, limit * 3)
+    let dense = await this.searchRelevantDense(clean, limit * 3, queryVector, null, {})
+
+    // temporal 필터: 날짜 범위가 있으면 해당 범위 + 범위 밖 결과 섞어서 범위 내 우선
+    if (temporal?.start) {
+      const inRange = (ts) => {
+        if (!ts) return false
+        const d = String(ts).slice(0, 10)
+        return d >= temporal.start && d <= temporal.end
+      }
+      const boostInRange = (items) => {
+        const inside = items.filter(r => inRange(r.source_ts))
+        const outside = items.filter(r => !inRange(r.source_ts))
+        return [...inside, ...outside]
+      }
+      sparse = boostInRange(sparse)
+      dense = boostInRange(dense)
+    }
 
     // Merge via RRF (Reciprocal Rank Fusion) — scale-independent
     // RRF score = 1/(k+rank_sparse) + 1/(k+rank_dense), k=60
