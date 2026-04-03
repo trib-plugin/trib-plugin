@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const os = require('os');
 
 let _event = {};
@@ -19,22 +18,11 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 
 const CONTEXT_FILE = path.join(DATA_DIR, 'history', 'context.md');
-const PORT_FILE = path.join(os.tmpdir(), 'trib-memory', 'memory-port');
 
 let contextContent = '';
 try {
   contextContent = fs.readFileSync(CONTEXT_FILE, 'utf8').trim();
 } catch {}
-
-function respond(content) {
-  if (!content) process.exit(0);
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext: content
-    }
-  }));
-}
 
 // Find latest SESSION-*.md in project root
 let sessionMd = '';
@@ -60,39 +48,12 @@ try {
   }
 } catch {}
 
-// Try to fetch fresh Recent from HTTP service
-let port;
-try {
-  port = fs.readFileSync(PORT_FILE, 'utf8').trim();
-} catch {
-  // Service not running — inject context.md + session md
-  const merged = [contextContent, sessionMd].filter(Boolean).join('\n\n');
-  respond(merged);
-  process.exit(0);
-}
-
-const url = `http://localhost:${port}/recent`;
-const req = http.get(url, { timeout: 5000 }, (res) => {
-  let body = '';
-  res.on('data', (chunk) => { body += chunk; });
-  res.on('end', () => {
-    try {
-      const data = JSON.parse(body);
-      const recent = data.recent || '';
-      const merged = [contextContent, recent, sessionMd].filter(Boolean).join('\n\n');
-      respond(merged);
-    } catch {
-      const merged = [contextContent, sessionMd].filter(Boolean).join('\n\n');
-      respond(merged);
+const merged = [contextContent, sessionMd].filter(Boolean).join('\n\n');
+if (merged) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: merged
     }
-  });
-});
-req.on('error', () => {
-  const merged = [contextContent, sessionMd].filter(Boolean).join('\n\n');
-  respond(merged);
-});
-req.on('timeout', () => {
-  req.destroy();
-  const merged = [contextContent, sessionMd].filter(Boolean).join('\n\n');
-  respond(merged);
-});
+  }));
+}
