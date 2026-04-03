@@ -356,27 +356,26 @@ async function sleepCycleImpl(ws) {
   const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER }
   await consolidateRecent(pendingDays, ws, consolidateOpts)
 
-  // 2. Sync + embeddings + context
+  // 2. Sync
   store.syncHistoryFromFiles()
-  if (pendingDays.length > 0 || isFirstRun) {
-    await refreshEmbeddings(ws, { kind: 'cycle2' })
-    store.writeContextFile()
-  }
 
-  // 3. Save timestamp
-  writeCycleConfig({ ...config, lastSleepAt: now })
-
-  // Update cycle state
-  const cycleState = loadCycleState()
-  cycleState.cycle2.lastRunAt = new Date().toISOString()
-  saveCycleState(cycleState)
-
-  // 4. Dedup/merge similar classifications
+  // 3. Dedup/merge
   const dedupResult = await deduplicateClassifications(store, { dryRun: false })
   if (dedupResult.merged > 0) {
     process.stderr.write(`[memory-cycle2] dedup: merged=${dedupResult.merged}\n`)
-    store.writeContextFile()
   }
+
+  // 4. Context + recent
+  store.writeContextFile()
+
+  // 5. Re-embed (after dedup changed content)
+  await refreshEmbeddings(ws, { kind: 'cycle2' })
+
+  // 6. Save timestamp
+  writeCycleConfig({ ...config, lastSleepAt: now })
+  const cycleState = loadCycleState()
+  cycleState.cycle2.lastRunAt = new Date().toISOString()
+  saveCycleState(cycleState)
 
   process.stderr.write('[memory-cycle] Cycle complete.\n')
 }
@@ -777,7 +776,6 @@ async function runCycle1Impl(ws, config, options = {}) {
 
   if (totalExtracted > 0) {
     await refreshEmbeddings(ws, { store, kind: 'cycle1' })
-    store.writeContextFile()
   }
 
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
