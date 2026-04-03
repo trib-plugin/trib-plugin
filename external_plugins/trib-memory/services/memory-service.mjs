@@ -164,7 +164,17 @@ if (startupEmbedding) {
   void startupEmbeddingJob.catch(err => process.stderr.write(`[memory-service] startup embedding catch-up failed: ${err}\n`))
 }
 
-// ── Cycle schedulers ─────────────────────────────────────────────────
+// ── Background embedding loop: embed unvectorized items every 30s, max 7 days ──
+let _bgEmbedRunning = false
+setInterval(async () => {
+  if (_bgEmbedRunning) return
+  _bgEmbedRunning = true
+  try {
+    const updated = await store.ensureEmbeddings({ perTypeLimit: 20, maxAgeDays: 7 })
+    if (updated > 0) process.stderr.write(`[bg-embed] ${updated} items\n`)
+  } catch {}
+  _bgEmbedRunning = false
+}, 30000)
 
 // ── Cycle schedulers (last-run based, not wall-clock) ────────────────
 
