@@ -33,12 +33,9 @@ try {
   ].filter(Boolean);
   for (const dir of projectDirs) {
     try {
-      const files = fs.readdirSync(dir)
-        .filter(f => /^SESSION-\d{4}-\d{2}-\d{2}\.md$/i.test(f))
-        .sort()
-        .reverse();
-      if (files.length > 0) {
-        const content = fs.readFileSync(path.join(dir, files[0]), 'utf8').trim();
+      const lastFile = path.join(dir, 'SESSION-LAST.md');
+      if (fs.existsSync(lastFile)) {
+        const content = fs.readFileSync(lastFile, 'utf8').trim();
         if (content.length > 50) {
           sessionMd = `## Previous Session\n${content.slice(0, 2000)}`;
           break;
