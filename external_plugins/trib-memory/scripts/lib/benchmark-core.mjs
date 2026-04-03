@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { buildTemporalOverride, parseTimerange } from './benchmark-runtime.mjs'
+import { buildTemporalOverride, cachedEmbedText, parseTimerange, saveEmbedCache } from './benchmark-runtime.mjs'
 import { cleanMemoryText } from '../../lib/memory-extraction.mjs'
 
 export function normalizeCase(raw, defaults = {}) {
@@ -102,10 +102,14 @@ export async function runBenchmarkCases(store, cases, options = {}) {
   for (const testCase of cases) {
     const { trStart, trEnd } = parseTimerange(testCase.timerange)
     const temporal = buildTemporalOverride(trStart, trEnd)
+    const queryVector = await cachedEmbedText(testCase.query)
+    const tuningOverride = options.reranker ? { reranker: { enabled: true } } : undefined
     const results = await store.searchRelevantHybrid(testCase.query, limit * 2, {
+      queryVector,
       temporal,
       filters: testCase.filters,
       recordRetrieval: false,
+      ...(tuningOverride ? { tuning: tuningOverride } : {}),
     })
     const items = Array.isArray(results) ? results : (results?.results ?? [])
     const rank = findFirstMatchRank(items, testCase)
@@ -129,6 +133,8 @@ export async function runBenchmarkCases(store, cases, options = {}) {
 
     if (includeCases) caseOutputs.push(caseSummary)
   }
+
+  saveEmbedCache()
 
   return {
     top_k: topK,

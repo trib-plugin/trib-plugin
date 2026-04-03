@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding, consumeProviderSwitchEvent } from './embedding-provider.mjs'
 import { cleanMemoryText } from './memory-extraction.mjs'
 import {
@@ -33,7 +33,6 @@ import {
   isHistoryQuery,
   parseTemporalHint,
 } from './memory-query-plan.mjs'
-import { detectOperationalIssueQuery, detectStandaloneMemoryQuery } from './memory-query-cues.mjs'
 import {
   applyMetadataFilters as applyMetadataFiltersImpl,
   getEpisodeRecallRows as getEpisodeRecallRowsImpl,
@@ -63,8 +62,6 @@ import { buildInboundMemoryContext as buildInboundMemoryContextImpl } from './me
 import { DEFAULT_MEMORY_TUNING, mergeMemoryTuning } from './memory-tuning.mjs'
 import { getTagFactor } from './memory-score-utils.mjs'
 import { readMemoryFeatureFlags } from './memory-ops-policy.mjs'
-import { detectDevQueryBias } from './memory-dev-utils.mjs'
-import { applyLexicalIntentHints, detectProfileQuerySlot } from './memory-profile-utils.mjs'
 // memory-score-utils imports removed — scoring consolidated into 3-stage pipeline
 import {
   averageVectors,
@@ -78,86 +75,6 @@ let sqliteVec = null
 try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
 
 const stores = new Map()
-const INTENT_PROTOTYPES = {
-  profile: [
-    'user language tone response style preference',
-    'how should the assistant speak, write, and address the user',
-    'preferred language, tone, and communication style',
-    'preferred address style and communication rules',
-    'how should the system respond to the user',
-    'language and style preference rules',
-    'formal respectful address style',
-    'response tone and wording rules',
-    'language and address behavior',
-    'does the user prefer agent delegation or direct work',
-    'user response style and formatting preference',
-    'user work style pattern and delegation preference',
-  ],
-  task: [
-    'current work status and active priorities',
-    'what is in progress right now and what comes next',
-    'ongoing execution state and next action',
-    'present operational focus and pending work',
-    'priority items in the current workflow',
-    'near-term work status and planned next steps',
-    'current tasks list what are we working on now',
-    'memory search improvement implementation task',
-    'session pinning routing stabilization task',
-    'memory split implementation work in progress',
-    'what is being done right now active work items',
-  ],
-  decision: [
-    'architecture decision design constraint rule limitation',
-    'system design choice and implementation constraint',
-    'agreed technical decision and structural direction',
-    'design decision and structural rule',
-    'technical direction and constraints',
-    'agreed system decision',
-    'Current Work Overlay usage conditions design decision',
-    'Recent Event Overlay design decision and rules',
-    'recall context hierarchy structure design',
-    'plugin manifest location decision',
-  ],
-  policy: [
-    'policy rule restriction allowed forbidden operational behavior',
-    'explicit constraint and operating rule',
-    'workflow policy and behavioral restrictions',
-    'what is allowed forbidden or required in operation',
-    'system rule and user-imposed constraint',
-    'operational guardrail and preference rule',
-    'automatic event-driven behavior implementation location hooks settings.json',
-    'where should automatic actions be implemented hooks or settings',
-    'event-driven automatic behavior must use hooks in settings.json',
-    'file change report rule after modification',
-    'settings.json audit read-only modification restriction',
-  ],
-  security: [
-    'secret credential sensitive value security privacy',
-    'how sensitive data should be handled safely',
-    'secure handling of protected values and access',
-    'private information safety and credential management',
-    'security restriction for confidential operational data',
-    'handling of protected secrets and privileged access',
-  ],
-  event: [
-    'past event incident timeline and what occurred',
-    'time-bounded event trace from prior conversation',
-    'what occurred at a specific time in history',
-    'historical event reconstruction from conversation evidence',
-    'trace a past occurrence using dated conversation context',
-    'timeline-oriented recall of an earlier incident',
-  ],
-  history: [
-    'recent history and discussed topics',
-    'recent activity and prior conversation context',
-    'what has been discussed recently',
-    'near-term conversational history and recent work',
-    'recent context and prior topics',
-    'history of recent discussion and activity',
-  ],
-}
-let intentPrototypeVectorsPromise = null
-let intentPrototypeVectorsModelId = null
 
 function logIgnoredError(scope, error) {
   if (!error) return
@@ -199,21 +116,6 @@ function isTranscriptQuarantineContent(text) {
   return false
 }
 
-async function getIntentPrototypeVectors() {
-  const currentModelId = getEmbeddingModelId()
-  if (!intentPrototypeVectorsPromise || intentPrototypeVectorsModelId !== currentModelId) {
-    intentPrototypeVectorsModelId = currentModelId
-    intentPrototypeVectorsPromise = (async () => {
-      const entries = []
-      for (const [intent, phrases] of Object.entries(INTENT_PROTOTYPES)) {
-        const vectors = await Promise.all(phrases.map(phrase => embedText(phrase)))
-        entries.push([intent, vectors.filter(vector => Array.isArray(vector) && vector.length > 0)])
-      }
-      return new Map(entries)
-    })()
-  }
-  return intentPrototypeVectorsPromise
-}
 
 export class MemoryStore {
   constructor(dataDir) {
@@ -1100,41 +1002,6 @@ export class MemoryStore {
       if (botContent) parts.push(botContent)
     }
 
-    // Decisions: recent important but not core (factor > 0.2 && < 1.0, e.g. incident)
-    const recentDecisions = allClassifications
-      .filter(row => {
-        const f = getTagFactor(row.importance)
-        return f > 0.2 && f < 1.0
-      })
-      .slice(0, 5)
-
-    if (recentDecisions.length > 0) {
-      const lines = recentDecisions.map(row => {
-        const tag = String(row.importance || '').split(',')[0].trim()
-        return `- [${tag}] ${row.topic} — ${row.element}`
-      })
-      parts.push(`## Recent Decisions\n${lines.join('\n')}`)
-    }
-
-    // Recent: last 3~5 turns (user + assistant, ~10 episodes)
-    const recentEpisodes = this.db.prepare(`
-      SELECT role, content FROM episodes
-      WHERE kind = 'message'
-        AND role IN ('user', 'assistant')
-        AND content NOT LIKE 'You are%'
-        AND LENGTH(content) BETWEEN 5 AND 300
-      ORDER BY ts DESC, id DESC
-      LIMIT 10
-    `).all().reverse()
-
-    if (recentEpisodes.length > 0) {
-      const body = recentEpisodes.map(row => {
-        const prefix = row.role === 'user' ? 'u' : 'a'
-        return `${prefix}: ${row.content.slice(0, 100)}`
-      }).join('\n')
-      parts.push(`## Recent\n${body}`)
-    }
-
     return parts.join('\n\n').trim()
   }
 
@@ -1302,109 +1169,6 @@ export class MemoryStore {
     } catch { /* ignore */ }
   }
 
-  async classifyQueryIntent(query, queryVector = null, options = {}) {
-    const clean = cleanMemoryText(query)
-    if (!clean) {
-      return {
-        primary: 'decision',
-        scores: { profile: 0, task: 0, decision: 0, policy: 0, security: 0, event: 0, history: 0 },
-      }
-    }
-
-    const tuning = options.tuning ?? this.getRetrievalTuning()
-    const vector = queryVector ?? await embedText(clean)
-    const prototypeVectors = await getIntentPrototypeVectors()
-    const scores = {
-      profile: 0,
-      task: 0,
-      decision: 0,
-      policy: 0,
-      security: 0,
-      event: 0,
-      history: 0,
-    }
-
-    for (const [intent, vectors] of prototypeVectors.entries()) {
-      let best = 0
-      for (const candidate of vectors) {
-        best = Math.max(best, cosineSimilarity(vector, candidate))
-      }
-      scores[intent] = best
-    }
-
-    applyLexicalIntentHints(clean, scores)
-    const operationalIssueCue = detectOperationalIssueQuery(clean)
-    const standaloneMemoryCue = detectStandaloneMemoryQuery(clean)
-    const devBias = detectDevQueryBias(clean)
-    const devBiasConfig = tuning?.devBias ?? DEFAULT_MEMORY_TUNING.devBias
-    if (devBias > 0) {
-      scores.task += devBias * Number(devBiasConfig.taskBoost ?? 0.25)
-      scores.decision += devBias * Number(devBiasConfig.decisionBoost ?? 0.15)
-      scores.profile = Math.max(0, scores.profile - devBias * Number(devBiasConfig.profileSuppress ?? 0.15))
-      scores.event = Math.max(0, scores.event - devBias * Number(devBiasConfig.eventSuppress ?? 0.08))
-    }
-    if (operationalIssueCue) {
-      scores.task = Number((scores.task + 0.36).toFixed(4))
-      scores.decision = Number((scores.decision + 0.12).toFixed(4))
-      scores.history = Math.max(0, scores.history - 0.12)
-      scores.event = Math.max(0, scores.event - 0.12)
-      scores.profile = Math.max(0, scores.profile - 0.06)
-    }
-    if (standaloneMemoryCue) {
-      scores.decision = Number((scores.decision + 0.30).toFixed(4))
-      scores.task = Number((scores.task + 0.18).toFixed(4))
-      scores.history = Math.max(0, scores.history - 0.20)
-      scores.event = Math.max(0, scores.event - 0.18)
-    }
-    const profileSlot = detectProfileQuerySlot(clean)
-
-    const temporal = parseTemporalHint(clean)
-    if (temporal) {
-      const historyRecallCue = /뭐했|뭐라고|했지|했어|어떻게|무슨|작업|진행|discuss|did|what.*do|how|work/i.test(clean)
-      const eventCue = /사건|이벤트|incident|event|meeting|회의/i.test(clean)
-      if (historyRecallCue && !eventCue) {
-        scores.history += 0.28
-        scores.event += 0.10
-      } else if (eventCue && !historyRecallCue) {
-        scores.event += 0.28
-        scores.history += 0.10
-      } else {
-        scores.event += 0.20
-        scores.history += 0.20
-      }
-    }
-
-    if (profileSlot) {
-      scores.history = Math.max(0, scores.history - 0.2)
-      scores.event = Math.max(0, scores.event - 0.16)
-    }
-
-    const timezonePreferenceCue =
-      profileSlot === 'timezone' &&
-      !temporal &&
-      (
-        /\b(local|device|timezone|timestamp|locale)\b/.test(clean.toLowerCase()) ||
-        /로컬|디바이스|시간대|타임존/.test(clean)
-      )
-    if (timezonePreferenceCue) {
-      return { primary: 'profile', scores }
-    }
-
-    const rankedIntents = Object.entries(scores).sort((a, b) => b[1] - a[1])
-    const topScore = Number(rankedIntents[0]?.[1] ?? 0)
-    const secondScore = Number(rankedIntents[1]?.[1] ?? 0)
-    const topScoreMin = Number(tuning?.intent?.topScoreMin ?? DEFAULT_MEMORY_TUNING.intent.topScoreMin)
-    const gapMin = Number(tuning?.intent?.gapMin ?? DEFAULT_MEMORY_TUNING.intent.gapMin)
-    const weakPrediction = topScore < topScoreMin || (topScore - secondScore) < gapMin
-    const eventLike =
-      /\b(event|incident|meeting)\b/.test(clean.toLowerCase()) ||
-      /사건|이벤트|회의/.test(clean)
-    const historyLike = Boolean(temporal) || isHistoryQuery(clean)
-    const primary = historyLike ? (eventLike ? 'event' : 'history') : 'decision'
-
-    return { primary, scores, topScore, secondScore, weakPrediction, devBias }
-  }
-
   async buildRecentFocusVector(options = {}) {
     const maxEpisodes = Math.max(1, Number(options.maxEpisodes ?? 8))
     const sinceDays = Math.max(1, Number(options.sinceDays ?? 3))
@@ -1501,7 +1265,27 @@ export class MemoryStore {
 
     // ── Stage 1: base scores (keyword + embedding + time) ──
     const queryVector = options.queryVector ?? await embedText(clean)
+    // Kiwi tokenization: supplement BM25 with morpheme-split query
+    let tokenizedQuery = clean
+    try {
+      const port = readFileSync(join(tmpdir(), 'trib-memory', 'temporal-port'), 'utf8').trim()
+      const res = await fetch(`http://localhost:${port}/tokenize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean }),
+        signal: AbortSignal.timeout(500),
+      })
+      const data = await res.json()
+      if (data.tokens && data.tokens !== clean) tokenizedQuery = data.tokens
+    } catch {}
     let sparse = this.searchRelevantSparse(clean, limit * 3)
+    if (tokenizedQuery !== clean) {
+      const tokenizedSparse = this.searchRelevantSparse(tokenizedQuery, limit * 2)
+      const seenKeys = new Set(sparse.map(r => `${r.type}:${r.entity_id}`))
+      for (const r of tokenizedSparse) {
+        if (!seenKeys.has(`${r.type}:${r.entity_id}`)) sparse.push(r)
+      }
+    }
     let dense = await this.searchRelevantDense(clean, limit * 3, queryVector, null, {})
 
     // temporal 필터: 날짜 범위가 있으면 해당 범위 + 범위 밖 결과 섞어서 범위 내 우선
@@ -1562,6 +1346,20 @@ export class MemoryStore {
       scored.push({ ...item, weighted_score: finalScore })
     }
 
+    // ── Importance keyword boost: boost classifications matching query intent ──
+    const IMPORTANCE_KEYWORDS = {
+      '규칙': 'rule', '정책': 'rule', '목표': 'goal', '요청': 'directive', '지시': 'directive',
+      '선호': 'preference', '결정': 'decision', '확정': 'decision', '사건': 'incident', '사고': 'incident',
+    }
+    const queryImportance = Object.entries(IMPORTANCE_KEYWORDS).find(([k]) => clean.includes(k))?.[1]
+    if (queryImportance) {
+      for (const item of scored) {
+        if (item.type === 'classification' && String(item.importance || '').includes(queryImportance)) {
+          item.weighted_score *= 2.0
+        }
+      }
+    }
+
     scored.sort((a, b) => b.weighted_score - a.weighted_score)
 
     // ── Stage 3: cap classifications, fill with episodes ──
@@ -1579,13 +1377,30 @@ export class MemoryStore {
       }
     }
     let finalResults = capped.slice(0, limit)
+
+    // ── Stage 4: conditional rerank via ml-service ──
     const tuning = options.tuning ?? this.getRetrievalTuning()
-    if (tuning.reranker?.enabled) {
-      try {
-        const { crossEncoderRerank } = await import('./reranker.mjs')
-        const reranked = await crossEncoderRerank(clean, finalResults, { limit })
-        if (reranked.length > 0) finalResults = reranked
-      } catch {}
+    if (tuning.reranker?.enabled && finalResults.length >= 2) {
+      const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[1]?.weighted_score || 0)
+      if (gap < 0.005) {
+        try {
+          const port = readFileSync(join(tmpdir(), 'trib-memory', 'temporal-port'), 'utf8').trim()
+          const top5 = finalResults.slice(0, 5)
+          const rest = finalResults.slice(5)
+          const docs = top5.map(r => String(r.content || '').slice(0, 240))
+          const body = JSON.stringify({ query: clean, documents: docs, top_k: 5 })
+          const res = await fetch(`http://localhost:${port}/rerank`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: AbortSignal.timeout(5000),
+          })
+          const data = await res.json()
+          if (data.results?.length > 0) {
+            finalResults = [...data.results.map(r => top5[r.index]).filter(Boolean), ...rest]
+          }
+        } catch {}
+      }
     }
 
     if (options.recordRetrieval !== false) this.recordRetrieval(finalResults)

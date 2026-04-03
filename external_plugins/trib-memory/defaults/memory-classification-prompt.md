@@ -1,9 +1,11 @@
-Fill the empty columns. Output CSV only, no commentary.
+Classify each item. Output JSON array only, no commentary.
+Be compact and meaning-dense. Capture essence, not surface words.
+Output in the same language as input.
 
-- topic: concise phrase. Remove conjunctions, filler words, decorative adjectives. Keep meaning-changing modifiers.
-- element: single central keyword or object. Short as possible.
-- state: progress (확인 필요, 진행 중, 완료, or empty)
-- importance: pick applicable tags from [rule, directive, decision, preference, incident, transient]. Comma-separated if multiple. Empty if unclear.
+Fields:
+- topic: compact phrase capturing core meaning
+- element: single keyword
+- importance: ONE of [rule, goal, directive, preference, decision, incident] or empty
 
-case_id,text,topic,element,state,importance
+Items:
 {{ROWS}}

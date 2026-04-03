@@ -179,13 +179,12 @@ function parseClassificationCsv(text) {
     }
     parts.push(cur.trim())
     if (parts.length < 3) continue
-    // case_id,text,topic,element,state,importance
+    // case_id,text,topic,element,importance
     items.push({
       case_id: parts[0],
       topic: parts[2] || '',
       element: parts[3] || '',
-      state: parts[4] || '',
-      importance: parts[5] || '',
+      importance: parts[4] || '',
     })
   }
   return items.length > 0 ? { items } : null
@@ -372,11 +371,88 @@ async function sleepCycleImpl(ws) {
   cycleState.cycle2.lastRunAt = new Date().toISOString()
   saveCycleState(cycleState)
 
+  // 4. Dedup/merge similar classifications
+  const dedupResult = await deduplicateClassifications(store, { dryRun: false })
+  if (dedupResult.merged > 0) {
+    process.stderr.write(`[memory-cycle2] dedup: merged=${dedupResult.merged}\n`)
+    store.writeContextFile()
+  }
+
   process.stderr.write('[memory-cycle] Cycle complete.\n')
 }
 
 export async function sleepCycle(ws) {
   return enqueueCycleWrite('cycle2', () => sleepCycleImpl(ws))
+}
+
+// ── Cycle2: Dedup/merge similar classifications ──
+
+const DEDUP_SIMILARITY_THRESHOLD = 0.92
+
+async function deduplicateClassifications(store, options = {}) {
+  const dryRun = Boolean(options.dryRun ?? false)
+  const threshold = Number(options.threshold ?? DEDUP_SIMILARITY_THRESHOLD)
+
+  const rows = store.db.prepare(`
+    SELECT c.id, c.episode_id, c.topic, c.element, c.importance, c.confidence, c.updated_at
+    FROM classifications c
+    WHERE c.status = 'active'
+    ORDER BY c.updated_at DESC
+  `).all()
+
+  if (rows.length < 2) return { merged: 0, checked: 0 }
+
+  // Load vectors for classifications
+  const vectors = new Map()
+  for (const row of rows) {
+    const vec = store.db.prepare(`
+      SELECT vector FROM memory_vectors
+      WHERE entity_type = 'classification' AND entity_id = ?
+    `).get(row.id)
+    if (vec?.vector) {
+      try {
+        const parsed = typeof vec.vector === 'string' ? JSON.parse(vec.vector) : vec.vector
+        if (Array.isArray(parsed) && parsed.length > 0) vectors.set(row.id, parsed)
+      } catch {}
+    }
+  }
+
+  const merged = []
+  const removed = new Set()
+
+  for (let i = 0; i < rows.length; i++) {
+    if (removed.has(rows[i].id)) continue
+    const vecA = vectors.get(rows[i].id)
+    if (!vecA) continue
+
+    for (let j = i + 1; j < rows.length; j++) {
+      if (removed.has(rows[j].id)) continue
+      const vecB = vectors.get(rows[j].id)
+      if (!vecB) continue
+
+      const sim = cosineSimilarity(vecA, vecB)
+      if (sim >= threshold) {
+        // Keep the newer one (i is newer due to DESC sort), remove j
+        removed.add(rows[j].id)
+        merged.push({
+          kept: rows[i].id,
+          removed: rows[j].id,
+          similarity: sim,
+          keptTopic: rows[i].topic,
+          removedTopic: rows[j].topic,
+        })
+      }
+    }
+  }
+
+  if (!dryRun && removed.size > 0) {
+    const ids = [...removed]
+    const placeholders = ids.map(() => '?').join(',')
+    store.db.prepare(`UPDATE classifications SET status = 'superseded' WHERE id IN (${placeholders})`).run(...ids)
+    store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'classification' AND entity_id IN (${placeholders})`).run(...ids)
+  }
+
+  return { merged: merged.length, checked: rows.length, removed: [...removed], details: dryRun ? merged : undefined }
 }
 
 export async function summarizeOnly(ws) {
@@ -560,19 +636,15 @@ function loadClassificationPrompt() {
   return 'Fill the missing classification columns for each row. Output JSON only.\n\n{{ROWS}}'
 }
 
-function csvEscape(value) {
-  const s = String(value ?? '').replace(/\n/g, ' ').trim()
-  return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s
-}
 
 function buildCycle1ClassificationRows(candidates = []) {
   return candidates.map(candidate => {
-    const text = csvEscape(candidate.content?.slice(0, 150) || '')
-    return [candidate.episode_id, text, '', '', '', ''].join(',')
+    const text = candidate.content?.slice(0, 150) || ''
+    return `- id:${candidate.episode_id} text:${text}`
   }).join('\n')
 }
 
-const DEFAULT_CYCLE_PROVIDER = { connection: 'codex', model: 'gpt-5.4', effort: 'medium', fast: true }
+const DEFAULT_CYCLE_PROVIDER = { connection: 'codex', model: 'gpt-5.4-mini', effort: 'medium', fast: true }
 
 async function runCycle1Impl(ws, config, options = {}) {
   const store = options.store ?? getStore()
@@ -615,8 +687,9 @@ async function runCycle1Impl(ws, config, options = {}) {
     if (!force) break
   }
 
-  for (let bi = 0; bi < batches.length; bi++) {
-    const candidates = batches[bi]
+  const concurrency = force ? Number(cycle1Config.concurrency ?? 2) : 1
+
+  async function processSingleBatch(candidates, batchIndex) {
     const extractionPrompt = loadClassificationPrompt()
       .replace('{{ROWS}}', buildCycle1ClassificationRows(candidates))
 
@@ -625,49 +698,78 @@ async function runCycle1Impl(ws, config, options = {}) {
       raw = await resolveCycleLlmOutput(extractionPrompt, ws, {
         ...options,
         mode: 'cycle1',
-        batchIndex: bi,
+        batchIndex,
         candidates,
         provider,
         timeout,
       })
     } catch (e) {
-      process.stderr.write(`[cycle1] batch ${bi} LLM error: ${e.message}\n`)
-      break
+      process.stderr.write(`[cycle1] batch ${batchIndex} LLM error: ${e.message}\n`)
+      return null
     }
 
-    const parsed = extractJsonObject(raw) || parseClassificationCsv(raw)
-    if (!parsed) {
-      process.stderr.write(`[cycle1] batch ${bi}: unparseable response\n`)
-      continue
-    }
-
-    const ts = new Date().toISOString()
-    const classificationRows = Array.isArray(parsed.items)
-      ? parsed.items.map(item => ({
-          episode_id: Number(item?.case_id ?? 0),
-          classification: String(item?.classification ?? '').trim() || '-',
+    // Parse JSON array (primary) or CSV (fallback)
+    let classificationRows = []
+    try {
+      const jsonMatch = String(raw).match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        const items = JSON.parse(jsonMatch[0])
+        classificationRows = items.map(item => ({
+          episode_id: Number(item?.id ?? item?.case_id ?? 0),
+          classification: '-',
           topic: String(item?.topic ?? '').trim(),
           element: String(item?.element ?? '').trim(),
-          state: String(item?.state ?? '').trim(),
           importance: String(item?.importance ?? '').trim(),
-          confidence: Number(item?.confidence ?? 0.6),
+          confidence: 0.6,
         }))
-      : []
-    store.upsertClassifications(classificationRows, ts, null)
-
-    // 처리된 candidates를 consolidated로 마킹
-    const processedIds = candidates.map(c => c.id).filter(id => id != null)
-    if (processedIds.length > 0) {
-      const placeholders = processedIds.map(() => '?').join(',')
-      store.db.prepare(`
-        UPDATE memory_candidates SET status = 'consolidated'
-        WHERE id IN (${placeholders}) AND status = 'pending'
-      `).run(...processedIds)
+      }
+    } catch {}
+    if (classificationRows.length === 0) {
+      const parsed = parseClassificationCsv(raw)
+      if (parsed?.items) {
+        classificationRows = parsed.items.map(item => ({
+          episode_id: Number(item?.case_id ?? 0),
+          classification: '-',
+          topic: String(item?.topic ?? '').trim(),
+          element: String(item?.element ?? '').trim(),
+          importance: String(item?.importance ?? '').trim(),
+          confidence: 0.6,
+        }))
+      }
+    }
+    if (classificationRows.length === 0) {
+      process.stderr.write(`[cycle1] batch ${batchIndex}: unparseable response (${String(raw).slice(0, 200)})\n`)
+      return null
     }
 
-    totalExtracted += candidates.length
-    totalClassifications += classificationRows.length
-    process.stderr.write(`[cycle1] batch ${bi}: ${candidates.length} candidates → ${classificationRows.length} classifications\n`)
+    return { candidates, classificationRows, batchIndex }
+  }
+
+  // LLM 호출은 병렬, DB 쓰기는 결과 모아서 순차
+  for (let i = 0; i < batches.length; i += concurrency) {
+    const chunk = batches.slice(i, i + concurrency)
+    const results = await Promise.all(chunk.map((batch, idx) => processSingleBatch(batch, i + idx)))
+
+    const ts = new Date().toISOString()
+    for (const result of results) {
+      if (!result) continue
+      const { candidates, classificationRows, batchIndex } = result
+
+      store.upsertClassifications(classificationRows, ts, null)
+
+      const processedIds = candidates.map(c => c.id).filter(id => id != null)
+      if (processedIds.length > 0) {
+        const placeholders = processedIds.map(() => '?').join(',')
+        store.db.prepare(`
+          UPDATE memory_candidates SET status = 'consolidated'
+          WHERE id IN (${placeholders}) AND status = 'pending'
+        `).run(...processedIds)
+      }
+
+      totalExtracted += candidates.length
+      totalClassifications += classificationRows.length
+      process.stderr.write(`[cycle1] batch ${batchIndex}: ${candidates.length} candidates → ${classificationRows.length} classifications\n`)
+    }
   }
 
   if (totalExtracted > 0) {

@@ -126,17 +126,18 @@ async function callCodex(prompt, provider, options) {
 
   const { stdout } = await execWithInput('codex', args, prompt, { ...options, provider })
 
-  // JSON streaming parse — extract text from agent_message type
+  // JSON streaming parse — extract LAST agent_message text
   const lines = stdout.split('\n').filter(l => l.trim())
+  let lastText = ''
   for (const line of lines) {
     try {
       const obj = JSON.parse(line)
       if (obj.type === 'item.completed' && obj.item?.type === 'agent_message') {
-        return obj.item.text
+        lastText = obj.item.text
       }
     } catch { /* skip non-JSON lines */ }
   }
-  return ''
+  return lastText
 }
 
 async function callClaude(prompt, provider, options) {

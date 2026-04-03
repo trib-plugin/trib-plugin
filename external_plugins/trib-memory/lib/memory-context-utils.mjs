@@ -19,38 +19,9 @@ export function formatHintAge(ts, nowTs = Date.now()) {
 }
 
 export function computeHintRelevance(item, _options = {}) {
-  // RRF + semantic: classification ~0.15-0.40, episode ~0.01-0.04
-  // normalize to 0-1 per type
   const weighted = Number(item?.weighted_score)
-  if (Number.isFinite(weighted) && weighted > 0) {
-    const type = String(item?.type ?? '')
-    const scale = type === 'classification' ? 0.4 : 0.05
-    return clamp01(weighted / scale)
-  }
+  if (Number.isFinite(weighted) && weighted > 0) return weighted
   return 0
-}
-
-export function shouldInjectHint(item, overrides = {}, options = {}) {
-  const type = String(overrides.type ?? item?.type ?? 'episode')
-  const queryTokenCount = Math.max(1, Number(options.queryTokenCount ?? 1))
-  const confidence = clamp01(overrides.confidence ?? item?.confidence ?? item?.quality_score ?? item?.effectiveScore ?? 0)
-  const relevance = clamp01(overrides.relevanceScore ?? computeHintRelevance(item, { queryTokenCount }))
-  const overlap = clamp01(Number(item?.overlapCount ?? 0) / Math.min(3, queryTokenCount))
-  const hintConfig = options.hintConfig ?? DEFAULT_MEMORY_TUNING.hintInjection
-  const weights = hintConfig?.compositeWeights ?? DEFAULT_MEMORY_TUNING.hintInjection.compositeWeights
-  const thresholds = hintConfig?.thresholds ?? DEFAULT_MEMORY_TUNING.hintInjection.thresholds
-  const threshold = thresholds?.[type] ?? thresholds?.default ?? DEFAULT_MEMORY_TUNING.hintInjection.thresholds.default
-  const composite = Number((
-    relevance * Number(weights.relevance ?? 0.58) +
-    confidence * Number(weights.confidence ?? 0.27) +
-    overlap * Number(weights.overlap ?? 0.15)
-  ).toFixed(3))
-
-  return (
-    relevance >= Number(threshold.relevance ?? 1) ||
-    composite >= Number(threshold.composite ?? 1) ||
-    (confidence >= Number(threshold.confidence ?? 1) && overlap >= Number(threshold.overlap ?? 1))
-  )
 }
 
 export function buildHintKey(item, overrides = {}) {
@@ -67,17 +38,7 @@ export function buildHintKey(item, overrides = {}) {
   return `${type}:${normalized}`
 }
 
-export function formatHintTag(item, overrides = {}, options = {}) {
-  const type = overrides.type ?? item?.type ?? 'episode'
-  const attrs = [`type="${type}"`]
-  const conf = overrides.confidence ?? item?.confidence ?? item?.quality_score ?? item?.effectiveScore
-  if (conf != null) attrs.push(`confidence="${Number(conf).toFixed(2)}"`)
-  const stage = overrides.stage ?? item?.stage ?? item?.status
-  if (stage && (type === 'task' || type === 'signal')) attrs.push(`stage="${stage}"`)
-  const ts = overrides.ts ?? item?.updated_at ?? item?.last_seen ?? item?.source_ts ?? item?.created_at
-  if (ts) attrs.push(`age="${formatHintAge(ts, options.nowTs)}"`)
-  const rel = overrides.relevanceScore ?? computeHintRelevance(item, { queryTokenCount: options.queryTokenCount })
-  if (rel != null) attrs.push(`relevance="${Number(rel).toFixed(2)}"`)
+export function formatHintTag(item, overrides = {}, _options = {}) {
   const text = String(overrides.text ?? item?.content ?? item?.text ?? item?.value ?? '').slice(0, 200)
-  return `<hint ${attrs.join(' ')}>${text}</hint>`
+  return `<hint>${text}</hint>`
 }

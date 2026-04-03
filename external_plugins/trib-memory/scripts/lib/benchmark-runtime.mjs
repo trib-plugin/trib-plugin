@@ -1,13 +1,50 @@
-import { cpSync, existsSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import {
   configureEmbedding,
   consumeProviderSwitchEvent,
+  embedText,
   getEmbeddingDims,
   getEmbeddingModelId,
 } from '../../lib/embedding-provider.mjs'
 import { readMainConfig } from '../../lib/memory-cycle.mjs'
+
+// ── Query embedding cache ───────────────────────────────────────────
+
+const CACHE_PATH = join(tmpdir(), 'trib-memory', 'embed-cache.json')
+let _cache = null
+
+function loadEmbedCache() {
+  if (_cache) return _cache
+  try {
+    _cache = JSON.parse(readFileSync(CACHE_PATH, 'utf8'))
+  } catch {
+    _cache = {}
+  }
+  return _cache
+}
+
+export function saveEmbedCache() {
+  if (!_cache) return
+  try {
+    mkdirSync(join(tmpdir(), 'trib-memory'), { recursive: true })
+    writeFileSync(CACHE_PATH, JSON.stringify(_cache))
+  } catch {}
+}
+
+export async function cachedEmbedText(text) {
+  const modelId = getEmbeddingModelId()
+  const cache = loadEmbedCache()
+  if (!cache[modelId]) cache[modelId] = {}
+  const cached = cache[modelId][text]
+  if (Array.isArray(cached) && cached.length > 0) return cached
+  const vector = await embedText(text)
+  if (Array.isArray(vector) && vector.length > 0) {
+    cache[modelId][text] = vector
+  }
+  return vector
+}
 
 export function resolveDataDir(explicitDataDir = '') {
   if (explicitDataDir && existsSync(join(explicitDataDir, 'memory.sqlite'))) {

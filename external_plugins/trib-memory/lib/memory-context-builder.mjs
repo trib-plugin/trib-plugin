@@ -5,6 +5,7 @@ import { embedText } from './embedding-provider.mjs'
 import { cleanMemoryText } from './memory-extraction.mjs'
 import { buildHintKey, formatHintTag } from './memory-context-utils.mjs'
 import { readMemoryFeatureFlags } from './memory-ops-policy.mjs'
+import { parseTemporalHint } from './memory-query-plan.mjs'
 import { looksLowSignalQuery, tokenizeMemoryText } from './memory-text-utils.mjs'
 
 function nextDateStr(value) {
@@ -49,12 +50,11 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
     channelId: options.channelId,
     userId: options.userId,
   }))
-  const intent = await measureStage('classify_intent', () => store.classifyQueryIntent(clean, queryVector, { tuning }))
   const pushHint = (item, overrides = {}) => {
     const rawText = String(overrides.text ?? item.content ?? item.text ?? item.value ?? '').trim()
     if (!rawText) return
-    // weighted_score > 0 이면 관련 결과 (RETRIEVAL-CLASSIFICATION-PLAN scoring)
-    if (item.weighted_score != null && item.weighted_score <= 0) return
+    // weighted_score >= 0.01 threshold (low-quality hints filtered)
+    if (item.weighted_score == null || item.weighted_score < 0.01) return
     const key = buildHintKey(item, overrides)
     if (!key) return
     if (seenHintKeys.has(key)) return
@@ -64,7 +64,6 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
 
   let relevant = await measureStage('hybrid_search', () => store.searchRelevantHybrid(clean, limit, {
     queryVector,
-    intent,
     focusVector,
     channelId: options.channelId,
     userId: options.userId,
@@ -130,15 +129,15 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
     } catch {}
   }
 
-  // Intent-based episode injection: event/history intents get recent episodes
-  if (lines.length === 0 && (intent.primary === 'event' || intent.primary === 'history')) {
+  // Temporal-based episode injection: temporal keywords get recent episodes
+  const temporal = parseTemporalHint(clean)
+  if (lines.length === 0 && temporal) {
     try {
       let startDate = null
       let endDate = null
-      const parsedTemporal = parseTemporalHint(clean)
-      if (parsedTemporal?.start) {
-        startDate = parsedTemporal.start
-        endDate = nextDateStr(parsedTemporal.end ?? parsedTemporal.start)
+      if (temporal?.start) {
+        startDate = temporal.start
+        endDate = nextDateStr(temporal.end ?? temporal.start)
       }
       if (!startDate && featureFlags.temporalParser) {
         try {

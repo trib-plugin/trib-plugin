@@ -87,7 +87,8 @@ const store = getMemoryStore(dataDir)
 await prepareBenchmarkStore(store, 'benchmark_recall_prepare_dense')
 const limit = Math.max(1, Number(args.limit ?? 5))
 const hitK = Math.max(1, Number(args.top_k ?? 3))
-const benchmark = await runBenchmarkCases(store, cases, { limit, topK: hitK })
+const reranker = Boolean(args.reranker)
+const benchmark = await runBenchmarkCases(store, cases, { limit, topK: hitK, reranker })
 const { summary, cases: caseOutputs } = benchmark
 
 const format = String(args.format ?? 'compact').toLowerCase()

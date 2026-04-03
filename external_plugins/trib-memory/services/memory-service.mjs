@@ -36,10 +36,9 @@ import {
   getCycleStatus,
   runCycle1,
   autoFlush,
-  buildSemanticDayPlan,
   readMainConfig,
 } from '../lib/memory-cycle.mjs'
-import { localNow, localDateStr } from '../lib/memory-text-utils.mjs'
+import { localNow } from '../lib/memory-text-utils.mjs'
 import {
   readMemoryOpsPolicy,
   readMemoryFeatureFlags,
@@ -258,422 +257,182 @@ const startupDelayMs = Math.max(
 )
 setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
 
-// Ensure context.md exists (empty template if first run)
-const contextPath = path.join(DATA_DIR, 'history', 'context.md')
-if (!fs.existsSync(contextPath)) {
-  try {
-    fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
-    store.writeContextFile()
-    process.stderr.write(`[memory-service] initial context.md created\n`)
-  } catch (e) {
-    process.stderr.write(`[memory-service] context.md init failed: ${e.message}\n`)
-  }
+// Refresh context.md on every startup (Core Memory + Bot only)
+try {
+  fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
+  store.writeContextFile()
+  process.stderr.write(`[memory-service] context.md refreshed on startup\n`)
+} catch (e) {
+  process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}\n`)
 }
 
 // ══════════════════════════════════════════════════════════════════════
 //  SHARED HELPERS (used by both MCP and HTTP)
 // ══════════════════════════════════════════════════════════════════════
 
-function addUtcDays(value, days) {
-  const next = new Date(value)
-  next.setDate(next.getDate() + days)
-  return next
-}
+// ── Recall handler (grep/read/glob modes) ───────────────────────────
 
-function monthRange(value) {
-  const match = String(value).trim().match(/^(\d{4})-(\d{2})$/)
-  if (!match) return null
-  const year = Number(match[1])
-  const month = Number(match[2])
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return null
-  const start = `${match[1]}-${match[2]}-01`
-  const nextMonth = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 }
-  const endDate = new Date(Date.UTC(nextMonth.year, nextMonth.month - 1, 1))
-  endDate.setUTCDate(endDate.getUTCDate() - 1)
-  return { start, end: endDate.toISOString().slice(0, 10) }
-}
+async function handleGrep(query, options) {
+  const { date, sort, offset, limit, context } = options
 
-function parseTimerange(timerangeArg) {
-  if (!timerangeArg) return { trStart: null, trEnd: null }
-  const now = new Date()
-  const localDate = (value) => {
-    const year = value.getFullYear()
-    const month = String(value.getMonth() + 1).padStart(2, '0')
-    const day = String(value.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
+  const { parseTemporalHint } = await import('../lib/memory-query-plan.mjs')
+  const temporal = parseTemporalHint(query)
+  let searchTemporal = temporal ? { start: temporal.start, end: temporal.end ?? temporal.start } : null
+  if (!searchTemporal && date) {
+    searchTemporal = { start: date, end: date, exact: true }
   }
-  const today = localDate(now)
-  const weekdayOffset = (now.getDay() + 6) % 7
-  const weekStart = localDate(addUtcDays(now, -weekdayOffset))
-  const lastWeekStart = localDate(addUtcDays(now, -(weekdayOffset + 7)))
-  const lastWeekEnd = localDate(addUtcDays(now, -(weekdayOffset + 1)))
-  const daysAgo = (n) => localDate(addUtcDays(now, -n))
-  const normalized = String(timerangeArg).trim().toLowerCase()
 
-  const dMatch = normalized.match(/^(\d+)d$/)
-  const wMatch = normalized.match(/^(\d+)w$/)
-  const rangeMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/)
-  const dateMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})$/)
-  const mRange = monthRange(normalized)
+  const results = await store.searchRelevantHybrid(query, limit * 2, {
+    temporal: searchTemporal,
+    recordRetrieval: true,
+  })
 
-  if (dMatch) return { trStart: daysAgo(Number(dMatch[1])), trEnd: today }
-  if (wMatch) return { trStart: daysAgo(Number(wMatch[1]) * 7), trEnd: today }
-  if (normalized === 'today' || normalized === '오늘') return { trStart: today, trEnd: today }
-  if (normalized === 'yesterday' || normalized === '어제') return { trStart: daysAgo(1), trEnd: daysAgo(1) }
-  if (['this-week', 'this week', 'this_week', '이번주', '이번 주'].includes(normalized)) return { trStart: weekStart, trEnd: today }
-  if (['last-week', 'last week', 'last_week', '지난주', '지난 주'].includes(normalized)) return { trStart: lastWeekStart, trEnd: lastWeekEnd }
-  if (rangeMatch) return { trStart: rangeMatch[1], trEnd: rangeMatch[2] }
-  if (mRange) return { trStart: mRange.start, trEnd: mRange.end }
-  if (dateMatch) return { trStart: dateMatch[1], trEnd: dateMatch[1] }
-  return { trStart: null, trEnd: null }
-}
+  let items = results.filter(r => r.type === 'classification' || r.type === 'episode')
 
-function buildTemporalOverride(trStart, trEnd) {
-  if (!trStart || !trEnd) return null
-  return {
-    start: trStart,
-    end: trEnd,
-    exact: trStart === trEnd,
+  if (sort === 'date') {
+    items.sort((a, b) => {
+      const tsA = a.source_ts || a.updated_at || ''
+      const tsB = b.source_ts || b.updated_at || ''
+      return tsB.localeCompare(tsA)
+    })
   }
+
+  items = items.slice(offset, offset + limit)
+
+  const lines = items.map(item => {
+    const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
+    const content = String(item.content || '').slice(0, 200)
+    return `[${ts}] ${content}`
+  })
+
+  if (context > 0 && items.length > 0) {
+    const firstItem = items[0]
+    const entityId = Number(firstItem.entity_id)
+    if (entityId && firstItem.type === 'episode') {
+      try {
+        const surrounding = store.db.prepare(`
+          SELECT id, ts, role, content FROM episodes
+          WHERE id BETWEEN ? AND ?
+            AND kind IN ('message', 'turn')
+          ORDER BY id ASC
+        `).all(entityId - context, entityId + context)
+        if (surrounding.length > 1) {
+          lines.push('')
+          lines.push('--- context ---')
+          for (const ep of surrounding) {
+            const prefix = ep.role === 'user' ? 'u' : 'a'
+            const marker = Number(ep.id) === entityId ? '*' : ' '
+            lines.push(`${marker}[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 150)}`)
+          }
+        }
+      } catch {}
+    }
+  }
+
+  return { text: lines.join('\n') || '(no results)' }
 }
 
-function buildSourceParts(row) {
-  return [
-    row.source_ref ? String(row.source_ref) : null,
-    row.source_ts ? `ts:${String(row.source_ts)}` : null,
-    row.source_kind ? `kind:${String(row.source_kind)}` : null,
-    row.source_backend ? `backend:${String(row.source_backend)}` : null,
-  ].filter(Boolean)
+async function handleRead(options) {
+  const { session, date, offset, limit } = options
+
+  let whereClause = "kind IN ('message', 'turn')"
+  const params = []
+
+  if (session === 'last' || session === 'current') {
+    const recentSessions = store.db.prepare(`
+      SELECT DISTINCT substr(source_ref, 12, instr(substr(source_ref, 12), ':') - 1) AS session_id,
+             MAX(ts) AS last_ts
+      FROM episodes
+      WHERE source_ref LIKE 'transcript:%'
+      GROUP BY session_id
+      ORDER BY last_ts DESC
+      LIMIT 2
+    `).all()
+
+    const targetSession = session === 'last'
+      ? recentSessions[1]?.session_id
+      : recentSessions[0]?.session_id
+
+    if (targetSession) {
+      whereClause += " AND source_ref LIKE ?"
+      params.push(`transcript:${targetSession}:%`)
+    }
+  } else if (session) {
+    whereClause += " AND source_ref LIKE ?"
+    params.push(`transcript:${session}:%`)
+  }
+
+  if (date) {
+    whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
+    params.push(date, date)
+  }
+
+  const episodes = store.db.prepare(`
+    SELECT ts, role, content FROM episodes
+    WHERE ${whereClause}
+    ORDER BY ts ASC, id ASC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset)
+
+  const lines = episodes.map(ep => {
+    const prefix = ep.role === 'user' ? 'u' : 'a'
+    return `[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 200)}`
+  })
+
+  return { text: lines.join('\n') || '(no episodes found)' }
 }
 
-function formatEpisodeLine(ep, marker = ' ', useCompact = true, includeSource = false) {
-  const role = useCompact ? (ep.role === 'user' ? 'u' : ep.role === 'assistant' ? 'a' : ep.role) : ep.role
-  const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-  const sourceParts = includeSource ? buildSourceParts(ep) : []
-  const sourceSuffix = sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
-  const markerPrefix = marker && marker !== ' ' ? `${marker}` : ''
-  return `${markerPrefix}[${ts}] ${role}: ${String(ep.content ?? '')}${sourceSuffix}`
+async function handleGlob(options) {
+  const { date, offset, limit } = options
+  const likePattern = date.replace(/\*/g, '%')
+
+  const days = store.db.prepare(`
+    SELECT substr(ts, 1, 10) AS day, COUNT(*) AS episodes,
+           MIN(ts) AS first_ts, MAX(ts) AS last_ts
+    FROM episodes
+    WHERE kind IN ('message', 'turn')
+      AND substr(ts, 1, 10) LIKE ?
+    GROUP BY day
+    ORDER BY day DESC
+    LIMIT ? OFFSET ?
+  `).all(likePattern, limit, offset)
+
+  const lines = days.map(d => `${d.day}: ${d.episodes} episodes (${String(d.first_ts).slice(11,16)}~${String(d.last_ts).slice(11,16)})`)
+
+  return { text: lines.join('\n') || '(no matching dates)' }
 }
 
-function formatDirectRows(rows) {
-  if (rows.length === 0) return '(no matching memories found)'
-  return rows.map(row => {
-    const ts = String(row.last_seen ?? row.updated_at ?? row.ts ?? '').trim()
-    const content = String(row.content ?? row.text ?? row.value ?? row.title ?? '').trim()
-    const type = String(row.type ?? '')
-    const subtype = String(row.subtype ?? '')
-    const confidence = row.confidence ?? row.score ?? row.quality_score
-    const meta = [
-      type,
-      subtype,
-      confidence != null ? `conf:${Number(confidence).toFixed(2)}` : null,
-    ].filter(Boolean).join(', ')
-    const sourceParts = buildSourceParts(row)
-    const source = sourceParts.length > 0 ? ` [source ${sourceParts.join(' | ')}]` : ''
-    return `[${ts}] ${content} (${meta})${source}`
-  }).join('\n')
-}
+async function handleRecallSingle(args) {
+  const query = String(args.query ?? '').trim()
+  const session = String(args.session ?? '').trim()
+  const date = String(args.date ?? '').trim()
+  const sort = String(args.sort ?? 'relevance')
+  const offset = Math.max(0, Number(args.offset ?? 0))
+  const limit = Math.max(1, Number(args.limit ?? 10))
+  const contextLines = Math.max(0, Number(args.context ?? 0))
 
-function formatClassificationRows(rows) {
-  if (rows.length === 0) return '(no matching classifications found)'
-  return rows.map(row => {
-    const ts = String(row.ts ?? row.updated_at ?? '').trim()
-    const fields = [
-      `분류=${row.classification}`,
-      `주제=${row.topic}`,
-      `요소=${row.element}`,
-      row.state ? `상태=${row.state}` : null,
-    ].filter(Boolean).join(' | ')
-    return `[${ts}] ${fields}`
-  }).join('\n')
+  if (query && !session) {
+    return handleGrep(query, { date, sort, offset, limit, context: contextLines })
+  }
+  if (session || (date && !date.includes('*') && !query)) {
+    return handleRead({ session, date, offset, limit })
+  }
+  if (date && date.includes('*')) {
+    return handleGlob({ date, offset, limit })
+  }
+  return handleRead({ session: 'last', date: '', offset, limit })
 }
-
-// ── Recall handler (all modes) ───────────────────────────────────────
 
 async function handleRecall(args) {
-  const mode = String(args.mode ?? 'search')
-  const query = String(args.query ?? '')
-  const typeFilter = String(args.type ?? 'all')
-  const limit = Number(args.limit ?? 5)
-  const includeSource = Boolean(args.source ?? false)
-  const contextArg = args.context
-  const debug = Boolean(args.debug)
-  const trace = Boolean(args.trace)
-  const metadataFilters = {
-    memory_kind: args.memory_kind,
-    task_status: args.task_status,
-    source_type: args.source_type,
-    session_id: args.session_id,
-    start_ts: args.start_ts,
-    end_ts: args.end_ts,
-  }
-  const useCompact = args.compact !== false
-  const stageDebug = Boolean(args.until_stage)
-
-  const { trStart, trEnd } = parseTimerange(args.timerange)
-  const temporalOverride = buildTemporalOverride(trStart, trEnd)
-  const queryLower = query.toLowerCase().trim()
-  const ftsQuery = query.replace(/['"*\-(){}[\]^~:]/g, ' ').replace(/\b(OR|AND|NOT|NEAR)\b/gi, '').trim()
-
-  const filterRowsByMetadata = async (rows) => {
-    return await store.applyMetadataFilters(rows, metadataFilters)
-  }
-
-  const inferredIntent = query
-    ? await store.classifyQueryIntent(query)
-    : { primary: 'decision', scores: {} }
-
-  let effectiveMode = mode
-  let effectiveType = typeFilter
-  if (mode === 'search' && typeFilter === 'all' && query) {
-    if (inferredIntent.primary === 'event' || (trStart && trEnd && inferredIntent.primary === 'history')) {
-      effectiveMode = 'episodes'
-      effectiveType = 'episodes'
-    } else {
-      effectiveMode = 'search'
-      effectiveType = 'classifications'
+  if (Array.isArray(args.queries) && args.queries.length > 0) {
+    const results = []
+    for (const q of args.queries) {
+      const result = await handleRecallSingle(q)
+      results.push(result.text)
     }
+    return { text: results.join('\n\n---\n\n') }
   }
-
-  const loadClassificationRows = async () => {
-    const rows = store.getClassificationRows(limit)
-    if (!query) return rows
-    const lowered = query.toLowerCase()
-    return rows.filter(row => {
-      const text = `${row.classification} ${row.topic} ${row.element} ${row.state ?? ''}`.toLowerCase()
-      return text.includes(lowered)
-    })
-  }
-
-  // ── mode: episodes ──
-  if (effectiveMode === 'episodes') {
-    if (!query && !(trStart && trEnd)) {
-      const latestEpisodes = store.db.prepare(`
-        SELECT id, ts, day_key, role, kind, content, source_ref, backend AS source_backend
-        FROM episodes
-        WHERE kind IN ('message', 'turn')
-        ORDER BY ts DESC
-        LIMIT ?
-      `).all(limit)
-      if (latestEpisodes.length === 0) return { text: '(no episodes found)' }
-      return { text: latestEpisodes.map(ep => formatEpisodeLine(ep, ' ', useCompact, includeSource)).join('\n') }
-    }
-
-    let startDate, endDate
-    if (trStart && trEnd) {
-      startDate = trStart
-      endDate = trEnd
-    } else {
-      endDate = localDateStr()
-      const threeDaysAgo = new Date(Date.now() - 3 * 86400000)
-      startDate = localDateStr(threeDaysAgo)
-    }
-
-    const { embedText } = await import('../lib/embedding-provider.mjs')
-    const vector = query ? await embedText(query) : []
-    const episodes = await store.getEpisodeRecallRows({
-      query,
-      startDate,
-      endDate,
-      limit,
-      queryVector: vector,
-      ftsQuery,
-      includeTranscripts: debug || metadataFilters.source_type === 'transcript',
-    })
-
-    if (episodes.length === 0) return { text: '(no episodes found in date range)' }
-    const lines = episodes.map(ep => formatEpisodeLine(ep, ' ', useCompact, includeSource))
-    const contextBlocks = []
-
-    if (query && contextArg !== undefined) {
-      for (const matched of episodes) {
-        const matchedId = Number(matched.id ?? matched.entity_id ?? 0)
-        if (!matchedId || !matched.day_key) continue
-        const dayEpisodes = store.getEpisodesForDate(String(matched.day_key), {
-          includeTranscripts: debug || metadataFilters.source_type === 'transcript',
-        }).map(ep => ({
-          ...ep,
-          day_key: matched.day_key,
-          source_ref: matched.source_ref ?? null,
-          source_backend: matched.source_backend ?? null,
-        }))
-        if (contextArg === 'semantic') {
-          const plan = await buildSemanticDayPlan(dayEpisodes)
-          const idx = plan.rows.findIndex(row => Number(row.id) === matchedId)
-          if (idx >= 0) {
-            const seg = plan.segments.find(s => idx >= s.start && idx <= s.end)
-            if (seg) {
-              contextBlocks.push(`--- context (semantic, ${matched.day_key}) ---`)
-              for (let i = seg.start; i <= seg.end; i += 1) {
-                const row = dayEpisodes.find(ep => Number(ep.id) === Number(plan.rows[i]?.id))
-                if (!row) continue
-                contextBlocks.push(formatEpisodeLine(row, Number(row.id) === matchedId ? '*' : ' ', useCompact, includeSource))
-              }
-            }
-          }
-        } else {
-          const n = Math.max(1, Number(contextArg))
-          const matchIdx = dayEpisodes.findIndex(ep => Number(ep.id) === matchedId)
-          if (matchIdx >= 0) {
-            const start = Math.max(0, matchIdx - n)
-            const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
-            contextBlocks.push(`--- context (+-${n}, ${matched.day_key}) ---`)
-            for (let i = start; i <= end; i += 1) {
-              contextBlocks.push(formatEpisodeLine(dayEpisodes[i], i === matchIdx ? '*' : ' ', useCompact, includeSource))
-            }
-          }
-        }
-      }
-    }
-
-    const output = contextBlocks.length > 0
-      ? `--- matches ---\n${lines.join('\n')}\n\n${contextBlocks.join('\n')}`
-      : lines.join('\n')
-    return { text: output }
-  }
-
-  // ── mode: search (default) ──
-  // Special query shortcuts
-  if (['all', 'episodes', 'classifications'].includes(queryLower)) {
-    if (queryLower === 'classifications') {
-      const rows = await loadClassificationRows()
-      if (rows.length === 0) return { text: '(no classifications found)' }
-      store.recordRetrieval(rows.map(row => ({ type: 'classification', entity_id: row.id })))
-      return { text: formatClassificationRows(rows) }
-    }
-    const rows = await filterRowsByMetadata(
-      store.getRecallShortcutRows(queryLower, limit, { startDate: trStart, endDate: trEnd }),
-    )
-    if (rows.length === 0) return { text: `(no ${queryLower} found)` }
-    const lines = rows.map(r => {
-      const ts = r.last_seen ?? ''
-      const meta = [r.type, r.subtype, r.confidence ? `conf:${Number(r.confidence).toFixed(2)}` : null].filter(Boolean).join(', ')
-      return `[${ts}] ${r.content} (${meta})`
-    })
-    return { text: lines.join('\n') }
-  }
-
-  // Special query: "hints"
-  if (queryLower === 'hints') {
-    const ctx = await store.buildInboundMemoryContext('general context check', {})
-    return { text: ctx || '(no hints generated)' }
-  }
-
-  // Special query: "hint:1,3"
-  const hintIdxMatch = queryLower.match(/^hint:(\d+(?:,\d+)*)$/)
-  if (hintIdxMatch) {
-    const ctx = await store.buildInboundMemoryContext('general context check', {})
-    if (!ctx) return { text: '(no hints generated)' }
-    const allHints = ctx.split('\n').filter(l => l.startsWith('<hint '))
-    const indices = hintIdxMatch[1].split(',').map(Number)
-    const selected = indices.filter(i => i >= 0 && i < allHints.length).map(i => allHints[i])
-    return { text: selected.length > 0 ? selected.join('\n') : `(no hints at indices: ${indices.join(',')})` }
-  }
-
-  if (!query) return { text: '(query required for search mode)', isError: true }
-
-  if (effectiveType === 'classifications') {
-    const rows = await loadClassificationRows()
-    store.recordRetrieval(rows.map(row => ({ type: 'classification', entity_id: row.id })))
-    return { text: formatClassificationRows(rows) }
-  }
-
-  const hybrid = await store.searchRelevantHybrid(query, limit * 2, {
-    debug: debug || stageDebug,
-    trace,
-    filters: metadataFilters,
-    temporal: temporalOverride,
-    untilStage: args.until_stage,
-  })
-  const results = Array.isArray(hybrid) ? hybrid : (hybrid?.results ?? [])
-  const debugPayload = !Array.isArray(hybrid) ? hybrid?.debug : null
-
-  if (!results || results.length === 0) return { text: '(no matching memories found)' }
-
-  const typeMap = { classification: 'classifications', episode: 'episodes' }
-  const filtered = results
-    .filter(r => effectiveType === 'all' || typeMap[r.type] === effectiveType || r.type === effectiveType)
-    .slice(0, limit)
-
-  // Context expansion
-  let contextEpisodes = []
-  if (contextArg !== undefined) {
-    const episodeResults = filtered.filter(r => r.type === 'episode')
-    for (const r of episodeResults) {
-      const matchedId = Number(r.entity_id ?? r.id ?? 0)
-      if (!matchedId) continue
-      const dayKey = store.getEpisodeDayKey(matchedId)
-      if (!dayKey) continue
-      const dayEpisodes = store.getEpisodesForDate(dayKey, {
-        includeTranscripts: debug || metadataFilters.source_type === 'transcript',
-      })
-      if (contextArg === 'semantic') {
-        const plan = await buildSemanticDayPlan(dayEpisodes)
-        const idx = plan.rows.findIndex(row => Number(row.id) === matchedId)
-        if (idx >= 0) {
-          const seg = plan.segments.find(s => idx >= s.start && idx <= s.end)
-          if (seg) {
-            const startIdx = dayEpisodes.findIndex(e => Number(e.id) === Number(plan.rows[seg.start]?.id))
-            const endIdx = dayEpisodes.findIndex(e => Number(e.id) === Number(plan.rows[seg.end]?.id))
-            if (startIdx >= 0 && endIdx >= 0) {
-              const slice = dayEpisodes.slice(startIdx, endIdx + 1)
-              contextEpisodes.push(`--- context (semantic segment, ${dayKey}) ---`)
-              for (const ep of slice) {
-                const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
-                const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-                contextEpisodes.push(`[${ts}] ${role}: ${ep.content}`)
-              }
-            }
-          }
-        }
-      } else {
-        const n = Math.max(1, Number(contextArg))
-        const matchIdx = dayEpisodes.findIndex(e => Number(e.id) === matchedId)
-        if (matchIdx >= 0) {
-          const start = Math.max(0, matchIdx - n)
-          const end = Math.min(dayEpisodes.length - 1, matchIdx + n)
-          contextEpisodes.push(`--- context (+-${n}, ${dayKey}) ---`)
-          for (let i = start; i <= end; i++) {
-            const ep = dayEpisodes[i]
-            const role = useCompact ? (ep.role === 'user' ? 'u' : 'a') : ep.role
-            const ts = useCompact ? String(ep.ts ?? '').replace(/:\d{2}\.\d+/, '') : String(ep.ts ?? '')
-            const marker = i === matchIdx ? '*' : ' '
-            contextEpisodes.push(`${marker}[${ts}] ${role}: ${ep.content}`)
-          }
-        }
-      }
-    }
-  }
-
-  const formatted = filtered.map(r => {
-    const ts = r.updated_at ?? r.source_ts
-    const date = ts ? new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts).toLocaleString() : 'unknown'
-    const isClassification = r.type === 'classification'
-    const meta = [
-      r.type,
-      r.subtype ? `subtype:${String(r.subtype)}` : null,
-      r.retrieval_count ? `retrieved:${r.retrieval_count}` : null,
-    ].filter(Boolean).join(', ')
-    const content = isClassification
-      ? String(r.content || r.text || '')
-      : String(r.content || r.text || '')
-    let line = `[${date}] ${content} (${meta})`
-    if (includeSource) {
-      const sourceParts = buildSourceParts(r)
-      if (sourceParts.length > 0) line += `\n  \u2514 source: ${sourceParts.join(' | ')}`
-    }
-    return line
-  }).join('\n')
-
-  const output = contextEpisodes.length > 0
-    ? `${formatted}\n\n${contextEpisodes.join('\n')}`
-    : formatted
-
-  const finalText = (debug || stageDebug) && debugPayload
-    ? `${output || '(no matching memories found)'}\n\n--- debug ---\n${JSON.stringify(debugPayload, null, useCompact ? 0 : 2)}`
-    : (output || '(no matching memories found)')
-
-  return { text: finalText }
+  return handleRecallSingle(args)
 }
 
 // ── Cycle handler ────────────────────────────────────────────────────
@@ -717,10 +476,13 @@ async function handleCycle(args) {
 const MEMORY_INSTRUCTIONS = [
   '## Memory Tool Policy',
   'If the answer depends on past conversations, dates, categories, topics, elements, or ongoing context and you are not already certain, call recall_memory before replying. Do not guess from memory-context alone.',
-  'Recall routing: events/date/timeline -> episodes; broad memory/category/topic lookup -> search; current long-term memory snapshot -> classifications.',
+  'recall_memory: memory search and retrieval tool.',
+  '- query: hybrid search (grep mode). Combine with date to narrow by date.',
+  '- session: read a session ("last", "current", or session ID).',
+  '- date: read episodes for a date ("2026-04-02"). Use wildcard ("2026-04-*") for date listing (glob mode).',
+  '- Auto-routing: query → search / session → session read / date+wildcard → date list.',
+  '- queries: batch multiple lookups in one call. Pass an array of query objects.',
   'When the user is asking you to remember or verify, always prefer the recall_memory MCP tool over unaided answering.',
-  'Pass explicit parameters: mode for strategy; query for the target fact/event/rule unless you are browsing episodes by date only; timerange for time-bounded recall; type only with search; hints only with bulk; source/context only with episodes when trace or surrounding turns are needed.',
-  'Search best practice: date-only lookup -> episodes + timerange; event/topic lookup -> episodes + query (+ timerange if known); broad memory lookup -> search; long-term memory snapshot -> classifications.',
   'Memory hints are injected automatically each turn via hooks. Use recall_memory to supplement hints — get detailed episodes, check event history, or retrieve additional classification context when hints are insufficient.',
   'When recalled memory conflicts with the current code, config, or observable state, trust the current state. Memory is a reference, not the source of truth.',
   'When this memory system is active, do not write work state or session context to auto-memory files (MEMORY.md). The memory cycle derives long-term context from episodes automatically.',
@@ -750,27 +512,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'recall_memory',
-      annotations: { title: 'Memory Recall' },
-      description: 'Search memory for relevant classifications and episodes. Use silently.\n\nParameters:\n- mode: search | episodes\n- query: target event/topic/category description; optional for episodes when timerange-only browsing is intended\n- timerange: optional date filter, formats: "today", "this-week", "3d", "1w", "2026-03", "2026-03-28", "2026-03-25~2026-03-28"\n- type: optional search-only filter\n- source/context: episodes-only when trace or nearby turns are needed\n\nSearch guide:\n- date-only recall -> episodes + timerange\n- event/topic recall -> episodes + query (+ timerange if known)\n- broad long-term memory lookup -> search or classifications\n\nCanonical calls:\n- recall_memory(mode="episodes", timerange="2026-03-28")\n- recall_memory(mode="episodes", query="event", timerange="2026-03-28", context=2, source=true)\n- recall_memory(mode="search", query="topic or category")\n- recall_memory(mode="search", type="classifications", query="long-term memory")',
+      annotations: { title: 'Recall Memory' },
+      description: 'Search and retrieve memory. Auto-routes: query→search, session→read, date+wildcard→list.\n\nExamples:\n- recall_memory(query="MCP 설정") — hybrid search\n- recall_memory(session="last") — previous session episodes\n- recall_memory(date="2026-04-02") — read day\n- recall_memory(date="2026-04-*") — list matching dates\n- recall_memory(query="버그 수정", date="2026-04-01") — search within date',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search text or shortcut. Shortcuts: "all", "hints", "hint:0,2", "classifications", "episodes". Free text for normal recall. Optional in episodes mode if timerange-only browsing is intended.' },
-          mode: { type: 'string', enum: ['search', 'episodes'], default: 'search', description: 'Recall strategy.' },
-          type: { type: 'string', enum: ['all', 'classifications', 'episodes'], default: 'all', description: 'Search-only memory type filter.' },
-          timerange: { type: 'string', description: 'Time filter for all modes. Formats: "today", "this-week", "3d"(days), "1w"(weeks), "2026-03"(month), "2026-03-28"(date), "2026-03-25~2026-03-28"(range)' },
-          limit: { type: 'number', default: 5, description: 'Max results' },
-          source: { type: 'boolean', default: false, description: 'Episodes-only: include source trace.' },
-          context: { type: ['number', 'string'], description: 'Episodes-only: surrounding turns count or "semantic".' },
-          compact: { type: 'boolean', default: true, description: 'Use u/a shorthand for episodes' },
-          memory_kind: { type: 'string', enum: ['classification', 'episode'], description: 'Optional metadata filter for a specific memory kind.' },
-          source_type: { type: 'string', description: 'Optional metadata filter for source kind/backend, e.g. message, transcript, discord, claude-session.' },
-          session_id: { type: 'string', description: 'Optional metadata filter for a specific source session id.' },
-          start_ts: { type: 'string', description: 'Optional timestamp lower bound for search results, e.g. "2026-04-01T09:00:00".' },
-          end_ts: { type: 'string', description: 'Optional timestamp upper bound for search results, e.g. "2026-04-01T18:00:00".' },
-          trace: { type: 'boolean', default: false, description: 'Persist a retrieval trace JSONL record under history for later inspection.' },
-          debug: { type: 'boolean', default: false, description: 'Include query plan / candidate / rerank debug summary for inspection.' },
-          until_stage: { type: 'string', enum: ['intent', 'plan', 'candidates', 'combined', 'exact', 'verified', 'rerank', 'final'], description: 'Stop the hybrid recall pipeline after the specified stage and return stage debug payload.' },
+          query: { type: 'string', description: 'Search text. Triggers hybrid search (grep mode).' },
+          session: { type: 'string', description: '"last", "current", or session UUID. Triggers session read mode.' },
+          date: { type: 'string', description: 'Date "2026-04-02" for read, or "2026-04-*" for listing (glob mode).' },
+          sort: { type: 'string', enum: ['relevance', 'date'], default: 'relevance', description: 'Sort order for grep mode.' },
+          offset: { type: 'number', default: 0, description: 'Skip N results.' },
+          limit: { type: 'number', default: 10, description: 'Max results to return.' },
+          context: { type: 'number', default: 0, description: 'Surrounding episodes count (grep mode, like grep -C).' },
+          queries: { type: 'array', description: 'Batch: array of query objects. Each has same params (query, session, date, sort, offset, limit, context).', items: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, date: { type: 'string' }, sort: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, context: { type: 'number' } } } },
         },
         required: [],
       },
@@ -855,6 +609,80 @@ const httpServer = http.createServer(async (req, res) => {
       sendJson(res, { status: 'ok', episodeCount, classificationCount })
     } catch (e) {
       sendError(res, e.message)
+    }
+    return
+  }
+
+  // GET /recent — Last Session turns + Key Conversations for session injection
+  if (req.method === 'GET' && req.url === '/recent') {
+    try {
+      const parts = []
+
+      // Section 1: Last Session — previous session's last 5 turns
+      const latestRef = store.db.prepare(`
+        SELECT source_ref FROM episodes
+        WHERE source_ref LIKE 'transcript:%'
+        ORDER BY id DESC LIMIT 1
+      `).get()
+      if (latestRef) {
+        const currentSessionId = String(latestRef.source_ref).split(':')[1]
+        const prevRef = store.db.prepare(`
+          SELECT source_ref FROM episodes
+          WHERE source_ref LIKE 'transcript:%'
+            AND source_ref NOT LIKE ?
+          ORDER BY id DESC LIMIT 1
+        `).get(`transcript:${currentSessionId}:%`)
+        if (prevRef) {
+          const prevSessionId = String(prevRef.source_ref).split(':')[1]
+          const lastTurns = store.db.prepare(`
+            SELECT role, content FROM episodes
+            WHERE source_ref LIKE ?
+              AND kind = 'message'
+              AND role IN ('user', 'assistant')
+              AND content NOT LIKE 'You are%'
+              AND LENGTH(content) BETWEEN 5 AND 300
+            ORDER BY id DESC LIMIT 10
+          `).all(`transcript:${prevSessionId}:%`).reverse().slice(-5)
+          if (lastTurns.length > 0) {
+            const body = lastTurns.map(row => {
+              const prefix = row.role === 'user' ? 'u' : 'a'
+              return `${prefix}: ${row.content.slice(0, 150)}`
+            }).join('\n')
+            parts.push(`## Last Session\n${body}`)
+          }
+        }
+      }
+
+      // Section 2: Key Conversations — most important classifications with episode content
+      const { getTagFactor } = await import('../lib/memory-score-utils.mjs')
+      const allClassifications = store.db.prepare(`
+        SELECT id, classification, topic, element, importance, episode_id
+        FROM classifications
+        WHERE status = 'active' AND importance IS NOT NULL AND importance != ''
+        ORDER BY updated_at DESC
+      `).all()
+      const keyItems = allClassifications
+        .map(row => ({ ...row, tagFactor: getTagFactor(row.importance) }))
+        .filter(row => row.tagFactor < 1.0)
+        .sort((a, b) => a.tagFactor - b.tagFactor)
+        .slice(0, 5)
+      if (keyItems.length > 0) {
+        const lines = keyItems.map(row => {
+          const tag = String(row.importance || '').split(',')[0].trim()
+          let content = ''
+          if (row.episode_id) {
+            const ep = store.db.prepare('SELECT content FROM episodes WHERE id = ?').get(row.episode_id)
+            if (ep) content = String(ep.content).slice(0, 150)
+          }
+          if (!content) content = `${row.topic} — ${row.element}`
+          return `- [${tag}] ${content}`
+        })
+        parts.push(`## Key Conversations\n${lines.join('\n')}`)
+      }
+
+      sendJson(res, { recent: parts.join('\n\n') })
+    } catch (e) {
+      sendJson(res, { recent: '' })
     }
     return
   }

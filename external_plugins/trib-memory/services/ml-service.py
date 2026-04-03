@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Temporal parser microservice — dateparser-based multilingual date extraction."""
+"""ML microservice — temporal parsing + reranker (MPS-accelerated)."""
 
 import json
 import os
@@ -10,6 +10,65 @@ import tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import dateparser
+
+# Kiwi tokenizer (lazy-loaded)
+_kiwi = None
+
+
+def get_kiwi():
+    global _kiwi
+    if _kiwi is None:
+        from kiwipiepy import Kiwi
+        _kiwi = Kiwi()
+    return _kiwi
+
+
+def tokenize_query(text):
+    kiwi = get_kiwi()
+    tokens = kiwi.tokenize(text)
+    # NN(명사), VV(동사), VA(형용사), SL(외국어), SN(숫자)
+    words = [tok.form for tok in tokens if tok.tag.startswith(('NN', 'VV', 'VA', 'SL', 'SN'))]
+    return ' '.join(words)
+
+# Lazy-loaded reranker
+_reranker_model = None
+_reranker_tokenizer = None
+RERANKER_MODEL_ID = os.environ.get('TRIB_RERANKER_MODEL', 'BAAI/bge-reranker-v2-m3')
+
+
+def get_reranker():
+    global _reranker_model, _reranker_tokenizer
+    if _reranker_model is None:
+        try:
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+            device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+            sys.stderr.write(f"[reranker] loading {RERANKER_MODEL_ID} on {device}\n")
+            _reranker_tokenizer = AutoTokenizer.from_pretrained(RERANKER_MODEL_ID)
+            _reranker_model = AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL_ID)
+            _reranker_model = _reranker_model.to(device).eval()
+            sys.stderr.write(f"[reranker] ready on {device}\n")
+        except Exception as e:
+            sys.stderr.write(f"[reranker] load failed: {e}\n")
+            return None, None
+    return _reranker_model, _reranker_tokenizer
+
+
+def rerank(query, documents, top_k=5):
+    model, tokenizer = get_reranker()
+    if model is None:
+        return [{'index': i, 'score': 0} for i in range(min(top_k, len(documents)))]
+    import torch
+    device = next(model.parameters()).device
+    pairs = [[query, doc] for doc in documents]
+    inputs = tokenizer(pairs, padding=True, truncation=True, max_length=512, return_tensors='pt').to(device)
+    with torch.no_grad():
+        scores = model(**inputs).logits.squeeze(-1).float().cpu().tolist()
+    if isinstance(scores, float):
+        scores = [scores]
+    indexed = [{'index': i, 'score': s} for i, s in enumerate(scores)]
+    indexed.sort(key=lambda x: x['score'], reverse=True)
+    return indexed[:top_k]
 
 PORT_FILE = os.path.join(tempfile.gettempdir(), 'trib-memory', 'temporal-port')
 BASE_PORT = 3360
@@ -50,6 +109,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'parsed': parsed}).encode())
+            return
+
+        if self.path == '/tokenize':
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            text = body.get('text', '')
+            result = tokenize_query(text) if text else ''
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'tokens': result}).encode())
+            return
+
+        if self.path == '/rerank':
+            length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            query = body.get('query', '')
+            documents = body.get('documents', [])
+            top_k = body.get('top_k', 5)
+
+            results = rerank(query, documents, top_k) if query and documents else []
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'results': results}).encode())
             return
 
         self.send_response(404)
