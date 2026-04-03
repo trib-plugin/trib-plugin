@@ -38,7 +38,7 @@ function respond(content) {
 
 // Wait for service to be ready (health check), poll every 1s, max 30s
 function waitForService(cb) {
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + 55000;
   function check() {
     let port;
     try { port = fs.readFileSync(PORT_FILE, 'utf8').trim(); } catch {}
