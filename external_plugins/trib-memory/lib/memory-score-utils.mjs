@@ -146,10 +146,23 @@ export function computeLanguageFactor(itemLang, queryLang, config = DEFAULT_SCOR
   return itemLang === queryLang ? config.language.match : config.language.mismatch
 }
 
+// ── Exact match bonus ───────────────────────────────────────────────
+
+export function computeExactMatchBonus(content, query, baseScore) {
+  if (!content || !query) return 0
+  const cleanQuery = String(query).toLowerCase().replace(/\s+/g, ' ').trim()
+  const cleanContent = String(content).toLowerCase().replace(/\s+/g, ' ').trim()
+  if (cleanQuery.length >= 4 && cleanContent.includes(cleanQuery)) {
+    return baseScore * 0.2
+  }
+  return 0
+}
+
 // ── Combined final score ─────────────────────────────────────────────
 
 export function computeFinalScore(baseScore, item, query, options = {}) {
   const config = options.config ?? DEFAULT_SCORING
   const importanceBoost = computeImportanceBoost(item.importance)
-  return baseScore * importanceBoost
+  const exactBonus = computeExactMatchBonus(item.content, query, baseScore)
+  return (baseScore + exactBonus) * importanceBoost
 }

@@ -1564,8 +1564,21 @@ export class MemoryStore {
 
     scored.sort((a, b) => b.weighted_score - a.weighted_score)
 
-    // ── Stage 3: rerank (optional) ──
-    let finalResults = scored.slice(0, limit)
+    // ── Stage 3: cap classifications, fill with episodes ──
+    const maxClassifications = 2
+    let classCount = 0
+    const capped = []
+    for (const item of scored) {
+      if (item.type === 'classification') {
+        if (classCount < maxClassifications) {
+          capped.push(item)
+          classCount++
+        }
+      } else {
+        capped.push(item)
+      }
+    }
+    let finalResults = capped.slice(0, limit)
     const tuning = options.tuning ?? this.getRetrievalTuning()
     if (tuning.reranker?.enabled) {
       try {
