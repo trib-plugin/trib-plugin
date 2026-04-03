@@ -651,6 +651,9 @@ async function runCycle1Impl(ws, config, options = {}) {
   const cycleConfig = readCycleConfig()
   const force = Boolean(options.force)
 
+  // Backfill recent transcripts (50 episodes per cycle)
+  try { store.backfillProject(ws, { limit: 50 }) } catch {}
+
   const cycle1Config = config?.memory?.cycle1 ?? {}
   const batchSize = Math.max(1, Number(cycle1Config.batchSize ?? 50))
   const maxDays = force ? 9999 : Math.max(1, Number(cycle1Config.maxDays ?? 7))
