@@ -1048,7 +1048,8 @@ export class MemoryStore {
     }
 
     const episodeLimit = Math.max(8, Math.floor(perTypeLimit / 2))
-    const maxAgeDays = Number(options.maxAgeDays ?? 30)
+    const maxAgeDays = options.maxAgeDays ?? null
+    const ageFilter = maxAgeDays ? `AND ts >= datetime('now', '-${Number(maxAgeDays)} days')` : ''
     const episodeRows = this.db.prepare(`
       SELECT id, role AS subtype, day_key AS ref, content
       FROM episodes
@@ -1059,7 +1060,7 @@ export class MemoryStore {
         AND content NOT LIKE 'Answer using live%'
         AND content NOT LIKE 'Use the ai_search%'
         AND content NOT LIKE 'Say only%'
-        AND ts >= datetime('now', '-${maxAgeDays} days')
+        ${ageFilter}
       ORDER BY ts DESC, id DESC
       LIMIT ?
     `).all(episodeLimit)
