@@ -40,7 +40,7 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
     }
   }
 
-  const limit = Number(options.limit ?? 6)
+  const limit = Number(options.limit ?? 3)
   const lines = []
   const seenHintKeys = new Set()
   const queryTokenCount = Math.max(1, tokenizeMemoryText(clean).length)
