@@ -633,10 +633,7 @@ export class MemoryStore {
         insertCandidateUnits(this.insertCandidateStmt, finalEpisodeId, ts, dayKey, entry.role, clean)
       }
 
-      // Inline embedding: immediately make this episode searchable via dense search
-      if (shouldCandidate && clean.length >= 10 && clean.length <= 500 && !looksLowSignal(clean)) {
-        this._embedEpisodeAsync(finalEpisodeId, clean)
-      }
+      // Embedding handled by cycle1 after classification
     }
     return finalEpisodeId ?? null
   }
