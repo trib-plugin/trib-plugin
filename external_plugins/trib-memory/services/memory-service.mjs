@@ -625,12 +625,14 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
-  // GET /recent — Last Session turns + Key Conversations for session injection
+  // GET /recent — What user asked + What was decided (total ~200 lines)
   if (req.method === 'GET' && req.url === '/recent') {
     try {
       const parts = []
+      const MAX_LINES = 200
+      let lineCount = 0
 
-      // Section 1: Last Session — previous session's last 5 turns
+      // Section 1: What User Asked — user messages from last session
       const latestRef = store.db.prepare(`
         SELECT source_ref FROM episodes
         WHERE source_ref LIKE 'transcript:%'
@@ -646,50 +648,61 @@ const httpServer = http.createServer(async (req, res) => {
         `).get(`transcript:${currentSessionId}:%`)
         if (prevRef) {
           const prevSessionId = String(prevRef.source_ref).split(':')[1]
-          const lastTurns = store.db.prepare(`
-            SELECT role, content FROM episodes
+          const userTurns = store.db.prepare(`
+            SELECT content FROM episodes
             WHERE source_ref LIKE ?
               AND kind = 'message'
-              AND role IN ('user', 'assistant')
+              AND role = 'user'
               AND content NOT LIKE 'You are%'
-              AND LENGTH(content) BETWEEN 5 AND 300
-            ORDER BY id DESC LIMIT 10
-          `).all(`transcript:${prevSessionId}:%`).reverse().slice(-5)
-          if (lastTurns.length > 0) {
-            const body = lastTurns.map(row => {
-              const prefix = row.role === 'user' ? 'u' : 'a'
-              return `${prefix}: ${row.content.slice(0, 150)}`
-            }).join('\n')
-            parts.push(`## Last Session\n${body}`)
+              AND LENGTH(content) >= 5
+            ORDER BY id ASC
+          `).all(`transcript:${prevSessionId}:%`)
+          if (userTurns.length > 0) {
+            const lines = []
+            for (const row of userTurns) {
+              const line = `- ${row.content}`
+              const newLines = line.split('\n').length
+              if (lineCount + newLines > MAX_LINES * 0.6) break
+              lines.push(line)
+              lineCount += newLines
+            }
+            if (lines.length > 0) parts.push(`## What User Asked\n${lines.join('\n')}`)
           }
         }
       }
 
-      // Section 2: Key Conversations — most important classifications with episode content
+      // Section 2: What Was Decided — recent classifications with importance
       const { getTagFactor } = await import('../lib/memory-score-utils.mjs')
-      const allClassifications = store.db.prepare(`
-        SELECT id, classification, topic, element, importance, episode_id
+      const recentDecisions = store.db.prepare(`
+        SELECT id, topic, element, importance, episode_id, updated_at
         FROM classifications
         WHERE status = 'active' AND importance IS NOT NULL AND importance != ''
         ORDER BY updated_at DESC
+        LIMIT 50
       `).all()
-      const keyItems = allClassifications
-        .map(row => ({ ...row, tagFactor: getTagFactor(row.importance) }))
-        .filter(row => row.tagFactor < 1.0)
-        .sort((a, b) => a.tagFactor - b.tagFactor)
-        .slice(0, 5)
+        .filter(row => getTagFactor(row.importance) < 1.0)
+
+      // Mix: permanent (rule/goal) + recent (any tag)
+      const permanent = recentDecisions.filter(row => getTagFactor(row.importance) <= 0.05).slice(0, 3)
+      const recent = recentDecisions.filter(row => !permanent.find(p => p.id === row.id)).slice(0, 7)
+      const keyItems = [...permanent, ...recent].slice(0, 10)
+
       if (keyItems.length > 0) {
-        const lines = keyItems.map(row => {
+        const lines = []
+        for (const row of keyItems) {
           const tag = String(row.importance || '').split(',')[0].trim()
-          let content = ''
+          let content = `${row.topic} — ${row.element}`
           if (row.episode_id) {
             const ep = store.db.prepare('SELECT content FROM episodes WHERE id = ?').get(row.episode_id)
-            if (ep) content = String(ep.content).slice(0, 150)
+            if (ep) content = String(ep.content)
           }
-          if (!content) content = `${row.topic} — ${row.element}`
-          return `- [${tag}] ${content}`
-        })
-        parts.push(`## Key Conversations\n${lines.join('\n')}`)
+          const line = `- [${tag}] ${content}`
+          const newLines = line.split('\n').length
+          if (lineCount + newLines > MAX_LINES) break
+          lines.push(line)
+          lineCount += newLines
+        }
+        if (lines.length > 0) parts.push(`## What Was Decided\n${lines.join('\n')}`)
       }
 
       sendJson(res, { recent: parts.join('\n\n') })
