@@ -778,6 +778,9 @@ async function runCycle1Impl(ws, config, options = {}) {
     await refreshEmbeddings(ws, { store, kind: 'cycle1' })
   }
 
+  // Update recent.md (last 20 turns)
+  store.writeRecentFile()
+
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
 
   // Update cycle state

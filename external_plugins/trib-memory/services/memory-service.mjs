@@ -264,25 +264,7 @@ setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
 try {
   fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
   store.writeContextFile()
-  // Write recent.md — last 20 turns (ring buffer style)
-  try {
-    const recentEpisodes = store.db.prepare(`
-      SELECT role, content FROM episodes
-      WHERE kind = 'message'
-        AND role IN ('user', 'assistant')
-        AND content NOT LIKE 'You are%'
-        AND LENGTH(content) >= 5
-      ORDER BY ts DESC, id DESC
-      LIMIT 20
-    `).all().reverse()
-    if (recentEpisodes.length > 0) {
-      const body = recentEpisodes.map(row => {
-        const prefix = row.role === 'user' ? 'u' : 'a'
-        return `${prefix}: ${row.content}`
-      }).join('\n')
-      fs.writeFileSync(path.join(DATA_DIR, 'history', 'recent.md'), `## Recent\n${body}`)
-    }
-  } catch {}
+  store.writeRecentFile()
   process.stderr.write(`[memory-service] context.md refreshed on startup\n`)
 } catch (e) {
   process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}\n`)

@@ -1007,6 +1007,28 @@ export class MemoryStore {
     return contextPath
   }
 
+  writeRecentFile() {
+    try {
+      ensureDir(this.historyDir)
+      const recentEpisodes = this.db.prepare(`
+        SELECT role, content FROM episodes
+        WHERE kind = 'message'
+          AND role IN ('user', 'assistant')
+          AND content NOT LIKE 'You are%'
+          AND LENGTH(content) >= 5
+        ORDER BY ts DESC, id DESC
+        LIMIT 20
+      `).all().reverse()
+      if (recentEpisodes.length > 0) {
+        const body = recentEpisodes.map(row => {
+          const prefix = row.role === 'user' ? 'u' : 'a'
+          return `${prefix}: ${row.content}`
+        }).join('\n')
+        writeFileSync(join(this.historyDir, 'recent.md'), `## Recent\n${body}`)
+      }
+    } catch {}
+  }
+
   appendRetrievalTrace(record = {}) {
     try {
       ensureDir(this.historyDir)
