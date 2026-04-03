@@ -165,9 +165,11 @@ if (startupEmbedding) {
 }
 
 // ── Background embedding loop: embed unvectorized items every 30s, max 7 days ──
+// Pauses when rebuild/force cycle is running
 let _bgEmbedRunning = false
+let _rebuildLock = false
 setInterval(async () => {
-  if (_bgEmbedRunning) return
+  if (_bgEmbedRunning || _rebuildLock) return
   _bgEmbedRunning = true
   try {
     const updated = await store.ensureEmbeddings({ perTypeLimit: 20, maxAgeDays: 7 })
@@ -199,6 +201,7 @@ function getCycleLastRun() {
 }
 
 async function checkCycles(options = {}) {
+  if (_rebuildLock) return
   const startup = options.startup === true
   const now = Date.now()
   const last = getCycleLastRun()
@@ -511,7 +514,10 @@ async function handleCycle(args) {
     return { text: 'Memory flush completed.' }
   }
   if (action === 'rebuild') {
-    await rebuildRecent(ws, { maxDays: Number(args.maxDays ?? 2) })
+    _rebuildLock = true
+    try {
+      await rebuildRecent(ws, { maxDays: Number(args.maxDays ?? 2) })
+    } finally { _rebuildLock = false }
     return { text: 'Memory rebuild completed.' }
   }
   if (action === 'prune') {
