@@ -4,7 +4,7 @@ You are initiating a conversation with the user. This is a bot-driven proactive 
 
 ## Process
 
-1. **대화 확인**: fetch_messages (limit 5)로 채널 {{CHAT_ID}}의 최근 메시지 확인.
+1. **대화 확인**: fetch (limit 5)로 채널 {{CHAT_ID}}의 최근 메시지 확인.
    - 5분 이내 메시지가 있으면 조용히 종료 (대화 중 끼어들지 않기).
 
 2. **맥락 수집**:

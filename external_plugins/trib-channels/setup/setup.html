@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>trib-channels setup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #18181b;
+    --bg-raised: #222228;
+    --bg-input: #18181b;
+    --border: rgba(255,255,255,0.15);
+    --border-focus: rgba(255,255,255,0.4);
+    --text-1: #fff;
+    --text-2: #ccc;
+    --text-3: #999;
+    --text-4: #555;
+    --accent: #8b91f0;
+    --green: #3fb950;
+    --green-dim: rgba(63,185,80,0.12);
+    --radius: 8px;
+    --cat-w: 150px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg); color: var(--text-2);
+    -webkit-font-smoothing: antialiased;
+    margin: 0; overflow: hidden; height: 100vh;
+  }
+
+  .layout { display: flex; height: 100vh; }
+
+  .cat-bar {
+    width: var(--cat-w); flex-shrink: 0;
+    background: #141416;
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 16px 0; overflow-y: auto;
+  }
+  .cat-title {
+    font-size: 10px; font-weight: 600; color: var(--text-4);
+    text-transform: uppercase; letter-spacing: 1.2px;
+    padding: 12px 14px 6px; user-select: none;
+  }
+  .cat-item {
+    padding: 8px 14px; cursor: pointer;
+    transition: all 0.15s; font-size: 13px;
+    color: var(--text-3); font-weight: 500;
+    border-left: 2px solid transparent;
+  }
+  .cat-item:hover { background: rgba(255,255,255,0.03); color: var(--text-2); }
+  .cat-item.active {
+    background: rgba(139,145,240,0.08);
+    color: var(--text-1);
+    border-left-color: var(--accent);
+  }
+
+  .main {
+    flex: 1; overflow-y: auto; padding: 28px 24px 20px;
+  }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .hdr { margin-bottom: 24px; display: flex; align-items: baseline; gap: 10px; }
+  .hdr h1 { font-size: 20px; font-weight: 600; color: var(--text-1); letter-spacing: -0.3px; }
+
+  .sec { margin-bottom: 20px; }
+  .sec-title {
+    font-size: 12px; font-weight: 600; color: var(--text-2);
+    margin-bottom: 8px; padding: 0 2px;
+  }
+  .sec-body {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .r {
+    display: flex; align-items: center;
+    padding: 0 14px; min-height: 44px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .r:last-child { border-bottom: none; }
+  .r:hover { background: rgba(255,255,255,0.015); cursor: default; }
+
+  .r-name-wide {
+    width: 130px; font-size: 13px; color: var(--text-1);
+    font-weight: 500; flex-shrink: 0;
+  }
+
+  .r-input {
+    flex: 1; height: 34px; padding: 0 10px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    transition: border-color 0.15s;
+  }
+  .r-input:focus { outline: none; border-color: var(--border-focus); }
+  .r-input::placeholder { color: #777; }
+
+  .r-select {
+    flex: 1; height: 34px; padding: 0 8px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'Inter', sans-serif;
+    transition: border-color 0.15s; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+  }
+  .r-select:focus { outline: none; border-color: var(--border-focus); }
+  .r-select option { background: var(--bg-raised); color: var(--text-1); }
+
+  .r-toggle {
+    width: 38px; height: 20px; border-radius: 10px;
+    background: #444; cursor: pointer; position: relative;
+    transition: background 0.2s; flex-shrink: 0;
+  }
+  .r-toggle.on { background: var(--accent); }
+  .r-toggle::after {
+    content: ''; position: absolute;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; top: 2px; left: 2px;
+    transition: transform 0.2s;
+  }
+  .r-toggle.on::after { transform: translateX(18px); }
+
+  .r-radio {
+    width: 17px; height: 17px; border-radius: 50%;
+    border: 1.5px solid #666; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; flex-shrink: 0;
+  }
+  .r-radio.on { border-color: var(--accent); }
+  .r-radio.on::after {
+    content: ''; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .r-slider {
+    flex: 1; -webkit-appearance: none; appearance: none;
+    height: 4px; background: #444; border-radius: 2px;
+    outline: none;
+  }
+  .r-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px;
+    border-radius: 50%; background: var(--accent); cursor: pointer;
+  }
+  .slider-val {
+    width: 24px; text-align: center; font-size: 12px;
+    color: var(--text-1); font-weight: 600; flex-shrink: 0;
+  }
+
+  .pw-wrap {
+    flex: 1; display: flex; align-items: center;
+    position: relative;
+  }
+  .pw-wrap .r-input { flex: 1; padding-right: 36px; }
+  .pw-toggle {
+    position: absolute; right: 8px; cursor: pointer;
+    font-size: 13px; color: var(--text-3); transition: color 0.15s;
+    user-select: none;
+  }
+  .pw-toggle:hover { color: var(--text-1); }
+
+  .tag-container {
+    flex: 1; display: flex; flex-wrap: wrap; gap: 4px;
+    min-height: 34px; padding: 4px 8px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; align-items: center; cursor: text;
+  }
+  .tag-container:focus-within { border-color: var(--border-focus); }
+  .tag-item {
+    display: flex; align-items: center; gap: 4px;
+    background: rgba(139,145,240,0.15); color: var(--accent);
+    padding: 2px 6px; border-radius: 3px; font-size: 11px;
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+  }
+  .tag-item .tag-x {
+    cursor: pointer; font-size: 12px; color: var(--text-3);
+    transition: color 0.15s;
+  }
+  .tag-item .tag-x:hover { color: #e05050; }
+  .tag-input {
+    border: none; background: none; color: var(--text-1);
+    font-size: 11px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    outline: none; min-width: 60px; flex: 1;
+  }
+  .tag-input::placeholder { color: #666; }
+
+  .save-area { margin-top: 12px; }
+  .save {
+    width: 100%; height: 44px;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: var(--radius);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .save:hover { filter: brightness(1.1); }
+  .save.done { background: var(--bg-raised); color: var(--green); pointer-events: none; }
+  .warn-msg {
+    text-align: center; font-size: 12px; color: #e05050;
+    margin-bottom: 4px; height: 16px;
+  }
+
+  .dyn-list { padding: 8px 14px; }
+  .dyn-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-wrap: wrap;
+  }
+  .dyn-item:last-child { border-bottom: none; }
+  .dyn-item .r-input { height: 30px; font-size: 11px; }
+  .dyn-item .r-select { height: 30px; font-size: 11px; }
+  .dyn-add {
+    font-size: 12px; color: var(--accent); cursor: pointer;
+    padding: 4px 0; transition: color 0.15s;
+  }
+  .dyn-add:hover { color: #fff; }
+  .dyn-remove {
+    font-size: 14px; color: var(--text-4); cursor: pointer;
+    transition: color 0.15s; flex-shrink: 0; width: 20px;
+    text-align: center;
+  }
+  .dyn-remove:hover { color: #e05050; }
+
+  .event-item {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .event-item:last-child { border-bottom: none; }
+  .event-item .r-input, .event-item .r-select { height: 28px; font-size: 11px; }
+
+  .field-label {
+    font-size: 10px; color: var(--text-4); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 2px;
+  }
+  .field-group { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+
+  .main::-webkit-scrollbar, .cat-bar::-webkit-scrollbar { width: 6px; }
+  .main::-webkit-scrollbar-track, .cat-bar::-webkit-scrollbar-track { background: transparent; }
+  .main::-webkit-scrollbar-thumb, .cat-bar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+  .main::-webkit-scrollbar-thumb:hover, .cat-bar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Category sidebar -->
+  <div class="cat-bar">
+    <div class="cat-title">TRIB-CHANNELS CONFIG</div>
+    <div class="cat-item active" data-panel="channels-connection" onclick="switchCat(this)">Connection</div>
+    <div class="cat-item" data-panel="channels-channels" onclick="switchCat(this)">Channels</div>
+    <div class="cat-item" data-panel="channels-access" onclick="switchCat(this)">Access</div>
+    <div class="cat-item" data-panel="channels-profile" onclick="switchCat(this)">Profile & Bot</div>
+    <div class="cat-item" data-panel="channels-voice" onclick="switchCat(this)">Voice</div>
+    <div class="cat-item" data-panel="channels-schedules" onclick="switchCat(this)">Schedules</div>
+    <div class="cat-item" data-panel="channels-proactive" onclick="switchCat(this)">Proactive</div>
+    <div class="cat-item" data-panel="channels-events" onclick="switchCat(this)">Events</div>
+    <div class="cat-item" data-panel="channels-advanced" onclick="switchCat(this)">Advanced</div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- CONNECTION -->
+    <div class="panel active" id="panel-channels-connection">
+      <div class="hdr"><h1>Connection</h1></div>
+      <div class="sec">
+        <div class="sec-title">Discord</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Bot token</span>
+            <div class="pw-wrap">
+              <input class="r-input" id="ch-discord-token" type="password" placeholder="Bot token">
+              <span class="pw-toggle" onclick="togglePw(this)">&#128065;</span>
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Application ID</span>
+            <input class="r-input" id="ch-discord-appid" type="text" placeholder="Application ID">
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-connection"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- CHANNELS -->
+    <div class="panel" id="panel-channels-channels">
+      <div class="hdr"><h1>Channels</h1></div>
+      <div class="sec">
+        <div class="sec-title">Channel list</div>
+        <div class="sec-body">
+          <div id="ch-channel-list" class="dyn-list"></div>
+          <div style="padding: 0 14px 8px;">
+            <span class="dyn-add" onclick="addChannel()">+ Add channel</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-channels"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- ACCESS -->
+    <div class="panel" id="panel-channels-access">
+      <div class="hdr"><h1>Access</h1></div>
+      <div class="sec">
+        <div class="sec-title">DM & mentions</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">DM policy</span>
+            <select class="r-select" id="ch-dm-policy">
+              <option value="pairing">pairing</option>
+              <option value="allowlist">allowlist</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </div>
+          <div class="r" style="min-height:auto;padding:8px 14px;">
+            <span class="r-name-wide">Allow from</span>
+            <div class="tag-container" id="ch-allowfrom"></div>
+          </div>
+          <div class="r" style="min-height:auto;padding:8px 14px;">
+            <span class="r-name-wide">Mention patterns</span>
+            <div class="tag-container" id="ch-mentionpatterns"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Ack reaction</span>
+            <input class="r-input" id="ch-ackreaction" type="text" placeholder="&#128064;" style="width:80px;flex:none;">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Reply-to mode</span>
+            <select class="r-select" id="ch-replyto">
+              <option value="off">off</option>
+              <option value="first">first</option>
+              <option value="all">all</option>
+            </select>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Text chunk limit</span>
+            <input class="r-input" id="ch-chunklimit" type="number" placeholder="2000">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Chunk mode</span>
+            <select class="r-select" id="ch-chunkmode">
+              <option value="length">length</option>
+              <option value="newline">newline</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-access"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- PROFILE & BOT -->
+    <div class="panel" id="panel-channels-profile">
+      <div class="hdr"><h1>Profile & Bot</h1></div>
+      <div class="sec">
+        <div class="sec-title">Profile</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Name</span>
+            <input class="r-input" id="prof-name" type="text" placeholder="Bot name">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Role</span>
+            <input class="r-input" id="prof-role" type="text" placeholder="assistant">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Language</span>
+            <input class="r-input" id="prof-lang" type="text" placeholder="ko">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Tone</span>
+            <input class="r-input" id="prof-tone" type="text" placeholder="friendly">
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Quiet hours</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Schedule</span>
+            <input class="r-input" id="bot-quiet-schedule" type="text" placeholder="HH:MM-HH:MM">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Autotalk quiet</span>
+            <input class="r-input" id="bot-quiet-autotalk" type="text" placeholder="HH:MM-HH:MM">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Holidays</span>
+            <input class="r-input" id="bot-holidays" type="text" placeholder="KR, US">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Timezone</span>
+            <input class="r-input" id="bot-timezone" type="text" placeholder="Asia/Seoul">
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Autotalk</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Frequency</span>
+            <input class="r-slider" id="bot-autotalk-freq" type="range" min="1" max="5" value="3">
+            <span class="slider-val" id="bot-autotalk-freq-val">3</span>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Enabled</span>
+            <div class="r-toggle" id="bot-autotalk-enabled" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Sleep</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Enabled</span>
+            <div class="r-toggle" id="bot-sleep-enabled" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Sleep time</span>
+            <input class="r-input" id="bot-sleep-time" type="text" placeholder="HH:MM">
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Display</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Display mode</span>
+            <select class="r-select" id="bot-displaymode">
+              <option value="view">view</option>
+              <option value="hide">hide</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-profile"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- VOICE -->
+    <div class="panel" id="panel-channels-voice">
+      <div class="hdr"><h1>Voice</h1></div>
+      <div class="sec">
+        <div class="sec-title">Voice config</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Command</span>
+            <input class="r-input" id="voice-command" type="text" placeholder="whisper">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Model</span>
+            <input class="r-input" id="voice-model" type="text" placeholder="path/to/model">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Language</span>
+            <select class="r-select" id="voice-language">
+              <option value="auto">auto</option>
+              <option value="ko">ko</option>
+              <option value="en">en</option>
+              <option value="ja">ja</option>
+              <option value="zh">zh</option>
+              <option value="es">es</option>
+              <option value="fr">fr</option>
+              <option value="de">de</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-voice"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- SCHEDULES -->
+    <div class="panel" id="panel-channels-schedules">
+      <div class="hdr"><h1>Schedules</h1></div>
+      <div class="sec">
+        <div class="sec-title">Non-interactive</div>
+        <div class="sec-body">
+          <div id="sched-noninteractive" class="dyn-list"></div>
+          <div style="padding: 0 14px 8px;">
+            <span class="dyn-add" onclick="addSchedule('noninteractive')">+ Add schedule</span>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Interactive</div>
+        <div class="sec-body">
+          <div id="sched-interactive" class="dyn-list"></div>
+          <div style="padding: 0 14px 8px;">
+            <span class="dyn-add" onclick="addSchedule('interactive')">+ Add schedule</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-schedules"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- PROACTIVE -->
+    <div class="panel" id="panel-channels-proactive">
+      <div class="hdr"><h1>Proactive</h1></div>
+      <div class="sec">
+        <div class="sec-title">Proactive messaging</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Frequency</span>
+            <input class="r-slider" id="proactive-freq" type="range" min="1" max="5" value="3">
+            <span class="slider-val" id="proactive-freq-val">3</span>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Feedback</span>
+            <div class="r-toggle" id="proactive-feedback" onclick="this.classList.toggle('on')"></div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">DND start</span>
+            <input class="r-input" id="proactive-dndstart" type="text" placeholder="HH:MM" style="width:80px;flex:none;">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">DND end</span>
+            <input class="r-input" id="proactive-dndend" type="text" placeholder="HH:MM" style="width:80px;flex:none;">
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Topics</div>
+        <div class="sec-body">
+          <div id="proactive-items" class="dyn-list"></div>
+          <div style="padding: 0 14px 8px;">
+            <span class="dyn-add" onclick="addProactiveItem()">+ Add topic</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-proactive"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- EVENTS -->
+    <div class="panel" id="panel-channels-events">
+      <div class="hdr"><h1>Events</h1></div>
+      <div class="sec">
+        <div class="sec-title">Event rules</div>
+        <div class="sec-body">
+          <div id="events-list" class="dyn-list"></div>
+          <div style="padding: 0 14px 8px;">
+            <span class="dyn-add" onclick="addEventRule()">+ Add rule</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-events"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- ADVANCED -->
+    <div class="panel" id="panel-channels-advanced">
+      <div class="hdr"><h1>Advanced</h1></div>
+      <div class="sec">
+        <div class="sec-title">Context files</div>
+        <div class="sec-body">
+          <div class="r" style="min-height:auto;padding:8px 14px;">
+            <div class="tag-container" id="ch-contextfiles"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Language</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Language</span>
+            <select class="r-select" id="ch-adv-language">
+              <option value="ko">ko</option>
+              <option value="en">en</option>
+              <option value="ja">ja</option>
+              <option value="zh">zh</option>
+              <option value="es">es</option>
+              <option value="fr">fr</option>
+              <option value="de">de</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Embedding</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Provider</span>
+            <select class="r-select" id="ch-adv-embed-provider">
+              <option value="local">local</option>
+              <option value="ollama">ollama</option>
+            </select>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Ollama model</span>
+            <input class="r-input" id="ch-adv-embed-model" type="text" placeholder="nomic-embed-text">
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Webhook</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Server host</span>
+            <input class="r-input" id="ch-webhook-host" type="text" placeholder="0.0.0.0">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Server port</span>
+            <input class="r-input" id="ch-webhook-port" type="number" placeholder="3000">
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-channels-advanced"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// -- Dirty tracking --
+let isDirty = false;
+document.addEventListener('input', () => { isDirty = true; });
+document.addEventListener('change', () => { isDirty = true; });
+window.addEventListener('beforeunload', (e) => {
+  if (isDirty) e.preventDefault();
+  else navigator.sendBeacon('/close', '');
+});
+
+// -- Globals --
+let config = null;
+let extraData = { bot: {}, profile: {} };
+
+// -- Init --
+window.addEventListener('load', async () => {
+  try {
+    window.resizeTo(800, 900);
+    window.moveTo((screen.availWidth - 800) / 2, (screen.availHeight - 900) / 2);
+  } catch {}
+  initTagInputs();
+  initSliders();
+  await loadConfig();
+});
+
+// -- Category switching --
+function switchCat(el) {
+  document.querySelectorAll('.cat-item').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + el.dataset.panel).classList.add('active');
+}
+
+// -- Password toggle --
+function togglePw(el) {
+  const inp = el.previousElementSibling;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// -- Tag input system --
+function initTagInputs() {
+  document.querySelectorAll('.tag-container').forEach(container => {
+    if (container.querySelector('.tag-input')) return;
+    const inp = document.createElement('input');
+    inp.className = 'tag-input';
+    inp.placeholder = 'Type and press Enter';
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && inp.value.trim()) {
+        e.preventDefault();
+        addTag(container, inp.value.trim());
+        inp.value = '';
+      } else if (e.key === 'Backspace' && !inp.value) {
+        const last = container.querySelector('.tag-item:last-of-type');
+        if (last) last.remove();
+      }
+    });
+    container.appendChild(inp);
+    container.addEventListener('click', () => inp.focus());
+  });
+}
+
+function addTag(container, text) {
+  const tag = document.createElement('span');
+  tag.className = 'tag-item';
+  tag.innerHTML = text + '<span class="tag-x" onclick="this.parentElement.remove()">&times;</span>';
+  tag.dataset.value = text;
+  const inp = container.querySelector('.tag-input');
+  container.insertBefore(tag, inp);
+}
+
+function getTagValues(containerId) {
+  return Array.from(document.getElementById(containerId).querySelectorAll('.tag-item'))
+    .map(t => t.dataset.value);
+}
+
+function setTagValues(containerId, values) {
+  const container = document.getElementById(containerId);
+  container.querySelectorAll('.tag-item').forEach(t => t.remove());
+  (values || []).forEach(v => addTag(container, v));
+}
+
+// -- Slider init --
+function initSliders() {
+  document.querySelectorAll('.r-slider').forEach(slider => {
+    const valEl = document.getElementById(slider.id + '-val');
+    if (valEl) {
+      slider.addEventListener('input', () => { valEl.textContent = slider.value; });
+    }
+  });
+}
+
+// -- Channel list --
+function addChannel(label, channelId, mode, isMain) {
+  const list = document.getElementById('ch-channel-list');
+  const item = document.createElement('div');
+  item.className = 'dyn-item';
+  item.innerHTML =
+    '<div class="r-radio' + (isMain ? ' on' : '') + '" title="Main channel" onclick="setMainChannel(this)"></div>' +
+    '<input class="r-input" type="text" placeholder="label" value="' + (label || '') + '" style="width:70px;flex:none;" data-f="ch-label">' +
+    '<input class="r-input" type="text" placeholder="Channel ID" value="' + (channelId || '') + '" data-f="ch-id">' +
+    '<select class="r-select" style="width:110px;flex:none;" data-f="ch-mode">' +
+    '  <option value="interactive"' + (mode === 'interactive' ? ' selected' : '') + '>interactive</option>' +
+    '  <option value="monitor"' + (mode === 'monitor' ? ' selected' : '') + '>monitor</option>' +
+    '</select>' +
+    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
+  list.appendChild(item);
+}
+
+function setMainChannel(radio) {
+  document.querySelectorAll('#ch-channel-list .r-radio').forEach(r => r.classList.remove('on'));
+  radio.classList.add('on');
+}
+
+// -- Schedule items --
+function addSchedule(type, data) {
+  const list = document.getElementById('sched-' + type);
+  const item = document.createElement('div');
+  item.className = 'dyn-item';
+  const d = data || {};
+  item.innerHTML =
+    '<input class="r-input" type="text" placeholder="name" value="' + (d.name || '') + '" style="width:80px;flex:none;" data-f="sc-name">' +
+    '<input class="r-input" type="text" placeholder="time" value="' + (d.time || '') + '" style="width:60px;flex:none;" data-f="sc-time">' +
+    '<input class="r-input" type="text" placeholder="days" value="' + (d.days || '') + '" style="width:80px;flex:none;" data-f="sc-days">' +
+    '<input class="r-input" type="text" placeholder="channel" value="' + (d.channel || '') + '" style="width:70px;flex:none;" data-f="sc-channel">' +
+    '<input class="r-input" type="text" placeholder="prompt" value="' + (d.prompt || '') + '" data-f="sc-prompt">' +
+    '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" data-f="sc-enabled" style="flex-shrink:0"></div>' +
+    '<select class="r-select" style="width:70px;flex:none;" data-f="sc-exec">' +
+    '  <option value="tool"' + (d.exec === 'tool' ? ' selected' : '') + '>tool</option>' +
+    '  <option value="shell"' + (d.exec === 'shell' ? ' selected' : '') + '>shell</option>' +
+    '</select>' +
+    '<input class="r-input" type="text" placeholder="script" value="' + (d.script || '') + '" style="width:100px;flex:none;" data-f="sc-script">' +
+    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
+  list.appendChild(item);
+}
+
+// -- Proactive items --
+function addProactiveItem(topic, channel) {
+  const list = document.getElementById('proactive-items');
+  const item = document.createElement('div');
+  item.className = 'dyn-item';
+  item.innerHTML =
+    '<input class="r-input" type="text" placeholder="topic" value="' + (topic || '') + '" data-f="pi-topic">' +
+    '<input class="r-input" type="text" placeholder="channel" value="' + (channel || '') + '" style="width:100px;flex:none;" data-f="pi-channel">' +
+    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
+  list.appendChild(item);
+}
+
+// -- Event rules --
+function addEventRule(data) {
+  const list = document.getElementById('events-list');
+  const item = document.createElement('div');
+  item.className = 'event-item';
+  const d = data || {};
+  item.innerHTML =
+    '<div class="field-group"><div class="field-label">Name</div><input class="r-input" type="text" value="' + (d.name || '') + '" data-f="ev-name"></div>' +
+    '<div class="field-group" style="width:90px;flex:none;"><div class="field-label">Source</div><select class="r-select" data-f="ev-source"><option value="webhook"' + (d.source === 'webhook' ? ' selected' : '') + '>webhook</option><option value="file"' + (d.source === 'file' ? ' selected' : '') + '>file</option><option value="schedule"' + (d.source === 'schedule' ? ' selected' : '') + '>schedule</option></select></div>' +
+    '<div class="field-group" style="width:80px;flex:none;"><div class="field-label">Parser</div><select class="r-select" data-f="ev-parser"><option value="json"' + (d.parser === 'json' ? ' selected' : '') + '>json</option><option value="text"' + (d.parser === 'text' ? ' selected' : '') + '>text</option><option value="xml"' + (d.parser === 'xml' ? ' selected' : '') + '>xml</option></select></div>' +
+    '<div class="field-group"><div class="field-label">Filter</div><input class="r-input" type="text" value="' + (d.filter || '') + '" data-f="ev-filter"></div>' +
+    '<div class="field-group"><div class="field-label">Match</div><input class="r-input" type="text" value="' + (d.match || '') + '" data-f="ev-match"></div>' +
+    '<div class="field-group"><div class="field-label">Path</div><input class="r-input" type="text" value="' + (d.path || '') + '" data-f="ev-path"></div>' +
+    '<div class="field-group"><div class="field-label">Execute</div><input class="r-input" type="text" value="' + (d.execute || '') + '" data-f="ev-execute"></div>' +
+    '<div class="field-group" style="width:80px;flex:none;"><div class="field-label">Priority</div><select class="r-select" data-f="ev-priority"><option value="normal"' + (d.priority === 'normal' ? ' selected' : '') + '>normal</option><option value="high"' + (d.priority === 'high' ? ' selected' : '') + '>high</option><option value="low"' + (d.priority === 'low' ? ' selected' : '') + '>low</option></select></div>' +
+    '<div class="field-group" style="width:70px;flex:none;"><div class="field-label">Exec</div><select class="r-select" data-f="ev-exec"><option value="tool"' + (d.exec === 'tool' ? ' selected' : '') + '>tool</option><option value="shell"' + (d.exec === 'shell' ? ' selected' : '') + '>shell</option></select></div>' +
+    '<div class="field-group" style="width:90px;flex:none;"><div class="field-label">Channel</div><input class="r-input" type="text" value="' + (d.channel || '') + '" data-f="ev-channel"></div>' +
+    '<div style="display:flex;align-items:flex-end;gap:6px;flex-shrink:0;"><div class="field-label">On</div><div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" data-f="ev-enabled"></div></div>' +
+    '<span class="dyn-remove" onclick="this.parentElement.remove()" style="align-self:flex-end;margin-bottom:4px;">&times;</span>';
+  list.appendChild(item);
+}
+
+// -- Load config --
+async function loadConfig() {
+  const cfgRes = await fetch('/config').then(r => r.json()).catch(() => ({}));
+  config = cfgRes;
+
+  if (cfgRes._bot) { extraData.bot = cfgRes._bot; delete cfgRes._bot; }
+  if (cfgRes._profile) { extraData.profile = cfgRes._profile; delete cfgRes._profile; }
+
+  populateChannels(cfgRes);
+  populateBot(extraData.bot);
+  populateProfile(extraData.profile);
+}
+
+// -- Populate channels --
+function populateChannels(cfg) {
+  const discord = cfg?.discord || {};
+  if (discord.token) document.getElementById('ch-discord-token').value = discord.token;
+  if (discord.applicationId) document.getElementById('ch-discord-appid').value = discord.applicationId;
+
+  const chCfg = cfg?.channelsConfig || {};
+  const mainCh = cfg?.mainChannel;
+  let first = true;
+  for (const [name, ch] of Object.entries(chCfg)) {
+    const isMain = mainCh ? (name === mainCh) : first;
+    const mode = ch.mode || 'interactive';
+    addChannel(name, ch.channelId, mode, isMain);
+    first = false;
+  }
+  if (Object.keys(chCfg).length === 0) addChannel('main', '', 'interactive', true);
+
+  const access = cfg?.access || {};
+  if (access.dmPolicy) document.getElementById('ch-dm-policy').value = access.dmPolicy;
+  setTagValues('ch-allowfrom', access.allowFrom);
+  setTagValues('ch-mentionpatterns', access.mentionPatterns);
+  if (access.ackReaction) document.getElementById('ch-ackreaction').value = access.ackReaction;
+  if (access.replyToMode) document.getElementById('ch-replyto').value = access.replyToMode;
+  if (access.textChunkLimit) document.getElementById('ch-chunklimit').value = access.textChunkLimit;
+  if (access.chunkMode) document.getElementById('ch-chunkmode').value = access.chunkMode;
+
+  const voice = cfg?.voice || {};
+  if (voice.command) document.getElementById('voice-command').value = voice.command;
+  if (voice.model) document.getElementById('voice-model').value = voice.model;
+  if (voice.language) document.getElementById('voice-language').value = voice.language;
+
+  const schedules = cfg?.schedules || {};
+  (schedules.nonInteractive || []).forEach(s => addSchedule('noninteractive', s));
+  (schedules.interactive || []).forEach(s => addSchedule('interactive', s));
+
+  const proactive = cfg?.proactive || {};
+  if (proactive.frequency) {
+    document.getElementById('proactive-freq').value = proactive.frequency;
+    document.getElementById('proactive-freq-val').textContent = proactive.frequency;
+  }
+  if (proactive.feedback) document.getElementById('proactive-feedback').classList.add('on');
+  if (proactive.dndStart) document.getElementById('proactive-dndstart').value = proactive.dndStart;
+  if (proactive.dndEnd) document.getElementById('proactive-dndend').value = proactive.dndEnd;
+  (proactive.items || []).forEach(i => addProactiveItem(i.topic, i.channel));
+
+  const events = cfg?.events || {};
+  (events.rules || []).forEach(r => addEventRule(r));
+
+  setTagValues('ch-contextfiles', cfg?.contextFiles);
+  if (cfg?.language) document.getElementById('ch-adv-language').value = cfg.language;
+  if (cfg?.embedding?.provider) document.getElementById('ch-adv-embed-provider').value = cfg.embedding.provider;
+  if (cfg?.embedding?.ollamaModel) document.getElementById('ch-adv-embed-model').value = cfg.embedding.ollamaModel;
+  if (cfg?.webhook?.host) document.getElementById('ch-webhook-host').value = cfg.webhook.host;
+  if (cfg?.webhook?.port) document.getElementById('ch-webhook-port').value = cfg.webhook.port;
+}
+
+function populateBot(bot) {
+  if (!bot) return;
+  const quiet = bot.quiet || {};
+  if (quiet.schedule) document.getElementById('bot-quiet-schedule').value = quiet.schedule;
+  if (quiet.autotalk) document.getElementById('bot-quiet-autotalk').value = quiet.autotalk;
+  if (quiet.holidays) document.getElementById('bot-holidays').value = quiet.holidays;
+  if (bot.timezone) document.getElementById('bot-timezone').value = bot.timezone;
+
+  const autotalk = bot.autotalk || {};
+  if (autotalk.freq) {
+    document.getElementById('bot-autotalk-freq').value = autotalk.freq;
+    document.getElementById('bot-autotalk-freq-val').textContent = autotalk.freq;
+  }
+  if (autotalk.enabled) document.getElementById('bot-autotalk-enabled').classList.add('on');
+
+  if (bot.sleepEnabled) document.getElementById('bot-sleep-enabled').classList.add('on');
+  if (bot.sleepTime) document.getElementById('bot-sleep-time').value = bot.sleepTime;
+  if (bot.displayMode) document.getElementById('bot-displaymode').value = bot.displayMode;
+}
+
+function populateProfile(profile) {
+  if (!profile) return;
+  if (profile.name) document.getElementById('prof-name').value = profile.name;
+  if (profile.role) document.getElementById('prof-role').value = profile.role;
+  if (profile.lang) document.getElementById('prof-lang').value = profile.lang;
+  if (profile.tone) document.getElementById('prof-tone').value = profile.tone;
+}
+
+// -- Build data --
+function buildData() {
+  const channelsConfig = {};
+  let mainChannel = null;
+  document.querySelectorAll('#ch-channel-list .dyn-item').forEach(item => {
+    const label = item.querySelector('[data-f="ch-label"]')?.value.trim() || 'main';
+    const chId = item.querySelector('[data-f="ch-id"]')?.value.trim();
+    const mode = item.querySelector('[data-f="ch-mode"]')?.value || 'interactive';
+    const isMain = item.querySelector('.r-radio')?.classList.contains('on');
+    if (chId) {
+      channelsConfig[label] = { channelId: chId, mode };
+      if (isMain) mainChannel = label;
+    }
+  });
+
+  function readSchedules(type) {
+    const items = [];
+    document.querySelectorAll('#sched-' + type + ' .dyn-item').forEach(item => {
+      items.push({
+        name: item.querySelector('[data-f="sc-name"]')?.value.trim() || '',
+        time: item.querySelector('[data-f="sc-time"]')?.value.trim() || '',
+        days: item.querySelector('[data-f="sc-days"]')?.value.trim() || '',
+        channel: item.querySelector('[data-f="sc-channel"]')?.value.trim() || '',
+        prompt: item.querySelector('[data-f="sc-prompt"]')?.value.trim() || '',
+        enabled: item.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true,
+        exec: item.querySelector('[data-f="sc-exec"]')?.value || 'tool',
+        script: item.querySelector('[data-f="sc-script"]')?.value.trim() || '',
+      });
+    });
+    return items;
+  }
+
+  const proactiveItems = [];
+  document.querySelectorAll('#proactive-items .dyn-item').forEach(item => {
+    const topic = item.querySelector('[data-f="pi-topic"]')?.value.trim();
+    const channel = item.querySelector('[data-f="pi-channel"]')?.value.trim();
+    if (topic) proactiveItems.push({ topic, channel });
+  });
+
+  const eventRules = [];
+  document.querySelectorAll('#events-list .event-item').forEach(item => {
+    eventRules.push({
+      name: item.querySelector('[data-f="ev-name"]')?.value.trim() || '',
+      source: item.querySelector('[data-f="ev-source"]')?.value || 'webhook',
+      parser: item.querySelector('[data-f="ev-parser"]')?.value || 'json',
+      filter: item.querySelector('[data-f="ev-filter"]')?.value.trim() || '',
+      match: item.querySelector('[data-f="ev-match"]')?.value.trim() || '',
+      path: item.querySelector('[data-f="ev-path"]')?.value.trim() || '',
+      execute: item.querySelector('[data-f="ev-execute"]')?.value.trim() || '',
+      priority: item.querySelector('[data-f="ev-priority"]')?.value || 'normal',
+      exec: item.querySelector('[data-f="ev-exec"]')?.value || 'tool',
+      channel: item.querySelector('[data-f="ev-channel"]')?.value.trim() || '',
+      enabled: item.querySelector('[data-f="ev-enabled"]')?.classList.contains('on') ?? true,
+    });
+  });
+
+  return {
+    discord: {
+      token: document.getElementById('ch-discord-token').value,
+      applicationId: document.getElementById('ch-discord-appid').value,
+    },
+    channelsConfig,
+    mainChannel,
+    access: {
+      dmPolicy: document.getElementById('ch-dm-policy').value,
+      allowFrom: getTagValues('ch-allowfrom'),
+      mentionPatterns: getTagValues('ch-mentionpatterns'),
+      ackReaction: document.getElementById('ch-ackreaction').value,
+      replyToMode: document.getElementById('ch-replyto').value,
+      textChunkLimit: parseInt(document.getElementById('ch-chunklimit').value) || undefined,
+      chunkMode: document.getElementById('ch-chunkmode').value,
+    },
+    voice: {
+      command: document.getElementById('voice-command').value,
+      model: document.getElementById('voice-model').value,
+      language: document.getElementById('voice-language').value,
+    },
+    schedules: {
+      nonInteractive: readSchedules('noninteractive'),
+      interactive: readSchedules('interactive'),
+    },
+    proactive: {
+      frequency: parseInt(document.getElementById('proactive-freq').value) || 3,
+      feedback: document.getElementById('proactive-feedback').classList.contains('on'),
+      dndStart: document.getElementById('proactive-dndstart').value,
+      dndEnd: document.getElementById('proactive-dndend').value,
+      items: proactiveItems,
+    },
+    events: { rules: eventRules },
+    contextFiles: getTagValues('ch-contextfiles'),
+    language: document.getElementById('ch-adv-language').value,
+    embedding: {
+      provider: document.getElementById('ch-adv-embed-provider').value,
+      ollamaModel: document.getElementById('ch-adv-embed-model').value,
+    },
+    webhook: {
+      host: document.getElementById('ch-webhook-host').value,
+      port: parseInt(document.getElementById('ch-webhook-port').value) || undefined,
+    },
+    _bot: {
+      quiet: {
+        schedule: document.getElementById('bot-quiet-schedule').value,
+        autotalk: document.getElementById('bot-quiet-autotalk').value,
+        holidays: document.getElementById('bot-holidays').value,
+      },
+      timezone: document.getElementById('bot-timezone').value,
+      autotalk: {
+        freq: parseInt(document.getElementById('bot-autotalk-freq').value) || 3,
+        enabled: document.getElementById('bot-autotalk-enabled').classList.contains('on'),
+      },
+      sleepEnabled: document.getElementById('bot-sleep-enabled').classList.contains('on'),
+      sleepTime: document.getElementById('bot-sleep-time').value,
+      displayMode: document.getElementById('bot-displaymode').value,
+    },
+    _profile: {
+      name: document.getElementById('prof-name').value,
+      role: document.getElementById('prof-role').value,
+      lang: document.getElementById('prof-lang').value,
+      tone: document.getElementById('prof-tone').value,
+    },
+  };
+}
+
+// -- Save --
+async function savePanel() {
+  const activePanel = document.querySelector('.panel.active');
+  const warnEl = activePanel?.querySelector('.warn-msg') || document.createElement('div');
+  const btn = activePanel?.querySelector('.save');
+  warnEl.textContent = '';
+
+  const data = buildData();
+
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  try {
+    await fetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    isDirty = false;
+    if (btn) {
+      btn.textContent = '\u2713 Saved'; btn.classList.add('done');
+      setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500);
+    }
+  } catch (e) {
+    warnEl.textContent = 'Save failed';
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+  }
+}
+</script>
+</body>
+</html>

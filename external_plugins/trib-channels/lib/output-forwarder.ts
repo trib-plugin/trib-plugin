@@ -589,7 +589,7 @@ export class OutputForwarder {
     if (OutputForwarder.HIDDEN_TOOLS.has(name)) return true
     // Hide trib-channels's own MCP tools from mirrored output.
     if ((name.includes('plugin_trib-channels') && !name.endsWith('recall_memory')) || name === 'reply' || name === 'react'
-      || name === 'edit_message' || name === 'fetch_messages' || name === 'download_attachment') return true
+      || name === 'edit_message' || name === 'fetch' || name === 'download_attachment') return true
     return false
   }
 

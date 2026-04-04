@@ -123,12 +123,13 @@ function formatCrawl(data) {
 function formatBatchItem(item) {
   switch (item.action) {
     case 'search':
+      if (item.mode === 'ai_first' || item.mode === 'ai_only') {
+        return formatAiSearch(item)
+      }
       return formatSearchResults(item)
-    case 'ai_search':
-      return formatAiSearch(item)
-    case 'scrape':
+    case 'firecrawl_scrape':
       return formatScrape(item)
-    case 'map':
+    case 'firecrawl_map':
       return formatMap(item)
     default:
       if (item.error) return `(오류: ${item.error})`

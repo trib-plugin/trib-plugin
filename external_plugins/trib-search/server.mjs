@@ -60,6 +60,7 @@ const searchArgsSchema = z.object({
   type: z.enum(['web', 'news', 'images']).optional(),
   github_type: z.enum(['repositories', 'code', 'issues']).optional().describe('GitHub search type (only used with github provider)'),
   maxResults: z.number().int().min(1).max(20).optional(),
+  mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional().describe('Search strategy: search_first (default) = raw search first with AI fallback, ai_first = AI search first with raw fallback, ai_only = AI search only'),
 })
 
 const aiSearchArgsSchema = z.object({
@@ -94,19 +95,14 @@ const batchItemSchema = z.discriminatedUnion('action', [
     type: z.enum(['web', 'news', 'images']).optional(),
     github_type: z.enum(['repositories', 'code', 'issues']).optional(),
     maxResults: z.number().int().min(1).max(20).optional(),
+    mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional(),
   }),
   z.object({
-    action: z.literal('ai_search'),
-    query: z.string().min(1),
-    site: z.string().optional(),
-    timeoutMs: z.number().int().min(1000).max(300000).optional(),
-  }),
-  z.object({
-    action: z.literal('scrape'),
+    action: z.literal('firecrawl_scrape'),
     urls: z.array(z.string().url()).min(1),
   }),
   z.object({
-    action: z.literal('map'),
+    action: z.literal('firecrawl_map'),
     url: z.string().url(),
     limit: z.number().int().min(1).max(200).optional(),
     sameDomainOnly: z.boolean().optional(),
@@ -387,31 +383,24 @@ async function writeStartupSnapshot() {
 const toolDefinitions = [
   {
     name: 'search',
-    title: 'Web Search',
-    description: 'Run raw web search. Providers are auto-selected based on configured priority. Use site and github_type to route to GitHub repositories, code, or issues.',
+    title: 'Search',
+    description: 'Unified search tool. Use mode to control strategy: search_first (default) = raw search first with AI fallback, ai_first = AI search first with raw fallback, ai_only = AI search only. Providers are auto-selected based on configured priority.',
     inputSchema: buildInputSchema(searchArgsSchema),
-    annotations: { title: 'Web Search (search)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { title: 'Search (search)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
-    name: 'ai_search',
-    title: 'AI Search',
-    description: 'Run AI search. Provider and model are auto-selected based on configured priority.',
-    inputSchema: buildInputSchema(aiSearchArgsSchema),
-    annotations: { title: 'AI Search (ai_search)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  },
-  {
-    name: 'scrape',
-    title: 'Web Scrape',
+    name: 'firecrawl_scrape',
+    title: 'Scrape',
     description: 'Fetch and extract readable content from known URLs.',
     inputSchema: buildInputSchema(scrapeArgsSchema),
-    annotations: { title: 'Web Scrape (scrape)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { title: 'Scrape (firecrawl_scrape)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
-    name: 'map',
-    title: 'Link Discovery',
+    name: 'firecrawl_map',
+    title: 'Map',
     description: 'Discover links from a page.',
     inputSchema: buildInputSchema(mapArgsSchema),
-    annotations: { title: 'Link Discovery (map)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { title: 'Map (firecrawl_map)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: 'crawl',
@@ -423,7 +412,7 @@ const toolDefinitions = [
   {
     name: 'batch',
     title: 'Batch Actions',
-    description: 'Execute multiple search, ai_search, scrape, and map actions in a single request. Each item runs in parallel. Crawl is not supported in batch.',
+    description: 'Execute multiple search, firecrawl_scrape, and firecrawl_map actions in a single request. Each item runs in parallel. Crawl is not supported in batch.',
     inputSchema: buildInputSchema(batchArgsSchema),
     annotations: { title: 'Batch Actions (batch)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
@@ -472,6 +461,50 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         }
         throw e
       }
+      const searchMode = args.mode || 'search_first'
+
+      // ai_only and ai_first modes: run AI search directly
+      if (searchMode === 'ai_only' || searchMode === 'ai_first') {
+        const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
+        const result = await executeAiSearch({
+          query: args.site ? `${query} site:${args.site}` : query,
+          site: args.site,
+          config,
+          usageState,
+        })
+        saveUsageState(usageState)
+
+        if (!result.success) {
+          if (searchMode === 'ai_only') {
+            return { ...jsonText({
+              tool: 'search',
+              mode: searchMode,
+              error: result.error,
+              ...(result.availableProviders ? { availableProviders: result.availableProviders } : {}),
+              ...(result.aiFailures?.length ? { aiFailures: result.aiFailures } : {}),
+            }), isError: true }
+          }
+          // ai_first: fall through to raw search below
+        } else {
+          if (result.cached) {
+            return formattedText('ai_search', {
+              ...result.payload,
+              cache: result.cacheMeta,
+            })
+          }
+          return formattedText('ai_search', {
+            tool: 'search',
+            mode: searchMode,
+            site: args.site || null,
+            ...(result.fallbackSource ? { fallbackSource: result.fallbackSource, fallbackProvider: result.fallbackProvider } : { provider: result.provider, model: result.model }),
+            response: result.response,
+            ...(result.aiFailures ? { aiFailures: result.aiFailures } : {}),
+            ...(result.cacheMeta ? { cache: result.cacheMeta } : {}),
+          })
+        }
+      }
+
+      // search_first mode (default) or ai_first fallback to raw
       const siteRule = args.site ? getSiteRule(config, args.site) : null
       if (siteRule?.search === 'xai.x_search') {
         const response = await runRawSearch({
@@ -644,53 +677,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       }
     }
 
-    case 'ai_search': {
-      let args
-      try {
-        args = aiSearchArgsSchema.parse(request.params.arguments || {})
-      } catch (e) {
-        if (e instanceof z.ZodError) {
-          return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
-        }
-        throw e
-      }
-
-      const result = await executeAiSearch({
-        query: args.query,
-        site: args.site,
-        timeoutMs: args.timeoutMs,
-        config,
-        usageState,
-      })
-      saveUsageState(usageState)
-
-      if (!result.success) {
-        return { ...jsonText({
-          tool: 'ai_search',
-          error: result.error,
-          ...(result.availableProviders ? { availableProviders: result.availableProviders } : {}),
-          ...(result.aiFailures?.length ? { aiFailures: result.aiFailures } : {}),
-        }), isError: true }
-      }
-
-      if (result.cached) {
-        return formattedText('ai_search', {
-          ...result.payload,
-          cache: result.cacheMeta,
-        })
-      }
-
-      return formattedText('ai_search', {
-        tool: 'ai_search',
-        site: args.site || null,
-        ...(result.fallbackSource ? { fallbackSource: result.fallbackSource, fallbackProvider: result.fallbackProvider } : { provider: result.provider, model: result.model }),
-        response: result.response,
-        ...(result.aiFailures ? { aiFailures: result.aiFailures } : {}),
-        ...(result.cacheMeta ? { cache: result.cacheMeta } : {}),
-      })
-    }
-
-    case 'scrape': {
+    case 'firecrawl_scrape': {
       let args
       try {
         args = scrapeArgsSchema.parse(request.params.arguments || {})
@@ -808,7 +795,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       })
     }
 
-    case 'map': {
+    case 'firecrawl_map': {
       let args
       try {
         args = mapArgsSchema.parse(request.params.arguments || {})
@@ -877,6 +864,40 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         try {
           switch (item.action) {
             case 'search': {
+              const batchMode = item.mode || 'search_first'
+
+              // ai_only and ai_first modes in batch
+              if (batchMode === 'ai_only' || batchMode === 'ai_first') {
+                const query = Array.isArray(item.keywords) ? item.keywords.join(' ') : item.keywords
+                const result = await executeAiSearch({
+                  query: item.site ? `${query} site:${item.site}` : query,
+                  site: item.site,
+                  config,
+                  usageState,
+                })
+
+                if (result.success) {
+                  if (result.cached) {
+                    return { index: idx + 1, action: 'search', mode: batchMode, status: 'success', ...result.payload, cache: result.cacheMeta }
+                  }
+                  return {
+                    index: idx + 1,
+                    action: 'search',
+                    mode: batchMode,
+                    status: 'success',
+                    ...(result.fallbackSource ? { fallbackSource: result.fallbackSource, fallbackProvider: result.fallbackProvider } : { provider: result.provider, model: result.model }),
+                    response: result.response,
+                    ...(result.aiFailures ? { aiFailures: result.aiFailures } : {}),
+                    ...(result.cacheMeta ? { cache: result.cacheMeta } : {}),
+                  }
+                }
+
+                if (batchMode === 'ai_only') {
+                  return { index: idx + 1, action: 'search', mode: batchMode, status: 'error', error: result.error, ...(result.aiFailures?.length ? { aiFailures: result.aiFailures } : {}) }
+                }
+                // ai_first: fall through to raw search below
+              }
+
               const siteRule = item.site ? getSiteRule(config, item.site) : null
               if (siteRule?.search === 'xai.x_search') {
                 const response = await runRawSearch({
@@ -933,35 +954,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
               return { index: idx + 1, action: 'search', providers, status: 'success', response }
             }
 
-            case 'ai_search': {
-              const result = await executeAiSearch({
-                query: item.query,
-                site: item.site,
-                timeoutMs: item.timeoutMs,
-                config,
-                usageState,
-              })
-
-              if (!result.success) {
-                return { index: idx + 1, action: 'ai_search', status: 'error', error: result.error, ...(result.aiFailures?.length ? { aiFailures: result.aiFailures } : {}) }
-              }
-
-              if (result.cached) {
-                return { index: idx + 1, action: 'ai_search', status: 'success', ...result.payload, cache: result.cacheMeta }
-              }
-
-              return {
-                index: idx + 1,
-                action: 'ai_search',
-                status: 'success',
-                ...(result.fallbackSource ? { fallbackSource: result.fallbackSource, fallbackProvider: result.fallbackProvider } : { provider: result.provider, model: result.model }),
-                response: result.response,
-                ...(result.aiFailures ? { aiFailures: result.aiFailures } : {}),
-                ...(result.cacheMeta ? { cache: result.cacheMeta } : {}),
-              }
-            }
-
-            case 'scrape': {
+            case 'firecrawl_scrape': {
               const normalizedUrls = item.urls.map(u => normalizeCacheUrl(u))
 
               if (item.urls.length === 1) {
@@ -971,7 +964,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
                   const xCacheKey = buildCacheKey('scrape:x', { url: normalizedUrls[0] })
                   const cachedX = getCachedEntry(cacheState, xCacheKey)
                   if (cachedX) {
-                    return { index: idx + 1, action: 'scrape', status: 'success', ...cachedX.payload, cache: buildCacheMeta(cachedX, true) }
+                    return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', ...cachedX.payload, cache: buildCacheMeta(cachedX, true) }
                   }
                   const response = await runRawSearch({
                     keywords: `Summarize the X post at ${item.urls[0]} and include the link.`,
@@ -982,7 +975,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
                   })
                   noteProviderSuccess(usageState, 'xai', { lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null })
                   setCachedEntry(cacheState, xCacheKey, { tool: 'scrape', url: item.urls[0], provider: 'xai', response }, getScrapeCacheTtlMs(true))
-                  return { index: idx + 1, action: 'scrape', provider: 'xai', status: 'success', response }
+                  return { index: idx + 1, action: 'firecrawl_scrape', provider: 'xai', status: 'success', response }
                 }
               }
 
@@ -1025,10 +1018,10 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
                 ...pageByUrl.get(nu),
                 cache: cacheByUrl.get(nu) || null,
               }))
-              return { index: idx + 1, action: 'scrape', status: 'success', pages }
+              return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', pages }
             }
 
-            case 'map': {
+            case 'firecrawl_map': {
               const links = await mapSite(
                 item.url,
                 {
@@ -1038,7 +1031,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
                 },
                 timeoutMs,
               )
-              return { index: idx + 1, action: 'map', status: 'success', links }
+              return { index: idx + 1, action: 'firecrawl_map', status: 'success', links }
             }
 
             default:

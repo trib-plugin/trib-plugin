@@ -189,7 +189,7 @@ const mcp = new Server(
 
 // ── Channel bridge active flag ────────────────────────────────────────
 // Default: false. When off, the server still connects to Discord and
-// provides MCP tools (reply, fetch_messages, etc.) but does NOT:
+// provides MCP tools (reply, fetch, etc.) but does NOT:
 //  - show typing indicators on inbound messages
 //  - auto-react with emoji on inbound messages
 //  - auto-forward transcript text to Discord via the output forwarder
@@ -1064,7 +1064,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           text: { type: 'string' },
           reply_to: {
             type: 'string',
-            description: 'Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch_messages.',
+            description: 'Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch.',
           },
           files: {
             type: 'array',
@@ -1129,7 +1129,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'download_attachment',
       title: 'Download Attachment',
       annotations: { title: 'Download Attachment', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: 'Download attachments from a message to the local inbox. Use after fetch_messages shows a message has attachments (marked with +Natt). Returns file paths ready to Read.',
+      description: 'Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -1140,9 +1140,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'fetch_messages',
-      title: 'Fetch Messages',
-      annotations: { title: 'Fetch Messages', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      name: 'fetch',
+      title: 'Fetch',
+      annotations: { title: 'Fetch', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
       inputSchema: {
         type: 'object' as const,
@@ -1198,7 +1198,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'activate_channel_bridge',
       title: 'Activate Channel Bridge',
       annotations: { title: 'Activate Channel Bridge', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: 'Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch_messages) work.',
+      description: 'Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -1222,7 +1222,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   let result: { content: Array<{ type: string; text: string }>; isError?: boolean }
 
   // Auto-connect: backend-dependent tools trigger ownership + connect
-  const BACKEND_TOOLS = new Set(['reply', 'fetch_messages', 'react', 'edit_message', 'download_attachment'])
+  const BACKEND_TOOLS = new Set(['reply', 'fetch', 'react', 'edit_message', 'download_attachment'])
   if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected) {
     if (!currentOwnerState().owned) claimBridgeOwnership('tool call')
     for (let i = 0; i < 3 && !bridgeRuntimeConnected; i++) {
@@ -1258,7 +1258,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         result = { content: [{ type: 'text', text }] }
         break
       }
-      case 'fetch_messages': {
+      case 'fetch': {
         let channelId = args.channel as string
         const channelEntry = config.channelsConfig?.channels?.[channelId]
         if (channelEntry) channelId = channelEntry.id
@@ -1478,7 +1478,7 @@ backend.onMessage = (msg) => {
   }
   // Channel bridge off: do not process inbound messages automatically.
   // Typing, emoji reactions, and notification forwarding are all suppressed.
-  // Direct MCP tool calls (reply, fetch_messages) remain available.
+  // Direct MCP tool calls (reply, fetch) remain available.
   if (!channelBridgeActive) return
   if (shouldDropDuplicateInbound(msg)) return
   if (!claimChannelOwner(msg.chatId)) return
