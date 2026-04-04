@@ -25,7 +25,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { getMemoryStore } from '../lib/memory.mjs'
 import { configureEmbedding } from '../lib/embedding-provider.mjs'
-import { startLlmWorker, stopLlmWorker } from '../lib/llm-worker-host.mjs'
+// worker removed — llm-provider uses direct spawn
 import {
   sleepCycle,
   memoryFlush,
@@ -88,13 +88,7 @@ if (embeddingConfig?.provider || embeddingConfig?.ollamaModel) {
 
 const store = getMemoryStore(DATA_DIR)
 store.syncHistoryFromFiles()
-startLlmWorker({
-  cwd: process.cwd(),
-  env: {
-    CLAUDE_PLUGIN_ROOT: process.env.CLAUDE_PLUGIN_ROOT || '',
-    CLAUDE_PLUGIN_DATA: DATA_DIR,
-  },
-})
+// llm worker removed — direct spawn in llm-provider
 
 // WORKSPACE_PATH for cycle functions that call backfillProject(ws).
 // If the ws path doesn't resolve to a valid project dir, backfillProject

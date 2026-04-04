@@ -5,16 +5,10 @@
 
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
-import { hasLlmWorker, runLlmWorkerTask } from './llm-worker-host.mjs'
 
 const execFileAsync = promisify(execFile)
 
-function shouldUseWorker(provider, options = {}) {
-  if (process.env.TRIB_MEMORY_LLM_WORKER_CHILD === '1') return false
-  if (options.disableWorker) return false
-  if (!hasLlmWorker()) return false
-  return provider?.connection === 'codex' || provider?.connection === 'cli'
-}
+function shouldUseWorker() { return false }
 
 async function execBuffered(command, args, options = {}) {
   if (shouldUseWorker(options.provider, options)) {
@@ -31,6 +25,7 @@ async function execBuffered(command, args, options = {}) {
     env: options.env,
     timeout: options.timeout || 60000,
     maxBuffer: 10 * 1024 * 1024,
+    shell: process.platform === 'win32',
   })
   return {
     stdout: String(stdout ?? '').trim(),
@@ -52,10 +47,13 @@ async function execWithInput(command, args, stdin, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const isWin = process.platform === 'win32'
+    const safeArgs = isWin ? args.map(a => /\s/.test(a) ? `"${a}"` : a) : args
+    const child = spawn(command, safeArgs, {
       env: { ...process.env, ...(options.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options.cwd ?? process.cwd(),
+      shell: isWin,
     })
 
     let stdout = ''
