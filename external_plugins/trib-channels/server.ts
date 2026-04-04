@@ -1595,19 +1595,25 @@ fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done\n`)
 // their own explicit targets.
 
 const previousOwner = readActiveInstance()
-// Keep concurrent Claude sessions alive on startup. The newest interactive
-// session claims bridge ownership here, and older servers will observe the
-// ownership change on their next refresh tick and fall back to standby.
-noteStartupHandoff(previousOwner)
-claimBridgeOwnership('server start')
 
-// Defer Discord connection — don't block MCP handshake.
-// The first backend tool call (reply, fetch_messages, etc.) triggers connect.
-// Ownership refresh runs every second to detect session handoffs.
-void refreshBridgeOwnership({ restoreBinding: true })
-bridgeOwnershipTimer = setInterval(() => {
-  void refreshBridgeOwnership()
-}, 1000)
+// Auto-connect only when explicitly enabled in config (channels mode).
+// When Claude Code runs without --channels, the MCP server stays connected
+// but does NOT bridge to Discord (no typing, no reactions, no auto-forward).
+// Tools (fetch_messages, reply) still work — they connect on-demand.
+// Default: false — only connect when user explicitly sets autoConnect: true
+// or launches with --channels flag (which sets it via channelsConfig)
+const autoConnect = config.autoConnect === true
+
+if (autoConnect) {
+  noteStartupHandoff(previousOwner)
+  claimBridgeOwnership('server start')
+  void refreshBridgeOwnership({ restoreBinding: true })
+  bridgeOwnershipTimer = setInterval(() => {
+    void refreshBridgeOwnership()
+  }, 1000)
+} else {
+  process.stderr.write('trib-channels: autoConnect=false, Discord bridge disabled (tools still available)\n')
+}
 
 if (bridgeRuntimeConnected) {
   // Greeting — inject once, then bind forwarder when transcript appears
