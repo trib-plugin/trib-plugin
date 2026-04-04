@@ -48,7 +48,7 @@ function fileContents(path) {
 
 async function isExecutable(path) {
   try {
-    await access(path, constants.X_OK)
+    await access(path, process.platform === "win32" ? constants.F_OK : constants.X_OK)
     return true
   } catch {
     return false
@@ -186,5 +186,5 @@ child.on('error', err => {
 
 process.on('SIGTERM', () => relayShutdown('SIGTERM'))
 process.on('SIGINT', () => relayShutdown(process.platform === 'win32' ? 'SIGTERM' : 'SIGINT'))
-process.on('SIGHUP', () => relayShutdown('SIGTERM'))
+if (process.platform !== 'win32') process.on('SIGHUP', () => relayShutdown('SIGTERM'))
 process.on('disconnect', () => relayShutdown('SIGTERM'))

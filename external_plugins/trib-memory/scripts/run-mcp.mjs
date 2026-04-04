@@ -133,5 +133,5 @@ child.on('error', err => {
 
 process.on('SIGTERM', () => relayShutdown('SIGTERM'))
 process.on('SIGINT', () => relayShutdown(process.platform === 'win32' ? 'SIGTERM' : 'SIGINT'))
-process.on('SIGHUP', () => relayShutdown('SIGTERM'))
+if (process.platform !== 'win32') process.on('SIGHUP', () => relayShutdown('SIGTERM'))
 process.on('disconnect', () => relayShutdown('SIGTERM'))
