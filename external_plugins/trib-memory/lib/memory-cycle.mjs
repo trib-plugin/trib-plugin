@@ -405,12 +405,12 @@ async function deduplicateClassifications(store, options = {}) {
   const vectors = new Map()
   for (const row of rows) {
     const vec = store.db.prepare(`
-      SELECT vector FROM memory_vectors
+      SELECT vector_json FROM memory_vectors
       WHERE entity_type = 'classification' AND entity_id = ?
     `).get(row.id)
-    if (vec?.vector) {
+    if (vec?.vector_json) {
       try {
-        const parsed = typeof vec.vector === 'string' ? JSON.parse(vec.vector) : vec.vector
+        const parsed = typeof vec.vector_json === 'string' ? JSON.parse(vec.vector_json) : vec.vector_json
         if (Array.isArray(parsed) && parsed.length > 0) vectors.set(row.id, parsed)
       } catch {}
     }
