@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { dirname, join, resolve } from 'path'
-import { homedir, tmpdir } from 'os'
+import { homedir } from 'os'
 import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding, consumeProviderSwitchEvent } from './embedding-provider.mjs'
 import { cleanMemoryText } from './memory-extraction.mjs'
 import {
@@ -29,7 +29,8 @@ import {
 } from './memory-text-utils.mjs'
 import {
   parseTemporalHint,
-} from './memory-query-plan.mjs'
+} from './ko-date-parser.mjs'
+import { rerank as jsRerank } from './reranker.mjs'
 import {
   applyMetadataFilters as applyMetadataFiltersImpl,
   getEpisodeRecallRows as getEpisodeRecallRowsImpl,
@@ -1283,27 +1284,7 @@ export class MemoryStore {
 
     // ── Stage 1: base scores (keyword + embedding + time) ──
     const queryVector = options.queryVector ?? await embedText(clean)
-    // Kiwi tokenization: supplement BM25 with morpheme-split query
-    let tokenizedQuery = clean
-    try {
-      const port = readFileSync(join(tmpdir(), 'trib-memory', 'temporal-port'), 'utf8').trim()
-      const res = await fetch(`http://localhost:${port}/tokenize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: clean }),
-        signal: AbortSignal.timeout(500),
-      })
-      const data = await res.json()
-      if (data.tokens && data.tokens !== clean) tokenizedQuery = data.tokens
-    } catch {}
     let sparse = this.searchRelevantSparse(clean, limit * 3)
-    if (tokenizedQuery !== clean) {
-      const tokenizedSparse = this.searchRelevantSparse(tokenizedQuery, limit * 2)
-      const seenKeys = new Set(sparse.map(r => `${r.type}:${r.entity_id}`))
-      for (const r of tokenizedSparse) {
-        if (!seenKeys.has(`${r.type}:${r.entity_id}`)) sparse.push(r)
-      }
-    }
     let dense = await this.searchRelevantDense(clean, limit * 3, queryVector, null, {})
 
     // temporal 필터: 날짜 범위가 있으면 해당 범위 + 범위 밖 결과 섞어서 범위 내 우선
@@ -1396,26 +1377,17 @@ export class MemoryStore {
     }
     let finalResults = capped.slice(0, limit)
 
-    // ── Stage 4: conditional rerank via ml-service ──
+    // ── Stage 4: conditional rerank ──
     const tuning = options.tuning ?? this.getRetrievalTuning()
     if (tuning.reranker?.enabled && finalResults.length >= 2) {
       const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[1]?.weighted_score || 0)
       if (gap < 0.005) {
         try {
-          const port = readFileSync(join(tmpdir(), 'trib-memory', 'temporal-port'), 'utf8').trim()
           const top5 = finalResults.slice(0, 5)
           const rest = finalResults.slice(5)
-          const docs = top5.map(r => String(r.content || '').slice(0, 240))
-          const body = JSON.stringify({ query: clean, documents: docs, top_k: 5 })
-          const res = await fetch(`http://localhost:${port}/rerank`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-            signal: AbortSignal.timeout(5000),
-          })
-          const data = await res.json()
-          if (data.results?.length > 0) {
-            finalResults = [...data.results.map(r => top5[r.index]).filter(Boolean), ...rest]
+          const reranked = await jsRerank(clean, top5, 5)
+          if (reranked.length > 0) {
+            finalResults = [...reranked, ...rest]
           }
         } catch {}
       }

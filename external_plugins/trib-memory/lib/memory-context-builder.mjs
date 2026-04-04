@@ -5,7 +5,7 @@ import { embedText, getEmbeddingModelId } from './embedding-provider.mjs'
 import { cleanMemoryText } from './memory-extraction.mjs'
 import { buildHintKey, formatHintTag } from './memory-context-utils.mjs'
 import { readMemoryFeatureFlags } from './memory-ops-policy.mjs'
-import { parseTemporalHint } from './memory-query-plan.mjs'
+import { parseTemporalHint } from './ko-date-parser.mjs'
 import { looksLowSignalQuery, tokenizeMemoryText } from './memory-text-utils.mjs'
 import { cosineSimilarity } from './memory-vector-utils.mjs'
 
@@ -137,28 +137,8 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
   const temporal = parseTemporalHint(clean)
   if (lines.length === 0 && temporal) {
     try {
-      let startDate = null
-      let endDate = null
-      if (temporal?.start) {
-        startDate = temporal.start
-        endDate = nextDateStr(temporal.end ?? temporal.start)
-      }
-      if (!startDate && featureFlags.temporalParser) {
-        try {
-          const temporalPort = fs.readFileSync(path.join(os.tmpdir(), 'trib-memory', 'temporal-port'), 'utf8').trim()
-          const res = await fetch(`http://localhost:${temporalPort}/temporal`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: clean, lang: 'ko' }),
-            signal: AbortSignal.timeout(1000),
-          })
-          const data = await res.json()
-          if (data.parsed?.length > 0) {
-            startDate = data.parsed[0].start
-            endDate = nextDateStr(data.parsed[0].end || data.parsed[0].start)
-          }
-        } catch {}
-      }
+      const startDate = temporal.start
+      const endDate = nextDateStr(temporal.end ?? temporal.start)
 
       // Fallback: history=3 days, event=7 days
       const fallbackDays = '-3 days'

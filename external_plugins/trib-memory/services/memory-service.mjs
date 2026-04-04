@@ -17,8 +17,6 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -97,28 +95,6 @@ startLlmWorker({
     CLAUDE_PLUGIN_DATA: DATA_DIR,
   },
 })
-
-// ── Temporal parser (optional Python dateparser) ─────────────────────
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const venvPythonUnix = path.join(__dirname, '.venv', 'bin', 'python3')
-const venvPythonWin = path.join(__dirname, '.venv', 'Scripts', 'python.exe')
-const mlPython = fs.existsSync(venvPythonUnix) ? venvPythonUnix : fs.existsSync(venvPythonWin) ? venvPythonWin : null
-let temporalProcess = null
-if (featureFlags.temporalParser) {
-  if (mlPython) {
-    try {
-      temporalProcess = spawn(mlPython, [path.join(__dirname, 'ml-service.py')], { stdio: 'ignore' })
-      temporalProcess.on('exit', (code) => process.stderr.write(`[temporal] exited code=${code}\n`))
-      process.stderr.write(`[temporal] spawned with ${mlPython}\n`)
-    } catch (e) {
-      process.stderr.write(`[temporal] spawn failed: ${e.message}\n`)
-    }
-  } else {
-    process.stderr.write(`[temporal] python venv not found, temporal parsing disabled\n`)
-  }
-} else {
-  process.stderr.write('[temporal] disabled by config (memory.runtime.features.temporalParser=false)\n')
-}
 
 // WORKSPACE_PATH for cycle functions that call backfillProject(ws).
 // If the ws path doesn't resolve to a valid project dir, backfillProject
@@ -848,7 +824,6 @@ process.stderr.write('[memory-service] MCP stdio connected\n')
 
 function shutdown() {
   process.stderr.write('[memory-service] shutting down...\n')
-  try { temporalProcess?.kill() } catch {}
   void stopLlmWorker().catch(() => {})
   removePortFile()
   void mcp.close()

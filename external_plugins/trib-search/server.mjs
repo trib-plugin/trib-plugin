@@ -49,6 +49,7 @@ import {
 } from './lib/ai-providers.mjs'
 import { crawlSite, getScrapeCapabilities, mapSite, scrapeUrls } from './lib/web-tools.mjs'
 import { formatResponse } from './lib/formatter.mjs'
+import { handleSetup } from './lib/setup-handler.mjs'
 import { startAiCliWorker, stopAiCliWorker } from './lib/ai-cli-worker-host.mjs'
 
 ensureDataDir()
@@ -421,6 +422,12 @@ const toolDefinitions = [
     inputSchema: buildInputSchema(batchArgsSchema),
     annotations: { title: 'Batch Actions (batch)' },
   },
+  {
+    name: 'setup',
+    description: 'Open interactive setup form to configure search providers, API keys, and options.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { title: 'Setup (setup)' },
+  },
 ]
 
 const bundledSettings = loadSettings()
@@ -432,6 +439,7 @@ const server = new Server(
   },
   {
     capabilities: {
+      elicitation: { form: {} },
       tools: {},
     },
     instructions: bundledSettings,
@@ -1017,6 +1025,9 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       return formattedText('batch', { tool: 'batch', results })
     }
 
+    case 'setup': {
+      return await handleSetup(server)
+    }
     default:
       throw new Error(`Unknown tool: ${request.params.name}`)
   }

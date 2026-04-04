@@ -110,7 +110,7 @@ export function clearEmbeddingCache() {
 async function loadExtractor() {
   if (!extractorPromise) {
     extractorPromise = (async () => {
-      const { pipeline, env } = await import('@xenova/transformers')
+      const { pipeline, env } = await import('@huggingface/transformers')
       env.allowLocalModels = false
       return pipeline('feature-extraction', LOCAL_MODEL)
     })()
