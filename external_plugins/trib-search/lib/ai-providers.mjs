@@ -1,3 +1,4 @@
+import os from 'os'
 import path from 'path'
 import { spawn } from 'child_process'
 import { mkdirSync } from 'fs'
@@ -241,7 +242,7 @@ function buildProviderEnv(provider) {
 
 function buildProviderCwd(provider, env) {
   if (provider === 'claude' || provider === 'codex') {
-    return env.TRIB_SEARCH_EXEC_CWD || process.cwd()
+    return env.TRIB_SEARCH_EXEC_CWD || env.PWD || env.HOME || os.tmpdir()
   }
   return process.cwd()
 }

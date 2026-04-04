@@ -187,6 +187,22 @@ const mcp = new Server(
   },
 )
 
+// ── Channel bridge active flag ────────────────────────────────────────
+// Default: false. When off, the server still connects to Discord and
+// provides MCP tools (reply, fetch_messages, etc.) but does NOT:
+//  - show typing indicators on inbound messages
+//  - auto-react with emoji on inbound messages
+//  - auto-forward transcript text to Discord via the output forwarder
+//  - inject inbound messages as MCP notifications
+// The bridge is activated via the activate_channel_bridge MCP tool
+// (typically invoked by the --channels skill).
+
+let channelBridgeActive = false
+
+export function isChannelBridgeActive(): boolean {
+  return channelBridgeActive
+}
+
 // ── Typing state management ───────────────────────────────────────────
 
 let typingChannelId: string | null = null
@@ -273,10 +289,12 @@ function pickUsableTranscriptPath(
 
 const forwarder = new OutputForwarder({
   send: async (ch, text) => {
+    // Bridge off: suppress auto-forwarding of transcript text to Discord
+    if (!channelBridgeActive) return
     await backend.sendMessage(ch, text)
-
   },
   recordAssistantTurn: async ({ channelId, text, sessionId }) => {
+    // Memory episode recording always runs regardless of bridge state
     void memoryAppendEpisode({
       ts: new Date().toISOString(),
       backend: backend.name,
@@ -290,8 +308,15 @@ const forwarder = new OutputForwarder({
       sourceRef: `assistant:${sessionId ?? INSTANCE_ID}:${Date.now()}`,
     })
   },
-  react: (ch, mid, emoji) => backend.react(ch, mid, emoji),
-  removeReaction: (ch, mid, emoji) => backend.removeReaction(ch, mid, emoji),
+  react: (ch, mid, emoji) => {
+    // Bridge off: suppress auto emoji reactions
+    if (!channelBridgeActive) return Promise.resolve()
+    return backend.react(ch, mid, emoji)
+  },
+  removeReaction: (ch, mid, emoji) => {
+    if (!channelBridgeActive) return Promise.resolve()
+    return backend.removeReaction(ch, mid, emoji)
+  },
 }, statusState)
 
 // Runtime ownership follows the newest interactive Claude session.
@@ -1028,7 +1053,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'reply',
-      annotations: { title: 'Discord Reply' },
+      title: 'Discord Reply',
+      annotations: { title: 'Discord Reply', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description:
         'Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).',
       inputSchema: {
@@ -1061,7 +1087,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'react',
-      annotations: { title: 'Reaction' },
+      title: 'Reaction',
+      annotations: { title: 'Reaction', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: 'Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.',
       inputSchema: {
         type: 'object' as const,
@@ -1075,7 +1102,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'edit_message',
-      annotations: { title: 'Edit Message' },
+      title: 'Edit Message',
+      annotations: { title: 'Edit Message', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: 'Edit a message the bot previously sent. Supports text, embeds, and components.',
       inputSchema: {
         type: 'object' as const,
@@ -1099,7 +1127,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'download_attachment',
-      annotations: { title: 'Download Attachment' },
+      title: 'Download Attachment',
+      annotations: { title: 'Download Attachment', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: 'Download attachments from a message to the local inbox. Use after fetch_messages shows a message has attachments (marked with +Natt). Returns file paths ready to Read.',
       inputSchema: {
         type: 'object' as const,
@@ -1112,7 +1141,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'fetch_messages',
-      annotations: { title: 'Fetch Messages' },
+      title: 'Fetch Messages',
+      annotations: { title: 'Fetch Messages', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
       inputSchema: {
         type: 'object' as const,
@@ -1128,7 +1158,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'schedule_status',
-      annotations: { title: 'Schedule Status' },
+      title: 'Schedule Status',
+      annotations: { title: 'Schedule Status', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Show all configured schedules, their next fire time, and whether they are currently running.',
       inputSchema: {
         type: 'object' as const,
@@ -1137,7 +1168,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'trigger_schedule',
-      annotations: { title: 'Trigger Schedule' },
+      title: 'Trigger Schedule',
+      annotations: { title: 'Trigger Schedule', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description: 'Manually trigger a named schedule immediately, ignoring time/day constraints.',
       inputSchema: {
         type: 'object' as const,
@@ -1149,7 +1181,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'schedule_control',
-      annotations: { title: 'Schedule Control' },
+      title: 'Schedule Control',
+      annotations: { title: 'Schedule Control', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Defer or skip a schedule. Use "defer" to suppress for N minutes (default 30), or "skip_today" to suppress for the rest of the day.',
       inputSchema: {
         type: 'object' as const,
@@ -1159,6 +1192,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           minutes: { type: 'number', description: 'Defer duration in minutes (default 30, only for defer action)' },
         },
         required: ['name', 'action'],
+      },
+    },
+    {
+      name: 'activate_channel_bridge',
+      title: 'Activate Channel Bridge',
+      annotations: { title: 'Activate Channel Bridge', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      description: 'Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch_messages) work.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          active: { type: 'boolean', description: 'true to activate, false to deactivate' },
+        },
+        required: ['active'],
       },
     },
     // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
@@ -1305,6 +1351,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         break
       }
+      case 'activate_channel_bridge': {
+        const active = args.active === true
+        const wasActive = channelBridgeActive
+        channelBridgeActive = active
+        if (active && !wasActive) {
+          // Trigger ownership refresh + bind on activation
+          void refreshBridgeOwnership({ restoreBinding: true })
+        }
+        if (!active && wasActive) {
+          stopServerTyping()
+        }
+        result = { content: [{ type: 'text', text: `channel bridge ${active ? 'activated' : 'deactivated'}` }] }
+        break
+      }
       // memory_cycle — handled by memory-service.mjs MCP
       default:
         result = {
@@ -1416,6 +1476,10 @@ backend.onMessage = (msg) => {
     void refreshBridgeOwnership()
     return
   }
+  // Channel bridge off: do not process inbound messages automatically.
+  // Typing, emoji reactions, and notification forwarding are all suppressed.
+  // Direct MCP tool calls (reply, fetch_messages) remain available.
+  if (!channelBridgeActive) return
   if (shouldDropDuplicateInbound(msg)) return
   if (!claimChannelOwner(msg.chatId)) return
   const route = resolveInboundRoute(msg.chatId)
@@ -1609,7 +1673,7 @@ bridgeOwnershipTimer = setInterval(() => {
   void refreshBridgeOwnership()
 }, 1000)
 
-if (bridgeRuntimeConnected) {
+if (bridgeRuntimeConnected && channelBridgeActive) {
   // Greeting — inject once, then bind forwarder when transcript appears
   const greetingDone = path.join(DATA_DIR, '.greeting-sent')
   const today = new Date().toISOString().slice(0, 10)

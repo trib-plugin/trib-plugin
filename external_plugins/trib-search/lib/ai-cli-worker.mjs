@@ -13,13 +13,16 @@ function runSpawnTask(task = {}) {
 
     const timeoutMs = Math.max(1000, Number(task.timeout ?? 120000))
     const useStdin = task.stdin != null
-    const child = spawn(command, args, {
+    const isWin = process.platform === 'win32'
+    const safeArgs = isWin ? args.map(a => /\s/.test(a) ? `"${a}"` : a) : args
+    const child = spawn(command, safeArgs, {
       cwd: task.cwd ? String(task.cwd) : process.cwd(),
       env: {
         ...process.env,
         ...(task.env && typeof task.env === 'object' ? task.env : {}),
       },
       stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      shell: isWin,
     })
 
     let stdout = ''
@@ -40,10 +43,14 @@ function runSpawnTask(task = {}) {
       clearTimeout(timer)
       reject(error)
     })
-    child.on('close', code => {
+    child.on('close', (code, signal) => {
       if (finished) return
       finished = true
       clearTimeout(timer)
+      if (signal) {
+        reject(new Error(`${command} killed by ${signal}${signal === 'SIGTERM' ? ' (timeout)' : ''}: ${stderr.trim()}`))
+        return
+      }
       if (code !== 0) {
         reject(new Error(`${command} exited with ${code}: ${stderr.trim()}`))
         return

@@ -15,12 +15,34 @@ import {
 
 const DEFAULT_EXTRACTORS = ['readability', 'puppeteer', 'firecrawl']
 
-const COMMON_BROWSER_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-]
+const COMMON_BROWSER_PATHS = (() => {
+  const platform = process.platform
+  if (platform === 'win32') {
+    return [
+      'C:/Program Files/Google/Chrome/Application/chrome.exe',
+      'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+      'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+      'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    ]
+  }
+  if (platform === 'linux') {
+    return [
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/microsoft-edge',
+      '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+      '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+      '/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe',
+      '/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    ]
+  }
+  return [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  ]
+})()
 
 export function getScrapeCapabilities() {
   const browserAvailable = Boolean(

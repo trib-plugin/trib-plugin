@@ -26,6 +26,7 @@
 - If the host model has no native search capability either, explain which provider credential is missing and stop.
 - `github` is not included in the default raw search priority. It is only used when explicitly routed via `site:github.com` or siteRules.
 - `batch` combines multiple search, scrape, and map actions into a single request. All items run in parallel. Crawl is not supported in batch.
+- **When you need 2 or more search/scrape/map operations, you MUST use `batch` instead of making separate tool calls.** Individual calls are only acceptable for single operations.
 - In batch mode, search items with `mode: "ai_first"` follow the same AI priority-based fallback chain as standalone calls.
 - Prefer short-lived cache reuse before re-querying the same request:
   - `search(web)`: 30 minutes

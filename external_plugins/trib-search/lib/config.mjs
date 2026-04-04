@@ -48,10 +48,6 @@ export const DEFAULT_CONFIG = {
         model: 'grok-4.20-0309-reasoning',
         xSearchEnabled: true,
       },
-      firecrawl: {
-        connection: 'api',
-        apiKey: '',
-      },
       gemini: {
         connection: 'cli',
         model: 'gemini-2.5-pro',
@@ -175,10 +171,6 @@ function normalizeLegacyConfig(config) {
         codex: {
           ...DEFAULT_CONFIG.aiSearch.profiles.codex,
           model: config.aiModels?.codex || DEFAULT_CONFIG.aiSearch.profiles.codex.model,
-        },
-        firecrawl: {
-          ...DEFAULT_CONFIG.aiSearch.profiles.firecrawl,
-          apiKey: config.firecrawlApiKey || DEFAULT_CONFIG.aiSearch.profiles.firecrawl.apiKey,
         },
       },
     },
@@ -304,7 +296,6 @@ export function getGrokApiKey(config) {
 export function getFirecrawlApiKey(config) {
   return (
     getRawProviderApiKey(config, 'firecrawl') ||
-    getAiProfile(config, 'firecrawl').apiKey ||
     config.firecrawlApiKey ||
     ''
   )

@@ -88,7 +88,7 @@ if (embeddingConfig?.provider || embeddingConfig?.ollamaModel) {
 
 const store = getMemoryStore(DATA_DIR)
 store.syncHistoryFromFiles()
-// llm worker removed — direct spawn in llm-provider
+startLlmWorker()
 
 // WORKSPACE_PATH for cycle functions that call backfillProject(ws).
 // If the ws path doesn't resolve to a valid project dir, backfillProject
@@ -321,7 +321,7 @@ async function handleGrep(query, options) {
 }
 
 async function handleRead(options) {
-  const { session, date, offset, limit } = options
+  const { session, date, offset, limit, sort } = options
 
   let whereClause = "kind IN ('message', 'turn')"
   const params = []
@@ -355,10 +355,13 @@ async function handleRead(options) {
     params.push(date, date)
   }
 
+  // Session mode defaults to DESC (newest first); explicit sort overrides
+  const isSessionMode = Boolean(session)
+  const orderDir = sort === 'asc' ? 'ASC' : sort === 'date' || isSessionMode ? 'DESC' : 'ASC'
   const episodes = store.db.prepare(`
     SELECT ts, role, content FROM episodes
     WHERE ${whereClause}
-    ORDER BY ts ASC, id ASC
+    ORDER BY ts ${orderDir}, id ${orderDir}
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset)
 
@@ -440,7 +443,10 @@ async function handleRecallSingle(args) {
   const date = String(args.date ?? '').trim()
   const sort = String(args.sort ?? 'relevance')
   const offset = Math.max(0, Number(args.offset ?? 0))
-  const limit = Math.max(1, Number(args.limit ?? 10))
+  // Session read mode needs higher default limit to capture full conversations
+  const hasExplicitLimit = args.limit != null
+  const defaultLimit = (session && !hasExplicitLimit) ? 200 : 10
+  const limit = Math.max(1, Number(args.limit ?? defaultLimit))
   const contextLines = Math.max(0, Number(args.context ?? 0))
 
   // Shortcut queries
@@ -455,12 +461,12 @@ async function handleRecallSingle(args) {
     return handleGrep(query, { date, sort, offset, limit, context: contextLines })
   }
   if (session || (date && !date.includes('*') && !query)) {
-    return handleRead({ session, date, offset, limit })
+    return handleRead({ session, date, offset, limit, sort })
   }
   if (date && date.includes('*')) {
     return handleGlob({ date, offset, limit })
   }
-  return handleRead({ session: 'last', date: '', offset, limit })
+  return handleRead({ session: 'last', date: '', offset, limit, sort })
 }
 
 async function handleRecall(args) {
@@ -532,8 +538,9 @@ const MEMORY_INSTRUCTIONS = [
   '  recall_memory(query="검색어", date="2026-04-02")  — search within date',
   '',
   '**Read** (browse conversation):',
-  '  recall_memory(session="last")  — previous session',
-  '  recall_memory(session="current")  — this session',
+  '  recall_memory(session="last")  — previous session (newest first by default)',
+  '  recall_memory(session="last", sort="asc")  — previous session (oldest first)',
+  '  recall_memory(session="current")  — this session (newest first by default)',
   '  recall_memory(date="2026-04-02")  — read specific day',
   '',
   '**List** (find dates):',
@@ -548,12 +555,18 @@ const MEMORY_INSTRUCTIONS = [
   '',
   '**Batch** (multiple lookups in one call):',
   '  recall_memory(queries=[{query:"A"}, {date:"2026-04-01"}, ...])',
+  '- **When you need 2 or more recall operations, you MUST use the `queries` array parameter instead of making separate tool calls.** Individual calls are only acceptable for single lookups.',
+  '',
+  '### Resuming previous work',
+  '- When continuing previous work, call `recall_memory(session="last")` FIRST to get the most recent context from the last session.',
+  '- Use individual `query` searches only as supplements after reviewing the session context.',
+  '- Session read mode uses a higher default limit (200) to capture full conversations.',
   '',
   '### Common params',
-  '- limit: max results (default 10)',
+  '- limit: max results (default 10, default 200 for session mode)',
   '- offset: skip N results for pagination',
   '- context: N surrounding episodes (grep mode, like grep -C)',
-  '- sort: "relevance" (default) | "date"',
+  '- sort: "relevance" (default) | "date" (newest first) | "asc" (oldest first). Session mode defaults to newest first.',
   '',
   '### Rules',
   '- Never query the database directly (sqlite, SQL). Always use recall_memory.',
@@ -573,7 +586,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'memory_cycle',
-      annotations: { title: 'Memory Cycle' },
+      title: 'Memory Cycle',
+      annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), status.',
       inputSchema: {
         type: 'object',
@@ -586,7 +600,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'recall_memory',
-      annotations: { title: 'Recall Memory', readOnlyHint: true, openWorldHint: false },
+      title: 'Recall Memory',
+      annotations: { title: 'Recall Memory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Search and retrieve memory. Auto-routes by params: query→search, session→read, date+wildcard→list, query="stats"→status, query="rules"→tag browse.',
       inputSchema: {
         type: 'object',
@@ -594,9 +609,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           query: { type: 'string', description: 'Search text. Triggers hybrid search (grep mode).' },
           session: { type: 'string', description: '"last", "current", or session UUID. Triggers session read mode.' },
           date: { type: 'string', description: 'Date "2026-04-02" for read, or "2026-04-*" for listing (glob mode).' },
-          sort: { type: 'string', enum: ['relevance', 'date'], default: 'relevance', description: 'Sort order for grep mode.' },
+          sort: { type: 'string', enum: ['relevance', 'date', 'asc'], default: 'relevance', description: 'Sort order. Session mode defaults to newest first (DESC). Use "asc" to override to oldest first.' },
           offset: { type: 'number', default: 0, description: 'Skip N results.' },
-          limit: { type: 'number', default: 10, description: 'Max results to return.' },
+          limit: { type: 'number', default: 10, description: 'Max results to return. Default 10 for search, 200 for session mode.' },
           context: { type: 'number', default: 0, description: 'Surrounding episodes count (grep mode, like grep -C).' },
           queries: { type: 'array', description: 'Batch: array of query objects. Each has same params (query, session, date, sort, offset, limit, context).', items: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, date: { type: 'string' }, sort: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, context: { type: 'number' } } } },
         },

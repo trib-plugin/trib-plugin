@@ -8,6 +8,8 @@ import { promisify } from 'util'
 
 const execFileAsync = promisify(execFile)
 
+function shouldUseWorker() { return hasLlmWorker() }
+
 async function execBuffered(command, args, options = {}) {
   const { stdout, stderr } = await execFileAsync(command, args, {
     cwd: options.cwd,
