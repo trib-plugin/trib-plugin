@@ -54,6 +54,18 @@ if (result.status !== 0) {
   process.exit(0);
 }
 
+// Build esbuild bundle
+const esbuildBin = path.join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild');
+const serverSrc = path.join(pluginRoot, 'server.mjs');
+const serverJs = path.join(pluginData, 'server.bundle.mjs');
+
+if (fs.existsSync(esbuildBin) && fs.existsSync(serverSrc)) {
+  spawnSync(esbuildBin, [
+    serverSrc, '--bundle', '--platform=node', '--format=esm',
+    `--outfile=${serverJs}`, '--packages=external',
+  ], { cwd: pluginRoot, stdio: 'pipe', timeout: 15000 });
+}
+
 process.stdout.write(JSON.stringify({
   hookSpecificOutput: {
     hookEventName: 'SessionStart',

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { join } from 'path'
@@ -24,6 +24,7 @@ const lockfilePath = join(pluginRoot, 'package-lock.json')
 const dataManifestPath = join(pluginData, 'package.json')
 const dataLockfilePath = join(pluginData, 'package-lock.json')
 const dataNodeModules = join(pluginData, 'node_modules')
+const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
 const logPath = join(pluginData, 'run-mcp.log')
 
 function log(message) {
@@ -39,6 +40,15 @@ function fileContents(path) {
     return readFileSync(path, 'utf8')
   } catch {
     return null
+  }
+}
+
+async function isExecutable(path) {
+  try {
+    await access(path, process.platform === 'win32' ? constants.F_OK : constants.X_OK)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -63,6 +73,9 @@ async function syncDependenciesIfNeeded() {
   if (fileContents(manifestPath) !== fileContents(dataManifestPath)) {
     needsInstall = true
   }
+  if (!(await isExecutable(esbuildBin))) {
+    needsInstall = true
+  }
 
   if (!needsInstall) {
     return
@@ -85,19 +98,43 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-const serverMjs = join(pluginRoot, 'services', 'memory-service.mjs')
-const spawnEnv = {
-  ...process.env,
-  NODE_PATH: process.env.NODE_PATH
-    ? `${dataNodeModules}${process.platform === 'win32' ? ';' : ':'}${process.env.NODE_PATH}`
-    : dataNodeModules,
+const serverSrc = join(pluginRoot, 'services', 'memory-service.mjs')
+const serverJs = join(pluginData, 'server.bundle.mjs')
+
+function buildBundle() {
+  try {
+    const srcStat = statSync(serverSrc)
+    try {
+      const bundleStat = statSync(serverJs)
+      if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
+    } catch { /* bundle doesn't exist yet */ }
+    log('building server bundle...')
+    const result = spawnSync(esbuildBin, [
+      serverSrc, '--bundle', '--platform=node', '--format=esm',
+      `--outfile=${serverJs}`, '--packages=external',
+    ], { cwd: pluginRoot, stdio: 'pipe', timeout: 15000 })
+    if (result.status === 0) {
+      log('bundle built successfully')
+      return true
+    }
+    log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
+    return false
+  } catch (e) {
+    log(`bundle build error: ${e.message}`)
+    return false
+  }
 }
 
-log(`exec node --no-warnings ${serverMjs}`)
-const child = spawn('node', ['--no-warnings', serverMjs], {
+if (!buildBundle()) {
+  log('fatal: bundle build failed, cannot start server')
+  process.exit(1)
+}
+
+log(`exec node ${serverJs} (bundled)`)
+const child = spawn('node', ['--no-warnings', serverJs], {
   cwd: pluginRoot,
   stdio: 'inherit',
-  env: spawnEnv,
+  env: process.env,
 })
 
 let shuttingDown = false
