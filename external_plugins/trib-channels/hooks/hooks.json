@@ -1,7 +1,16 @@
 {
-  "description": "trib-channels hooks — channel: session-start, permission / memory: hints, auto-memory block",
+  "description": "trib-channels hooks — deps sync, channel: session-start, permission / memory: hints, auto-memory block",
   "hooks": {
     "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/deps-sync.cjs",
+            "timeout": 120
+          }
+        ]
+      },
       {
         "hooks": [
           {

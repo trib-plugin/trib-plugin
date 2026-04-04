@@ -1,7 +1,16 @@
 {
-  "description": "trib-memory hooks — session context, per-turn hints, auto-memory blocking",
+  "description": "trib-memory hooks — deps sync, session context, per-turn hints, auto-memory blocking",
   "hooks": {
     "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/deps-sync.cjs",
+            "timeout": 120
+          }
+        ]
+      },
       {
         "hooks": [
           {
