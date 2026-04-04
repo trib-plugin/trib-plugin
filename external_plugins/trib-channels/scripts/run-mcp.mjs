@@ -104,7 +104,7 @@ await syncDependenciesIfNeeded()
 // Dev: auto-sync marketplace source to cache if newer
 function devSyncFromMarketplace() {
   try {
-    const pluginsBase = join(pluginRoot, '..', '..', '..')
+    const pluginsBase = join(pluginRoot, '..', '..', '..', '..')
     const marketName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[0]
     const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
     if (!marketName || !pluginName) return
