@@ -1,8 +1,8 @@
 {
-  "name": "tribgames",
-  "description": "TRIBGAMES plugin ecosystem — channels, memory, search",
+  "name": "trib-plugin",
+  "description": "trib-plugin ecosystem — channels, memory, search",
   "owner": {
-    "name": "TRIBGAMES",
+    "name": "trib-plugin",
     "email": "dev@tribgames.com"
   },
   "plugins": [
