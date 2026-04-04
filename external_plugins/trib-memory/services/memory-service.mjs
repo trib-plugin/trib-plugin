@@ -25,7 +25,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { getMemoryStore } from '../lib/memory.mjs'
 import { configureEmbedding } from '../lib/embedding-provider.mjs'
-// worker removed — llm-provider uses direct spawn
+import { startLlmWorker, stopLlmWorker } from '../lib/llm-worker-host.mjs'
 import {
   sleepCycle,
   memoryFlush,
