@@ -45,6 +45,7 @@ const args = lockContent != null
 const result = spawnSync(npmCmd, args, {
   cwd: pluginData,
   stdio: ['ignore', 'pipe', 'pipe'],
+  shell: process.platform === 'win32',
   env: process.env,
   timeout: 120000,
 });

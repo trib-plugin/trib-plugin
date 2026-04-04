@@ -56,6 +56,7 @@ function runInstall(command, args) {
   const result = spawnSync(command, args, {
     cwd: pluginData,
     stdio: ['ignore', 'pipe', 'inherit'],
+    shell: process.platform === 'win32',
     env: process.env,
   })
 
