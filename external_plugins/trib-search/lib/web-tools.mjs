@@ -1,11 +1,11 @@
-import fs from 'fs'
-import { createRequire } from 'module'
+import fs, { readFileSync } from 'fs'
+
 import { JSDOM } from 'jsdom'
 import puppeteer from 'puppeteer-core'
 import { Readability } from '@mozilla/readability'
 
-const _require = createRequire(import.meta.url)
-const PKG_VERSION = _require('../package.json').version
+
+const PKG_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version } catch { return '0.0.1' } })()
 import {
   noteProviderFailure,
   noteProviderSuccess,
