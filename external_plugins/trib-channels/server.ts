@@ -124,7 +124,7 @@ ensureRuntimeDirs()
 killAllPreviousServers()
 writeServerPid()
 cleanupStaleRuntimeFiles()
-startCliWorker({ cwd: process.cwd(), env: { TRIB_CHANNELS_NO_CONNECT: '1' } })
+startCliWorker() // no-op — direct spawn in cli-worker-host
 
 // ── Memory service ───────────────────────────────────────────────────
 // memory-service.mjs is managed by .mcp.json (trib-memory).

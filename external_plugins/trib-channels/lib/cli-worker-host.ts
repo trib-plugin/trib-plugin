@@ -1,88 +1,77 @@
-import { fork, type ChildProcess } from 'child_process'
-import { join } from 'path'
-import { PLUGIN_ROOT } from './config.js'
+import { spawn } from 'child_process'
 
-type PendingEntry = {
-  resolve: (value: { stdout: string, stderr: string, code: number | null }) => void
-  reject: (reason: Error) => void
-  timer: NodeJS.Timeout
-}
-
-let worker: ChildProcess | null = null
-let requestSeq = 0
-const pending = new Map<number, PendingEntry>()
-
-function rejectAllPending(message: string): void {
-  for (const { reject, timer } of pending.values()) {
-    clearTimeout(timer)
-    reject(new Error(message))
-  }
-  pending.clear()
-}
-
-function workerPath(): string {
-  return join(PLUGIN_ROOT, 'lib', 'ai-cli-worker.cjs')
-}
-
-function attachWorkerListeners(child: ChildProcess): void {
-  child.on('message', (message: any) => {
-    const requestId = Number(message?.requestId ?? 0)
-    if (!requestId || !pending.has(requestId)) return
-    const entry = pending.get(requestId)!
-    pending.delete(requestId)
-    clearTimeout(entry.timer)
-    if (message?.type === 'result') {
-      entry.resolve(message.result ?? { stdout: '', stderr: '', code: 0 })
-      return
-    }
-    entry.reject(new Error(String(message?.error ?? 'cli worker request failed')))
-  })
-
-  child.on('exit', (code, signal) => {
-    worker = null
-    rejectAllPending(`cli worker exited code=${code ?? 'null'} signal=${signal ?? 'null'}`)
-  })
-
-  child.on('error', (error) => {
-    worker = null
-    rejectAllPending(`cli worker error: ${error instanceof Error ? error.message : String(error)}`)
-  })
+type CliResult = { stdout: string, stderr: string, code: number | null }
+type CliTask = {
+  command: string
+  args?: string[]
+  stdin?: string
+  cwd?: string
+  env?: Record<string, string>
+  timeout?: number
 }
 
 export function hasCliWorker(): boolean {
-  return Boolean(worker && worker.connected)
+  return true // always available — direct spawn, no worker needed
 }
 
-export function startCliWorker(options: { cwd?: string, env?: NodeJS.ProcessEnv } = {}): ChildProcess {
-  if (hasCliWorker()) return worker!
-  const child = fork(workerPath(), {
-    cwd: options.cwd ?? process.cwd(),
-    env: { ...process.env, ...options.env, TRIB_CHANNELS_CLI_WORKER_CHILD: '1' },
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-  })
-  worker = child
-  attachWorkerListeners(child)
-  return child
+export function startCliWorker(_options?: Record<string, unknown>): void {
+  // no-op — worker removed, using direct spawn
 }
 
 export async function stopCliWorker(): Promise<void> {
-  if (!worker) return
-  const child = worker
-  worker = null
-  rejectAllPending('cli worker stopped')
-  try { child.kill('SIGTERM') } catch {}
+  // no-op
 }
 
-export function runCliWorkerTask(task: Record<string, unknown>): Promise<{ stdout: string, stderr: string, code: number | null }> {
-  if (!hasCliWorker()) throw new Error('cli worker is not running')
-  const requestId = ++requestSeq
+export function runCliWorkerTask(task: CliTask | Record<string, unknown>): Promise<CliResult> {
   return new Promise((resolve, reject) => {
-    const timeoutMs = Math.max(1000, Number(task.timeout ?? 120000)) + 5000
+    const command = String((task as CliTask).command ?? '').trim()
+    const args = Array.isArray((task as CliTask).args) ? (task as CliTask).args!.map(String) : []
+    const timeoutMs = Math.max(1000, Number((task as CliTask).timeout ?? 120000))
+    const isWin = process.platform === 'win32'
+
+    // Windows: quote args with spaces for shell mode
+    const safeArgs = isWin ? args.map(a => /\s/.test(a) ? `"${a}"` : a) : args
+
+    const child = spawn(command, safeArgs, {
+      cwd: (task as CliTask).cwd ?? process.cwd(),
+      env: { ...process.env, ...((task as CliTask).env ?? {}) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: isWin,
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let finished = false
+
     const timer = setTimeout(() => {
-      pending.delete(requestId)
-      reject(new Error(`cli worker request timed out after ${timeoutMs}ms`))
+      if (finished) return
+      finished = true
+      try { child.kill('SIGTERM') } catch {}
+      reject(new Error(`${command} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
-    pending.set(requestId, { resolve, reject, timer })
-    worker!.send({ type: 'run', requestId, task })
+
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+
+    child.on('error', (err: Error) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      reject(new Error(`spawn ${command} failed: ${err.message}`))
+    })
+
+    child.on('close', (code: number | null) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code })
+    })
+
+    // Send stdin if provided
+    const stdin = (task as CliTask).stdin
+    if (stdin != null) {
+      child.stdin.write(String(stdin))
+    }
+    child.stdin.end()
   })
 }
