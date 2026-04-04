@@ -8,18 +8,7 @@ import { promisify } from 'util'
 
 const execFileAsync = promisify(execFile)
 
-function shouldUseWorker() { return false }
-
 async function execBuffered(command, args, options = {}) {
-  if (shouldUseWorker(options.provider, options)) {
-    return runLlmWorkerTask({
-      command,
-      args,
-      cwd: options.cwd,
-      env: options.env,
-      timeout: options.timeout,
-    })
-  }
   const { stdout, stderr } = await execFileAsync(command, args, {
     cwd: options.cwd,
     env: options.env,
@@ -35,17 +24,6 @@ async function execBuffered(command, args, options = {}) {
 }
 
 async function execWithInput(command, args, stdin, options = {}) {
-  if (shouldUseWorker(options.provider, options)) {
-    return runLlmWorkerTask({
-      command,
-      args,
-      cwd: options.cwd,
-      env: options.env,
-      timeout: options.timeout,
-      stdin,
-    })
-  }
-
   return new Promise((resolve, reject) => {
     const isWin = process.platform === 'win32'
     const safeArgs = isWin ? args.map(a => /\s/.test(a) ? `"${a}"` : a) : args
