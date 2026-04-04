@@ -50,10 +50,9 @@ import {
 import { crawlSite, getScrapeCapabilities, mapSite, scrapeUrls } from './lib/web-tools.mjs'
 import { formatResponse } from './lib/formatter.mjs'
 import { handleSetup } from './lib/setup-handler.mjs'
-import { startAiCliWorker, stopAiCliWorker } from './lib/ai-cli-worker-host.mjs'
+// worker removed — CLI calls use direct spawn now
 
 ensureDataDir()
-startAiCliWorker({ cwd: process.cwd() })
 
 const searchArgsSchema = z.object({
   keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
@@ -496,8 +495,37 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       )
 
       if (!providers.length) {
+        // No raw providers → fall back to AI search
+        const aiPriority = getAiSearchPriority(config)
+        const aiAvailable = await getAvailableAiProviders(config)
+        const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
+        if (aiCandidates.length > 0) {
+          const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
+          const aiFallbackFailures = []
+          for (const aiProvider of aiCandidates) {
+            try {
+              const aiProfile = getAiProfile(config, aiProvider)
+              const aiModel = aiProfile.model || null
+              const aiResponse = await runAiSearch({
+                query: args.site ? `${query} site:${args.site}` : query,
+                provider: aiProvider, site: args.site, model: aiModel, profile: aiProfile,
+                timeoutMs: getAiTimeoutMs(config),
+              })
+              noteProviderSuccess(usageState, aiProvider, { lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null })
+              saveUsageState(usageState)
+              return formattedText('search', {
+                tool: 'search', fallbackSource: 'ai_search', fallbackProvider: aiProvider,
+                fallbackModel: aiModel, rawFailures: [], aiFallbackFailures, response: aiResponse,
+              })
+            } catch (aiError) {
+              aiFallbackFailures.push({ provider: aiProvider, error: aiError instanceof Error ? aiError.message : String(aiError) })
+              noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
+            }
+          }
+          saveUsageState(usageState)
+        }
         return { ...jsonText({
-          error: 'No raw search provider is available. Configure a rawSearch credential such as serper or firecrawl.',
+          error: 'No search provider available. Configure a rawSearch key or install a CLI (codex, claude, gemini).',
           availableProviders: available,
         }), isError: true }
       }
@@ -1038,7 +1066,6 @@ await writeStartupSnapshot()
 await server.connect(transport)
 
 async function shutdown() {
-  await stopAiCliWorker().catch(() => {})
   process.exit(0)
 }
 

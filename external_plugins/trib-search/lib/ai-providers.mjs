@@ -1,13 +1,8 @@
 import path from 'path'
 import { spawn } from 'child_process'
+import { mkdirSync } from 'fs'
+import { tmpdir } from 'os'
 import { CLI_HOME_DIR, ensureDir } from './config.mjs'
-import { hasAiCliWorker, runAiCliTask } from './ai-cli-worker-host.mjs'
-
-function requireWorker(label) {
-  if (!hasAiCliWorker()) {
-    throw new Error(`ai cli worker is not running — cannot execute ${label}`)
-  }
-}
 
 export const AI_PROVIDER_IDS = ['grok', 'gemini', 'claude', 'codex']
 
@@ -84,15 +79,20 @@ export async function getAvailableAiProviders(config = null) {
 }
 
 function buildPrompt(query, site) {
-  const parts = [
-    'Answer using live web search when the provider supports it.',
-    'Return a concise answer with source URLs when possible.',
-  ]
-  if (site) {
-    parts.push(`Limit the search to site:${site}.`)
-  }
-  parts.push(`Question: ${query}`)
-  return parts.join('\n')
+  const siteClause = site ? `\nScope: ${site} only.` : ''
+  return `Web search query: ${query}${siteClause}
+
+Search the web and return results in this exact format:
+
+## Summary
+(2-3 sentence answer to the query)
+
+## Results
+1. **[Title](URL)** — one-line description
+2. **[Title](URL)** — one-line description
+3. **[Title](URL)** — one-line description
+
+Return 3-5 results with real URLs. No made-up links. If you cannot search the web, answer from your knowledge and note that.`
 }
 
 function extractGrokAnswer(payload) {
@@ -241,7 +241,7 @@ function buildProviderEnv(provider) {
 
 function buildProviderCwd(provider, env) {
   if (provider === 'claude' || provider === 'codex') {
-    return env.TRIB_SEARCH_EXEC_CWD || env.PWD || env.HOME || '/tmp'
+    return env.TRIB_SEARCH_EXEC_CWD || process.cwd()
   }
   return process.cwd()
 }
@@ -251,28 +251,26 @@ function isTrue(value) {
 }
 
 function runCli(command, args, env, timeoutMs, cwd = process.cwd()) {
-  requireWorker(command)
-  return runAiCliTask({
-    mode: 'spawn',
-    command,
-    args,
-    env,
-    cwd,
-    timeout: timeoutMs,
-  })
-}
-
-function shellEscape(value) {
-  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`
-}
-
-function runShellCli(commandText, env, timeoutMs) {
-  requireWorker('shell')
-  return runAiCliTask({
-    mode: 'shell',
-    commandText,
-    env,
-    timeout: timeoutMs,
+  return new Promise((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    const isWin = process.platform === 'win32'
+    // Windows shell: true splits args by space, so quote args with spaces
+    const safeArgs = isWin ? args.map(a => /\s/.test(a) ? `"${a}"` : a) : args
+    const child = spawn(command, safeArgs, {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: isWin,
+      timeout: timeoutMs || 120000,
+    })
+    child.stdout.on('data', d => { stdout += d })
+    child.stderr.on('data', d => { stderr += d })
+    child.on('error', err => reject(new Error(`spawn ${command} failed: ${err.message}`)))
+    child.on('exit', (code) => {
+      if (code === 0) resolve({ stdout, stderr })
+      else reject(new Error(`${command} exited with ${code}: ${stderr.slice(0, 200)}`))
+    })
   })
 }
 
@@ -282,19 +280,17 @@ function extractCodexAnswer(stdout) {
     .map(line => line.trim())
     .filter(Boolean)
 
-  let lastMessage = null
+  const messages = []
   for (const line of lines) {
     try {
       const payload = JSON.parse(line)
-      if (payload?.type === 'item.completed' && payload?.item?.type === 'agent_message') {
-        lastMessage = payload.item.text || lastMessage
+      if (payload?.type === 'item.completed' && payload?.item?.type === 'agent_message' && payload.item.text) {
+        messages.push(payload.item.text)
       }
-    } catch {
-      // ignore non-JSON lines
-    }
+    } catch {}
   }
 
-  return lastMessage || stdout.trim()
+  return messages.join('\n\n') || stdout.trim()
 }
 
 export async function runAiSearch({
@@ -358,17 +354,17 @@ export async function runAiSearch({
     }
     case 'claude': {
       const prompt = buildPrompt(query, site)
-      const command = [
-        `cd ${shellEscape(cwd)}`,
-        '&&',
-        'claude',
+      const tmpDir = path.join(tmpdir(), 'trib-claude-' + Date.now())
+      mkdirSync(tmpDir, { recursive: true })
+      const args = [
         '--print',
-        ...(model ? ['--model', shellEscape(model)] : []),
-        ...(profile?.effort ? ['--effort', shellEscape(profile.effort)] : []),
+        '--no-session-persistence',
+        ...(model ? ['--model', model] : []),
+        ...(profile?.effort ? ['--effort', profile.effort] : []),
         '--',
-        shellEscape(prompt),
-      ].join(' ')
-      const result = await runShellCli(command, env, timeoutMs)
+        prompt,
+      ]
+      const result = await runCli('claude', args, env, timeoutMs, tmpDir)
       return {
         provider: 'claude',
         model: model || null,

@@ -59,9 +59,10 @@ function runSpawnTask(task = {}) {
 }
 
 function runShellTask(task = {}) {
+  const isWin = process.platform === 'win32'
   return runSpawnTask({
-    command: '/bin/zsh',
-    args: ['-lc', String(task.commandText ?? '')],
+    command: isWin ? 'cmd.exe' : (process.env.SHELL || '/bin/bash'),
+    args: isWin ? ['/c', String(task.commandText ?? '')] : ['-lc', String(task.commandText ?? '')],
     cwd: task.cwd,
     env: task.env,
     timeout: task.timeout,
