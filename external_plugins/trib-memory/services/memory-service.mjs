@@ -6,7 +6,7 @@ process.on('warning', () => {})
  * memory-service.mjs — MCP server + HTTP hybrid memory service.
  *
  * Single Node.js process providing:
- *   MCP (stdio)  — recall_memory, memory_cycle tools for Claude Code
+ *   MCP (stdio)  — search_memories, memory_cycle tools for Claude Code
  *   HTTP (tcp)   — /hints, /episode, /health for hooks + internal use
  *
  * Owns the MemoryStore singleton exclusively.
@@ -528,37 +528,37 @@ const MEMORY_INSTRUCTIONS = [
   '### How it works',
   'Session start: Core Memory + Recent conversation are auto-injected.',
   'Each message: relevant memory hints are auto-injected via hook.',
-  'recall_memory: search or browse past conversations when hints are insufficient.',
+  'search_memories: search or browse past conversations when hints are insufficient.',
   '',
-  '### recall_memory — single tool, auto-routed by params',
+  '### search_memories — single tool, auto-routed by params',
   '',
   '**Search** (hybrid keyword + embedding):',
-  '  recall_memory(query="검색어")',
-  '  recall_memory(query="검색어", sort="date")',
-  '  recall_memory(query="검색어", date="2026-04-02")  — search within date',
+  '  search_memories(query="검색어")',
+  '  search_memories(query="검색어", sort="date")',
+  '  search_memories(query="검색어", date="2026-04-02")  — search within date',
   '',
   '**Read** (browse conversation):',
-  '  recall_memory(session="last")  — previous session (newest first by default)',
-  '  recall_memory(session="last", sort="asc")  — previous session (oldest first)',
-  '  recall_memory(session="current")  — this session (newest first by default)',
-  '  recall_memory(date="2026-04-02")  — read specific day',
+  '  search_memories(session="last")  — previous session (newest first by default)',
+  '  search_memories(session="last", sort="asc")  — previous session (oldest first)',
+  '  search_memories(session="current")  — this session (newest first by default)',
+  '  search_memories(date="2026-04-02")  — read specific day',
   '',
   '**List** (find dates):',
-  '  recall_memory(date="2026-04-*")  — list matching dates',
+  '  search_memories(date="2026-04-*")  — list matching dates',
   '',
   '**Stats** (system status):',
-  '  recall_memory(query="stats")  — episodes, classifications, pending, cycle status',
+  '  search_memories(query="stats")  — episodes, classifications, pending, cycle status',
   '',
   '**Tag shortcuts** (browse classifications by tag):',
-  '  recall_memory(query="rules")  — all rule classifications',
-  '  recall_memory(query="decisions") / "goals" / "preferences" / "incidents" / "directives"',
+  '  search_memories(query="rules")  — all rule classifications',
+  '  search_memories(query="decisions") / "goals" / "preferences" / "incidents" / "directives"',
   '',
   '**Batch** (multiple lookups in one call):',
-  '  recall_memory(queries=[{query:"A"}, {date:"2026-04-01"}, ...])',
+  '  search_memories(queries=[{query:"A"}, {date:"2026-04-01"}, ...])',
   '- **When you need 2 or more recall operations, you MUST use the `queries` array parameter instead of making separate tool calls.** Individual calls are only acceptable for single lookups.',
   '',
   '### Resuming previous work',
-  '- When continuing previous work, call `recall_memory(session="last")` FIRST to get the most recent context from the last session.',
+  '- When continuing previous work, call `search_memories(session="last")` FIRST to get the most recent context from the last session.',
   '- Use individual `query` searches only as supplements after reviewing the session context.',
   '- Session read mode uses a higher default limit (200) to capture full conversations.',
   '',
@@ -569,7 +569,7 @@ const MEMORY_INSTRUCTIONS = [
   '- sort: "relevance" (default) | "date" (newest first) | "asc" (oldest first). Session mode defaults to newest first.',
   '',
   '### Rules',
-  '- Never query the database directly (sqlite, SQL). Always use recall_memory.',
+  '- Never query the database directly (sqlite, SQL). Always use search_memories.',
   '- Trust current code/config over recalled memory if they conflict.',
   '- Do not write to MEMORY.md or memory/ folder. This system handles persistence.',
   '- Store work documents in ~/Project/docs/, never in plugin directories.',
@@ -599,9 +599,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'recall_memory',
-      title: 'Recall Memory',
-      annotations: { title: 'Recall Memory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      name: 'search_memories',
+      title: 'Search Memories',
+      annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Search and retrieve memory. Auto-routes by params: query→search, session→read, date+wildcard→list, query="stats"→status, query="rules"→tag browse.',
       inputSchema: {
         type: 'object',
@@ -628,7 +628,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const args = req.params.arguments ?? {}
 
   try {
-    if (toolName === 'recall_memory') {
+    if (toolName === 'search_memories') {
       const result = await handleRecall(args)
       return {
         content: [{ type: 'text', text: result.text }],
