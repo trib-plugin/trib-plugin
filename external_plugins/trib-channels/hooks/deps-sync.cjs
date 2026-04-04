@@ -64,7 +64,7 @@ if (fs.existsSync(esbuildBin) && fs.existsSync(serverTs)) {
   spawnSync(esbuildBin, [
     serverTs, '--bundle', '--platform=node', '--format=esm',
     `--outfile=${serverJs}`, '--packages=external',
-  ], { cwd: pluginRoot, stdio: 'pipe', timeout: 15000 });
+  ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 });
 }
 
 process.stdout.write(JSON.stringify({

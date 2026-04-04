@@ -123,7 +123,7 @@ function buildBundle() {
     const result = spawnSync(esbuildBin, [
       serverTs, '--bundle', '--platform=node', '--format=esm',
       `--outfile=${serverJs}`, '--packages=external',
-    ], { cwd: pluginRoot, stdio: 'pipe', timeout: 15000 })
+    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
     if (result.status === 0) {
       log('bundle built successfully')
       return true
