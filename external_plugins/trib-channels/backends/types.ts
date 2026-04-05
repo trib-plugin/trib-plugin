@@ -463,6 +463,8 @@ export interface WebhookConfig {
   port: number
   /** ngrok fixed domain for external access */
   ngrokDomain?: string
+  /** Shared secret for HMAC-SHA256 signature verification */
+  secret?: string
   /** Named webhook endpoints */
   endpoints: Record<string, WebhookEndpoint>
   /** Batch processing interval in minutes (default: 30) */

@@ -14,6 +14,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { spawn } from 'child_process'
 import * as fs from 'fs'
+import * as http from 'http'
 import * as https from 'https'
 import * as os from 'os'
 import * as path from 'path'
@@ -423,6 +424,207 @@ let bridgeOwnershipTimer: ReturnType<typeof setInterval> | null = null
 let lastOwnershipNote = ''
 const ACTIVE_OWNER_STALE_MS = 10_000
 
+// ── HTTP Proxy mode ──────────────────────────────────────────────────
+// When another instance is the owner, this instance operates in proxy mode:
+// MCP tool calls are forwarded to the owner's HTTP server instead of
+// directly accessing the Discord backend.
+
+let proxyMode = false
+let ownerHttpPort = 0
+let ownerHttpServer: http.Server | null = null
+const PROXY_PORT_MIN = 3460
+const PROXY_PORT_MAX = 3467
+
+async function proxyRequest(
+  endpoint: string,
+  method: 'GET' | 'POST',
+  body?: Record<string, unknown>,
+): Promise<{ ok: boolean; data?: any; error?: string }> {
+  return new Promise((resolve) => {
+    const url = new URL(`http://127.0.0.1:${ownerHttpPort}${endpoint}`)
+    const reqOpts: http.RequestOptions = {
+      hostname: '127.0.0.1',
+      port: ownerHttpPort,
+      path: url.pathname + url.search,
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 30_000,
+    }
+    const req = http.request(reqOpts, (res) => {
+      let data = ''
+      res.on('data', (chunk: Buffer) => { data += chunk })
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data)
+          resolve({ ok: res.statusCode === 200, data: parsed, error: parsed.error })
+        } catch {
+          resolve({ ok: false, error: `invalid response from owner: ${data.slice(0, 200)}` })
+        }
+      })
+    })
+    req.on('error', (err) => {
+      resolve({ ok: false, error: `proxy request failed: ${err.message}` })
+    })
+    req.on('timeout', () => {
+      req.destroy()
+      resolve({ ok: false, error: 'proxy request timed out' })
+    })
+    if (body) req.write(JSON.stringify(body))
+    req.end()
+  })
+}
+
+async function pingOwner(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/ping',
+      method: 'GET',
+      timeout: 3000,
+    }, (res) => {
+      res.resume()
+      resolve(res.statusCode === 200)
+    })
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => { req.destroy(); resolve(false) })
+    req.end()
+  })
+}
+
+function tryListenPort(server: http.Server, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    server.once('error', () => resolve(false))
+    server.listen(port, '127.0.0.1', () => resolve(true))
+  })
+}
+
+async function startOwnerHttpServer(): Promise<number> {
+  if (ownerHttpServer) return (ownerHttpServer.address() as import('net').AddressInfo).port
+
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+
+    // Parse body for POST requests
+    let body: Record<string, unknown> = {}
+    if (req.method === 'POST') {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(chunk as Buffer)
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString())
+      } catch {
+        res.writeHead(400)
+        res.end(JSON.stringify({ error: 'invalid JSON body' }))
+        return
+      }
+    }
+
+    try {
+      const url = new URL(req.url ?? '/', `http://127.0.0.1`)
+
+      switch (url.pathname) {
+        case '/ping': {
+          res.writeHead(200)
+          res.end(JSON.stringify({ ok: true, instanceId: INSTANCE_ID, pid: process.pid }))
+          return
+        }
+        case '/send': {
+          const sendResult = await backend.sendMessage(
+            body.chatId as string,
+            body.text as string,
+            body.opts as any,
+          )
+          res.writeHead(200)
+          res.end(JSON.stringify({ sentIds: sendResult.sentIds }))
+          return
+        }
+        case '/react': {
+          await backend.react(
+            body.chatId as string,
+            body.messageId as string,
+            body.emoji as string,
+          )
+          res.writeHead(200)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+        case '/edit': {
+          const editId = await backend.editMessage(
+            body.chatId as string,
+            body.messageId as string,
+            body.text as string,
+            body.opts as any,
+          )
+          res.writeHead(200)
+          res.end(JSON.stringify({ id: editId }))
+          return
+        }
+        case '/fetch': {
+          const channelId = url.searchParams.get('channel') ?? ''
+          const limit = parseInt(url.searchParams.get('limit') ?? '20', 10)
+          const msgs = await backend.fetchMessages(channelId, limit)
+          res.writeHead(200)
+          res.end(JSON.stringify({ messages: msgs }))
+          return
+        }
+        case '/download': {
+          const files = await backend.downloadAttachment(
+            body.chatId as string,
+            body.messageId as string,
+          )
+          res.writeHead(200)
+          res.end(JSON.stringify({ files }))
+          return
+        }
+        case '/typing/start': {
+          backend.startTyping(body.channelId as string)
+          res.writeHead(200)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+        case '/typing/stop': {
+          backend.stopTyping(body.channelId as string)
+          res.writeHead(200)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+        case '/bridge/activate': {
+          channelBridgeActive = Boolean(body.active)
+          res.writeHead(200)
+          res.end(JSON.stringify({ ok: true, active: channelBridgeActive }))
+          return
+        }
+        default: {
+          res.writeHead(404)
+          res.end(JSON.stringify({ error: 'not found' }))
+          return
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.writeHead(500)
+      res.end(JSON.stringify({ error: msg }))
+    }
+  })
+
+  for (let port = PROXY_PORT_MIN; port <= PROXY_PORT_MAX; port++) {
+    if (await tryListenPort(server, port)) {
+      ownerHttpServer = server
+      process.stderr.write(`trib-channels: owner HTTP server listening on 127.0.0.1:${port}\n`)
+      return port
+    }
+    // Remove error listener from failed attempt so it doesn't accumulate
+    server.removeAllListeners('error')
+  }
+  throw new Error(`no available port in range ${PROXY_PORT_MIN}-${PROXY_PORT_MAX}`)
+}
+
+function stopOwnerHttpServer(): void {
+  if (!ownerHttpServer) return
+  ownerHttpServer.close()
+  ownerHttpServer = null
+}
+
 function logOwnership(note: string): void {
   if (lastOwnershipNote === note) return
   lastOwnershipNote = note
@@ -512,10 +714,20 @@ async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Pr
     return // MCP server continues without Discord — memory tools still work
   }
   bridgeRuntimeConnected = true
+  proxyMode = false
   scheduler.start()
   if (webhookServer) webhookServer.start()
   eventPipeline.start()
-  refreshActiveInstance(INSTANCE_ID)
+
+  // Start HTTP server for proxy clients
+  let httpPort: number | undefined
+  try {
+    httpPort = await startOwnerHttpServer()
+  } catch (e) {
+    process.stderr.write(`trib-channels: HTTP server start failed (non-fatal): ${e instanceof Error ? e.message : String(e)}\n`)
+  }
+
+  refreshActiveInstance(INSTANCE_ID, httpPort ? { httpPort } : undefined)
   if (options.restoreBinding !== false) bindPersistedTranscriptIfAny()
   process.stderr.write(`trib-channels: running with ${backend.name} backend\n`)
   logOwnership(`active owner pid=${process.pid}`)
@@ -524,6 +736,7 @@ async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Pr
 async function stopOwnedRuntime(reason: string): Promise<void> {
   if (!bridgeRuntimeConnected) return
   stopServerTyping()
+  stopOwnerHttpServer()
   scheduler.stop()
   if (webhookServer) webhookServer.stop()
   eventPipeline.stop()
@@ -539,7 +752,38 @@ async function refreshBridgeOwnership(options: { restoreBinding?: boolean } = {}
   bridgeOwnershipRefreshRunning = true
   try {
     const { active, owned } = currentOwnerState()
+
+    // If we are in proxy mode, check if owner is still alive
+    if (proxyMode && !owned && active?.httpPort) {
+      const alive = await pingOwner(active.httpPort)
+      if (!alive) {
+        // Owner died — attempt to take over
+        process.stderr.write(`[ownership] owner ping failed, attempting takeover\n`)
+        proxyMode = false
+        ownerHttpPort = 0
+        claimBridgeOwnership(`owner ${active.instanceId} unreachable`)
+        const next2 = currentOwnerState()
+        if (next2.owned) {
+          refreshActiveInstance(INSTANCE_ID)
+          await startOwnedRuntime(options)
+        }
+        return
+      }
+      return // owner alive, stay in proxy mode
+    }
+
     if (!owned && canStealOwnership(active)) {
+      // Before stealing, check if owner has an HTTP server we can proxy to
+      if (active?.httpPort) {
+        const alive = await pingOwner(active.httpPort)
+        if (alive) {
+          // Owner is alive — enter proxy mode instead of stealing
+          proxyMode = true
+          ownerHttpPort = active.httpPort
+          logOwnership(`proxy mode via owner ${active.instanceId} port ${active.httpPort}`)
+          return
+        }
+      }
       claimBridgeOwnership(active ? `takeover from ${active.instanceId}` : 'startup')
     }
     const next = currentOwnerState()
@@ -555,6 +799,16 @@ async function refreshBridgeOwnership(options: { restoreBinding?: boolean } = {}
           : 'no active owner'
       await stopOwnedRuntime(reason)
       return
+    }
+    // Not owned and not stealing — check if we should enter proxy mode
+    if (next.active?.httpPort && !proxyMode) {
+      const alive = await pingOwner(next.active.httpPort)
+      if (alive) {
+        proxyMode = true
+        ownerHttpPort = next.active.httpPort
+        logOwnership(`proxy mode via owner ${next.active.instanceId} port ${next.active.httpPort}`)
+        return
+      }
     }
     if (next.active?.instanceId) {
       logOwnership(`standby under owner ${next.active.instanceId}`)
@@ -1216,15 +1470,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   let result: { content: Array<{ type: string; text: string }>; isError?: boolean }
 
-  // Auto-connect: backend-dependent tools trigger ownership + connect
+  // Auto-connect: backend-dependent tools trigger ownership + connect (or proxy)
   const BACKEND_TOOLS = new Set(['reply', 'fetch', 'react', 'edit_message', 'download_attachment'])
-  if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected) {
+  if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected && !proxyMode) {
     if (!currentOwnerState().owned) claimBridgeOwnership('tool call')
-    for (let i = 0; i < 3 && !bridgeRuntimeConnected; i++) {
+    for (let i = 0; i < 3 && !bridgeRuntimeConnected && !proxyMode; i++) {
       try { await refreshBridgeOwnership() } catch { /* logged internally */ }
-      if (!bridgeRuntimeConnected) await new Promise(r => setTimeout(r, 1000))
+      if (!bridgeRuntimeConnected && !proxyMode) await new Promise(r => setTimeout(r, 1000))
     }
-    if (!bridgeRuntimeConnected) {
+    if (!bridgeRuntimeConnected && !proxyMode) {
       return {
         content: [{ type: 'text', text: `Discord auto-connect failed after retries. Check token and network.` }],
         isError: true,
@@ -1233,6 +1487,107 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   }
 
   try {
+    // ── Proxy mode: forward BACKEND_TOOLS to owner via HTTP ──
+    if (proxyMode && BACKEND_TOOLS.has(toolName)) {
+      let proxyResult: { ok: boolean; data?: any; error?: string }
+      switch (toolName) {
+        case 'reply': {
+          proxyResult = await proxyRequest('/send', 'POST', {
+            chatId: args.chat_id,
+            text: args.text,
+            opts: {
+              replyTo: args.reply_to,
+              files: args.files ?? [],
+              embeds: args.embeds ?? [],
+              components: args.components ?? [],
+            },
+          })
+          if (!proxyResult.ok) {
+            result = { content: [{ type: 'text', text: `proxy reply failed: ${proxyResult.error}` }], isError: true }
+          } else {
+            const ids = proxyResult.data?.sentIds ?? []
+            const text = ids.length === 1
+              ? `sent (id: ${ids[0]})`
+              : `sent ${ids.length} parts (ids: ${ids.join(', ')})`
+            result = { content: [{ type: 'text', text }] }
+          }
+          break
+        }
+        case 'fetch': {
+          let channelId = args.channel as string
+          const channelEntry = config.channelsConfig?.channels?.[channelId]
+          if (channelEntry) channelId = channelEntry.id
+          const limit = (args.limit as number) ?? 20
+          proxyResult = await proxyRequest(`/fetch?channel=${encodeURIComponent(channelId)}&limit=${limit}`, 'GET')
+          if (!proxyResult.ok) {
+            result = { content: [{ type: 'text', text: `proxy fetch failed: ${proxyResult.error}` }], isError: true }
+          } else {
+            const msgs = proxyResult.data?.messages ?? []
+            const text = msgs.length === 0
+              ? '(no messages)'
+              : msgs.map((m: any) => {
+                  const atts = m.attachmentCount > 0 ? ` +${m.attachmentCount}att` : ''
+                  return `[${m.ts}] ${m.user}: ${m.text}  (id: ${m.id}${atts})`
+                }).join('\n')
+            result = { content: [{ type: 'text', text }] }
+          }
+          break
+        }
+        case 'react': {
+          proxyResult = await proxyRequest('/react', 'POST', {
+            chatId: args.chat_id,
+            messageId: args.message_id,
+            emoji: args.emoji,
+          })
+          if (!proxyResult.ok) {
+            result = { content: [{ type: 'text', text: `proxy react failed: ${proxyResult.error}` }], isError: true }
+          } else {
+            result = { content: [{ type: 'text', text: 'reacted' }] }
+          }
+          break
+        }
+        case 'edit_message': {
+          proxyResult = await proxyRequest('/edit', 'POST', {
+            chatId: args.chat_id,
+            messageId: args.message_id,
+            text: args.text,
+            opts: {
+              embeds: args.embeds ?? [],
+              components: args.components ?? [],
+            },
+          })
+          if (!proxyResult.ok) {
+            result = { content: [{ type: 'text', text: `proxy edit failed: ${proxyResult.error}` }], isError: true }
+          } else {
+            result = { content: [{ type: 'text', text: `edited (id: ${proxyResult.data?.id})` }] }
+          }
+          break
+        }
+        case 'download_attachment': {
+          proxyResult = await proxyRequest('/download', 'POST', {
+            chatId: args.chat_id,
+            messageId: args.message_id,
+          })
+          if (!proxyResult.ok) {
+            result = { content: [{ type: 'text', text: `proxy download failed: ${proxyResult.error}` }], isError: true }
+          } else {
+            const files = proxyResult.data?.files ?? []
+            if (files.length === 0) {
+              result = { content: [{ type: 'text', text: 'message has no attachments' }] }
+            } else {
+              const lines = files.map(
+                (f: any) => `  ${f.path}  (${f.name}, ${f.contentType}, ${(f.size / 1024).toFixed(0)}KB)`,
+              )
+              result = { content: [{ type: 'text', text: `downloaded ${files.length} attachment(s):\n${lines.join('\n')}` }] }
+            }
+          }
+          break
+        }
+        default:
+          result = { content: [{ type: 'text', text: `unknown proxy tool: ${toolName}` }], isError: true }
+      }
+    } else {
+    // ── Direct mode (owner) ──
     switch (toolName) {
       case 'reply': {
         // Typing is cleared by the Stop hook via the turn-end signal.
@@ -1347,17 +1702,27 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         break
       }
       case 'activate_channel_bridge': {
-        const active = args.active === true
-        const wasActive = channelBridgeActive
-        channelBridgeActive = active
-        if (active && !wasActive) {
-          // Trigger ownership refresh + bind on activation
-          void refreshBridgeOwnership({ restoreBinding: true })
+        if (proxyMode) {
+          const proxyRes = await proxyRequest('/bridge/activate', 'POST', { active: args.active === true })
+          if (!proxyRes.ok) {
+            result = { content: [{ type: 'text', text: `proxy bridge activate failed: ${proxyRes.error}` }], isError: true }
+          } else {
+            channelBridgeActive = Boolean(args.active)
+            result = { content: [{ type: 'text', text: `channel bridge ${args.active ? 'activated' : 'deactivated'}` }] }
+          }
+        } else {
+          const active = args.active === true
+          const wasActive = channelBridgeActive
+          channelBridgeActive = active
+          if (active && !wasActive) {
+            // Trigger ownership refresh + bind on activation
+            void refreshBridgeOwnership({ restoreBinding: true })
+          }
+          if (!active && wasActive) {
+            stopServerTyping()
+          }
+          result = { content: [{ type: 'text', text: `channel bridge ${active ? 'activated' : 'deactivated'}` }] }
         }
-        if (!active && wasActive) {
-          stopServerTyping()
-        }
-        result = { content: [{ type: 'text', text: `channel bridge ${active ? 'activated' : 'deactivated'}` }] }
         break
       }
       // memory_cycle — handled by memory-service.mjs MCP
@@ -1367,6 +1732,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           isError: true,
         }
     }
+    } // end else (direct mode)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     result = {
@@ -1666,7 +2032,7 @@ claimBridgeOwnership('server start')
 void refreshBridgeOwnership({ restoreBinding: true })
 bridgeOwnershipTimer = setInterval(() => {
   void refreshBridgeOwnership()
-}, 1000)
+}, 30_000)
 
 if (bridgeRuntimeConnected && channelBridgeActive) {
   // Greeting — inject once, then bind forwarder when transcript appears

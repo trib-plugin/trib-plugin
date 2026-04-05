@@ -69,7 +69,7 @@ export const DEFAULT_CONFIG = {
   requestTimeoutMs: 30000,
   crawl: {
     maxPages: 10,
-    maxDepth: 1,
+    maxDepth: 2,
     sameDomainOnly: true,
   },
   siteRules: {

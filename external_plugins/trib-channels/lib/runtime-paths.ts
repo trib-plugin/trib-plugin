@@ -13,6 +13,7 @@ export type ActiveInstanceState = {
   statusFile: string
   channelId?: string
   transcriptPath?: string
+  httpPort?: number
 }
 
 export const RUNTIME_ROOT = join(tmpdir(), 'trib-channels')
@@ -80,7 +81,7 @@ export function writeActiveInstance(state: ActiveInstanceState): void {
 
 export function buildActiveInstanceState(
   instanceId: string,
-  meta?: Partial<Pick<ActiveInstanceState, 'channelId' | 'transcriptPath'>>,
+  meta?: Partial<Pick<ActiveInstanceState, 'channelId' | 'transcriptPath' | 'httpPort'>>,
 ): ActiveInstanceState {
   return {
     instanceId,
@@ -91,12 +92,13 @@ export function buildActiveInstanceState(
     statusFile: getStatusPath(instanceId),
     ...(meta?.channelId ? { channelId: meta.channelId } : {}),
     ...(meta?.transcriptPath ? { transcriptPath: meta.transcriptPath } : {}),
+    ...(meta?.httpPort ? { httpPort: meta.httpPort } : {}),
   }
 }
 
 export function refreshActiveInstance(
   instanceId: string,
-  meta?: Partial<Pick<ActiveInstanceState, 'channelId' | 'transcriptPath'>>,
+  meta?: Partial<Pick<ActiveInstanceState, 'channelId' | 'transcriptPath' | 'httpPort'>>,
 ): ActiveInstanceState {
   const prev = readActiveInstance()
   const next: ActiveInstanceState = {
@@ -104,6 +106,7 @@ export function refreshActiveInstance(
     updatedAt: Date.now(),
     ...(meta?.channelId ? { channelId: meta.channelId } : {}),
     ...(meta?.transcriptPath ? { transcriptPath: meta.transcriptPath } : {}),
+    ...(meta?.httpPort ? { httpPort: meta.httpPort } : {}),
   }
   writeActiveInstance(next)
   return next
