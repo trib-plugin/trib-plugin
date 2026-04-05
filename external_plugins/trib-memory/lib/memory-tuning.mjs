@@ -218,7 +218,7 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
     },
   },
   reranker: {
-    enabled: false,
+    enabled: true,
     model: 'Xenova/bge-reranker-large',
     triggerThreshold: -0.4,
     minRerankerScore: -2,

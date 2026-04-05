@@ -206,7 +206,7 @@ export async function buildSemanticDayPlan(dayEpisodes) {
   if (rows.length <= 1) return { rows, segments: rows.length ? [{ start: 0, end: rows.length - 1 }] : [], threshold: 1 }
   const vectors = []
   for (const row of rows) {
-    vectors.push(await embedText(String(row.content).slice(0, 320)))
+    vectors.push(await embedText(String(row.content).slice(0, 768)))
   }
   const similarities = []
   for (let i = 0; i < vectors.length - 1; i++) similarities.push(cosineSimilarity(vectors[i], vectors[i + 1]))
@@ -350,10 +350,27 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
     process.stderr.write(`[memory-cycle] consolidation LLM failed for ${dayKey}: ${e.message}, falling back to classification-only\n`)
   }
 
-  store.markCandidateIdsConsolidated(candidates.map(item => item.id))
   if (!llmSuccess) {
-    process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${candidates.length}, mode=classification-only\n`)
+    const ts = new Date().toISOString()
+    const fallbackRows = []
+    for (const c of candidates) {
+      const concept = classifyCandidateConcept(cleanMemoryText(c.content), c.role ?? 'user')
+      if (!concept.admit) continue
+      fallbackRows.push({
+        episode_id: Number(c.episode_id ?? 0),
+        classification: String(concept.category ?? 'fact').trim(),
+        topic: String(concept.topic || 'general').trim(),
+        element: String(cleanMemoryText(c.content)).trim().slice(0, 300),
+        importance: concept.importance ?? '',
+        confidence: 0.4,
+      })
+    }
+    if (fallbackRows.length > 0) {
+      store.upsertClassifications(fallbackRows, ts, null)
+    }
+    process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${candidates.length}, mode=classification-only, classifications=${fallbackRows.length}\n`)
   }
+  store.markCandidateIdsConsolidated(candidates.map(item => item.id))
 }
 
 export async function consolidateRecent(dayKeys, ws, options = {}) {

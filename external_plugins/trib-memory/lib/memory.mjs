@@ -1413,7 +1413,7 @@ export class MemoryStore {
     scored.sort((a, b) => b.weighted_score - a.weighted_score)
 
     // ── Stage 3: cap classifications, fill with episodes ──
-    const maxClassifications = Math.min(4, Math.ceil(limit / 2))
+    const maxClassifications = Math.min(limit, Math.max(2, Math.ceil(scored.length * 0.3)))
     let classCount = 0
     const capped = []
     for (const item of scored) {

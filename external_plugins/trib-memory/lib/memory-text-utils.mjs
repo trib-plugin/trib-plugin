@@ -222,8 +222,8 @@ export function candidateScore(text, role) {
     concept.category === 'storage_decision' ? 0.12 :
     0
   const structureBoost = /\n/.test(clean) ? 0.04 : 0
-  const overlongPenalty = compact.length > 320
-    ? Math.min(0.45, ((compact.length - 320) / 1200) * 0.45)
+  const overlongPenalty = compact.length > 768
+    ? Math.min(0.45, ((compact.length - 768) / 1200) * 0.45)
     : 0
   const proceduralPenalty = lineCount > 8 && colonCount >= 4 ? 0.18 : 0
   const artifactPenalty = pathCount >= 3 || tagCount >= 2 ? 0.14 : 0
