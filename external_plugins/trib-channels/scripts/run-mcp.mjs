@@ -3,7 +3,7 @@
 import { mkdirSync, readFileSync, readdirSync, copyFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { spawn, spawnSync } from 'child_process'
 const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT
 const pluginData = process.env.CLAUDE_PLUGIN_DATA
@@ -101,32 +101,44 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-// Find marketplace source — always build from marketplace if available
-function findMarketplaceSource() {
+// Dev: auto-sync marketplace source to cache when content differs
+function devSyncFromMarketplace() {
   try {
-    const pluginsBase = resolve(pluginData, '..', '..')
-    const ourName = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8')).name
-    const marketsDir = join(pluginsBase, 'marketplaces')
-    for (const market of readdirSync(marketsDir)) {
-      const extDir = join(marketsDir, market, 'external_plugins')
+    if (!pluginRoot.match(/[/\]cache[/\]/)) return
+function devSyncFromMarketplace() {
+  try {
+    const pluginsBase = join(pluginRoot, '..', '..', '..', '..')
+    const marketName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[0]
+    const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
+    if (!marketName || !pluginName) return
+    const marketSrc = join(pluginsBase, 'marketplaces', marketName, 'external_plugins', pluginName)
+    const dirs = ['lib', 'services', 'defaults', '.']
+    let synced = 0
+    for (const dir of dirs) {
       try {
-        for (const p of readdirSync(extDir)) {
+        const base = dir === '.' ? marketSrc : join(marketSrc, dir)
+        const entries = readdirSync(base).filter(f => f.endsWith('.mjs') || f.endsWith('.ts') || f.endsWith('.cjs') || f.endsWith('.md'))
+        for (const f of entries) {
           try {
-            const pkg = JSON.parse(readFileSync(join(extDir, p, 'package.json'), 'utf8'))
-            if (pkg.name === ourName) return join(extDir, p)
+            const src = join(base, f)
+            const dst = dir === '.' ? join(pluginRoot, f) : join(pluginRoot, dir, f)
+            const srcContent = readFileSync(src)
+            let dstContent = null
+            try { dstContent = readFileSync(dst) } catch {}
+            if (!dstContent || !srcContent.equals(dstContent)) {
+              copyFileSync(src, dst)
+              synced++
+            }
           } catch {}
         }
       } catch {}
     }
+    if (synced > 0) log(`dev-sync: copied ${synced} changed files from marketplace`)
   } catch {}
-  return null
 }
+devSyncFromMarketplace()
 
-const marketplaceSrc = findMarketplaceSource()
-const buildRoot = marketplaceSrc || pluginRoot
-if (marketplaceSrc) log(`using marketplace source: ${marketplaceSrc}`)
-
-const serverTs = join(buildRoot, 'server.ts')
+const serverTs = join(pluginRoot, 'server.ts')
 const serverJs = join(pluginData, 'server.bundle.mjs')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
 const spawnEnv = {
@@ -148,7 +160,7 @@ function buildBundle() {
     const result = spawnSync(esbuildBin, [
       serverTs, '--bundle', '--platform=node', '--format=esm',
       `--outfile=${serverJs}`, '--packages=external',
-    ], { cwd: buildRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
     if (result.status === 0) {
       log('bundle built successfully')
       return true
