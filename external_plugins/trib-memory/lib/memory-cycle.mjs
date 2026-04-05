@@ -14,6 +14,7 @@ import { cosineSimilarity as cosineSimilarityShared } from './memory-vector-util
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
   const candidates = [
+    join(homedir(), '.claude', 'plugins', 'data', 'trib-memory-trib-plugin'),
     join(homedir(), '.claude', 'plugins', 'data', 'trib-memory-trib-memory'),
   ]
   for (const c of candidates) {
@@ -123,10 +124,11 @@ function resolveEmbeddingRefreshOptions(mainConfig = {}, kind = 'cycle2') {
 function getStore() {
   const mainConfig = readMainConfig()
   const embeddingConfig = mainConfig?.embedding ?? {}
-  if (embeddingConfig.provider || embeddingConfig.ollamaModel) {
+  if (embeddingConfig.provider || embeddingConfig.ollamaModel || embeddingConfig.dtype) {
     configureEmbedding({
       provider: embeddingConfig.provider,
       ollamaModel: embeddingConfig.ollamaModel,
+      dtype: embeddingConfig.dtype,
     })
   }
   return getMemoryStore(PLUGIN_DATA_DIR)
@@ -723,7 +725,7 @@ function loadClassificationPrompt() {
 
 function buildCycle1ClassificationRows(candidates = []) {
   return candidates.map(candidate => {
-    const text = candidate.content?.slice(0, 150) || ''
+    const text = candidate.content?.slice(0, 300) || ''
     return `- id:${candidate.episode_id} text:${text}`
   }).join('\n')
 }
@@ -742,7 +744,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   const batchSize = Math.max(1, Number(cycle1Config.batchSize ?? 50))
   const maxDays = force ? 9999 : Math.max(1, Number(cycle1Config.maxDays ?? 7))
   const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
-  const timeout = config?.memory?.cycle1?.timeout || 60000
+  const timeout = config?.memory?.cycle1?.timeout || 300000
 
   // pending candidates를 최근 maxDays 범위에서 가져옴
   // getCandidatesForDate는 이미 status='pending'만 반환
@@ -827,6 +829,23 @@ async function runCycle1Impl(ws, config, options = {}) {
     if (classificationRows.length === 0) {
       process.stderr.write(`[cycle1] batch ${batchIndex}: unparseable response (${String(raw).slice(0, 200)})\n`)
       return null
+    }
+
+    // Post-process: enrich short elements with candidate source text
+    const candidateById = new Map(candidates.map(c => [Number(c.episode_id), c]))
+    for (const row of classificationRows) {
+      // element too short → use candidate content as fallback
+      if (row.element.length < 8) {
+        const src = candidateById.get(row.episode_id)
+        if (src?.content) {
+          const fallback = cleanMemoryText(src.content).slice(0, 120)
+          row.element = fallback || row.element
+        }
+      }
+      // topic too short → prepend element keywords
+      if (row.topic.length < 4 && row.element.length >= 4) {
+        row.topic = row.element.split(/\s+/).slice(0, 3).join(' ')
+      }
     }
 
     return { candidates, classificationRows, batchIndex }

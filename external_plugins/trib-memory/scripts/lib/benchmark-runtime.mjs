@@ -55,6 +55,7 @@ export function resolveDataDir(explicitDataDir = '') {
   }
   const dataRoot = join(homedir(), '.claude', 'plugins', 'data')
   const candidates = [
+    join(dataRoot, 'trib-memory-trib-plugin'),
     join(dataRoot, 'trib-memory-trib-memory'),
     join(dataRoot, 'trib-memory-tribgames'),
   ]
@@ -145,6 +146,7 @@ export function configureBenchmarkEmbedding(allowMlService = false) {
   configureEmbedding({
     provider: embeddingConfig?.provider ?? 'ollama',
     ollamaModel: embeddingConfig?.ollamaModel ?? 'bge-m3',
+    dtype: embeddingConfig?.dtype,
   })
 }
 

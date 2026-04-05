@@ -1081,7 +1081,7 @@ export class MemoryStore {
   getEmbeddableItems(options = {}) {
     const perTypeLimit = options.all
       ? 1000000000
-      : Math.max(1, Number(options.perTypeLimit ?? 64))
+      : Math.max(1, Number(options.perTypeLimit ?? 128))
     const items = []
 
     const classificationRows = this.db.prepare(`
@@ -1319,7 +1319,7 @@ export class MemoryStore {
     // ── Stage 1: base scores (keyword + embedding + time) ──
     const queryVector = options.queryVector ?? await embedText(clean)
     const variants = generateQueryVariants ? generateQueryVariants(clean) : [clean]
-    const allQueries = [clean, ...variants.filter(v => v !== clean)].slice(0, 4) // max 4 variants
+    const allQueries = [clean, ...variants.filter(v => v !== clean)].slice(0, 6) // max 6 variants (ko↔en)
 
     // Multi-variant sparse search: run FTS on each variant and merge
     let sparse = []

@@ -22,6 +22,40 @@ const MEMORY_TOKEN_ALIASES = new Map([
   ['시간대', 'timezone'],
   ['타임존', 'timezone'],
   ['deployment', 'deploy'],
+  // dev & infra terms
+  ['권한', 'permission'],
+  ['스케줄', 'schedule'],
+  ['채널', 'channel'],
+  ['디스코드', 'discord'],
+  ['파이프라인', 'pipeline'],
+  ['트리거', 'trigger'],
+  ['플러그인', 'plugin'],
+  ['임베딩', 'embedding'],
+  ['벡터', 'vector'],
+  ['모델', 'model'],
+  ['프롬프트', 'prompt'],
+  ['토큰', 'token'],
+  ['데이터', 'data'],
+  ['인덱스', 'index'],
+  ['캐시', 'cache'],
+  ['로그', 'log'],
+  ['에러', 'error'],
+  ['버그', 'bug'],
+  ['테스트', 'test'],
+  ['타입', 'type'],
+  ['모드', 'mode'],
+  ['훅', 'hook'],
+  ['세션', 'session'],
+  ['컨텍스트', 'context'],
+  ['프로젝트', 'project'],
+  ['워크스페이스', 'workspace'],
+  ['알림', 'notification'],
+  ['동기화', 'sync'],
+  ['인바운드', 'inbound'],
+  ['아웃바운드', 'outbound'],
+  ['포워딩', 'forwarding'],
+  ['리팩터', 'refactor'],
+  ['마이그레이션', 'migration'],
 ])
 
 const MEMORY_TOKEN_STOPWORDS = new Set([
@@ -328,6 +362,23 @@ export function generateQueryVariants(query) {
     '인증': 'authentication auth', '메모리': 'memory', '언어': 'language',
     '호칭': 'address name honorific', '응답': 'response', '형식': 'format style',
     '캐주얼': 'casual informal', '누적': 'accumulate',
+    // extended coverage for cross-lingual retrieval
+    '권한': 'permission access', '스케줄': 'schedule cron', '채널': 'channel',
+    '모드': 'mode', '디스코드': 'discord', '파이프라인': 'pipeline',
+    '트리거': 'trigger', '플러그인': 'plugin', '임베딩': 'embedding vector',
+    '프롬프트': 'prompt', '토큰': 'token', '데이터': 'data', '인덱스': 'index',
+    '에러': 'error', '버그': 'bug', '테스트': 'test', '모델': 'model',
+    '훅': 'hook', '세션': 'session', '컨텍스트': 'context', '알림': 'notification',
+    '동기화': 'sync synchronize', '분류': 'classification classify',
+    '후보': 'candidate', '점수': 'score', '가중치': 'weight', '벡터': 'vector',
+    '차원': 'dimension dims', '프로젝트': 'project', '워크스페이스': 'workspace',
+    '인바운드': 'inbound', '아웃바운드': 'outbound', '포워딩': 'forwarding',
+    '리팩터': 'refactor', '마이그레이션': 'migration', '중복': 'duplicate dedup',
+    '삭제': 'delete remove', '추가': 'add create', '변경': 'change update modify',
+    '확인': 'check verify', '실행': 'execute run', '종료': 'stop terminate',
+    '시작': 'start begin', '재시작': 'restart', '배포': 'deploy',
+    '호출': 'call invoke', '반환': 'return', '파싱': 'parse parsing',
+    '캐시': 'cache', '타임아웃': 'timeout', '재시도': 'retry',
   }
   const translated = tokens.map(t => koToEn[t] ?? t).join(' ')
   const translatedVariants = translated !== tokens.join(' ') ? [translated] : []
@@ -355,15 +406,32 @@ export function generateQueryVariants(query) {
   if ((/임베드|embed|embedding/i.test(clean)) && (/즉시|timing|immediate/i.test(clean))) {
     phraseExpansions.push(`${clean} inline embedding immediate timing`)
   }
+  // 4. English→Korean reverse mapping (for en queries matching ko content)
+  const enToKo = {
+    'permission': '권한 접근', 'schedule': '스케줄 예약', 'channel': '채널',
+    'discord': '디스코드', 'pipeline': '파이프라인', 'plugin': '플러그인',
+    'embedding': '임베딩 벡터', 'model': '모델', 'prompt': '프롬프트',
+    'hook': '훅', 'session': '세션', 'context': '컨텍스트',
+    'notification': '알림', 'config': '설정', 'settings': '설정',
+    'deploy': '배포', 'test': '테스트', 'search': '검색',
+    'memory': '메모리 기억', 'cache': '캐시', 'trigger': '트리거',
+    'inbound': '인바운드 수신', 'project': '프로젝트', 'sync': '동기화',
+    'migration': '마이그레이션 이관', 'refactor': '리팩터 정리',
+    'error': '에러 오류', 'bug': '버그', 'mode': '모드',
+  }
+  const reverseTokens = tokens.map(t => enToKo[t] ?? t).join(' ')
+  const reverseVariants = reverseTokens !== tokens.join(' ') ? [reverseTokens] : []
+
   const variants = [
     ...baseVariants,
     ...phraseExpansions,
     ...aliasVariants,
     ...translatedVariants,
+    ...reverseVariants,
   ]
 
   // 중복 제거
-  return [...new Set(variants)].slice(0, 5)
+  return [...new Set(variants)].slice(0, 6)
 }
 
 /**

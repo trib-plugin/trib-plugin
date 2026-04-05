@@ -79,10 +79,11 @@ const mainConfig = readMainConfig()
 const opsPolicy = readMemoryOpsPolicy(mainConfig)
 const featureFlags = readMemoryFeatureFlags(mainConfig)
 const embeddingConfig = mainConfig?.embedding
-if (embeddingConfig?.provider || embeddingConfig?.ollamaModel) {
+if (embeddingConfig?.provider || embeddingConfig?.ollamaModel || embeddingConfig?.dtype) {
   configureEmbedding({
     provider: embeddingConfig.provider,
     ollamaModel: embeddingConfig.ollamaModel,
+    dtype: embeddingConfig.dtype,
   })
 }
 

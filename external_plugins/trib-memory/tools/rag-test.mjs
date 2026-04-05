@@ -7,6 +7,7 @@
  *   node rag-test.mjs --query "검색어" --expect "키워드1,키워드2"
  *   node rag-test.mjs --query "검색어" --mask 0x070
  *   node rag-test.mjs --sample 5
+ *   node rag-test.mjs --cycle1 --sample 10
  *   node rag-test.mjs --batch
  *   node rag-test.mjs --batch --verbose
  */
@@ -55,6 +56,9 @@ const { values: opts } = parseArgs({
   options: {
     query:   { type: 'string', short: 'q' },
     sample:  { type: 'string', short: 's' },
+    cycle1:  { type: 'boolean', default: false },
+    rebuild: { type: 'boolean', default: false },
+    isolate: { type: 'boolean', default: false },
     batch:   { type: 'boolean', short: 'b', default: false },
     mask:    { type: 'string', short: 'm', default: '0x7FF' },
     expect:  { type: 'string', short: 'e' },
@@ -72,6 +76,12 @@ rag-test.mjs — RAG pipeline test harness
 Options:
   --query  "검색어"            Single query test
   --sample N                   Sample N recent episodes from DB (ingest test)
+  --cycle1                     Run Cycle1 pipeline (backfill->candidate->classify->embed)
+                               Use with --sample N. DB write enabled.
+  --rebuild                    Reset candidate status to pending before cycle1.
+                               Fixes stuck consolidated candidates without classifications.
+  --isolate                    Restrict search to cycle1-processed episodes only.
+                               Use with --cycle1 --batch for isolated benchmarks.
   --batch                      Run built-in test query set
   --mask   0x7FF               Bitmask (default: ALL)
   --expect "키워드1,키워드2"    Keywords for MRR evaluation
@@ -89,6 +99,9 @@ Stages (bitmask):
 
 const MASK = Number(opts.mask) || STAGES.ALL
 const VERBOSE = opts.verbose
+
+// ── Isolation state: when --isolate, search only within these IDs ──
+let isolatedEpisodeIds = null  // Set<number> or null (null = no isolation)
 
 // ── Resolve data directory ──
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
@@ -113,14 +126,28 @@ const { computeFinalScore, computeImportanceBoost, getTagFactor } = await import
 const { cosineSimilarity, vecToHex } = await import(libUrl('memory-vector-utils.mjs'))
 const { mergeMemoryTuning } = await import(libUrl('memory-tuning.mjs'))
 
+// ── Cycle1 imports (lazy, only when --cycle1 is used) ──
+let _cycle1Imports = null
+async function getCycle1Imports() {
+  if (_cycle1Imports) return _cycle1Imports
+  const mod = await import(libUrl('memory-cycle.mjs'))
+  _cycle1Imports = {
+    runCycle1: mod.runCycle1,
+    readMainConfig: mod.readMainConfig,
+    loadCycleState: mod.loadCycleState,
+  }
+  return _cycle1Imports
+}
+
 // ── Configure embedding from config.json ──
 try {
   const mainConfig = JSON.parse(readFileSync(join(PLUGIN_DATA_DIR, 'config.json'), 'utf8'))
   const embeddingConfig = mainConfig?.embedding ?? {}
-  if (embeddingConfig.provider || embeddingConfig.ollamaModel) {
+  if (embeddingConfig.provider || embeddingConfig.ollamaModel || embeddingConfig.dtype) {
     configureEmbedding({
       provider: embeddingConfig.provider,
       ollamaModel: embeddingConfig.ollamaModel,
+      dtype: embeddingConfig.dtype,
     })
   }
 } catch { /* no config.json, use defaults */ }
@@ -176,6 +203,22 @@ function printHeader(query, stats) {
   console.log(`DB: memory.sqlite (${stats.episodeCount.toLocaleString()} episodes, ${stats.classCount.toLocaleString()} classifications, ${stats.vectorCount.toLocaleString()} vectors)`)
   console.log(`Model: ${getEmbeddingModelId()}`)
   console.log()
+}
+
+// ── Isolation filter ──
+function applyIsolationFilter(results) {
+  if (!isolatedEpisodeIds) return results
+  return results.filter(r => {
+    if (r.type === 'episode') return isolatedEpisodeIds.has(Number(r.entity_id))
+    // For classifications: look up episode_id via readDb
+    if (r.type === 'classification') {
+      try {
+        const row = readDb.prepare('SELECT episode_id FROM classifications WHERE id = ?').get(Number(r.entity_id))
+        return row && isolatedEpisodeIds.has(Number(row.episode_id))
+      } catch { return false }
+    }
+    return true
+  })
 }
 
 // ── Stage runners ──
@@ -264,17 +307,19 @@ function stageFts(variants) {
     }
   }
 
+  const filtered = applyIsolationFilter(results)
   const elapsed = performance.now() - t0
   if (VERBOSE) {
-    console.log(`[STAGE: FTS] ${results.length} results | ${fmt(elapsed)}`)
-    for (let i = 0; i < Math.min(results.length, 5); i++) {
-      const r = results[i]
+    const isoLabel = isolatedEpisodeIds ? ` (${results.length}->${filtered.length} after isolation)` : ''
+    console.log(`[STAGE: FTS] ${filtered.length} results${isoLabel} | ${fmt(elapsed)}`)
+    for (let i = 0; i < Math.min(filtered.length, 5); i++) {
+      const r = filtered[i]
       console.log(`  #${i + 1} score=${Number(r.score).toFixed(2)} [${r.type}] "${trunc(r.content)}"`)
     }
-    if (results.length > 5) console.log(`  ... (${results.length - 5} more)`)
+    if (filtered.length > 5) console.log(`  ... (${filtered.length - 5} more)`)
     console.log()
   }
-  return { results, elapsed }
+  return { results: filtered, elapsed }
 }
 
 async function stageVectorKnn(query, queryVector) {
@@ -363,17 +408,19 @@ async function stageVectorKnn(query, queryVector) {
     } catch {}
   }
 
+  const filtered = applyIsolationFilter(results)
   const elapsed = performance.now() - t0
   if (VERBOSE) {
-    console.log(`[STAGE: VECTOR_KNN] ${results.length} results | ${fmt(elapsed)}`)
-    for (let i = 0; i < Math.min(results.length, 5); i++) {
-      const r = results[i]
+    const isoLabel = isolatedEpisodeIds ? ` (${results.length}->${filtered.length} after isolation)` : ''
+    console.log(`[STAGE: VECTOR_KNN] ${filtered.length} results${isoLabel} | ${fmt(elapsed)}`)
+    for (let i = 0; i < Math.min(filtered.length, 5); i++) {
+      const r = filtered[i]
       console.log(`  #${i + 1} sim=${(r.similarity ?? 0).toFixed(3)} [${r.type}] "${trunc(r.content)}"`)
     }
-    if (results.length > 5) console.log(`  ... (${results.length - 5} more)`)
+    if (filtered.length > 5) console.log(`  ... (${filtered.length - 5} more)`)
     console.log()
   }
-  return { results, elapsed, queryVector: vector }
+  return { results: filtered, elapsed, queryVector: vector }
 }
 
 function stageRrfFusion(ftsResults, vecResults) {
@@ -534,7 +581,7 @@ async function stageReranker(items, query) {
   const t0 = performance.now()
   let reranked = items
   try {
-    const { rerank } = await import(join(LIB, 'reranker.mjs'))
+    const { rerank } = await import(libUrl('reranker.mjs'))
     const top = items.slice(0, 5)
     const rest = items.slice(5)
     const scored = await rerank(query, top, 5)
@@ -764,6 +811,7 @@ async function runBatch() {
   console.log(`DB: memory.sqlite (${stats.episodeCount.toLocaleString()} episodes, ${stats.classCount.toLocaleString()} classifications)`)
   console.log(`Mask: 0x${MASK.toString(16).toUpperCase()} (${enabledStages(MASK).join(', ')})`)
   console.log(`Model: ${getEmbeddingModelId()}`)
+  if (isolatedEpisodeIds) console.log(`Isolation: ON (${isolatedEpisodeIds.size} episodes in scope)`)
   console.log()
 
   const rows = []
@@ -859,10 +907,262 @@ async function runSample(n) {
   console.log()
 }
 
+// ── Cycle1 mode ──
+async function runCycle1Test(sampleCount) {
+  const { runCycle1, readMainConfig, loadCycleState } = await getCycle1Imports()
+  const mainConfig = readMainConfig()
+  const cycle1Config = mainConfig?.memory?.cycle1 ?? {}
+  const providerConfig = cycle1Config.provider || { connection: 'codex', model: 'gpt-5.4-mini' }
+  const providerLabel = typeof providerConfig === 'string'
+    ? providerConfig
+    : `${providerConfig.connection ?? 'codex'}/${providerConfig.model ?? '?'}`
+
+  // Use writable MemoryStore (cycle1 writes to DB)
+  const store = getMemoryStore(PLUGIN_DATA_DIR)
+
+  // Pre-run stats (use store.db for accurate counts — readDb may be stale)
+  const preEpisodes = store.countEpisodes() ?? 0
+  const prePending = store.getPendingCandidateDays(100, 1)
+  const prePendingTotal = prePending.reduce((sum, d) => sum + d.n, 0)
+  const preClassifications = store.db.prepare('SELECT COUNT(*) AS cnt FROM classifications WHERE status = ?').get('active')?.cnt ?? 0
+  const preVectors = store.db.prepare('SELECT COUNT(*) AS cnt FROM memory_vectors').get()?.cnt ?? 0
+
+  console.log()
+  console.log('='.repeat(56))
+  console.log('  Cycle1 Pipeline Test (WRITE MODE)')
+  console.log('='.repeat(56))
+  console.log(`Sample: ${sampleCount} episodes from DB`)
+  console.log(`Provider: ${providerLabel}`)
+  console.log(`Model: ${getEmbeddingModelId()}`)
+  console.log(`Pre-run: ${preEpisodes} episodes, ${prePendingTotal} pending, ${preClassifications} classifications, ${preVectors} vectors`)
+  if (opts.rebuild) console.log(`Rebuild: ON (candidate status will be reset to pending)`)
+  console.log()
+
+  const stageTimes = {}
+  const totalT0 = performance.now()
+
+  // ── STEP 0 (optional): REBUILD — reset candidate status to pending ──
+  if (opts.rebuild) {
+    const rebuildT0 = performance.now()
+    const rebuilt = store.rebuildCandidates()
+    stageTimes.REBUILD = performance.now() - rebuildT0
+
+    const postRebuildPending = store.getPendingCandidateDays(100, 1)
+    const postRebuildTotal = postRebuildPending.reduce((sum, d) => sum + d.n, 0)
+
+    console.log(`[STEP: REBUILD] ${rebuilt} candidates rebuilt (all reset to pending) | ${fmt(stageTimes.REBUILD)}`)
+    console.log(`  pending: ${prePendingTotal} -> ${postRebuildTotal}`)
+    if (VERBOSE && postRebuildPending.length > 0) {
+      for (const d of postRebuildPending.slice(0, 10)) {
+        console.log(`    ${d.day_key}: ${d.n} candidates`)
+      }
+    }
+    console.log()
+  }
+
+  // ── STEP 1: BACKFILL — ingest transcripts -> episodes -> candidates ──
+  const backfillT0 = performance.now()
+  let backfilled = 0
+  try {
+    backfilled = store.backfillAllProjects({ limit: sampleCount }) ?? 0
+  } catch (err) {
+    if (VERBOSE) console.log(`  backfillAllProjects error: ${err.message}`)
+  }
+  stageTimes.BACKFILL = performance.now() - backfillT0
+
+  const postBackfillEpisodes = store.countEpisodes() ?? 0
+  const newEpisodes = postBackfillEpisodes - preEpisodes
+
+  // Count candidates generated by backfill
+  const midPending = store.getPendingCandidateDays(100, 1)
+  const midPendingTotal = midPending.reduce((sum, d) => sum + d.n, 0)
+  const newCandidates = midPendingTotal - prePendingTotal
+
+  // Gather candidate details for verbose output
+  let candidateDetails = []
+  if (VERBOSE) {
+    for (const { day_key } of midPending.slice(0, 5)) {
+      const rows = store.getCandidatesForDate(day_key)
+      for (const r of rows.slice(0, 10)) {
+        candidateDetails.push(r)
+      }
+    }
+  }
+
+  console.log(`[STEP: BACKFILL] ${postBackfillEpisodes} episodes -> ${midPendingTotal} candidates | ${fmt(stageTimes.BACKFILL)}`)
+  console.log(`  new episodes: +${newEpisodes}, new candidates: +${newCandidates < 0 ? 0 : newCandidates}`)
+  if (VERBOSE && midPending.length > 0) {
+    console.log(`  pending days:`)
+    for (const d of midPending.slice(0, 10)) {
+      console.log(`    ${d.day_key}: ${d.n} candidates`)
+    }
+    if (candidateDetails.length > 0) {
+      console.log(`  sample candidates:`)
+      for (const c of candidateDetails.slice(0, 5)) {
+        const sc = candidateScore(cleanMemoryText(c.content), c.role)
+        console.log(`    score=${sc.toFixed(3)} [${c.role}] "${trunc(c.content)}"`)
+      }
+    }
+  }
+  console.log()
+
+  if (midPendingTotal === 0) {
+    const totalElapsed = performance.now() - totalT0
+    console.log('No pending candidates to process. Cycle1 skipped.')
+    console.log(`Total: ${fmt(totalElapsed)}`)
+    console.log()
+    return
+  }
+
+  // ── STEP 2: CLASSIFY — LLM classification via runCycle1 ──
+  // runCycle1 does both classify + embed internally.
+  // We measure separately by snapshotting vector count before/after.
+  const preClassifyVectors = store.db.prepare('SELECT COUNT(*) AS cnt FROM memory_vectors').get()?.cnt ?? 0
+
+  const classifyT0 = performance.now()
+  let cycle1Result = { extracted: 0, classifications: 0 }
+  try {
+    const ws = process.cwd()
+    cycle1Result = await runCycle1(ws, mainConfig, { force: true, store }) ?? cycle1Result
+  } catch (err) {
+    console.log(`  runCycle1 error: ${err.message}`)
+  }
+  const classifyTotalElapsed = performance.now() - classifyT0
+
+  // Snapshot post-classify state
+  const postClassifications = store.db.prepare('SELECT COUNT(*) AS cnt FROM classifications WHERE status = ?').get('active')?.cnt ?? 0
+  const postVectors = store.db.prepare('SELECT COUNT(*) AS cnt FROM memory_vectors').get()?.cnt ?? 0
+  const newClassifications = postClassifications - preClassifications
+  const newVectors = postVectors - preClassifyVectors
+
+  // Estimate: embed time ~ proportional to new vectors generated
+  // We attribute the remaining time to classification (LLM call dominates)
+  // Since runCycle1 embeds after classify, a rough split based on vector count:
+  const embedEstimateRatio = newVectors > 0 && cycle1Result.classifications > 0
+    ? Math.min(0.6, newVectors / (cycle1Result.classifications + newVectors))
+    : 0.3
+  stageTimes.CLASSIFY = classifyTotalElapsed * (1 - embedEstimateRatio)
+  stageTimes.EMBED = classifyTotalElapsed * embedEstimateRatio
+
+  console.log(`[STEP: CLASSIFY] ${midPendingTotal} candidates -> ${newClassifications} classifications | ${fmt(stageTimes.CLASSIFY)}`)
+  if (VERBOSE && newClassifications > 0) {
+    const recentCls = store.db.prepare(`
+      SELECT c.classification, c.topic, c.element, c.importance, c.confidence
+      FROM classifications c WHERE c.status = 'active'
+      ORDER BY c.updated_at DESC, c.id DESC LIMIT ?
+    `).all(Math.min(newClassifications, 10))
+    for (let i = 0; i < recentCls.length; i++) {
+      const cls = recentCls[i]
+      console.log(`  #${i + 1} [${cls.importance || '-'}] "${trunc(cls.element, 50)}" topic=${cls.topic} conf=${(cls.confidence ?? 0).toFixed(2)}`)
+    }
+  }
+  console.log()
+
+  // ── STEP 3: EMBED — vectors generated ──
+  console.log(`[STEP: EMBED] ${newVectors} vectors generated | ${fmt(stageTimes.EMBED)}`)
+  console.log(`  dims: ${getEmbeddingModelId().includes('bge-m3') ? 1024 : '?'}, model: ${getEmbeddingModelId()}`)
+
+  // When --isolate, ensure full embedding coverage for the sample set
+  if (opts.isolate) {
+    const embedExtraT0 = performance.now()
+    const extraEmbedded = await store.ensureEmbeddings({ perTypeLimit: sampleCount * 2 })
+    const embedExtraElapsed = performance.now() - embedExtraT0
+    if (extraEmbedded > 0) {
+      console.log(`  + ${extraEmbedded} extra vectors (isolate fill, perTypeLimit=${sampleCount * 2}) | ${fmt(embedExtraElapsed)}`)
+    }
+  }
+  console.log()
+
+  // ── Post-run pending ──
+  const postPending = store.getPendingCandidateDays(100, 1)
+  const postPendingTotal = postPending.reduce((sum, d) => sum + d.n, 0)
+
+  const totalElapsed = performance.now() - totalT0
+
+  // ── Summary ──
+  console.log('='.repeat(56))
+  console.log('  CYCLE1 SUMMARY')
+  console.log('='.repeat(56))
+  console.log(`Episodes: ${postBackfillEpisodes} -> Candidates: ${midPendingTotal} -> Classifications: ${newClassifications} -> Embeddings: ${newVectors}`)
+  console.log(`Total: ${fmt(totalElapsed)}`)
+
+  // Bottleneck
+  let bottleneck = { stage: '-', time: 0 }
+  for (const [stage, time] of Object.entries(stageTimes)) {
+    if (time > bottleneck.time) bottleneck = { stage, time }
+  }
+  console.log(`Bottleneck: ${bottleneck.stage} (${fmt(bottleneck.time)}, ${(bottleneck.time / totalElapsed * 100).toFixed(1)}%)`)
+  console.log()
+
+  console.log(`  Stage    | Time        | Detail`)
+  console.log(`  ---------|-------------|-------------------------------`)
+  if (stageTimes.REBUILD != null) {
+    console.log(`  REBUILD  | ${fmt(stageTimes.REBUILD).padStart(9)}   | candidates reset to pending`)
+  }
+  console.log(`  BACKFILL | ${fmt(stageTimes.BACKFILL).padStart(9)}   | ${backfilled} files, +${newEpisodes} episodes, +${newCandidates < 0 ? 0 : newCandidates} candidates`)
+  console.log(`  CLASSIFY | ${fmt(stageTimes.CLASSIFY).padStart(9)}   | ${cycle1Result.extracted} extracted, ${newClassifications} classified`)
+  console.log(`  EMBED    | ${fmt(stageTimes.EMBED).padStart(9)}   | ${newVectors} vectors, model=${getEmbeddingModelId()}`)
+  console.log()
+
+  console.log(`  Metric          | Before | After  | Delta`)
+  console.log(`  ----------------|--------|--------|------`)
+  console.log(`  Episodes        | ${String(preEpisodes).padStart(6)} | ${String(postBackfillEpisodes).padStart(6)} | +${newEpisodes}`)
+  console.log(`  Pending         | ${String(prePendingTotal).padStart(6)} | ${String(postPendingTotal).padStart(6)} | ${postPendingTotal - prePendingTotal >= 0 ? '+' : ''}${postPendingTotal - prePendingTotal}`)
+  console.log(`  Classifications | ${String(preClassifications).padStart(6)} | ${String(postClassifications).padStart(6)} | +${newClassifications}`)
+  console.log(`  Vectors         | ${String(preVectors).padStart(6)} | ${String(postVectors).padStart(6)} | +${newVectors}`)
+  console.log()
+
+  // ── Capture isolation set if --isolate ──
+  if (opts.isolate) {
+    // Collect episode IDs that have classifications or vectors from this cycle
+    const isoIds = new Set()
+    try {
+      // Episodes that have active classifications
+      const clsEpRows = store.db.prepare(`
+        SELECT DISTINCT c.episode_id FROM classifications c WHERE c.status = 'active'
+      `).all()
+      for (const r of clsEpRows) isoIds.add(Number(r.episode_id))
+
+      // Episodes that have vectors
+      const vecEpRows = store.db.prepare(`
+        SELECT DISTINCT entity_id FROM memory_vectors WHERE entity_type = 'episode'
+      `).all()
+      for (const r of vecEpRows) isoIds.add(Number(r.entity_id))
+    } catch {}
+
+    // If we have a sample size, also limit to the most recent N episodes
+    if (sampleCount > 0) {
+      const recentEps = store.db.prepare(`
+        SELECT id FROM episodes WHERE kind IN ('message', 'turn')
+        ORDER BY ts DESC LIMIT ?
+      `).all(sampleCount)
+      const recentIds = new Set(recentEps.map(r => Number(r.id)))
+      // Union: include both recent episodes AND episodes with classification/vector data
+      for (const id of recentIds) isoIds.add(id)
+    }
+
+    isolatedEpisodeIds = isoIds
+    console.log(`Isolation: ${isoIds.size} episode IDs captured for --batch search scope`)
+    console.log()
+  }
+}
+
 // ── Main ──
 async function main() {
   try {
-    if (opts.batch) {
+    if (opts.cycle1) {
+      const n = Number(opts.sample) || 20
+      await runCycle1Test(n)
+      // If --batch is also set, run benchmark after cycle1 (supports --isolate)
+      if (opts.batch) {
+        // Re-open readDb to pick up cycle1 writes
+        try { readDb?.close() } catch {}
+        readDb = new DatabaseSync(DB_PATH, { readOnly: true })
+        readDb.exec('PRAGMA busy_timeout = 2000;')
+        if (sqliteVec) { try { sqliteVec.load(readDb); vecEnabled = true } catch {} }
+        await runBatch()
+      }
+    } else if (opts.batch) {
       await runBatch()
     } else if (opts.sample) {
       await runSample(Number(opts.sample) || 5)
@@ -870,7 +1170,7 @@ async function main() {
       const expectKeywords = opts.expect ? opts.expect.split(',').map(s => s.trim()).filter(Boolean) : []
       await runPipeline(opts.query, expectKeywords)
     } else {
-      console.error('Usage: rag-test.mjs --query "..." | --batch | --sample N')
+      console.error('Usage: rag-test.mjs --query "..." | --batch | --sample N | --cycle1 [--sample N]')
       console.error('Run with --help for details.')
       process.exit(1)
     }

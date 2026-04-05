@@ -29,7 +29,7 @@ export function getTagFactor(importance) {
 
 export function computeImportanceBoost(importance) {
   const factor = getTagFactor(importance)
-  return 1 + (1 - factor) * 2
+  return 1 + (1 - factor) * 0.5
 }
 
 // ── Exact match bonus ───────────────────────────────────────────────
