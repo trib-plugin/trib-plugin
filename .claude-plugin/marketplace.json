@@ -23,6 +23,12 @@
       "description": "Search plugin with raw search, AI search, scrape, map, crawl",
       "category": "productivity",
       "source": "./external_plugins/trib-search"
+    },
+    {
+      "name": "trib-agent",
+      "description": "Agent workflow orchestration — structured task flow, team agent management, and context-efficient delegation",
+      "category": "productivity",
+      "source": "./external_plugins/trib-agent"
     }
   ]
 }
