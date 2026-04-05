@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>trib-memory setup</title>
+<title>trib-memory config</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -134,6 +134,71 @@
     margin-bottom: 4px; height: 16px;
   }
 
+  .r-pw-wrap {
+    flex: 1; position: relative; display: flex; align-items: center;
+  }
+  .r-pw-wrap .r-input { flex: 1; padding-right: 34px; }
+  .eye-toggle {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-3);
+    cursor: pointer; font-size: 14px; padding: 2px;
+    line-height: 1; user-select: none;
+  }
+  .eye-toggle:hover { color: var(--text-1); }
+
+  .file-label {
+    font-size: 13px; font-weight: 600; color: var(--text-1);
+    margin-bottom: 6px;
+  }
+  .file-label .file-hint {
+    font-weight: 400; color: var(--text-3); font-size: 11px; margin-left: 6px;
+  }
+  .file-area {
+    width: 100%; height: 200px; padding: 10px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
+    line-height: 1.5; resize: vertical;
+    transition: border-color 0.15s;
+  }
+  .file-area:focus { outline: none; border-color: var(--border-focus); }
+  .file-area:disabled {
+    background: rgba(255,255,255,0.03); color: var(--text-3);
+    cursor: not-allowed;
+  }
+  .file-group { margin-bottom: 16px; }
+
+  /* Toggle switch */
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+  .toggle {
+    position: relative; width: 40px; height: 22px; flex-shrink: 0;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; inset: 0; cursor: pointer;
+    background: rgba(255,255,255,0.12); border-radius: 11px;
+    transition: background 0.2s;
+  }
+  .toggle-track::after {
+    content: ''; position: absolute; left: 3px; top: 3px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--text-3); transition: all 0.2s;
+  }
+  .toggle input:checked + .toggle-track {
+    background: var(--accent);
+  }
+  .toggle input:checked + .toggle-track::after {
+    transform: translateX(18px); background: #fff;
+  }
+
+  .r-unit {
+    font-size: 12px; color: var(--text-3); margin-left: 8px; flex-shrink: 0;
+  }
+
+  .settings-body.disabled {
+    opacity: 0.35; pointer-events: none;
+  }
+
   .main::-webkit-scrollbar, .cat-bar::-webkit-scrollbar { width: 6px; }
   .main::-webkit-scrollbar-track, .cat-bar::-webkit-scrollbar-track { background: transparent; }
   .main::-webkit-scrollbar-thumb, .cat-bar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
@@ -145,136 +210,254 @@
 
   <!-- Category sidebar -->
   <div class="cat-bar">
-    <div class="cat-title">TRIB-MEMORY CONFIG</div>
-    <div class="cat-item active" data-panel="memory-embedding" onclick="switchCat(this)">Embedding</div>
-    <div class="cat-item" data-panel="memory-cycles" onclick="switchCat(this)">Cycles</div>
+    <div class="cat-title">TRIB-MEMORY</div>
+    <div class="cat-item active" data-panel="settings" onclick="switchCat(this)">Settings</div>
+    <div class="cat-item" data-panel="models" onclick="switchCat(this)">Models</div>
+    <div class="cat-item" data-panel="embedding" onclick="switchCat(this)">Embedding</div>
+    <div class="cat-item" data-panel="reranker" onclick="switchCat(this)">Reranker</div>
+    <div class="cat-item" data-panel="files" onclick="switchCat(this)">Files</div>
   </div>
 
   <!-- Main -->
   <div class="main">
 
-    <!-- EMBEDDING -->
-    <div class="panel active" id="panel-memory-embedding">
-      <div class="hdr">
-        <h1>Embedding</h1>
-      </div>
+    <!-- SETTINGS -->
+    <div class="panel active" id="panel-settings">
+      <div class="hdr"><h1>Settings</h1></div>
 
       <div class="sec">
-        <div class="sec-title">Embedding config</div>
         <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Provider</span>
-            <select class="r-select" id="mem-embed-provider">
-              <option value="local">local</option>
-              <option value="ollama">ollama</option>
-            </select>
+          <div class="r toggle-row">
+            <span class="r-name-wide">Memory</span>
+            <label class="toggle">
+              <input type="checkbox" id="set-enabled" checked onchange="toggleMemory()">
+              <span class="toggle-track"></span>
+            </label>
           </div>
-          <div class="r">
-            <span class="r-name-wide">Ollama model</span>
-            <input class="r-input" id="mem-embed-model" type="text" placeholder="nomic-embed-text">
+        </div>
+      </div>
+
+      <div id="settings-body" class="settings-body">
+        <div class="sec">
+          <div class="sec-title">Extraction</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Retention</span>
+              <select class="r-select" id="set-retention">
+                <option value="1m">Very High (1m)</option>
+                <option value="5m" selected>High (5m)</option>
+                <option value="10m">Normal (10m)</option>
+                <option value="30m">Low (30m)</option>
+                <option value="1h">Minimal (1h)</option>
+              </select>
+            </div>
+            <div class="r">
+              <span class="r-name-wide">Timeout</span>
+              <input class="r-input" id="set-timeout" type="number" placeholder="30" style="flex:1">
+              <span class="r-unit">sec</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">Consolidation</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Schedule</span>
+              <input class="r-input" id="set-schedule" type="text" placeholder="03:00">
+            </div>
           </div>
         </div>
       </div>
 
       <div class="save-area">
-        <div class="warn-msg" id="warn-memory-embedding"></div>
-        <button class="save" onclick="savePanel()">Save</button>
+        <div class="warn-msg" id="warn-settings"></div>
+        <button class="save" onclick="saveConfig()">Save</button>
       </div>
     </div>
 
-    <!-- CYCLES -->
-    <div class="panel" id="panel-memory-cycles">
-      <div class="hdr">
-        <h1>Cycles</h1>
-      </div>
+    <!-- MODELS (LLM) -->
+    <div class="panel" id="panel-models">
+      <div class="hdr"><h1>Models</h1></div>
 
       <div class="sec">
-        <div class="sec-title">Cycle 1 - Embedding</div>
+        <div class="sec-title">LLM</div>
         <div class="sec-body">
           <div class="r">
-            <span class="r-name-wide">Interval</span>
-            <input class="r-input" id="mem-c1-interval" type="text" placeholder="300000">
+            <span class="r-name-wide">Type</span>
+            <select class="r-select" id="mdl-type" onchange="toggleFields('mdl')">
+              <option value="default">Default</option>
+              <option value="codex">Codex</option>
+              <option value="api">API</option>
+              <option value="local">Local</option>
+            </select>
           </div>
-          <div class="r">
-            <span class="r-name-wide">Timeout</span>
-            <input class="r-input" id="mem-c1-timeout" type="number" placeholder="30000">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Batch size</span>
-            <input class="r-input" id="mem-c1-batchsize" type="number" placeholder="50">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Max days</span>
-            <input class="r-input" id="mem-c1-maxdays" type="number" placeholder="30">
-          </div>
-          <div class="r">
+          <div class="r" id="mdl-provider-row" style="display:none">
             <span class="r-name-wide">Provider</span>
-            <select class="r-select" id="mem-c1-provider">
-              <option value="codex">codex</option>
-              <option value="claude">claude</option>
-              <option value="gemini">gemini</option>
-              <option value="ollama">ollama</option>
+            <select class="r-select" id="mdl-provider">
+              <option value="ollama">Ollama</option>
+              <option value="lmstudio">LM Studio</option>
+              <option value="vllm">vLLM</option>
+              <option value="llamacpp">llama.cpp</option>
             </select>
           </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Cycle 2 - Consolidation</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Schedule</span>
-            <input class="r-input" id="mem-c2-schedule" type="text" placeholder="HH:MM">
+          <div class="r" id="mdl-apikey-row" style="display:none">
+            <span class="r-name-wide">Key</span>
+            <div class="r-pw-wrap">
+              <input class="r-input" id="mdl-apikey" type="password" placeholder="sk-...">
+              <button class="eye-toggle" onclick="togglePw('mdl-apikey',this)" type="button">&#9673;</button>
+            </div>
           </div>
           <div class="r">
-            <span class="r-name-wide">Max candidates</span>
-            <input class="r-input" id="mem-c2-maxcandidates" type="number" placeholder="100">
+            <span class="r-name-wide">Model</span>
+            <input class="r-input" id="mdl-model" type="text" placeholder="(default)">
           </div>
           <div class="r">
-            <span class="r-name-wide">Provider</span>
-            <select class="r-select" id="mem-c2-provider">
-              <option value="codex">codex</option>
-              <option value="claude">claude</option>
-              <option value="gemini">gemini</option>
-              <option value="ollama">ollama</option>
+            <span class="r-name-wide">Effort</span>
+            <select class="r-select" id="mdl-effort">
+              <option value="">(default)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
             </select>
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Cycle 3 - Pruning</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Schedule</span>
-            <input class="r-input" id="mem-c3-schedule" type="text" placeholder="HH:MM">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Day</span>
-            <select class="r-select" id="mem-c3-day">
-              <option value="monday">monday</option>
-              <option value="tuesday">tuesday</option>
-              <option value="wednesday">wednesday</option>
-              <option value="thursday">thursday</option>
-              <option value="friday">friday</option>
-              <option value="saturday">saturday</option>
-              <option value="sunday">sunday</option>
-            </select>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Threshold</span>
-            <input class="r-input" id="mem-c3-threshold" type="number" placeholder="0.3" step="0.1">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Grace days</span>
-            <input class="r-input" id="mem-c3-gracedays" type="number" placeholder="7">
           </div>
         </div>
       </div>
 
       <div class="save-area">
-        <div class="warn-msg" id="warn-memory-cycles"></div>
-        <button class="save" onclick="savePanel()">Save</button>
+        <div class="warn-msg" id="warn-models"></div>
+        <button class="save" onclick="saveConfig()">Save</button>
+      </div>
+    </div>
+
+    <!-- EMBEDDING -->
+    <div class="panel" id="panel-embedding">
+      <div class="hdr"><h1>Embedding</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">Embedding Model</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Type</span>
+            <select class="r-select" id="emb-type" onchange="toggleFields('emb')">
+              <option value="default">Default</option>
+              <option value="api">API</option>
+              <option value="local">Local</option>
+            </select>
+          </div>
+          <div class="r" id="emb-provider-row" style="display:none">
+            <span class="r-name-wide">Provider</span>
+            <select class="r-select" id="emb-provider">
+              <option value="ollama">Ollama</option>
+              <option value="lmstudio">LM Studio</option>
+              <option value="vllm">vLLM</option>
+              <option value="llamacpp">llama.cpp</option>
+            </select>
+          </div>
+          <div class="r" id="emb-apikey-row" style="display:none">
+            <span class="r-name-wide">Key</span>
+            <div class="r-pw-wrap">
+              <input class="r-input" id="emb-apikey" type="password" placeholder="sk-...">
+              <button class="eye-toggle" onclick="togglePw('emb-apikey',this)" type="button">&#9673;</button>
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Model</span>
+            <input class="r-input" id="emb-model" type="text" placeholder="bge-m3">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Effort</span>
+            <select class="r-select" id="emb-effort">
+              <option value="">(default)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-embedding"></div>
+        <button class="save" onclick="saveConfig()">Save</button>
+      </div>
+    </div>
+
+    <!-- RERANKER -->
+    <div class="panel" id="panel-reranker">
+      <div class="hdr"><h1>Reranker</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">Reranker Model</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name-wide">Type</span>
+            <select class="r-select" id="rnk-type" onchange="toggleFields('rnk')">
+              <option value="default">Default</option>
+              <option value="api">API</option>
+              <option value="local">Local</option>
+            </select>
+          </div>
+          <div class="r" id="rnk-provider-row" style="display:none">
+            <span class="r-name-wide">Provider</span>
+            <select class="r-select" id="rnk-provider">
+              <option value="ollama">Ollama</option>
+              <option value="lmstudio">LM Studio</option>
+              <option value="vllm">vLLM</option>
+              <option value="llamacpp">llama.cpp</option>
+            </select>
+          </div>
+          <div class="r" id="rnk-apikey-row" style="display:none">
+            <span class="r-name-wide">Key</span>
+            <div class="r-pw-wrap">
+              <input class="r-input" id="rnk-apikey" type="password" placeholder="sk-...">
+              <button class="eye-toggle" onclick="togglePw('rnk-apikey',this)" type="button">&#9673;</button>
+            </div>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Model</span>
+            <input class="r-input" id="rnk-model" type="text" placeholder="Qwen3-Reranker">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Effort</span>
+            <select class="r-select" id="rnk-effort">
+              <option value="">(default)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-reranker"></div>
+        <button class="save" onclick="saveConfig()">Save</button>
+      </div>
+    </div>
+
+    <!-- FILES -->
+    <div class="panel" id="panel-files">
+      <div class="hdr"><h1>Files</h1></div>
+
+      <div class="file-group">
+        <div class="file-label">bot.md<span class="file-hint">Bot persona and behavior</span></div>
+        <textarea class="file-area" id="file-bot"></textarea>
+      </div>
+
+      <div class="file-group">
+        <div class="file-label">user_profile.md<span class="file-hint">User information</span></div>
+        <textarea class="file-area" id="file-user-profile"></textarea>
+      </div>
+
+      <div class="file-group">
+        <div class="file-label">context.md<span class="file-hint">Auto-generated context</span></div>
+        <textarea class="file-area" id="file-context"></textarea>
+      </div>
+
+      <div class="save-area">
+        <div class="warn-msg" id="warn-files"></div>
+        <button class="save" onclick="saveFiles()">Save</button>
       </div>
     </div>
 
@@ -297,10 +480,12 @@ let config = null;
 // -- Init --
 window.addEventListener('load', async () => {
   try {
-    window.resizeTo(650, 600);
-    window.moveTo((screen.availWidth - 650) / 2, (screen.availHeight - 600) / 2);
+    window.resizeTo(700, 800);
+    window.moveTo((screen.availWidth - 700) / 2, (screen.availHeight - 800) / 2);
   } catch {}
   await loadConfig();
+  await loadFiles();
+  isDirty = false;
 });
 
 // -- Category switching --
@@ -311,77 +496,120 @@ function switchCat(el) {
   document.getElementById('panel-' + el.dataset.panel).classList.add('active');
 }
 
+// -- Toggle fields by prefix --
+function toggleFields(prefix) {
+  const type = document.getElementById(prefix + '-type').value;
+  const providerRow = document.getElementById(prefix + '-provider-row');
+  const apikeyRow = document.getElementById(prefix + '-apikey-row');
+  if (providerRow) providerRow.style.display = type === 'local' ? '' : 'none';
+  if (apikeyRow) apikeyRow.style.display = type === 'api' ? '' : 'none';
+}
+
+function togglePw(inputId, btn) {
+  const input = document.getElementById(inputId);
+  input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+function toggleMemory() {
+  const on = document.getElementById('set-enabled').checked;
+  document.getElementById('settings-body').classList.toggle('disabled', !on);
+}
+
 // -- Load config --
 async function loadConfig() {
   config = await fetch('/config').then(r => r.json()).catch(() => ({}));
-  populateMemory(config);
+  populateConfig(config);
 }
 
-// -- Populate --
-function populateMemory(cfg) {
-  const embed = cfg?.embedding || {};
-  const cycles = cfg?.cycles || {};
+function populateConfig(cfg) {
+  // Enabled
+  const enabled = cfg.enabled !== false;
+  document.getElementById('set-enabled').checked = enabled;
+  toggleMemory();
 
-  if (embed.provider) document.getElementById('mem-embed-provider').value = embed.provider;
-  if (embed.model) document.getElementById('mem-embed-model').value = embed.model;
+  // Settings
+  const c1 = cfg.cycle1 || {};
+  const c2 = cfg.cycle2 || {};
+  if (c1.interval) document.getElementById('set-retention').value = c1.interval;
+  if (c1.timeout != null) document.getElementById('set-timeout').value = Math.round(c1.timeout / 1000);
+  if (c2.schedule) document.getElementById('set-schedule').value = c2.schedule;
 
-  const c1 = cycles.cycle1 || {};
-  if (c1.interval) document.getElementById('mem-c1-interval').value = c1.interval;
-  if (c1.timeout) document.getElementById('mem-c1-timeout').value = c1.timeout;
-  if (c1.batchSize) document.getElementById('mem-c1-batchsize').value = c1.batchSize;
-  if (c1.maxDays) document.getElementById('mem-c1-maxdays').value = c1.maxDays;
-  if (c1.provider) document.getElementById('mem-c1-provider').value = c1.provider;
+  // Models (LLM)
+  const mdl = cfg.models || {};
+  if (mdl.type) document.getElementById('mdl-type').value = mdl.type;
+  if (mdl.provider) document.getElementById('mdl-provider').value = mdl.provider;
+  if (mdl.apiKey) document.getElementById('mdl-apikey').value = mdl.apiKey;
+  if (mdl.model) document.getElementById('mdl-model').value = mdl.model;
+  if (mdl.effort) document.getElementById('mdl-effort').value = mdl.effort;
+  toggleFields('mdl');
 
-  const c2 = cycles.cycle2 || {};
-  if (c2.schedule) document.getElementById('mem-c2-schedule').value = c2.schedule;
-  if (c2.maxCandidates) document.getElementById('mem-c2-maxcandidates').value = c2.maxCandidates;
-  if (c2.provider) document.getElementById('mem-c2-provider').value = c2.provider;
+  // Embedding
+  const emb = cfg.embedding || {};
+  if (emb.type) document.getElementById('emb-type').value = emb.type;
+  if (emb.provider) document.getElementById('emb-provider').value = emb.provider;
+  if (emb.apiKey) document.getElementById('emb-apikey').value = emb.apiKey;
+  if (emb.model) document.getElementById('emb-model').value = emb.model;
+  if (emb.effort) document.getElementById('emb-effort').value = emb.effort;
+  toggleFields('emb');
 
-  const c3 = cycles.cycle3 || {};
-  if (c3.schedule) document.getElementById('mem-c3-schedule').value = c3.schedule;
-  if (c3.day) document.getElementById('mem-c3-day').value = c3.day;
-  if (c3.threshold != null) document.getElementById('mem-c3-threshold').value = c3.threshold;
-  if (c3.graceDays != null) document.getElementById('mem-c3-gracedays').value = c3.graceDays;
+  // Reranker
+  const rnk = cfg.reranker || {};
+  if (rnk.type) document.getElementById('rnk-type').value = rnk.type;
+  if (rnk.provider) document.getElementById('rnk-provider').value = rnk.provider;
+  if (rnk.apiKey) document.getElementById('rnk-apikey').value = rnk.apiKey;
+  if (rnk.model) document.getElementById('rnk-model').value = rnk.model;
+  if (rnk.effort) document.getElementById('rnk-effort').value = rnk.effort;
+  toggleFields('rnk');
 }
 
-// -- Build data --
-function buildData() {
+// -- Build config data --
+function buildConfigData() {
+  const mdlType = document.getElementById('mdl-type').value;
+  const embType = document.getElementById('emb-type').value;
+  const rnkType = document.getElementById('rnk-type').value;
+  const timeoutSec = parseInt(document.getElementById('set-timeout').value);
+
   return {
-    embedding: {
-      provider: document.getElementById('mem-embed-provider').value,
-      model: document.getElementById('mem-embed-model').value || undefined,
+    enabled: document.getElementById('set-enabled').checked,
+    cycle1: {
+      interval: document.getElementById('set-retention').value,
+      timeout: timeoutSec > 0 ? timeoutSec * 1000 : undefined,
     },
-    cycles: {
-      cycle1: {
-        interval: document.getElementById('mem-c1-interval').value || undefined,
-        timeout: parseInt(document.getElementById('mem-c1-timeout').value) || undefined,
-        batchSize: parseInt(document.getElementById('mem-c1-batchsize').value) || undefined,
-        maxDays: parseInt(document.getElementById('mem-c1-maxdays').value) || undefined,
-        provider: document.getElementById('mem-c1-provider').value,
-      },
-      cycle2: {
-        schedule: document.getElementById('mem-c2-schedule').value || undefined,
-        maxCandidates: parseInt(document.getElementById('mem-c2-maxcandidates').value) || undefined,
-        provider: document.getElementById('mem-c2-provider').value,
-      },
-      cycle3: {
-        schedule: document.getElementById('mem-c3-schedule').value || undefined,
-        day: document.getElementById('mem-c3-day').value,
-        threshold: parseFloat(document.getElementById('mem-c3-threshold').value) || undefined,
-        graceDays: parseInt(document.getElementById('mem-c3-gracedays').value) || undefined,
-      },
+    cycle2: {
+      schedule: document.getElementById('set-schedule').value || undefined,
+    },
+    models: {
+      type: mdlType,
+      provider: mdlType === 'local' ? document.getElementById('mdl-provider').value : '',
+      apiKey: mdlType === 'api' ? document.getElementById('mdl-apikey').value : '',
+      model: document.getElementById('mdl-model').value,
+      effort: document.getElementById('mdl-effort').value,
+    },
+    embedding: {
+      type: embType,
+      provider: embType === 'local' ? document.getElementById('emb-provider').value : '',
+      apiKey: embType === 'api' ? document.getElementById('emb-apikey').value : '',
+      model: document.getElementById('emb-model').value,
+      effort: document.getElementById('emb-effort').value,
+    },
+    reranker: {
+      type: rnkType,
+      provider: rnkType === 'local' ? document.getElementById('rnk-provider').value : '',
+      apiKey: rnkType === 'api' ? document.getElementById('rnk-apikey').value : '',
+      model: document.getElementById('rnk-model').value,
+      effort: document.getElementById('rnk-effort').value,
     },
   };
 }
 
-// -- Save --
-async function savePanel() {
+// -- Save config --
+async function saveConfig() {
   const activePanel = document.querySelector('.panel.active');
-  const warnEl = activePanel?.querySelector('.warn-msg') || document.createElement('div');
+  const warnEl = activePanel?.querySelector('.warn-msg');
   const btn = activePanel?.querySelector('.save');
-  warnEl.textContent = '';
+  if (warnEl) warnEl.textContent = '';
 
-  const data = buildData();
+  const data = buildConfigData();
 
   if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
   try {
@@ -396,7 +624,47 @@ async function savePanel() {
       setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500);
     }
   } catch (e) {
-    warnEl.textContent = 'Save failed';
+    if (warnEl) warnEl.textContent = 'Save failed';
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+  }
+}
+
+// -- Files --
+async function loadFiles() {
+  try {
+    const data = await fetch('/files').then(r => r.json());
+    document.getElementById('file-bot').value = data['bot.md'] || '';
+    document.getElementById('file-user-profile').value = data['user_profile.md'] || '';
+    document.getElementById('file-context').value = data['context.md'] || '';
+  } catch {}
+}
+
+async function saveFiles() {
+  const panel = document.getElementById('panel-files');
+  const warnEl = panel.querySelector('.warn-msg');
+  const btn = panel.querySelector('.save');
+  if (warnEl) warnEl.textContent = '';
+
+  const data = {
+    'bot.md': document.getElementById('file-bot').value,
+    'user_profile.md': document.getElementById('file-user-profile').value,
+    'context.md': document.getElementById('file-context').value,
+  };
+
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  try {
+    await fetch('/files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    isDirty = false;
+    if (btn) {
+      btn.textContent = '\u2713 Saved'; btn.classList.add('done');
+      setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500);
+    }
+  } catch (e) {
+    if (warnEl) warnEl.textContent = 'Save failed';
     if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
   }
 }

@@ -77,6 +77,7 @@ export const RAW_PROVIDER_CAPABILITIES = {
   },
   github: {
     searchTypes: ['repositories', 'code', 'issues'],
+    readTypes: ['file', 'repo', 'issue', 'pulls'],
     siteSearch: false,
     xContentSearch: false,
     usageSupport: {
@@ -300,8 +301,7 @@ function extractXaiSearchCitations(payload) {
   }))
 }
 
-async function runGithubSearch({ query, maxResults, github_type = 'repositories' }) {
-  const endpoint = `https://api.github.com/search/${github_type}?q=${encodeURIComponent(query)}&per_page=${maxResults}`
+function getGithubHeaders() {
   const headers = {
     'Accept': 'application/vnd.github+json',
     'User-Agent': 'trib-search',
@@ -310,21 +310,174 @@ async function runGithubSearch({ query, maxResults, github_type = 'repositories'
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  return headers
+}
 
-  const response = await fetch(endpoint, { headers })
-
+function handleGithubError(response, context) {
   if (response.status === 401) {
-    throw new Error('GitHub code search requires authentication. Set GITHUB_TOKEN in config or environment. Use search with site:github.com as fallback.')
+    throw new Error(`GitHub ${context} requires authentication. Set GITHUB_TOKEN in config or environment.`)
   }
   if (response.status === 403) {
     throw new Error('GitHub API rate limit exceeded. Set GITHUB_TOKEN for higher limits.')
   }
+  if (response.status === 404) {
+    throw new Error(`GitHub ${context}: not found (404).`)
+  }
+  if (!response.ok) {
+    throw new Error(`GitHub ${context} failed: ${response.status}`)
+  }
+}
+
+async function runGithubRead({ owner, repo, path, ref }) {
+  if (!owner || !repo || !path) {
+    throw new Error('owner, repo, and path are required for GitHub file read.')
+  }
+  const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path}`)
+  if (ref) url.searchParams.set('ref', ref)
+
+  const response = await fetch(url, { headers: getGithubHeaders() })
+  handleGithubError(response, 'file read')
+
+  const payload = await response.json()
+  if (Array.isArray(payload)) {
+    // Directory listing
+    return {
+      results: payload.map(item => ({
+        title: item.name,
+        url: item.html_url || '',
+        snippet: `${item.type} — ${item.path}${item.size ? ` (${item.size} bytes)` : ''}`,
+        source: 'github',
+        publishedDate: null,
+        provider: 'github',
+      })),
+      usage: null,
+    }
+  }
+  if (payload.size > 1048576) {
+    throw new Error(`File too large (${payload.size} bytes). GitHub contents API does not support files over 1 MB.`)
+  }
+  const content = Buffer.from(payload.content || '', 'base64').toString('utf8')
+  return {
+    results: [{
+      title: `${payload.name} (${owner}/${repo})`,
+      url: payload.html_url || '',
+      snippet: content,
+      source: 'github',
+      publishedDate: null,
+      provider: 'github',
+      meta: { sha: payload.sha, size: payload.size, path: payload.path, encoding: payload.encoding },
+    }],
+    usage: null,
+  }
+}
+
+async function runGithubRepoInfo({ owner, repo }) {
+  if (!owner || !repo) {
+    throw new Error('owner and repo are required for GitHub repo info.')
+  }
+  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+    headers: getGithubHeaders(),
+  })
+  handleGithubError(response, 'repo info')
+
+  const r = await response.json()
+  return {
+    results: [{
+      title: r.full_name || `${owner}/${repo}`,
+      url: r.html_url || '',
+      snippet: r.description || '',
+      source: 'github',
+      publishedDate: r.updated_at || null,
+      provider: 'github',
+      meta: {
+        stars: r.stargazers_count,
+        forks: r.forks_count,
+        language: r.language,
+        default_branch: r.default_branch,
+        open_issues: r.open_issues_count,
+        license: r.license?.spdx_id || null,
+        topics: r.topics || [],
+        archived: r.archived,
+        created_at: r.created_at,
+      },
+    }],
+    usage: null,
+  }
+}
+
+async function runGithubIssueDetail({ owner, repo, number }) {
+  if (!owner || !repo || !number) {
+    throw new Error('owner, repo, and number are required for GitHub issue detail.')
+  }
+  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`, {
+    headers: getGithubHeaders(),
+  })
+  handleGithubError(response, 'issue detail')
+
+  const issue = await response.json()
+  return {
+    results: [{
+      title: issue.title || '',
+      url: issue.html_url || '',
+      snippet: issue.body || '',
+      source: 'github',
+      publishedDate: issue.created_at || null,
+      provider: 'github',
+      meta: {
+        state: issue.state,
+        labels: (issue.labels || []).map(l => l.name || l),
+        comments: issue.comments,
+        user: issue.user?.login,
+        is_pull_request: !!issue.pull_request,
+        closed_at: issue.closed_at,
+      },
+    }],
+    usage: null,
+  }
+}
+
+async function runGithubPulls({ owner, repo, state = 'open' }) {
+  if (!owner || !repo) {
+    throw new Error('owner and repo are required for GitHub pulls list.')
+  }
+  const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`)
+  url.searchParams.set('state', state)
+  url.searchParams.set('per_page', '10')
+
+  const response = await fetch(url, { headers: getGithubHeaders() })
+  handleGithubError(response, 'pulls list')
+
+  const pulls = await response.json()
+  return {
+    results: pulls.map(pr => ({
+      title: pr.title || '',
+      url: pr.html_url || '',
+      snippet: (pr.body || '').slice(0, 200),
+      source: 'github',
+      publishedDate: pr.created_at || null,
+      provider: 'github',
+      meta: {
+        number: pr.number,
+        state: pr.state,
+        user: pr.user?.login,
+        head: pr.head?.ref,
+        base: pr.base?.ref,
+        draft: pr.draft,
+        merged_at: pr.merged_at,
+      },
+    })),
+    usage: null,
+  }
+}
+
+async function runGithubSearch({ query, maxResults, github_type = 'repositories' }) {
+  const endpoint = `https://api.github.com/search/${github_type}?q=${encodeURIComponent(query)}&per_page=${maxResults}`
+  const response = await fetch(endpoint, { headers: getGithubHeaders() })
+
   if (response.status === 422) {
     throw new Error(`GitHub API validation error for query: ${query}`)
   }
-  if (!response.ok) {
-    throw new Error(`GitHub request failed: ${response.status}`)
-  }
+  handleGithubError(response, `${github_type} search`)
 
   const payload = await response.json()
   const items = payload?.items || []
@@ -437,8 +590,14 @@ async function searchWithProvider(provider, args) {
       return { results: await runTavilySearch(args), usage: null }
     case 'xai':
       return runXaiSearch(args)
-    case 'github':
+    case 'github': {
+      const ghType = args.github_type
+      if (ghType === 'file') return runGithubRead(args)
+      if (ghType === 'repo') return runGithubRepoInfo(args)
+      if (ghType === 'issue') return runGithubIssueDetail(args)
+      if (ghType === 'pulls') return runGithubPulls(args)
       return { results: await runGithubSearch(args), usage: null }
+    }
     default:
       throw new Error(`Unsupported raw provider: ${provider}`)
   }
@@ -451,9 +610,17 @@ export async function runRawSearch({
   type = 'web',
   maxResults = 5,
   github_type,
+  owner,
+  repo,
+  path,
+  number,
+  ref,
+  state,
 }) {
-  const query = buildQuery(keywords, site)
-  if (!query) {
+  // GitHub read types don't need a search query
+  const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(github_type)
+  const query = isGithubReadType ? (keywords ? buildQuery(keywords, site) : '') : buildQuery(keywords, site)
+  if (!query && !isGithubReadType) {
     throw new Error('keywords is required')
   }
 
@@ -464,7 +631,7 @@ export async function runRawSearch({
   const failures = []
   for (const provider of providers) {
     try {
-      const searchResult = await searchWithProvider(provider, { query, type, maxResults, github_type })
+      const searchResult = await searchWithProvider(provider, { query, type, maxResults, github_type, owner, repo, path, number, ref, state })
       return {
         mode: 'fallback',
         usedProvider: provider,

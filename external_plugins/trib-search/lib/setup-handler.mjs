@@ -83,7 +83,8 @@ function applyKeys(config, section, data) {
     if (!config[section]) config[section] = {}
     if (!config[section][target]) config[section][target] = {}
     if (!config[section][target][provider]) config[section][target][provider] = {}
-    config[section][target][provider].apiKey = value === 'clear' ? '' : value
+    const key = section === 'rawSearch' && provider === 'github' ? 'token' : 'apiKey'
+    config[section][target][provider][key] = value === 'clear' ? '' : value
   }
 }
 
@@ -126,7 +127,7 @@ export async function handleSetup(server) {
         ['serper', c.serper?.apiKey], ['brave', c.brave?.apiKey],
         ['perplexity', c.perplexity?.apiKey], ['tavily', c.tavily?.apiKey],
         ['firecrawl', c.firecrawl?.apiKey], ['xai', c.xai?.apiKey],
-        ['github', c.github?.apiKey],
+        ['github', c.github?.token],
       ]),
       requestedSchema: {
         type: 'object',

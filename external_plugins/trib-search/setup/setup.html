@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>trib-search setup</title>
+<title>trib-search config</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -38,11 +38,6 @@
     border-right: 1px solid var(--border);
     display: flex; flex-direction: column;
     padding: 16px 0; overflow-y: auto;
-  }
-  .cat-title {
-    font-size: 10px; font-weight: 600; color: var(--text-4);
-    text-transform: uppercase; letter-spacing: 1.2px;
-    padding: 12px 14px 6px; user-select: none;
   }
   .cat-item {
     padding: 8px 14px; cursor: pointer;
@@ -179,6 +174,23 @@
     transition: transform 0.2s;
   }
   .r-toggle.on::after { transform: translateX(18px); }
+  .input-group {
+    display: flex; flex: 1; align-items: center; gap: 0;
+  }
+  .input-group .r-input {
+    border-top-right-radius: 0; border-bottom-right-radius: 0;
+    border-right: none;
+  }
+  .input-group .eye-btn {
+    height: 34px; width: 36px; flex-shrink: 0;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 5px 5px 0;
+    color: var(--text-3); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; transition: color 0.15s;
+  }
+  .input-group .eye-btn:hover { color: var(--text-1); }
 
   .modes { display: flex; overflow: hidden; }
   .mode {
@@ -218,26 +230,6 @@
     margin-bottom: 4px; height: 16px;
   }
 
-  .dyn-list { padding: 8px 14px; }
-  .dyn-item {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
-    flex-wrap: wrap;
-  }
-  .dyn-item:last-child { border-bottom: none; }
-  .dyn-item .r-input { height: 30px; font-size: 11px; }
-  .dyn-add {
-    font-size: 12px; color: var(--accent); cursor: pointer;
-    padding: 4px 0; transition: color 0.15s;
-  }
-  .dyn-add:hover { color: #fff; }
-  .dyn-remove {
-    font-size: 14px; color: var(--text-4); cursor: pointer;
-    transition: color 0.15s; flex-shrink: 0; width: 20px;
-    text-align: center;
-  }
-  .dyn-remove:hover { color: #e05050; }
-
   .main::-webkit-scrollbar, .cat-bar::-webkit-scrollbar { width: 6px; }
   .main::-webkit-scrollbar-track, .cat-bar::-webkit-scrollbar-track { background: transparent; }
   .main::-webkit-scrollbar-thumb, .cat-bar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
@@ -249,13 +241,10 @@
 
   <!-- Category sidebar -->
   <div class="cat-bar">
-    <div class="cat-title">TRIB-SEARCH CONFIG</div>
     <div class="cat-item active" data-panel="search-apikeys" onclick="switchCat(this)">API Keys</div>
     <div class="cat-item" data-panel="search-providers" onclick="switchCat(this)">Providers</div>
-    <div class="cat-item" data-panel="search-aimodels" onclick="switchCat(this)">AI Models</div>
     <div class="cat-item" data-panel="search-behavior" onclick="switchCat(this)">Behavior</div>
     <div class="cat-item" data-panel="search-crawl" onclick="switchCat(this)">Crawl</div>
-    <div class="cat-item" data-panel="search-siterules" onclick="switchCat(this)">Site Rules</div>
   </div>
 
   <!-- Main -->
@@ -278,7 +267,10 @@
         <div class="sec-body">
           <div class="r">
             <span class="r-name">GitHub</span>
-            <input class="r-input" id="gh-token" type="text" placeholder="GITHUB TOKEN">
+            <div class="input-group">
+              <input class="r-input" id="gh-token" type="password" placeholder="GITHUB TOKEN">
+              <button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button>
+            </div>
             <a class="r-link" href="https://github.com/settings/tokens" target="_blank">Get token &#8599;</a>
           </div>
         </div>
@@ -314,87 +306,6 @@
       </div>
     </div>
 
-    <!-- AI MODELS -->
-    <div class="panel" id="panel-search-aimodels">
-      <div class="hdr">
-        <h1>AI Models</h1>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Grok</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="ai-grok-model" type="text" placeholder="grok-3-mini-fast">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">xSearch</span>
-            <div class="r-toggle" id="ai-grok-xsearch" onclick="this.classList.toggle('on')"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Claude</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="ai-claude-model" type="text" placeholder="sonnet">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Effort</span>
-            <select class="r-select" id="ai-claude-effort">
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Fast mode</span>
-            <div class="r-toggle" id="ai-claude-fast" onclick="this.classList.toggle('on')"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Codex</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="ai-codex-model" type="text" placeholder="o3">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Effort</span>
-            <select class="r-select" id="ai-codex-effort">
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-            </select>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Fast mode</span>
-            <div class="r-toggle" id="ai-codex-fast" onclick="this.classList.toggle('on')"></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Gemini</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="ai-gemini-model" type="text" placeholder="gemini-2.5-pro">
-          </div>
-        </div>
-      </div>
-
-      <div class="save-area">
-        <div class="warn-msg" id="warn-search-aimodels"></div>
-        <button class="save" onclick="savePanel()">Save</button>
-      </div>
-    </div>
-
     <!-- BEHAVIOR -->
     <div class="panel" id="panel-search-behavior">
       <div class="hdr">
@@ -422,7 +333,7 @@
         <div class="sec-body">
           <div class="r">
             <span class="r-name-wide">Max results</span>
-            <input class="r-input" id="beh-maxresults" type="number" placeholder="5">
+            <input class="r-input" id="beh-maxresults" type="number" placeholder="10">
           </div>
           <div class="r">
             <span class="r-name-wide">Request timeout</span>
@@ -458,7 +369,7 @@
           </div>
           <div class="r">
             <span class="r-name-wide">Max depth</span>
-            <input class="r-input" id="crawl-maxdepth" type="number" placeholder="1">
+            <input class="r-input" id="crawl-maxdepth" type="number" placeholder="2">
           </div>
           <div class="r">
             <span class="r-name-wide">Same domain only</span>
@@ -469,28 +380,6 @@
 
       <div class="save-area">
         <div class="warn-msg" id="warn-search-crawl"></div>
-        <button class="save" onclick="savePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- SITE RULES -->
-    <div class="panel" id="panel-search-siterules">
-      <div class="hdr">
-        <h1>Site Rules</h1>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Domain rules</div>
-        <div class="sec-body">
-          <div id="siterules-list" class="dyn-list"></div>
-          <div style="padding: 0 14px 8px;">
-            <span class="dyn-add" onclick="addSiteRule()">+ Add rule</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="save-area">
-        <div class="warn-msg" id="warn-search-siterules"></div>
         <button class="save" onclick="savePanel()">Save</button>
       </div>
     </div>
@@ -511,6 +400,18 @@ window.addEventListener('beforeunload', (e) => {
 // -- Globals --
 let config = null;
 let saveCounter = 0;
+
+// -- Eye toggle for password fields --
+function toggleVis(btn) {
+  const inp = btn.parentElement.querySelector('.r-input');
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    btn.innerHTML = '&#128065;&#8205;&#128488;';
+  } else {
+    inp.type = 'password';
+    btn.innerHTML = '&#128065;';
+  }
+}
 
 // -- Init --
 window.addEventListener('load', async () => {
@@ -541,7 +442,6 @@ const S = [
 const AI = [
   {id:'codex',name:'Codex',hint:'OpenAI',cli:1},
   {id:'claude',name:'Claude',hint:'Anthropic',cli:1},
-  {id:'grok',name:'Grok',hint:'xAI',cli:0,api:1},
   {id:'gemini',name:'Gemini',hint:'Google',cli:1},
 ];
 
@@ -556,15 +456,25 @@ function makeSearchRow(p) {
   chk.className = 'r-check'; d.appendChild(chk);
   const nm = document.createElement('span');
   nm.className = 'r-name'; nm.textContent = p.name; d.appendChild(nm);
+
+  const group = document.createElement('div');
+  group.className = 'input-group';
   const inp = document.createElement('input');
-  inp.className = 'r-input'; inp.type = 'text';
+  inp.className = 'r-input'; inp.type = 'password';
   inp.placeholder = 'API KEY'; inp.dataset.k = 's-' + p.id;
   inp.addEventListener('input', () => {
     if (inp.value.trim()) chk.classList.add('on');
     else chk.classList.remove('on');
     inp.classList.remove('warn', 'valid');
   });
-  d.appendChild(inp);
+  group.appendChild(inp);
+  const eyeBtn = document.createElement('button');
+  eyeBtn.className = 'eye-btn'; eyeBtn.type = 'button';
+  eyeBtn.innerHTML = '&#128065;';
+  eyeBtn.onclick = function() { toggleVis(this); };
+  group.appendChild(eyeBtn);
+  d.appendChild(group);
+
   chk.onclick = () => { chk.classList.toggle('on'); };
   if (p.url) {
     const a = document.createElement('a');
@@ -647,19 +557,6 @@ function setMode(el) {
   el.classList.add('on');
 }
 
-// -- Site rules --
-function addSiteRule(domain, search, scrape) {
-  const list = document.getElementById('siterules-list');
-  const item = document.createElement('div');
-  item.className = 'dyn-item';
-  item.innerHTML =
-    '<input class="r-input" type="text" placeholder="domain (e.g. x.com)" value="' + (domain || '') + '" style="width:120px;flex:none;" data-f="sr-domain">' +
-    '<input class="r-input" type="text" placeholder="search handler" value="' + (search || '') + '" data-f="sr-search">' +
-    '<input class="r-input" type="text" placeholder="scrape handler" value="' + (scrape || '') + '" data-f="sr-scrape">' +
-    '<span class="dyn-remove" onclick="this.parentElement.remove()">&times;</span>';
-  list.appendChild(item);
-}
-
 // -- Load config --
 async function loadConfig() {
   const [cfgRes, cliRes] = await Promise.all([
@@ -705,11 +602,14 @@ function populateSearch(cfg) {
     ordered.forEach(r => sec.appendChild(r));
   }
 
-  if (aiPriority.length) {
+  // Filter out grok from AI priority if present in saved config
+  const filteredAiPriority = aiPriority.filter(id => id !== 'grok');
+
+  if (filteredAiPriority.length) {
     const sec = document.getElementById('ai-priority-sec');
     const rows = Array.from(sec.querySelectorAll('.r'));
     const ordered = [];
-    aiPriority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); });
+    filteredAiPriority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); });
     rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); });
     ordered.forEach(r => sec.appendChild(r));
   }
@@ -729,26 +629,8 @@ function populateSearch(cfg) {
     }
   });
 
-  const ghKey = creds?.github?.apiKey || '';
+  const ghKey = creds?.github?.token || '';
   if (ghKey) document.getElementById('gh-token').value = ghKey;
-
-  if (aiProfiles.grok) {
-    if (aiProfiles.grok.model) document.getElementById('ai-grok-model').value = aiProfiles.grok.model;
-    if (aiProfiles.grok.xSearchEnabled) document.getElementById('ai-grok-xsearch').classList.add('on');
-  }
-  if (aiProfiles.claude) {
-    if (aiProfiles.claude.model) document.getElementById('ai-claude-model').value = aiProfiles.claude.model;
-    if (aiProfiles.claude.effort) document.getElementById('ai-claude-effort').value = aiProfiles.claude.effort;
-    if (aiProfiles.claude.fastMode) document.getElementById('ai-claude-fast').classList.add('on');
-  }
-  if (aiProfiles.codex) {
-    if (aiProfiles.codex.model) document.getElementById('ai-codex-model').value = aiProfiles.codex.model;
-    if (aiProfiles.codex.effort) document.getElementById('ai-codex-effort').value = aiProfiles.codex.effort;
-    if (aiProfiles.codex.fastMode) document.getElementById('ai-codex-fast').classList.add('on');
-  }
-  if (aiProfiles.gemini) {
-    if (aiProfiles.gemini.model) document.getElementById('ai-gemini-model').value = aiProfiles.gemini.model;
-  }
 
   const mode = cfg?.defaultMode || 'search_first';
   document.querySelectorAll('.mode').forEach(m => m.classList.toggle('on', m.dataset.m === mode));
@@ -762,11 +644,6 @@ function populateSearch(cfg) {
     if (cfg.crawl.sameDomainOnly === false) document.getElementById('crawl-samedomain').classList.remove('on');
   }
 
-  if (cfg?.siteRules) {
-    for (const [domain, rule] of Object.entries(cfg.siteRules)) {
-      addSiteRule(domain, rule.search || '', rule.scrape || '');
-    }
-  }
 }
 
 function populateCli(cli) {
@@ -809,26 +686,6 @@ function buildData() {
   });
   data.aiPriority = aiPriority;
 
-  data.aiModels = {
-    grok: {
-      model: document.getElementById('ai-grok-model').value,
-      xSearchEnabled: document.getElementById('ai-grok-xsearch').classList.contains('on'),
-    },
-    claude: {
-      model: document.getElementById('ai-claude-model').value,
-      effort: document.getElementById('ai-claude-effort').value,
-      fastMode: document.getElementById('ai-claude-fast').classList.contains('on'),
-    },
-    codex: {
-      model: document.getElementById('ai-codex-model').value,
-      effort: document.getElementById('ai-codex-effort').value,
-      fastMode: document.getElementById('ai-codex-fast').classList.contains('on'),
-    },
-    gemini: {
-      model: document.getElementById('ai-gemini-model').value,
-    },
-  };
-
   data.mode = document.querySelector('.mode.on')?.dataset.m || 'search_first';
   data.maxResults = parseInt(document.getElementById('beh-maxresults').value) || undefined;
   data.requestTimeoutMs = parseInt(document.getElementById('beh-timeout').value) || undefined;
@@ -839,14 +696,6 @@ function buildData() {
     maxDepth: parseInt(document.getElementById('crawl-maxdepth').value) || undefined,
     sameDomainOnly: document.getElementById('crawl-samedomain').classList.contains('on'),
   };
-
-  data.siteRules = {};
-  document.querySelectorAll('#siterules-list .dyn-item').forEach(item => {
-    const domain = item.querySelector('[data-f="sr-domain"]')?.value.trim();
-    const search = item.querySelector('[data-f="sr-search"]')?.value.trim();
-    const scrape = item.querySelector('[data-f="sr-scrape"]')?.value.trim();
-    if (domain) data.siteRules[domain] = { search, scrape };
-  });
 
   data.github = document.getElementById('gh-token').value;
 

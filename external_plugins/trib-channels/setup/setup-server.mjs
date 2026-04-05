@@ -13,6 +13,7 @@ const pluginsData = join(home, '.claude', 'plugins', 'data');
 
 const DATA_DIR = join(pluginsData, 'trib-channels-trib-plugin');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
+const BOT_PATH = join(DATA_DIR, 'bot.json');
 const PORT = 3458;
 const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');
 
@@ -49,14 +50,23 @@ function mergeConfig(existing, data) {
   if (data.access) config.access = data.access;
   if (data.voice) config.voice = data.voice;
   if (data.schedules) config.schedules = data.schedules;
-  if (data.proactive) config.proactive = data.proactive;
+  if (data.autotalk) config.autotalk = data.autotalk;
   if (data.events) config.events = data.events;
-  if (data.contextFiles) config.contextFiles = data.contextFiles;
-  if (data.language) config.language = data.language;
-  if (data.embedding) config.embedding = data.embedding;
   if (data.webhook) config.webhook = data.webhook;
 
   return config;
+}
+
+// -- CLI check --
+
+function checkCli(name) {
+  return new Promise(resolve => {
+    const cmd = isWin ? `where ${name}` : `which ${name}`;
+    exec(cmd, (err, stdout) => {
+      if (err || !stdout.trim()) resolve({ installed: false });
+      else resolve({ installed: true, path: stdout.trim().split(/\r?\n/)[0] });
+    });
+  });
 }
 
 // -- HTTP body reader --
@@ -93,10 +103,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/config') {
     const config = readConfig();
-    const botPath = join(DATA_DIR, 'bot.json');
-    const profilePath = join(DATA_DIR, 'profile.json');
-    config._bot = readJsonFile(botPath);
-    config._profile = readJsonFile(profilePath);
+    const bot = readJsonFile(BOT_PATH);
+    config._bot = bot;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(config));
     return;
@@ -106,9 +114,7 @@ const server = http.createServer(async (req, res) => {
     const data = await readBody(req);
 
     const botData = data._bot;
-    const profileData = data._profile;
     delete data._bot;
-    delete data._profile;
 
     const existing = readConfig();
     const merged = mergeConfig(existing, data);
@@ -116,20 +122,22 @@ const server = http.createServer(async (req, res) => {
     console.log('  Config saved: channels');
 
     if (botData) {
-      const botPath = join(DATA_DIR, 'bot.json');
-      const existingBot = readJsonFile(botPath);
-      writeJsonFile(botPath, { ...existingBot, ...botData });
+      const existingBot = readJsonFile(BOT_PATH);
+      writeJsonFile(BOT_PATH, { ...existingBot, ...botData });
       console.log('  Config saved: bot.json');
     }
-    if (profileData) {
-      const profilePath = join(DATA_DIR, 'profile.json');
-      const existingProfile = readJsonFile(profilePath);
-      writeJsonFile(profilePath, { ...existingProfile, ...profileData });
-      console.log('  Config saved: profile.json');
-    }
-
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/cli-check') {
+    const [whisper, ngrok] = await Promise.all([
+      checkCli('whisper'),
+      checkCli('ngrok'),
+    ]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ whisper, ngrok }));
     return;
   }
 
@@ -169,7 +177,7 @@ server.listen(PORT, () => {
       process.env['PROGRAMFILES(X86)'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
     ];
     const browser = paths.find(p => existsSync(p));
-    if (browser) exec(`"${browser}" --app=${appUrl} --window-size=800,900 --new-window`);
+    if (browser) exec(`"${browser}" --app=${appUrl} --window-size=850,900 --new-window`);
     else exec(`start ${appUrl}`);
   } else if (process.platform === 'darwin') {
     exec(`open ${appUrl}`);

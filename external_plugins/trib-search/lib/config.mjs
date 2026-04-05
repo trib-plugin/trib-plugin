@@ -13,7 +13,7 @@ export const CLI_HOME_DIR = path.join(DATA_DIR, 'cli-home')
 export const DEFAULT_CONFIG = {
   rawSearch: {
     priority: ['serper', 'brave', 'perplexity', 'firecrawl', 'tavily', 'xai'],
-    maxResults: 5,
+    maxResults: 10,
     credentials: {
       serper: {
         apiKey: '',
@@ -34,7 +34,7 @@ export const DEFAULT_CONFIG = {
         apiKey: '',
       },
       github: {
-        apiKey: '',
+        token: '',
       },
     },
   },
@@ -233,7 +233,9 @@ export function getRawSearchMaxResults(config) {
 }
 
 export function getRawProviderApiKey(config, provider) {
-  return config.rawSearch?.credentials?.[provider]?.apiKey || ''
+  const cred = config.rawSearch?.credentials?.[provider]
+  if (provider === 'github') return cred?.token || ''
+  return cred?.apiKey || ''
 }
 
 export function getRawProviderCredentialSource(config, provider, env = process.env) {

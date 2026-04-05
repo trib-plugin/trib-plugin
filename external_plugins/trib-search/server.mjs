@@ -55,13 +55,26 @@ import { handleSetup } from './lib/setup-handler.mjs'
 ensureDataDir()
 
 const searchArgsSchema = z.object({
-  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
   site: z.string().optional(),
   type: z.enum(['web', 'news', 'images']).optional(),
-  github_type: z.enum(['repositories', 'code', 'issues']).optional().describe('GitHub search type (only used with github provider)'),
+  github_type: z.enum(['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls']).optional().describe('GitHub type. Search: repositories/code/issues. Read: file (read file contents), repo (repo info), issue (issue/PR detail), pulls (PR list).'),
+  owner: z.string().optional().describe('GitHub owner (org or user). Required for github_type: file, repo, issue, pulls.'),
+  repo: z.string().optional().describe('GitHub repository name. Required for github_type: file, repo, issue, pulls.'),
+  path: z.string().optional().describe('File path within repo. Required for github_type: file.'),
+  number: z.number().int().optional().describe('Issue or PR number. Required for github_type: issue.'),
+  ref: z.string().optional().describe('Git ref (branch, tag, SHA). Optional for github_type: file.'),
+  state: z.enum(['open', 'closed', 'all']).optional().describe('Filter state for github_type: pulls. Default: open.'),
   maxResults: z.number().int().min(1).max(20).optional(),
   mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional().describe('Search strategy: search_first (default) = raw search first with AI fallback, ai_first = AI search first with raw fallback, ai_only = AI search only'),
-})
+}).refine(
+  data => {
+    const isGithubRead = ['file', 'repo', 'issue', 'pulls'].includes(data.github_type)
+    if (isGithubRead) return true
+    return !!data.keywords
+  },
+  { message: 'keywords is required for non-GitHub-read operations' },
+)
 
 const aiSearchArgsSchema = z.object({
   query: z.string().min(1),
@@ -90,10 +103,16 @@ const crawlArgsSchema = z.object({
 const batchItemSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('search'),
-    keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+    keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
     site: z.string().optional(),
     type: z.enum(['web', 'news', 'images']).optional(),
-    github_type: z.enum(['repositories', 'code', 'issues']).optional(),
+    github_type: z.enum(['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls']).optional(),
+    owner: z.string().optional(),
+    repo: z.string().optional(),
+    path: z.string().optional(),
+    number: z.number().int().optional(),
+    ref: z.string().optional(),
+    state: z.enum(['open', 'closed', 'all']).optional(),
     maxResults: z.number().int().min(1).max(20).optional(),
     mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional(),
   }),
@@ -505,6 +524,33 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       }
 
       // search_first mode (default) or ai_first fallback to raw
+
+      // GitHub read types: route directly to github provider
+      const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
+      if (isGithubReadType) {
+        try {
+          const response = await runRawSearch({
+            ...args,
+            keywords: args.keywords || '',
+            providers: ['github'],
+            maxResults: args.maxResults || getRawSearchMaxResults(config),
+          })
+          saveUsageState(usageState)
+          return formattedText('search', {
+            tool: 'search',
+            provider: 'github',
+            github_type: args.github_type,
+            response,
+          })
+        } catch (error) {
+          return { ...jsonText({
+            error: error instanceof Error ? error.message : String(error),
+            tool: 'search',
+            github_type: args.github_type,
+          }), isError: true }
+        }
+      }
+
       const siteRule = args.site ? getSiteRule(config, args.site) : null
       if (siteRule?.search === 'xai.x_search') {
         const response = await runRawSearch({

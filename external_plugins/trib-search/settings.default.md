@@ -16,6 +16,13 @@
 - `crawl` is for multi-page collection.
 - `x.com` is not a reliable scrape target. Route both search and scrape to `x_search` via `xai`.
 - GitHub repository, code, or issue searches must be routed to `github` provider with the appropriate `github_type`.
+- GitHub read operations use dedicated `github_type` values:
+  - `file`: Read file contents from a repo. Requires `owner`, `repo`, `path`. Optional: `ref` (branch/tag/SHA).
+  - `repo`: Get repository info (description, stars, language, default_branch). Requires `owner`, `repo`.
+  - `issue`: Get issue or PR detail (title, body, state, labels). Requires `owner`, `repo`, `number`.
+  - `pulls`: List pull requests. Requires `owner`, `repo`. Optional: `state` (open/closed/all, default: open).
+- When GITHUB_TOKEN is configured and the query is about code, repositories, or GitHub-specific content, prefer `github` provider with appropriate `github_type` over general web search.
+- For reading specific files from GitHub repos, use `github_type: "file"` with owner/repo/path instead of scraping raw URLs.
 - GitHub code search requires GITHUB_TOKEN. If unavailable, use `serper` or `brave` with `site:github.com` instead.
 - GitHub repository and issue searches work without authentication.
 - GitHub code search has a strict rate limit of 10 requests per minute.

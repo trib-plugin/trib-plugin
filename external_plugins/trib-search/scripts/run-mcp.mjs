@@ -152,7 +152,7 @@ const tavilyApiKey =
 
 const githubToken =
   localConfig?.githubToken ||
-  readNestedKey(localConfig, ['rawSearch', 'credentials', 'github', 'apiKey'])
+  readNestedKey(localConfig, ['rawSearch', 'credentials', 'github', 'token'])
 
 // Dev: auto-sync marketplace source to cache if newer
 function devSyncFromMarketplace() {

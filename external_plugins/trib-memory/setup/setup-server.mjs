@@ -9,9 +9,9 @@ import http from 'http';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
-const pluginsData = join(home, '.claude', 'plugins', 'data');
-
-const CONFIG_PATH = join(pluginsData, 'trib-memory-trib-plugin', 'config.json');
+const DATA_DIR = join(home, '.claude', 'plugins', 'data', 'trib-memory-trib-plugin');
+const CONFIG_PATH = join(DATA_DIR, 'config.json');
+const FILES_DIR = join(DATA_DIR, 'history');
 const PORT = 3457;
 const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');
 
@@ -32,43 +32,36 @@ function writeConfig(data) { writeJsonFile(CONFIG_PATH, data); }
 
 // -- Merge logic --
 
-function mergeConfig(existing, data) {
+function mergeConfig(existing, incoming) {
   const config = { ...existing };
 
-  if (data.embedding) {
-    if (!config.embedding) config.embedding = {};
-    if (data.embedding.provider) config.embedding.provider = data.embedding.provider;
-    if (data.embedding.model) config.embedding.model = data.embedding.model;
+  // enabled
+  if (incoming.enabled !== undefined) config.enabled = incoming.enabled;
+
+  // cycle1
+  if (incoming.cycle1) {
+    if (!config.cycle1) config.cycle1 = {};
+    if (incoming.cycle1.interval !== undefined) config.cycle1.interval = incoming.cycle1.interval;
+    if (incoming.cycle1.timeout !== undefined) config.cycle1.timeout = incoming.cycle1.timeout;
   }
 
-  if (data.cycles) {
-    if (!config.cycles) config.cycles = {};
+  // cycle2
+  if (incoming.cycle2) {
+    if (!config.cycle2) config.cycle2 = {};
+    if (incoming.cycle2.schedule !== undefined) config.cycle2.schedule = incoming.cycle2.schedule;
+  }
 
-    if (data.cycles.cycle1) {
-      if (!config.cycles.cycle1) config.cycles.cycle1 = {};
-      const c = data.cycles.cycle1;
-      if (c.interval !== undefined) config.cycles.cycle1.interval = c.interval;
-      if (c.timeout !== undefined) config.cycles.cycle1.timeout = c.timeout;
-      if (c.batchSize !== undefined) config.cycles.cycle1.batchSize = c.batchSize;
-      if (c.maxDays !== undefined) config.cycles.cycle1.maxDays = c.maxDays;
-      if (c.provider) config.cycles.cycle1.provider = c.provider;
-    }
-
-    if (data.cycles.cycle2) {
-      if (!config.cycles.cycle2) config.cycles.cycle2 = {};
-      const c = data.cycles.cycle2;
-      if (c.schedule !== undefined) config.cycles.cycle2.schedule = c.schedule;
-      if (c.maxCandidates !== undefined) config.cycles.cycle2.maxCandidates = c.maxCandidates;
-      if (c.provider) config.cycles.cycle2.provider = c.provider;
-    }
-
-    if (data.cycles.cycle3) {
-      if (!config.cycles.cycle3) config.cycles.cycle3 = {};
-      const c = data.cycles.cycle3;
-      if (c.schedule !== undefined) config.cycles.cycle3.schedule = c.schedule;
-      if (c.day) config.cycles.cycle3.day = c.day;
-      if (c.threshold !== undefined) config.cycles.cycle3.threshold = c.threshold;
-      if (c.graceDays !== undefined) config.cycles.cycle3.graceDays = c.graceDays;
+  // models, embedding, reranker
+  for (const section of ['models', 'embedding', 'reranker']) {
+    if (incoming[section]) {
+      if (!config[section]) config[section] = {};
+      const src = incoming[section];
+      const dst = config[section];
+      if (src.type !== undefined) dst.type = src.type;
+      if (src.provider !== undefined) dst.provider = src.provider;
+      if (src.apiKey !== undefined) dst.apiKey = src.apiKey;
+      if (src.model !== undefined) dst.model = src.model;
+      if (src.effort !== undefined) dst.effort = src.effort;
     }
   }
 
@@ -119,7 +112,32 @@ const server = http.createServer(async (req, res) => {
     const existing = readConfig();
     const merged = mergeConfig(existing, data);
     writeConfig(merged);
-    console.log('  Config saved: memory');
+    console.log('  Config saved');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/files') {
+    const result = {};
+    for (const name of ['bot.md', 'user_profile.md', 'context.md']) {
+      try { result[name] = readFileSync(join(FILES_DIR, name), 'utf8'); }
+      catch { result[name] = ''; }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/files') {
+    const data = await readBody(req);
+    mkdirSync(FILES_DIR, { recursive: true });
+    for (const name of ['bot.md', 'user_profile.md', 'context.md']) {
+      if (data[name] != null) {
+        writeFileSync(join(FILES_DIR, name), data[name], 'utf8');
+      }
+    }
+    console.log('  Files saved: bot.md, user_profile.md, context.md');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -147,7 +165,7 @@ const idleCheck = setInterval(() => {
 }, 10000);
 
 server.listen(PORT, () => {
-  console.log(`\n  trib-memory setup`);
+  console.log(`\n  trib-memory config`);
   console.log(`  http://localhost:${PORT}\n`);
 
   const appUrl = `http://localhost:${PORT}`;
@@ -161,7 +179,7 @@ server.listen(PORT, () => {
       process.env['PROGRAMFILES(X86)'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
     ];
     const browser = paths.find(p => existsSync(p));
-    if (browser) exec(`"${browser}" --app=${appUrl} --window-size=650,600 --new-window`);
+    if (browser) exec(`"${browser}" --app=${appUrl} --window-size=700,800 --new-window`);
     else exec(`start ${appUrl}`);
   } else if (process.platform === 'darwin') {
     exec(`open ${appUrl}`);

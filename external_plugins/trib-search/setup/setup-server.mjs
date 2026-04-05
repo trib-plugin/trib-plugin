@@ -135,7 +135,8 @@ function mergeConfig(existing, data) {
   if (!config.aiSearch.profiles) config.aiSearch.profiles = {};
 
   if (data.aiPriority?.length) {
-    config.aiSearch.priority = data.aiPriority;
+    // Filter out grok from saved priority
+    config.aiSearch.priority = data.aiPriority.filter(id => id !== 'grok');
   }
 
   if (data.aiModels) {
@@ -151,7 +152,7 @@ function mergeConfig(existing, data) {
 
   if (data.github !== undefined) {
     if (!config.rawSearch.credentials.github) config.rawSearch.credentials.github = {};
-    config.rawSearch.credentials.github.apiKey = data.github;
+    config.rawSearch.credentials.github.token = data.github;
   }
 
   if (data.mode) config.defaultMode = data.mode;
@@ -163,6 +164,7 @@ function mergeConfig(existing, data) {
     config.crawl = { ...config.crawl, ...data.crawl };
   }
 
+  // siteRules: preserve existing values (not exposed in UI)
   if (data.siteRules) {
     config.siteRules = data.siteRules;
   }

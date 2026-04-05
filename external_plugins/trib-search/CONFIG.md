@@ -53,9 +53,9 @@ Each provider has a `credentials.<provider>.apiKey` field. API keys can also be 
 | `firecrawl` | `rawSearch.credentials.firecrawl.apiKey` | `FIRECRAWL_API_KEY` | Firecrawl search + scrape |
 | `tavily` | `rawSearch.credentials.tavily.apiKey` | `TAVILY_API_KEY` | Tavily Search API |
 | `xai` | `rawSearch.credentials.xai.apiKey` | `XAI_API_KEY`, `GROK_API_KEY` | xAI / Grok (also used for x_search) |
-| `github` | `rawSearch.credentials.github.apiKey` | `GITHUB_TOKEN` | GitHub Search API (code search requires auth) |
+| `github` | `rawSearch.credentials.github.token` | `GITHUB_TOKEN` | GitHub Search API (code search requires auth) |
 
-**Credential resolution order**: config.json `apiKey` field > environment variable. If both exist, config takes precedence.
+**Credential resolution order**: config.json credential field (`apiKey`, or `token` for github) > environment variable. If both exist, config takes precedence.
 
 **Note**: `github` is not included in the default `priority` array. It is only used when explicitly routed via `site:github.com` or siteRules.
 
@@ -240,7 +240,7 @@ Old flat-key config formats are automatically normalized to the current structur
       "firecrawl": { "apiKey": "YOUR_FIRECRAWL_KEY" },
       "tavily": { "apiKey": "YOUR_TAVILY_KEY" },
       "xai": { "apiKey": "YOUR_XAI_KEY" },
-      "github": { "apiKey": "YOUR_GITHUB_TOKEN" }
+      "github": { "token": "YOUR_GITHUB_TOKEN" }
     }
   },
   "aiSearch": {
