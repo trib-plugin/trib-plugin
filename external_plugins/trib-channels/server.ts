@@ -1006,13 +1006,8 @@ backend.onModalRequest = async (rawInteraction: any) => {
 }
 
 backend.onInteraction = (interaction: BackendInteraction) => {
-  if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
-    void refreshBridgeOwnership()
-    return
-  }
-  scheduler.noteActivity()
-
   // ── Permission button handling (perm-{uuid}-{action}) ──
+  // Always handle regardless of bridge state — permission file writes don't depend on bridge ownership.
   if (interaction.customId?.startsWith('perm-')) {
     const match = interaction.customId.match(/^perm-([0-9a-f]{32})-(allow|session|deny)$/)
     if (!match) return
@@ -1022,7 +1017,10 @@ backend.onInteraction = (interaction: BackendInteraction) => {
     const access = config.access
 
     // Ignore permission actions when access settings are not available.
-    if (!access) return
+    if (!access) {
+      fs.appendFileSync(_bootLog, `[${localTimestamp()}] perm interaction dropped: no access config\n`)
+      return
+    }
 
     if (access.allowFrom && !access.allowFrom.includes(interaction.userId)) {
       process.stderr.write(`trib-channels: perm button rejected — user ${interaction.userId} not in allowFrom\n`)
@@ -1043,6 +1041,13 @@ backend.onInteraction = (interaction: BackendInteraction) => {
 
     return  // do NOT forward to notification
   }
+
+  // Bridge ownership guard — only for non-permission interactions
+  if (!bridgeRuntimeConnected || !getBridgeOwnershipSnapshot().owned) {
+    void refreshBridgeOwnership()
+    return
+  }
+  scheduler.noteActivity()
 
   // ── Bot button handling ──
   if (interaction.customId === 'stop_task') {
@@ -2118,6 +2123,7 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
+  writeBridgeState(false)
   try { process.stderr.write('trib-channels: shutting down\n') } catch { /* EPIPE */ }
   // Hard deadline: exit after 3s no matter what
   setTimeout(() => process.exit(0), 3000)

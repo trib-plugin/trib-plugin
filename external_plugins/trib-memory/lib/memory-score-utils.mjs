@@ -28,7 +28,8 @@ export function getTagFactor(importance) {
 // ── Importance boost (search time) ──────────────────────────────────
 
 export function computeImportanceBoost(importance) {
-  return 1.0
+  const factor = getTagFactor(importance)
+  return 1 + (1 - factor) * 0.1
 }
 
 // ── Exact match bonus ───────────────────────────────────────────────
@@ -48,5 +49,16 @@ export function computeExactMatchBonus(content, query, baseScore) {
 export function computeFinalScore(baseScore, item, query, _options = {}) {
   const importanceBoost = computeImportanceBoost(item.importance)
   const exactBonus = computeExactMatchBonus(item.content, query, baseScore)
-  return (baseScore + exactBonus) * importanceBoost
+
+  // Time decay modulated by importance
+  let timeFactor = 1.0
+  if (item.ts) {
+    const ageDays = Math.max(0, (Date.now() - new Date(item.ts).getTime()) / 86400000)
+    const decay = 1 / Math.pow(1 + ageDays / 30, 0.3)
+    const tagFactor = getTagFactor(item.importance)
+    const actualLoss = (1 - decay) * tagFactor
+    timeFactor = 1 - actualLoss
+  }
+
+  return (baseScore + exactBonus) * importanceBoost * timeFactor
 }

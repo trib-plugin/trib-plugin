@@ -284,8 +284,76 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
   const maxPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MAX_MEMORY_CANDIDATES_PER_DAY))
   const candidates = await prepareConsolidationCandidates(store.getCandidatesForDate(dayKey), maxPerBatch, store.getEpisodesForDate(dayKey))
   if (candidates.length === 0) return
+
+  // Attempt LLM consolidation with the full consolidation prompt
+  let llmSuccess = false
+  try {
+    const promptPath = join(resourceDir(), 'defaults', 'memory-consolidate-prompt.md')
+    if (existsSync(promptPath)) {
+      const template = readFileSync(promptPath, 'utf8')
+      const candidatesText = candidates.map((c, i) => {
+        const lines = [`Case ${i + 1}:`, `- content: ${c.content}`]
+        if (c.span_content && c.span_content !== c.content) lines.push(`- Context:\n${c.span_content}`)
+        return lines.join('\n')
+      }).join('\n\n')
+      const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidatesText)
+      const provider = options.provider || readMainConfig()?.memory?.cycle2?.provider || DEFAULT_CYCLE_PROVIDER
+      const raw = await resolveCycleLlmOutput(prompt, _ws, {
+        ...options,
+        mode: 'consolidate',
+        dayKey,
+        candidates,
+        provider,
+        timeout: options.timeout ?? 180000,
+      })
+      const parsed = extractJsonObject(raw)
+      if (parsed) {
+        const ts = new Date().toISOString()
+        // Map facts to classifications
+        const classificationRows = []
+        for (const fact of (parsed.facts ?? [])) {
+          if (!fact?.text) continue
+          const caseMatch = String(fact.text).match(/Case\s+(\d+)/i)
+          const caseIdx = caseMatch ? Number(caseMatch[1]) - 1 : -1
+          const episodeId = caseIdx >= 0 && caseIdx < candidates.length
+            ? candidates[caseIdx].episode_id
+            : candidates[0]?.episode_id
+          classificationRows.push({
+            episode_id: Number(episodeId ?? 0),
+            classification: String(fact.type ?? 'fact').trim(),
+            topic: String(fact.slot || fact.workstream || 'general').trim(),
+            element: String(fact.text).trim(),
+            importance: String(fact.type ?? '').trim(),
+            confidence: Number(fact.confidence ?? 0.6),
+          })
+        }
+        // Map tasks to classifications
+        for (const task of (parsed.tasks ?? [])) {
+          if (!task?.title) continue
+          classificationRows.push({
+            episode_id: Number(candidates[0]?.episode_id ?? 0),
+            classification: 'task',
+            topic: String(task.workstream || task.title).trim().slice(0, 80),
+            element: String(task.title).trim() + (task.details ? ` | ${task.details}` : ''),
+            importance: task.priority === 'high' ? 'goal' : 'directive',
+            confidence: Number(task.confidence ?? 0.5),
+          })
+        }
+        if (classificationRows.length > 0) {
+          store.upsertClassifications(classificationRows, ts, null)
+          llmSuccess = true
+          process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${candidates.length}, llm_classifications=${classificationRows.length}\n`)
+        }
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`[memory-cycle] consolidation LLM failed for ${dayKey}: ${e.message}, falling back to classification-only\n`)
+  }
+
   store.markCandidateIdsConsolidated(candidates.map(item => item.id))
-  process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${candidates.length}, mode=classification-only\n`)
+  if (!llmSuccess) {
+    process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${candidates.length}, mode=classification-only\n`)
+  }
 }
 
 export async function consolidateRecent(dayKeys, ws, options = {}) {

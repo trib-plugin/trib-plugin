@@ -87,7 +87,7 @@ export function readMemoryOpsPolicy(mainConfig = {}) {
 
   return {
     features: {
-      reranker: featuresConfig.reranker === true,
+      reranker: featuresConfig.reranker !== false,
       temporalParser: featuresConfig.temporalParser === true,
     },
     startup: {

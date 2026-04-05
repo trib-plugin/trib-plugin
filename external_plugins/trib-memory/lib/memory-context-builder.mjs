@@ -164,39 +164,38 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
     } catch {}
   }
 
-  // Passive mention tracking: update decay counters for core_memory items
-  // that are semantically similar to the user message (fire-and-forget)
+  // Passive mention tracking: update retrieval_count for semantically similar classifications
   if (Array.isArray(queryVector) && queryVector.length > 0) {
     try {
       const activeModel = getEmbeddingModelId()
-      const coreMemoryVectors = store.db.prepare(`
+      const classVectors = store.db.prepare(`
         SELECT mv.entity_id, mv.vector_json
         FROM memory_vectors mv
-        JOIN core_memory cm ON cm.id = mv.entity_id
-        WHERE mv.entity_type = 'core_memory'
+        JOIN classifications c ON c.id = mv.entity_id
+        WHERE mv.entity_type = 'classification'
           AND mv.model = ?
-          AND cm.status = 'active'
+          AND c.status = 'active'
       `).all(activeModel)
       const nowTs = Math.floor(Date.now() / 1000)
       const mentionedIds = []
-      for (const row of coreMemoryVectors) {
+      for (const row of classVectors) {
         try {
           const vec = JSON.parse(row.vector_json)
           if (!Array.isArray(vec) || vec.length === 0) continue
           const sim = cosineSimilarity(queryVector, vec)
           if (sim >= 0.4) mentionedIds.push(row.entity_id)
-        } catch { /* skip malformed vectors */ }
+        } catch {}
       }
       if (mentionedIds.length > 0) {
         const placeholders = mentionedIds.map(() => '?').join(',')
         store.db.prepare(`
-          UPDATE core_memory
-          SET retrieval_count = retrieval_count + 1,
+          UPDATE classifications
+          SET retrieval_count = COALESCE(retrieval_count, 0) + 1,
               last_retrieved_at = ?
           WHERE id IN (${placeholders})
         `).run(nowTs, ...mentionedIds)
       }
-    } catch { /* passive tracking should never break hint delivery */ }
+    } catch {}
   }
 
   const validLines = lines.filter(l => l && l.trim())

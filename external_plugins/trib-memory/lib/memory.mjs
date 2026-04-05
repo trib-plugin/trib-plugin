@@ -19,6 +19,7 @@ import { cleanMemoryText } from './memory-extraction.mjs'
 import {
   buildFtsQuery,
   firstTextContent,
+  generateQueryVariants,
   getShortTokensForLike,
   insertCandidateUnits,
   looksLowSignal,
@@ -73,6 +74,46 @@ let sqliteVec = null
 try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
 
 const stores = new Map()
+
+function applyMMR(results, lambda = 0.7) {
+  if (results.length <= 1) return results
+  const selected = [results[0]]
+  const remaining = results.slice(1)
+
+  while (selected.length < results.length && remaining.length > 0) {
+    let bestIdx = -1
+    let bestScore = -Infinity
+
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i]
+      // Max similarity to already selected items (using content overlap as proxy)
+      const maxSim = Math.max(...selected.map(s => {
+        const a = String(s.content || '').toLowerCase()
+        const b = String(candidate.content || '').toLowerCase()
+        if (!a || !b) return 0
+        // Simple Jaccard-like overlap on words
+        const wordsA = new Set(a.split(/\s+/))
+        const wordsB = new Set(b.split(/\s+/))
+        const intersection = [...wordsA].filter(w => wordsB.has(w)).length
+        const union = new Set([...wordsA, ...wordsB]).size
+        return union > 0 ? intersection / union : 0
+      }))
+
+      const mmrScore = lambda * (candidate.weighted_score || 0) - (1 - lambda) * maxSim
+      if (mmrScore > bestScore) {
+        bestScore = mmrScore
+        bestIdx = i
+      }
+    }
+
+    if (bestIdx >= 0) {
+      selected.push(remaining.splice(bestIdx, 1)[0])
+    } else {
+      break
+    }
+  }
+  return selected
+}
 
 function logIgnoredError(scope, error) {
   if (!error) return
@@ -587,7 +628,7 @@ export class MemoryStore {
         if (Array.isArray(parsed) && parsed.length > 0) return parsed
       } catch { /* fall through to embed */ }
     }
-    const vector = await embedText(String(text).slice(0, 320))
+    const vector = await embedText(String(text).slice(0, 768))
     if (Array.isArray(vector) && vector.length > 0) {
       const activeModel = getEmbeddingModelId()
       const contentHash = hashEmbeddingInput(text)
@@ -646,11 +687,11 @@ export class MemoryStore {
     if (existing?.content_hash === contentHash) return
     // Persist to DB queue for crash recovery
     try {
-      this.db.prepare('INSERT OR IGNORE INTO pending_embeds (entity_type, entity_id, content) VALUES (?, ?, ?)').run('episode', episodeId, content.slice(0, 320))
+      this.db.prepare('INSERT OR IGNORE INTO pending_embeds (entity_type, entity_id, content) VALUES (?, ?, ?)').run('episode', episodeId, content.slice(0, 768))
     } catch {}
     // Process asynchronously
     const task = async () => {
-      const vector = await embedText(content.slice(0, 320))
+      const vector = await embedText(content.slice(0, 768))
       if (!Array.isArray(vector) || vector.length === 0) return
       const activeModel = getEmbeddingModelId()
       this.upsertVectorStmt.run('episode', episodeId, activeModel, vector.length, JSON.stringify(vector), contentHash)
@@ -667,7 +708,7 @@ export class MemoryStore {
     if (pending.length === 0) return 0
     let processed = 0
     for (const item of pending) {
-      const vector = await embedText(item.content.slice(0, 320))
+      const vector = await embedText(item.content.slice(0, 768))
       if (!Array.isArray(vector) || vector.length === 0) continue
       const activeModel = getEmbeddingModelId()
       const contentHash = hashEmbeddingInput(item.content)
@@ -978,7 +1019,7 @@ export class MemoryStore {
       ORDER BY updated_at DESC
     `).all()
 
-    const promoted = allClassifications.filter(row => getTagFactor(row.importance) <= 0.2).slice(0, 5)
+    const promoted = allClassifications.filter(row => getTagFactor(row.importance) <= 0.2)
 
     if (promoted.length > 0) {
       const lines = promoted.map(row => {
@@ -988,14 +1029,7 @@ export class MemoryStore {
       parts.push(`## Core Memory\n${lines.join('\n')}`)
     }
 
-    // ## Bot — bot.md + tone/style signals
-    const botMdPath = join(this.dataDir, 'bot.md')
-    let botContent = ''
-    try { botContent = readFileSync(botMdPath, 'utf8').trim() } catch {}
-    if (botContent) {
-      parts.push('## Bot')
-      if (botContent) parts.push(botContent)
-    }
+    // Bot section removed — bot.md is injected separately by session-start hook
 
     return parts.join('\n\n').trim()
   }
@@ -1254,7 +1288,7 @@ export class MemoryStore {
       const entityId = Number(row.entity_id ?? 0)
       const rowVector = (vector && entityId > 0)
         ? await this.getStoredVector(entityType, entityId, `${row.subtype ?? ''} ${content}`)
-        : (vector ? await embedText(String(`${row.subtype ?? ''} ${content}`).slice(0, 320)) : [])
+        : (vector ? await embedText(String(`${row.subtype ?? ''} ${content}`).slice(0, 768)) : [])
       const semanticSimilarity = vector
         ? cosineSimilarity(vector, rowVector)
         : 0
@@ -1284,7 +1318,24 @@ export class MemoryStore {
 
     // ── Stage 1: base scores (keyword + embedding + time) ──
     const queryVector = options.queryVector ?? await embedText(clean)
-    let sparse = this.searchRelevantSparse(clean, limit * 3)
+    const variants = generateQueryVariants ? generateQueryVariants(clean) : [clean]
+    const allQueries = [clean, ...variants.filter(v => v !== clean)].slice(0, 4) // max 4 variants
+
+    // Multi-variant sparse search: run FTS on each variant and merge
+    let sparse = []
+    {
+      const seenSparse = new Set()
+      for (const q of allQueries) {
+        const sr = this.searchRelevantSparse(q, limit * 2)
+        for (const r of sr) {
+          const key = `${r.type}-${r.entity_id}`
+          if (!seenSparse.has(key)) {
+            seenSparse.add(key)
+            sparse.push(r)
+          }
+        }
+      }
+    }
     let dense = await this.searchRelevantDense(clean, limit * 3, queryVector, null, {})
 
     // temporal 필터: 날짜 범위가 있으면 해당 범위 + 범위 밖 결과 섞어서 범위 내 우선
@@ -1362,7 +1413,7 @@ export class MemoryStore {
     scored.sort((a, b) => b.weighted_score - a.weighted_score)
 
     // ── Stage 3: cap classifications, fill with episodes ──
-    const maxClassifications = 2
+    const maxClassifications = Math.min(4, Math.ceil(limit / 2))
     let classCount = 0
     const capped = []
     for (const item of scored) {
@@ -1375,13 +1426,13 @@ export class MemoryStore {
         capped.push(item)
       }
     }
-    let finalResults = capped.slice(0, limit)
+    let finalResults = applyMMR(capped.slice(0, limit))
 
     // ── Stage 4: conditional rerank ──
     const tuning = options.tuning ?? this.getRetrievalTuning()
-    if (tuning.reranker?.enabled && finalResults.length >= 2) {
-      const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[1]?.weighted_score || 0)
-      if (gap < 0.005) {
+    if (tuning.reranker?.enabled && finalResults.length >= 3) {
+      const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[2]?.weighted_score || 0)
+      if (gap < 0.03) {
         try {
           const top5 = finalResults.slice(0, 5)
           const rest = finalResults.slice(5)
