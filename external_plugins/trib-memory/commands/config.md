@@ -1,5 +1,4 @@
 ---
-name: config
 description: Read or update trib-memory config values directly.
 args: "[path] [value]"
 allowed-tools:
