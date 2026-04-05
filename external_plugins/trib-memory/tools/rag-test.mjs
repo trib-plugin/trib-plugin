@@ -41,14 +41,14 @@ const STAGES = {
 
 // ── Built-in test query set ──
 const TEST_QUERIES = [
-  { query: '프로젝트 구조', expect: ['구조', '디렉토리', 'structure'] },
-  { query: 'Discord 채널 모드', expect: ['채널', 'channel', 'discord'] },
-  { query: 'RAG 파이프라인', expect: ['RAG', '검색', 'embedding'] },
-  { query: '메모리 시스템', expect: ['memory', '메모리', 'recall'] },
-  { query: '권한 설정', expect: ['permission', 'access', '권한'] },
-  { query: '작업 상태', expect: ['task', '작업', 'status', '상태'] },
-  { query: '스케줄 설정', expect: ['schedule', 'cron', '스케줄'] },
-  { query: '임베딩 모델', expect: ['embedding', 'bge', 'vector', '임베딩'] },
+  { query: '채널 모드 감지', expect: ['채널', 'channel', 'flag', '플래그', 'bridge'] },
+  { query: 'Discord 연결 설정', expect: ['discord', 'connect', '연결', 'autoConnect', 'token'] },
+  { query: 'config access control', expect: ['config', 'access', 'allow', 'deny', 'policy'] },
+  { query: '설정창 UI 구현', expect: ['설정', 'config', 'UI', '카드', 'card'] },
+  { query: 'MCP 도구 출력', expect: ['MCP', '도구', 'tool', '출력', '정리'] },
+  { query: 'git push 승인', expect: ['push', '승인', 'commit', 'git', 'force'] },
+  { query: '메모리 채널 리팩토링', expect: ['메모리', 'memory', '채널', 'channel', '리팩토링', 'refactor'] },
+  { query: '롤백 수정 확인', expect: ['롤백', 'rollback', '수정', '확인', '검증'] },
 ]
 
 // ── CLI parse ──

@@ -288,33 +288,62 @@ async function handleGrep(query, options) {
 
   items = items.slice(offset, offset + limit)
 
-  const lines = items.map(item => {
-    const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
-    const content = String(item.content || '').slice(0, 200)
-    return `[${ts}] ${content}`
-  })
+  // Auto-chunk: search mode gets context=3 by default for episode results
+  const ctx = context > 0 ? context : 3
+  const hitIds = new Set(items.filter(i => i.type === 'episode').map(i => Number(i.entity_id)))
 
-  if (context > 0 && items.length > 0) {
-    const firstItem = items[0]
-    const entityId = Number(firstItem.entity_id)
-    if (entityId && firstItem.type === 'episode') {
-      try {
-        const surrounding = store.db.prepare(`
-          SELECT id, ts, role, content FROM episodes
-          WHERE id BETWEEN ? AND ?
-            AND kind IN ('message', 'turn')
-          ORDER BY id ASC
-        `).all(entityId - context, entityId + context)
-        if (surrounding.length > 1) {
-          lines.push('')
-          lines.push('--- context ---')
-          for (const ep of surrounding) {
-            const prefix = ep.role === 'user' ? 'u' : 'a'
-            const marker = Number(ep.id) === entityId ? '*' : ' '
-            lines.push(`${marker}[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 150)}`)
-          }
-        }
-      } catch {}
+  // Build chunks: collect ranges from all episode hits, merge overlaps
+  const ranges = []
+  for (const id of hitIds) {
+    ranges.push({ lo: id - ctx, hi: id + ctx })
+  }
+  ranges.sort((a, b) => a.lo - b.lo)
+  const merged = []
+  for (const r of ranges) {
+    const last = merged[merged.length - 1]
+    if (last && r.lo <= last.hi + 1) {
+      last.hi = Math.max(last.hi, r.hi)
+    } else {
+      merged.push({ ...r })
+    }
+  }
+
+  const lines = []
+
+  // Classification results first (no chunking)
+  for (const item of items) {
+    if (item.type === 'classification') {
+      const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
+      lines.push(`[${ts}] ${String(item.content || '').slice(0, 200)}`)
+    }
+  }
+
+  // Chunked episode results
+  for (const range of merged) {
+    try {
+      const rows = store.db.prepare(`
+        SELECT id, ts, role, content FROM episodes
+        WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn')
+        ORDER BY id ASC
+      `).all(range.lo, range.hi)
+      if (rows.length === 0) continue
+      const tsStart = String(rows[0].ts || '').slice(0, 16)
+      const tsEnd = String(rows[rows.length - 1].ts || '').slice(0, 16)
+      const chunkHits = rows.filter(r => hitIds.has(Number(r.id))).length
+      lines.push(`\n[${tsStart}~${tsEnd}] ${chunkHits} hit(s)`)
+      for (const ep of rows) {
+        const prefix = ep.role === 'user' ? 'u' : 'a'
+        const marker = hitIds.has(Number(ep.id)) ? '→' : ' '
+        lines.push(`${marker} ${prefix}: ${String(ep.content || '').slice(0, 150)}`)
+      }
+    } catch {}
+  }
+
+  // Fallback: if no chunks built, show flat results
+  if (merged.length === 0 && lines.length === 0) {
+    for (const item of items) {
+      const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
+      lines.push(`[${ts}] ${String(item.content || '').slice(0, 200)}`)
     }
   }
 
