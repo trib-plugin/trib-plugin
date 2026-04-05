@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, readdirSync, copyFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { join } from 'path'
@@ -101,7 +101,10 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-// Dev: auto-sync marketplace source to cache if newer
+// Dev: auto-sync marketplace source to cache when content differs
+function devSyncFromMarketplace() {
+  try {
+    if (!pluginRoot.match(/[/\]cache[/\]/)) return
 function devSyncFromMarketplace() {
   try {
     const pluginsBase = join(pluginRoot, '..', '..', '..', '..')
@@ -114,23 +117,23 @@ function devSyncFromMarketplace() {
     for (const dir of dirs) {
       try {
         const base = dir === '.' ? marketSrc : join(marketSrc, dir)
-        const entries = require('fs').readdirSync(base).filter(f => f.endsWith('.mjs') || f.endsWith('.ts') || f.endsWith('.cjs') || f.endsWith('.md'))
+        const entries = readdirSync(base).filter(f => f.endsWith('.mjs') || f.endsWith('.ts') || f.endsWith('.cjs') || f.endsWith('.md'))
         for (const f of entries) {
           try {
             const src = join(base, f)
             const dst = dir === '.' ? join(pluginRoot, f) : join(pluginRoot, dir, f)
-            const srcMtime = statSync(src).mtimeMs
-            let dstMtime = 0
-            try { dstMtime = statSync(dst).mtimeMs } catch {}
-            if (srcMtime > dstMtime) {
-              require('fs').copyFileSync(src, dst)
+            const srcContent = readFileSync(src)
+            let dstContent = null
+            try { dstContent = readFileSync(dst) } catch {}
+            if (!dstContent || !srcContent.equals(dstContent)) {
+              copyFileSync(src, dst)
               synced++
             }
           } catch {}
         }
       } catch {}
     }
-    if (synced > 0) log(`dev-sync: copied ${synced} newer files from marketplace`)
+    if (synced > 0) log(`dev-sync: copied ${synced} changed files from marketplace`)
   } catch {}
 }
 devSyncFromMarketplace()
