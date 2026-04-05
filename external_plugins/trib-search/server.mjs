@@ -553,23 +553,34 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
 
       const siteRule = args.site ? getSiteRule(config, args.site) : null
       if (siteRule?.search === 'xai.x_search') {
-        const response = await runRawSearch({
-          keywords: Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords,
-          providers: ['xai'],
-          site: args.site,
-          type: 'web',
-          maxResults: args.maxResults || getRawSearchMaxResults(config),
-        })
-        noteProviderSuccess(usageState, 'xai', {
-          lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-        })
-        saveUsageState(usageState)
-        return formattedText('search', {
-          tool: 'search',
-          site: 'x.com',
-          provider: 'xai',
-          response,
-        })
+        try {
+          const response = await runRawSearch({
+            keywords: Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords,
+            providers: ['xai'],
+            site: args.site,
+            type: 'web',
+            maxResults: args.maxResults || getRawSearchMaxResults(config),
+          })
+          noteProviderSuccess(usageState, 'xai', {
+            lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
+          })
+          saveUsageState(usageState)
+          return formattedText('search', {
+            tool: 'search',
+            site: 'x.com',
+            provider: 'xai',
+            response,
+          })
+        } catch (error) {
+          noteProviderFailure(usageState, 'xai', error instanceof Error ? error.message : String(error), 60000)
+          saveUsageState(usageState)
+          return { ...jsonText({
+            tool: 'search',
+            site: 'x.com',
+            provider: 'xai',
+            error: error instanceof Error ? error.message : String(error),
+          }), isError: true }
+        }
       }
       const runtimeEnv = buildRuntimeEnv(config)
       const available = getAvailableRawProviders(runtimeEnv)

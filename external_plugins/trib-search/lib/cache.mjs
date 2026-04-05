@@ -39,11 +39,15 @@ process.on('exit', flushCacheState)
 process.on('SIGTERM', () => { flushCacheState(); process.exit(0) })
 process.on('SIGINT', () => { flushCacheState(); process.exit(0) })
 
+let _instance = null
+
 export function loadCacheState() {
+  if (_instance) return _instance
   const state = readJson(CACHE_PATH, DEFAULT_CACHE_STATE)
   if (!state.entries || typeof state.entries !== 'object') {
     state.entries = {}
   }
+  _instance = state
   activeCacheState = state
   pruneExpiredEntries(state)
   return state

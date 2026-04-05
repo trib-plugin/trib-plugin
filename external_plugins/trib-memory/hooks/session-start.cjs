@@ -19,8 +19,8 @@ if (!DATA_DIR) process.exit(0);
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
 const CONTEXT_FILE = path.join(HISTORY_DIR, 'context.md');
 const RECENT_FILE = path.join(HISTORY_DIR, 'recent.md');
-const BOT_FILE = path.join(HISTORY_DIR, 'bot.md');
-const USER_PROFILE_FILE = path.join(HISTORY_DIR, 'user_profile.md');
+const BOT_FILE = path.join(DATA_DIR, 'bot.md');
+const USER_PROFILE_FILE = path.join(DATA_DIR, 'user_profile.md');
 
 function readOptional(filePath) {
   try { return fs.readFileSync(filePath, 'utf8').trim(); } catch { return ''; }

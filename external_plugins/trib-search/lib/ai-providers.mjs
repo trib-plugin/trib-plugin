@@ -256,8 +256,10 @@ function runCli(command, args, env, timeoutMs, cwd = process.cwd()) {
     let stdout = ''
     let stderr = ''
     const isWin = process.platform === 'win32'
-    // Windows shell: true splits args by space, so quote args with spaces
-    const safeArgs = isWin ? args.map(a => /\s/.test(a) ? `"${a}"` : a) : args
+    // Windows shell: true — escape internal quotes and wrap in double quotes to prevent metacharacter injection
+    const safeArgs = isWin
+      ? args.map(a => `"${a.replace(/"/g, '\\"')}"`)
+      : args
     const child = spawn(command, safeArgs, {
       cwd,
       env: { ...process.env, ...env },

@@ -5,7 +5,7 @@ const os = require('os');
 const fs = require('fs');
 
 // Block Read/Write/Edit access to auto-memory folder when MCP memory is active.
-// This ensures all memory operations go through the RAG system (recall_memory, memory_cycle).
+// This ensures all memory operations go through the RAG system (search_memories, memory_cycle).
 
 const MEMORY_DIR = path.join(os.homedir(), '.claude', 'projects');
 
@@ -55,7 +55,7 @@ function main() {
           hookSpecificOutput: {
             permissionDecision: 'deny'
           },
-          systemMessage: 'Auto-memory files are blocked. MCP memory system is active — use recall_memory tool for retrieval and memory_cycle for storage. Do not attempt to read or write files under the memory/ directory.'
+          systemMessage: 'Auto-memory files are blocked. MCP memory system is active — use search_memories tool for retrieval and memory_cycle for storage. Do not attempt to read or write files under the memory/ directory.'
         }));
         return;
       }

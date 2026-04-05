@@ -44,8 +44,12 @@ process.on('exit', flushUsageState)
 process.on('SIGTERM', () => { flushUsageState(); process.exit(0) })
 process.on('SIGINT', () => { flushUsageState(); process.exit(0) })
 
+let _instance = null
+
 export function loadUsageState() {
+  if (_instance) return _instance
   const state = readJson(USAGE_PATH, defaultState())
+  _instance = state
   activeUsageState = state
   return state
 }

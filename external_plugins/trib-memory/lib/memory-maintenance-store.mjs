@@ -133,7 +133,7 @@ export function rebuildCandidates(store) {
   for (const row of rows) {
     const clean = cleanMemoryText(row.content)
     if (!clean) continue
-    const shouldCandidate = row.role === 'user' && row.kind === 'message'
+    const shouldCandidate = (row.role === 'user' || row.role === 'assistant') && row.kind === 'message'
     if (shouldCandidate) {
       created += insertCandidateUnits(store.insertCandidateStmt, row.id, row.ts, row.day_key, row.role, clean)
     }
