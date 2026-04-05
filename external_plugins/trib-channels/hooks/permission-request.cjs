@@ -27,6 +27,16 @@ try {
   if (sig.channelsEnabled === false) process.exit(0);
 } catch {}
 
+// Skip when channel bridge is not active (not started with --channels flag).
+const BRIDGE_STATE_FILE = path.join(RUNTIME_ROOT, 'bridge-state.json');
+try {
+  const state = JSON.parse(fs.readFileSync(BRIDGE_STATE_FILE, 'utf8'));
+  if (!state.active) process.exit(0);
+} catch {
+  // No bridge state file means bridge is not active — skip.
+  process.exit(0);
+}
+
 const POLL_INTERVAL = 2000;
 const TIMEOUT = 900000; // 15 minutes
 const STALE_THRESHOLD = 30 * 60 * 1000; // 30 minutes

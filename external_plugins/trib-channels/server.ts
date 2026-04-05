@@ -171,6 +171,14 @@ const mcp = new Server(
 
 let channelBridgeActive = false
 
+function writeBridgeState(active: boolean): void {
+  try {
+    const stateFile = path.join(os.tmpdir(), 'trib-channels', 'bridge-state.json')
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+    fs.writeFileSync(stateFile, JSON.stringify({ active, ts: Date.now() }))
+  } catch {}
+}
+
 export function isChannelBridgeActive(): boolean {
   return channelBridgeActive
 }
@@ -566,6 +574,7 @@ async function startOwnerHttpServer(): Promise<number> {
         }
         case '/bridge/activate': {
           channelBridgeActive = Boolean(body.active)
+          writeBridgeState(channelBridgeActive)
           res.writeHead(200)
           res.end(JSON.stringify({ ok: true, active: channelBridgeActive }))
           return
@@ -1687,12 +1696,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             result = { content: [{ type: 'text', text: `proxy bridge activate failed: ${proxyRes.error}` }], isError: true }
           } else {
             channelBridgeActive = Boolean(args.active)
+            writeBridgeState(channelBridgeActive)
             result = { content: [{ type: 'text', text: `channel bridge ${args.active ? 'activated' : 'deactivated'}` }] }
           }
         } else {
           const active = args.active === true
           const wasActive = channelBridgeActive
           channelBridgeActive = active
+          writeBridgeState(active)
           if (active && !wasActive) {
             // Trigger ownership refresh + bind on activation
             void refreshBridgeOwnership({ restoreBinding: true })
@@ -2028,6 +2039,7 @@ if (_channelFlagDetected) {
   channelBridgeActive = true
   fs.appendFileSync(_bootLog, `[${localTimestamp()}] channel mode detected — bridge auto-activated\n`)
 }
+writeBridgeState(channelBridgeActive)
 
 // Do not bind transcript output to a default channel on startup.
 // Interactive routing should be decided by the first allowed inbound message.
