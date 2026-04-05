@@ -402,7 +402,7 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
 
       return {
         embeds: [{
-          title: '\uD83E\uDDE0 Memory Summarize',
+          title: '\uD83E\uDDE0 Sleep Cycle',
           description: `**Status**: ${enabled ? 'ON' : 'OFF'}\n**Summarize Time**: ${time}`,
           color: 0x5865F2,
         }],
@@ -410,11 +410,11 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
     }
     case 'on': {
       writeBotField('sleepEnabled', true)
-      return { text: 'Memory Summarize enabled.' }
+      return { text: 'Sleep Cycle enabled.' }
     }
     case 'off': {
       writeBotField('sleepEnabled', false)
-      return { text: 'Memory Summarize disabled.' }
+      return { text: 'Sleep Cycle disabled.' }
     }
     case 'time': {
       const time = parsed.args[2] ?? parsed.params.time

@@ -541,7 +541,7 @@ const mcp = new Server(
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 
-// ── Tool definitions (copied from server.ts) ─────────────────────────
+// ── Tool definitions ─────────────────────────────────────────────────
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
