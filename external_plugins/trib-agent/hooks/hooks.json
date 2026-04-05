@@ -1,0 +1,16 @@
+{
+  "description": "trib-agent hooks — deploy agent definitions on session start",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/deploy-agents.cjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
