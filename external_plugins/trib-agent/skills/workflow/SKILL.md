@@ -1,10 +1,12 @@
 ---
-name: agent
+name: workflow
 user-invocable: false
 description: >
-  Enforces structured workflow and team agent orchestration for all work requests.
-  Triggers on: code changes, implementation, investigation, fix, refactor, research,
-  exploration, setup, configuration, or any task that requires action.
+  **BLOCKING REQUIREMENT**: Before starting ANY work (code changes, investigation, diagnosis,
+  fix, refactor, research, exploration, setup, configuration), you MUST invoke this skill FIRST.
+  This includes casual requests like "check this", "fix it", "try it", "build this".
+  Do NOT read files, run commands, or use any tools before calling this skill.
+  Only pure Q&A conversations (explanations, opinions) are exempt.
 ---
 
 ## Workflow
