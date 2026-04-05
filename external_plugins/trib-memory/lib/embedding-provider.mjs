@@ -2,13 +2,11 @@
  * embedding-provider.mjs — Embedding provider abstraction.
  *
  * Default path:
- *   local bge-m3 via Ollama
+ *   local Xenova/bge-m3 (JS, no external deps)
  *
- * Optional path:
- *   Python ML service (/embed) when explicitly enabled
- *
- * Last-resort path:
- *   local Xenova bge-m3
+ * Optional paths (config-selectable):
+ *   Ollama bge-m3
+ *   Python ML service (/embed)
  */
 
 import { readFileSync } from 'fs'
@@ -17,7 +15,7 @@ import { tmpdir } from 'os'
 
 const LOCAL_MODEL = 'Xenova/bge-m3'
 const LOCAL_DIMS = 1024
-const DEFAULT_PROVIDER = 'ollama'
+const DEFAULT_PROVIDER = 'xenova'
 const DEFAULT_OLLAMA_MODEL = 'bge-m3'
 const ML_PORT_FILE = join(tmpdir(), 'trib-memory', 'ml-port')
 const ML_TIMEOUT_MS = Number(process.env.CLAUDE2BOT_ML_TIMEOUT_MS || 15000)
