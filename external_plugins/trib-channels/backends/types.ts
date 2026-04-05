@@ -305,24 +305,14 @@ export interface PluginConfig {
 export interface QuietConfig {
   /** Quiet hours for timed schedules "HH:MM-HH:MM" (e.g. "23:00-07:00") */
   schedule?: string
-  /** Quiet hours for autotalk/proactive "HH:MM-HH:MM" (e.g. "23:00-09:00") */
-  autotalk?: string
   /** ISO 3166-1 alpha-2 country code for public holiday lookup (e.g. "KR") */
   holidays?: string
   /** IANA timezone for date evaluation (e.g. "Asia/Seoul"). Default: system tz */
   timezone?: string
 }
 
-export interface AutotalkConfig {
-  /** Frequency level 1-5 */
-  freq?: number
-  /** Whether autotalk is enabled */
-  enabled?: boolean
-}
-
 export interface BotConfig {
   quiet?: QuietConfig
-  autotalk?: AutotalkConfig
   sleepEnabled?: boolean
   sleepTime?: string
   displayMode?: 'view' | 'hide'

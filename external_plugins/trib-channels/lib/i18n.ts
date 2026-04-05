@@ -97,22 +97,6 @@ const dict: Record<string, I18nEntry> = {
     ko: 'Unknown subcommand: {sub}',
     en: 'Unknown subcommand: {sub}',
   },
-  'autotalk.status': {
-    ko: 'Autotalk Status',
-    en: 'Autotalk Status',
-  },
-  'autotalk.freq_updated': {
-    ko: 'Autotalk frequency changed to {freq}.',
-    en: 'Autotalk frequency updated to {freq}.',
-  },
-  'autotalk.enabled': {
-    ko: 'Autotalk enabled.',
-    en: 'Autotalk enabled.',
-  },
-  'autotalk.disabled': {
-    ko: 'Autotalk disabled.',
-    en: 'Autotalk disabled.',
-  },
   'quiet.status': {
     ko: 'Quiet Hours',
     en: 'Quiet Settings',

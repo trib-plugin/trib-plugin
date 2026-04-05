@@ -107,7 +107,6 @@ export function buildModalRequestSpec(
         title: 'Quiet Hours',
         fields: [
           { id: 'schedule', label: 'Schedule quiet hours (e.g. 23:00-07:00)', required: false },
-          { id: 'autotalk', label: 'Autotalk quiet hours (e.g. 23:00-09:00)', required: false },
         ],
       }
     case 'sched_edit_next': {
@@ -173,7 +172,6 @@ export function buildModalExecutionPlan(
     case 'modal_quiet': {
       const commands: CommandInvocation[] = []
       if (fields.schedule) commands.push({ target: 'bot', args: ['quiet', 'schedule', fields.schedule], params: {} })
-      if (fields.autotalk) commands.push({ target: 'bot', args: ['quiet', 'autotalk', fields.autotalk], params: {} })
       if (pending.holidays && pending.holidays !== 'none') {
         commands.push({ target: 'bot', args: ['quiet', 'holidays', pending.holidays], params: {} })
       }

@@ -82,24 +82,6 @@ export function buildScheduleEditPanel(name: string): InteractionPanel {
   ])
 }
 
-export function buildAutotalkFrequencyPanel(): InteractionPanel {
-  return panel('\uD83D\uDCAC Autotalk Frequency', 'Select frequency', [
-    actionRow([
-      selectMenu('autotalk_freq_select', 'Frequency (1~5)', [
-        { label: '1 — Min', value: '1' },
-        { label: '2 — Low', value: '2' },
-        { label: '3 — Normal', value: '3', default: true },
-        { label: '4 — High', value: '4' },
-        { label: '5 — Max', value: '5' },
-      ]),
-    ]),
-    actionRow([
-      button(2, '← Autotalk', 'bot_autotalk'),
-      button(4, '\u2715', 'gui_close'),
-    ]),
-  ])
-}
-
 export function buildQuietHoursPanel(): InteractionPanel {
   return panel('\uD83D\uDD15 Quiet Hours', 'Select holiday country and press **Next**', [
     actionRow([

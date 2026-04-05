@@ -128,8 +128,6 @@ export async function handleBotCommand(
   switch (sub) {
     case 'schedule':
       return handleSchedule(parsed, ctx)
-    case 'autotalk':
-      return handleAutotalk(parsed, ctx)
     case 'quiet':
       return handleQuiet(parsed, ctx)
     case 'activity':
@@ -153,7 +151,6 @@ export async function handleBotCommand(
             '`/bot schedule list`',
             '',
             '**Parameterized**',
-            '`/bot autotalk on|off|freq=1-5`',
             '`/bot quiet schedule HH:MM-HH:MM`',
             '`/bot sleeping on|off|run|time HH:MM`',
             '`/bot display view|hide`',
@@ -181,12 +178,8 @@ function handleBotStatus(_ctx: CommandContext): CommandResult {
   const lines: string[] = []
   lines.push(`**Schedules** ${ni.length + i.length} registered`)
 
-  const autotalkStatus = bot.autotalk?.enabled ? `freq=${bot.autotalk.freq ?? 3}, active` : 'inactive'
-  lines.push(`**Autotalk** ${autotalkStatus}`)
-
   const quietParts: string[] = []
   if (bot.quiet?.schedule) quietParts.push(bot.quiet.schedule)
-  if (bot.quiet?.autotalk) quietParts.push(`autotalk ${bot.quiet.autotalk}`)
   lines.push(`**Quiet** ${quietParts.length > 0 ? quietParts.join(', ') : 'none'}`)
 
   const chCount = Object.keys(config.channelsConfig?.channels ?? {}).length
@@ -342,56 +335,6 @@ function handleBotProfile(parsed: ParsedCommand, ctx: CommandContext): CommandRe
   }
 }
 
-// ── /bot(autotalk, ...) ──────────────────────────────────────────────
-
-function handleAutotalk(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
-  const action = parsed.args[1] ?? 'status'
-  const bot = loadBotConfig()
-
-  // /bot(autotalk, freq=N) — frequency is passed as a named parameter.
-  if (parsed.params.freq) {
-    const freq = Math.max(1, Math.min(5, parseInt(parsed.params.freq, 10) || 3))
-    if (!bot.autotalk) bot.autotalk = {}
-    bot.autotalk.freq = freq
-    saveBotConfig(bot)
-    refreshRuntime(ctx)
-    return { text: t('autotalk.freq_updated', ctx.lang, { freq: String(freq) }) }
-  }
-
-  switch (action) {
-    case 'status':
-    case 'list': {
-      const freq = bot.autotalk?.freq ?? '-'
-      const enabled = bot.autotalk?.enabled ?? false
-      const statusEmoji = enabled ? '\u2705' : '\u274C'
-
-      return {
-        embeds: [{
-          title: `\uD83D\uDCAC ${t('autotalk.status', ctx.lang)}`,
-          description: `**Freq**: ${freq}\n**Status**: ${statusEmoji} ${enabled ? 'ON' : 'OFF'}`,
-          color: 0x5865F2,
-        }],
-      }
-    }
-    case 'on': {
-      if (!bot.autotalk) bot.autotalk = {}
-      bot.autotalk.enabled = true
-      saveBotConfig(bot)
-      refreshRuntime(ctx)
-      return { text: t('autotalk.enabled', ctx.lang) }
-    }
-    case 'off': {
-      if (!bot.autotalk) bot.autotalk = {}
-      bot.autotalk.enabled = false
-      saveBotConfig(bot)
-      refreshRuntime(ctx)
-      return { text: t('autotalk.disabled', ctx.lang) }
-    }
-    default:
-      return { text: t('unknown_action', ctx.lang, { action }) }
-  }
-}
-
 // ── /bot(quiet, ...) ────────────────────────────────────────────────
 
 function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult {
@@ -405,7 +348,6 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
       const q = bot.quiet ?? {}
       const lines: string[] = [
         `**\uC2A4\uCF00\uC904 \uBC29\uD574\uAE08\uC9C0**: ${q.schedule ?? '-'}`,
-        `**\uC790\uC728\uB300\uD654 \uBC29\uD574\uAE08\uC9C0**: ${q.autotalk ?? '-'}`,
         `**\uACF5\uD734\uC77C \uAD6D\uAC00**: ${q.holidays ?? '-'}`,
         `**\uC2DC\uAC04\uB300**: ${q.timezone ?? 'system'}`,
       ]
@@ -422,14 +364,6 @@ function handleQuiet(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
       if (!value) return { text: t('unknown_action', ctx.lang, { action: 'schedule (value required)' }) }
       if (!bot.quiet) bot.quiet = {}
       bot.quiet.schedule = value
-      saveBotConfig(bot)
-      refreshRuntime(ctx)
-      return { text: t('quiet.updated', ctx.lang) }
-    }
-    case 'autotalk': {
-      if (!value) return { text: t('unknown_action', ctx.lang, { action: 'autotalk (value required)' }) }
-      if (!bot.quiet) bot.quiet = {}
-      bot.quiet.autotalk = value
       saveBotConfig(bot)
       refreshRuntime(ctx)
       return { text: t('quiet.updated', ctx.lang) }
