@@ -12,7 +12,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import * as fs from 'fs'
 import * as http from 'http'
 import * as https from 'https'
@@ -707,6 +707,9 @@ function bindPersistedTranscriptIfAny(): void {
 
 async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Promise<void> {
   if (bridgeRuntimeConnected) return
+  // No channel flag → skip Discord connection entirely.
+  // Prevents 1000+ connect/disconnect cycles that trigger Discord bot blocking.
+  if (!channelBridgeActive) return
   try {
     await backend.connect()
   } catch (e) {
@@ -2013,6 +2016,42 @@ const _bootLog = path.join(DATA_DIR, 'boot.log')
 fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect starting\n`)
 await mcp.connect(new StdioServerTransport())
 fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done\n`)
+
+// ── Auto-detect channel mode from parent process CLI flags ───────────
+// Walk up the process tree and check command-line args for --channels or
+// --dangerously-load-development-channels.  If either is present, the user
+// launched Claude Code in channel mode → auto-activate the bridge.
+function detectChannelFlag(): boolean {
+  const isWin = process.platform === 'win32'
+  let pid = process.ppid
+  for (let depth = 0; pid && pid > 1 && depth < 6; depth++) {
+    try {
+      const cmdLine: string = isWin
+        ? execSync(`wmic process where ProcessId=${pid} get CommandLine /format:list`, { encoding: 'utf8', timeout: 3000 })
+        : execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 })
+      if (/--channels\b|--dangerously-load-development-channels\b/.test(cmdLine)) {
+        return true
+      }
+      // Walk to parent
+      if (isWin) {
+        const ppidOut: string = execSync(`wmic process where ProcessId=${pid} get ParentProcessId /format:list`, { encoding: 'utf8', timeout: 3000 })
+        const m = ppidOut.match(/ParentProcessId=(\d+)/)
+        pid = m ? parseInt(m[1], 10) : 0
+      } else {
+        pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10)
+      }
+    } catch { break }
+  }
+  return false
+}
+
+const _channelFlagDetected = detectChannelFlag()
+fs.appendFileSync(_bootLog, `[${localTimestamp()}] channelFlag: ${_channelFlagDetected}\n`)
+
+if (_channelFlagDetected) {
+  channelBridgeActive = true
+  fs.appendFileSync(_bootLog, `[${localTimestamp()}] channel mode detected — bridge auto-activated\n`)
+}
 
 // Do not bind transcript output to a default channel on startup.
 // Interactive routing should be decided by the first allowed inbound message.
