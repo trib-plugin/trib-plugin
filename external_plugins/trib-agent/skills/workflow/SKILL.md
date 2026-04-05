@@ -16,7 +16,11 @@ All work MUST follow this sequence. Never skip steps.
 1. **Discuss** — Talk with user until direction, scope, and approach are fully aligned
 2. **Finalize** — Present a concrete plan: what, where, how, impact scope
 3. **Approve** — Wait for explicit user approval on the finalized plan
-4. **Execute** — Only after approval. Delegate to Workers
+4. **Execute** — Only after approval:
+   1. `TaskCreate` — define all tasks
+   2. `TeamCreate` — create team (skip for simple single-file tasks)
+   3. Spawn Workers/Reviewers with `team_name` param
+   4. `TaskUpdate` — assign and track
 
 ## Team Agent Orchestration
 
