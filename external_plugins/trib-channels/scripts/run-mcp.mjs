@@ -102,6 +102,49 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
+// Dev: auto-sync marketplace source to cache if newer
+function devSyncFromMarketplace() {
+  try {
+    const pluginsBase = join(pluginRoot, '..', '..', '..', '..')
+    const marketName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[0]
+    const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
+    if (!marketName || !pluginName) return
+    const marketSrc = join(pluginsBase, 'marketplaces', marketName, 'external_plugins', pluginName)
+    const dirs = ['lib', 'services', 'defaults', 'hooks', 'backends']
+    let synced = 0
+    // Sync directories
+    for (const dir of dirs) {
+      try {
+        const entries = require('fs').readdirSync(join(marketSrc, dir))
+        for (const f of entries) {
+          try {
+            const src = join(marketSrc, dir, f)
+            const dst = join(pluginRoot, dir, f)
+            if (statSync(src).mtimeMs > ((() => { try { return statSync(dst).mtimeMs } catch { return 0 } })()))  {
+              require('fs').mkdirSync(join(pluginRoot, dir), { recursive: true })
+              require('fs').copyFileSync(src, dst)
+              synced++
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+    // Sync root-level source files
+    for (const f of ['server.ts']) {
+      try {
+        const src = join(marketSrc, f)
+        const dst = join(pluginRoot, f)
+        if (statSync(src).mtimeMs > ((() => { try { return statSync(dst).mtimeMs } catch { return 0 } })())) {
+          require('fs').copyFileSync(src, dst)
+          synced++
+        }
+      } catch {}
+    }
+    if (synced > 0) log(`dev-sync: copied ${synced} newer files from marketplace`)
+  } catch {}
+}
+devSyncFromMarketplace()
+
 const serverTs = join(pluginRoot, 'server.ts')
 const serverJs = join(pluginData, 'server.bundle.mjs')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')

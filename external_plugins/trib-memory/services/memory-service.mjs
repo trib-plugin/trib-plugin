@@ -272,12 +272,41 @@ async function handleGrep(query, options) {
     searchTemporal = { start: date, end: date, exact: true }
   }
 
+  const queryVector = await embedText(query)
   const results = await store.searchRelevantHybrid(query, limit * 2, {
     temporal: searchTemporal,
     recordRetrieval: true,
+    queryVector,
   })
 
-  let items = results.filter(r => r.type === 'classification' || r.type === 'episode')
+  // Cross-check: drop episode results with low cosine similarity to query
+  const PRECISION_FLOOR = 0.65
+  const precisionLog = path.join(os.tmpdir(), 'trib-memory', 'precision.log')
+  try { fs.mkdirSync(path.dirname(precisionLog), { recursive: true }) } catch {}
+  try { fs.appendFileSync(precisionLog, `\n[${new Date().toISOString().slice(0,19)}] handleGrep query="${query}" results=${results.length} qvec=${queryVector?.length} DATA_DIR=${DATA_DIR}\n`) } catch (e) { process.stderr.write(`precision-log-fail: ${e.message}\n`) }
+  const crossChecked = []
+  for (const r of results) {
+    try { fs.appendFileSync(precisionLog, `  r: type=${r.type} id=${r.entity_id}\n`) } catch {}
+    if (r.type === 'classification') { crossChecked.push(r); continue }
+    if (r.type !== 'episode' || !queryVector?.length) { crossChecked.push(r); continue }
+    try {
+      let epVec = null
+      if (r.vector_json) {
+        epVec = JSON.parse(r.vector_json)
+      } else {
+        // FTS-only results: look up stored vector
+        epVec = await store.getStoredVector('episode', Number(r.entity_id), String(r.content || '').slice(0, 768))
+      }
+      if (!Array.isArray(epVec) || epVec.length !== queryVector.length) { crossChecked.push(r); continue }
+      const sim = cosineSimilarity(queryVector, epVec)
+      try { fs.appendFileSync(precisionLog, `  [sim] id=${r.entity_id} sim=${sim.toFixed(4)} ${sim >= PRECISION_FLOOR ? 'PASS' : 'DROP'} ${String(r.content || '').slice(0, 50)}\n`) } catch {}
+      if (sim >= PRECISION_FLOOR) crossChecked.push(r)
+    } catch (e) {
+      try { fs.appendFileSync(precisionLog, `  [ERR] id=${r.entity_id} type=${r.type} err=${e.message}\n`) } catch {}
+      crossChecked.push(r)
+    }
+  }
+  let items = crossChecked
 
   if (sort === 'date') {
     items.sort((a, b) => {
@@ -289,9 +318,10 @@ async function handleGrep(query, options) {
 
   items = items.slice(offset, offset + limit)
 
-  // Semantic chunking: use embedding similarity to group related episodes
-  const SEMANTIC_WINDOW = 8   // scan +-8 episodes around each hit
-  const SEMANTIC_THRESH = 0.45 // cosine similarity threshold to include
+  // Semantic chunking: top-N most similar neighbors per hit
+  const SEMANTIC_WINDOW = 5   // scan +-5 episodes around each hit
+  const SEMANTIC_FLOOR = 0.50 // minimum cosine similarity
+  const NEIGHBORS_PER_HIT = 3 // max context episodes per hit
   const hitIds = new Set(items.filter(i => i.type === 'episode').map(i => Number(i.entity_id)))
 
   const lines = []
@@ -318,7 +348,7 @@ async function handleGrep(query, options) {
       } catch {}
     }
 
-    // For each hit, expand semantically
+    // For each hit, pick top-N most similar neighbors
     const included = new Map() // episodeId -> { sim, hitId }
     for (const id of hitIds) {
       included.set(id, { sim: 1.0, hitId: id })
@@ -331,19 +361,23 @@ async function handleGrep(query, options) {
         ORDER BY id ASC
       `).all(hitId - SEMANTIC_WINDOW, hitId + SEMANTIC_WINDOW, hitId)
 
+      const scored = []
       for (const ep of window) {
-        if (included.has(ep.id) && included.get(ep.id).sim >= 1.0) continue
+        if (hitIds.has(ep.id)) continue // other hits are already included
         try {
           const epVec = await store.getStoredVector('episode', ep.id, ep.content)
           if (!epVec?.length) continue
           const sim = cosineSimilarity(hitVec, epVec)
-          if (sim >= SEMANTIC_THRESH) {
-            const existing = included.get(ep.id)
-            if (!existing || sim > existing.sim) {
-              included.set(ep.id, { sim, hitId })
-            }
-          }
+          if (sim >= SEMANTIC_FLOOR) scored.push({ id: ep.id, sim })
         } catch {}
+      }
+      // Take top N by similarity
+      scored.sort((a, b) => b.sim - a.sim)
+      for (const pick of scored.slice(0, NEIGHBORS_PER_HIT)) {
+        const existing = included.get(pick.id)
+        if (!existing || pick.sim > existing.sim) {
+          included.set(pick.id, { sim: pick.sim, hitId })
+        }
       }
     }
 
@@ -352,7 +386,7 @@ async function handleGrep(query, options) {
     const chunks = []
     let chunk = [sortedIds[0]]
     for (let i = 1; i < sortedIds.length; i++) {
-      if (sortedIds[i] - sortedIds[i - 1] <= 2) {
+      if (sortedIds[i] - sortedIds[i - 1] <= 1) {
         chunk.push(sortedIds[i])
       } else {
         chunks.push(chunk)

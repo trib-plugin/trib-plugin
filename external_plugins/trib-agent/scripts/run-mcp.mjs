@@ -66,6 +66,31 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
+// Dev: auto-sync marketplace source to cache if newer
+function devSyncFromMarketplace() {
+  try {
+    const pluginsBase = join(pluginRoot, '..', '..', '..', '..')
+    const marketName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[0]
+    const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
+    if (!marketName || !pluginName) return
+    const marketSrc = join(pluginsBase, 'marketplaces', marketName, 'external_plugins', pluginName)
+    let synced = 0
+    // Sync root-level source files
+    for (const f of ['server.mjs']) {
+      try {
+        const src = join(marketSrc, f)
+        const dst = join(pluginRoot, f)
+        if (statSync(src).mtimeMs > ((() => { try { return statSync(dst).mtimeMs } catch { return 0 } })())) {
+          require('fs').copyFileSync(src, dst)
+          synced++
+        }
+      } catch {}
+    }
+    if (synced > 0) log(`dev-sync: copied ${synced} newer files from marketplace`)
+  } catch {}
+}
+devSyncFromMarketplace()
+
 // Build bundle if needed
 const serverSrc = join(pluginRoot, 'server.mjs')
 if (!existsSync(bundlePath) || statSync(serverSrc).mtimeMs > statSync(bundlePath).mtimeMs) {

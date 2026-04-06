@@ -120,7 +120,7 @@ function devSyncFromMarketplace() {
     const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
     if (!marketName || !pluginName) return
     const marketSrc = join(pluginsBase, 'marketplaces', marketName, 'external_plugins', pluginName)
-    const dirs = ['src', 'src/providers', 'src/session', '.']
+    const dirs = ['src', 'src/providers', 'src/session', 'hooks', '.']
     let synced = 0
     for (const dir of dirs) {
       try {
