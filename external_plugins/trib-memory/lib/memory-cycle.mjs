@@ -809,6 +809,7 @@ async function runCycle1Impl(ws, config, options = {}) {
           element: String(item?.element ?? '').trim(),
           importance: String(item?.importance ?? '').trim(),
           confidence: 0.6,
+          chunks: Array.isArray(item?.chunks) ? item.chunks.map(c => String(c).trim()).filter(Boolean).slice(0, 3) : [],
         }))
       }
     } catch {}

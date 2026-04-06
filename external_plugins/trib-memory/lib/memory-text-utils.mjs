@@ -137,9 +137,13 @@ export function normalizeMemoryToken(token) {
   let normalized = String(token ?? '').trim().toLowerCase()
   if (!normalized) return ''
 
-  if (normalized.length > 2) {
-    const stripped = normalized.replace(/(은|는|이|가|을|를|랑|과|와|도|에|의)$/u, '')
-    if (stripped.length > 0) normalized = stripped
+  // Korean suffix stripping: basic particles + compound endings
+  if (/[\uAC00-\uD7AF]/.test(normalized) && normalized.length > 2) {
+    const stripped = normalized
+      .replace(/(했었지|했더라|됐었나|됐던가|했는지|였는지|인건가|하려면|에서는|이라서|였더라|에서도|이었지|으로도|거였지|한건지|이었나)$/u, '')
+      .replace(/(했던|했지|됐던|됐지|하게|되던|이라|에서|으로|하는|없는|있는|었던|하자|않게|할때|인지|인데|인건|이고|보다|처럼|까지|부터|마다|밖에|없이)$/u, '')
+      .replace(/(은|는|이|가|을|를|랑|과|와|도|에|의|로|만|며|나|고|서|자|요)$/u, '')
+    if (stripped.length >= 2) normalized = stripped
   }
 
   if (/^[a-z][a-z0-9_-]+$/i.test(normalized)) {
@@ -156,7 +160,7 @@ export function normalizeMemoryToken(token) {
 export function tokenizeMemoryText(text) {
   return cleanMemoryText(text)
     .toLowerCase()
-    .split(/[^\p{L}\p{N}_-]+/u)
+    .split(/[^\p{L}\p{N}_]+/u)
     .map(token => normalizeMemoryToken(token))
     .filter(token => token.length >= 2)
     .filter(token => !MEMORY_TOKEN_STOPWORDS.has(token))
@@ -207,9 +211,10 @@ export function propositionSubjectTokens(text) {
 export function buildFtsQuery(text) {
   const tokens = tokenizeMemoryText(text)
   if (tokens.length === 0) return ''
-  const trigramTokens = [...new Set(tokens)].filter(t => t.length >= 3)
-  if (trigramTokens.length === 0) return ''
-  return trigramTokens.map(token => `"${token.replace(/"/g, '""')}"`).join(' OR ')
+  // Include 2-char Korean tokens (they carry meaning unlike 2-char English)
+  const ftsTokens = [...new Set(tokens)].filter(t => t.length >= 3 || (t.length === 2 && /[\uAC00-\uD7AF]/.test(t)))
+  if (ftsTokens.length === 0) return ''
+  return ftsTokens.map(token => `"${token.replace(/"/g, '""')}"`).join(' OR ')
 }
 
 export function getShortTokensForLike(text) {

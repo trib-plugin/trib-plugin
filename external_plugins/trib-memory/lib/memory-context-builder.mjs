@@ -50,8 +50,8 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
   const pushHint = (item, overrides = {}) => {
     const rawText = String(overrides.text ?? item.content ?? item.text ?? item.value ?? '').trim()
     if (!rawText) return
-    // weighted_score >= 0.02 threshold (low-quality hints filtered)
-    if (item.weighted_score == null || item.weighted_score < 0.02) return
+    // weighted_score >= 0.012 threshold (low-quality hints filtered)
+    if (item.weighted_score == null || item.weighted_score < 0.012) return
     const key = buildHintKey(item, overrides)
     if (!key) return
     if (seenHintKeys.has(key)) return

@@ -385,6 +385,11 @@ export class MemoryStore {
       this.db.exec(`ALTER TABLE classifications ADD COLUMN importance TEXT DEFAULT ''`)
     } catch { /* already exists */ }
 
+    // chunks column migration (semantic chunks from cycle1 LLM)
+    try {
+      this.db.exec(`ALTER TABLE classifications ADD COLUMN chunks TEXT DEFAULT '[]'`)
+    } catch { /* already exists */ }
+
     this.db.exec(`
 
       CREATE TABLE IF NOT EXISTS memory_meta (
@@ -465,8 +470,8 @@ export class MemoryStore {
       VALUES (?, ?, ?, ?, ?, ?)
     `)
     this.upsertClassificationStmt = this.db.prepare(`
-      INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, importance, confidence, status, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch())
+      INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, importance, chunks, confidence, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch())
       ON CONFLICT(episode_id) DO UPDATE SET
         ts = excluded.ts,
         day_key = excluded.day_key,
@@ -475,6 +480,7 @@ export class MemoryStore {
         element = excluded.element,
         state = excluded.state,
         importance = excluded.importance,
+        chunks = excluded.chunks,
         confidence = MAX(classifications.confidence, excluded.confidence),
         status = 'active',
         updated_at = unixepoch()
@@ -911,6 +917,7 @@ export class MemoryStore {
       const element = cleanMemoryText(row?.element)
       const state = cleanMemoryText(row?.state)
       const importance = String(row?.importance ?? '').trim() || null
+      const chunks = JSON.stringify(Array.isArray(row?.chunks) ? row.chunks : [])
       const confidence = Number(row?.confidence ?? 0.6)
       if (!classification || !topic || !element) continue
       this.upsertClassificationStmt.run(
@@ -922,6 +929,7 @@ export class MemoryStore {
         element,
         state || null,
         importance,
+        chunks,
         confidence,
       )
       const id = this.getClassificationByEpisodeStmt.get(episodeId)?.id
@@ -1491,9 +1499,13 @@ export class MemoryStore {
                e.source_ref AS source_ref,
                e.ts AS source_ts,
                e.kind AS source_kind,
-               e.backend AS source_backend
+               e.backend AS source_backend,
+               c.topic AS classification_topic,
+               c.element AS classification_element,
+               c.chunks AS classification_chunks
         FROM episodes_fts
         JOIN episodes e ON e.id = episodes_fts.rowid
+        LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
         WHERE episodes_fts MATCH ?
           AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
           AND e.content NOT LIKE 'You are consolidating%'
@@ -1675,8 +1687,12 @@ export class MemoryStore {
                  e.created_at AS updated_at, 0 AS retrieval_count,
                  e.source_ref AS source_ref, e.ts AS source_ts,
                  e.kind AS source_kind, e.backend AS source_backend,
-                 mv.vector_json
+                 mv.vector_json,
+                 c.topic AS classification_topic,
+                 c.element AS classification_element,
+               c.chunks AS classification_chunks
           FROM episodes e JOIN memory_vectors mv ON mv.entity_type = 'episode' AND mv.entity_id = e.id AND mv.model = ?
+          LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
           WHERE e.id = ?
             AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
         `).get(model, entityId)
