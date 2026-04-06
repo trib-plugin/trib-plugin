@@ -1356,7 +1356,7 @@ export class MemoryStore {
 
     // Merge via RRF (Reciprocal Rank Fusion) — scale-independent
     // RRF score = 1/(k+rank_sparse) + 1/(k+rank_dense), k=60
-    const K = 60
+    const K = 30
     const sparseRanks = new Map()
     const denseRanks = new Map()
     sparse.forEach((item, i) => {

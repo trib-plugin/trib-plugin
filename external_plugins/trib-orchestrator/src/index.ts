@@ -48,7 +48,7 @@ const TOOLS = [
   {
     name: 'create_session',
     title: 'Create Session',
-    annotations: { title: 'Create Session (create_session)', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { title: 'Create Session', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     description: 'Create a new AI session with a specific provider and model. Returns a session ID for stateful conversation.',
     inputSchema: {
       type: 'object' as const,
@@ -64,7 +64,7 @@ const TOOLS = [
   {
     name: 'ask',
     title: 'Ask',
-    annotations: { title: 'Ask (ask)', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { title: 'Ask', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     description: 'Send a message to a session. Returns immediately, result is pushed via channel notification.',
     inputSchema: {
       type: 'object' as const,
@@ -78,7 +78,7 @@ const TOOLS = [
   {
     name: 'inject',
     title: 'Inject Context',
-    annotations: { title: 'Inject Context (inject)', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    annotations: { title: 'Inject Context', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: 'Inject additional context (files, text) into an existing session.',
     inputSchema: {
       type: 'object' as const,
@@ -93,14 +93,14 @@ const TOOLS = [
   {
     name: 'list_sessions',
     title: 'List Sessions',
-    annotations: { title: 'List Sessions (list_sessions)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { title: 'List Sessions', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'List all active sessions.',
     inputSchema: { type: 'object' as const, properties: {} },
   },
   {
     name: 'close_session',
     title: 'Close Session',
-    annotations: { title: 'Close Session (close_session)', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { title: 'Close Session', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description: 'Close and discard a session.',
     inputSchema: {
       type: 'object' as const,
@@ -113,14 +113,14 @@ const TOOLS = [
   {
     name: 'list_models',
     title: 'List Models',
-    annotations: { title: 'List Models (list_models)', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { title: 'List Models', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     description: 'List available models from all enabled providers. For local providers (ollama, lmstudio), shows installed models.',
     inputSchema: { type: 'object' as const, properties: {} },
   },
   {
     name: 'team_review',
     title: 'Team Review',
-    annotations: { title: 'Team Review (team_review)', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { title: 'Team Review', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     description: 'Fan-out a prompt to multiple providers simultaneously. Results are pushed via channel notifications.',
     inputSchema: {
       type: 'object' as const,
