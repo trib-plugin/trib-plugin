@@ -68,7 +68,7 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
   }))
   relevant = relevant
     .filter(item => {
-      if (item.type !== 'classification' && item.type !== 'episode') return false
+      if (item.type !== 'classification' && item.type !== 'episode' && item.type !== 'chunk') return false
       // Filter out short noisy episodes (ㅎㅇ, ㅇㅇ, ㄱㄱ etc.)
       if (item.type === 'episode') {
         const text = String(item.content || '').replace(/\s+/g, '')
@@ -76,7 +76,38 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
       }
       return true
     })
-    .slice(0, Math.max(3, limit))
+
+  // Deduplicate: if a chunk covers the same episode, drop the raw episode
+  const chunkEpisodeIds = new Set(
+    relevant.filter(r => r.type === 'chunk' && r.chunk_episode_id).map(r => Number(r.chunk_episode_id))
+  )
+  if (chunkEpisodeIds.size > 0) {
+    relevant = relevant.filter(item =>
+      item.type !== 'episode' || !chunkEpisodeIds.has(Number(item.entity_id))
+    )
+  }
+
+  // Session exclusion: filter out episodes from the current session
+  const serverStartedAt = options.serverStartedAt
+  if (serverStartedAt) {
+    relevant = relevant.filter(item => {
+      if (item.type !== 'episode') return true
+      const ts = item.source_ts || item.updated_at
+      if (!ts) return true
+      return ts < serverStartedAt
+    })
+  }
+
+  // Type priority: chunk > classification > episode
+  const typePriority = { chunk: 0, classification: 1, episode: 2 }
+  relevant.sort((a, b) => {
+    const pa = typePriority[a.type] ?? 2
+    const pb = typePriority[b.type] ?? 2
+    if (pa !== pb) return pa - pb
+    return (b.weighted_score || 0) - (a.weighted_score || 0)
+  })
+
+  relevant = relevant.slice(0, Math.max(3, limit))
 
   if (relevant.length > 0) {
     for (const item of relevant) {

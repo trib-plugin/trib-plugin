@@ -167,48 +167,46 @@ const githubToken =
 // Bundle
 const serverSrc = join(pluginRoot, 'server.mjs')
 const serverJs = join(pluginData, 'server.bundle.mjs')
+const prebuiltBundle = join(pluginRoot, 'dist', 'server.bundle.mjs')
+let serverFile
 
-function getMaxSourceMtime() {
-  let max = 0
-  try { max = Math.max(max, statSync(serverSrc).mtimeMs) } catch {}
-  try {
-    const libDir = join(pluginRoot, 'lib')
-    for (const f of readdirSync(libDir)) {
-      if (f.endsWith('.mjs')) {
-        try { max = Math.max(max, statSync(join(libDir, f)).mtimeMs) } catch {}
-      }
-    }
-  } catch {}
-  return max
-}
-
-function buildBundle() {
-  try {
-    const maxSourceMtime = getMaxSourceMtime()
+try {
+  statSync(prebuiltBundle)
+  serverFile = prebuiltBundle
+  log('using pre-built bundle')
+} catch {
+  log('no pre-built bundle, building at runtime...')
+  function getMaxSourceMtime() {
+    let max = 0
+    try { max = Math.max(max, statSync(serverSrc).mtimeMs) } catch {}
     try {
-      const bundleStat = statSync(serverJs)
-      if (bundleStat.mtimeMs >= maxSourceMtime) return true
-    } catch { /* bundle doesn't exist yet */ }
-    log('building server bundle...')
-    const result = spawnSync(esbuildBin, [
-      serverSrc, '--bundle', '--platform=node', '--format=esm',
-      `--outfile=${serverJs}`, '--packages=external',
-    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
-    if (result.status === 0) {
-      log('bundle built successfully')
-      return true
-    }
-    log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
-    return false
-  } catch (e) {
-    log(`bundle build error: ${e.message}`)
-    return false
+      const libDir = join(pluginRoot, 'lib')
+      for (const f of readdirSync(libDir)) {
+        if (f.endsWith('.mjs')) {
+          try { max = Math.max(max, statSync(join(libDir, f)).mtimeMs) } catch {}
+        }
+      }
+    } catch {}
+    return max
   }
-}
-
-if (!buildBundle()) {
-  log('fatal: bundle build failed, cannot start server')
-  process.exit(1)
+  function buildBundle() {
+    try {
+      const maxSourceMtime = getMaxSourceMtime()
+      try {
+        const bundleStat = statSync(serverJs)
+        if (bundleStat.mtimeMs >= maxSourceMtime) return true
+      } catch {}
+      const result = spawnSync(esbuildBin, [
+        serverSrc, '--bundle', '--platform=node', '--format=esm',
+        `--outfile=${serverJs}`, '--packages=external',
+      ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+      if (result.status === 0) { log('bundle built'); return true }
+      log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
+      return false
+    } catch (e) { log(`bundle build error: ${e.message}`); return false }
+  }
+  if (!buildBundle()) { log('fatal: bundle build failed'); process.exit(1) }
+  serverFile = serverJs
 }
 
 const spawnEnv = {
@@ -224,8 +222,8 @@ const spawnEnv = {
   CLAUDE_PLUGIN_DATA: pluginData,
 }
 
-log(`exec node ${serverJs} (bundled)`)
-const child = spawn('node', [serverJs], {
+log(`exec node ${serverFile}`)
+const child = spawn('node', [serverFile], {
   cwd: pluginRoot,
   stdio: 'inherit',
   env: spawnEnv,

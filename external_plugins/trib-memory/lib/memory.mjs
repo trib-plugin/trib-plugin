@@ -416,6 +416,24 @@ export class MemoryStore {
         updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
         PRIMARY KEY(entity_type, entity_id, model)
       );
+
+      CREATE TABLE IF NOT EXISTS memory_chunks (
+        id INTEGER PRIMARY KEY,
+        episode_id INTEGER NOT NULL,
+        classification_id INTEGER,
+        content TEXT NOT NULL,
+        topic TEXT,
+        importance TEXT,
+        seq INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        FOREIGN KEY(episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chunks_episode ON memory_chunks(episode_id, status);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts
+        USING fts5(content, topic, tokenize='trigram');
     `)
 
     try {
@@ -1049,25 +1067,96 @@ export class MemoryStore {
     return contextPath
   }
 
-  writeRecentFile() {
+  syncChunksFromClassifications() {
+    const rows = this.db.prepare(`
+      SELECT id, episode_id, topic, importance, chunks
+      FROM classifications
+      WHERE chunks IS NOT NULL AND chunks != '[]' AND status = 'active'
+    `).all()
+
+    let synced = 0
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO memory_chunks (episode_id, classification_id, content, topic, importance, seq)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+
+    for (const row of rows) {
+      let chunks
+      try { chunks = JSON.parse(row.chunks) } catch { continue }
+      if (!Array.isArray(chunks) || chunks.length === 0) continue
+
+      const existing = this.db.prepare('SELECT COUNT(*) as cnt FROM memory_chunks WHERE episode_id = ?').get(row.episode_id)
+      if (existing?.cnt > 0) continue
+
+      for (let seq = 0; seq < chunks.length; seq++) {
+        const text = String(chunks[seq]).trim()
+        if (!text) continue
+        insert.run(row.episode_id, row.id, text, row.topic || '', row.importance || '', seq)
+        const chunkId = this.db.prepare('SELECT last_insert_rowid() as id').get().id
+        try {
+          this.db.prepare('INSERT INTO memory_chunks_fts(rowid, content, topic) VALUES (?, ?, ?)').run(chunkId, text, row.topic || '')
+        } catch {}
+        synced++
+      }
+    }
+
+    // FTS 누락분 보충
+    const missingFts = this.db.prepare(`
+      SELECT mc.id, mc.content, mc.topic FROM memory_chunks mc
+      WHERE mc.id NOT IN (SELECT rowid FROM memory_chunks_fts)
+    `).all()
+    for (const mc of missingFts) {
+      try {
+        this.db.prepare('INSERT INTO memory_chunks_fts(rowid, content, topic) VALUES (?, ?, ?)').run(mc.id, mc.content, mc.topic || '')
+        synced++
+      } catch {}
+    }
+
+    return synced
+  }
+
+  writeRecentFile(options = {}) {
     try {
       ensureDir(this.historyDir)
-      const recentEpisodes = this.db.prepare(`
-        SELECT role, content FROM episodes
-        WHERE kind = 'message'
-          AND role IN ('user', 'assistant')
-          AND content NOT LIKE 'You are%'
-          AND LENGTH(content) >= 5
-        ORDER BY ts DESC, id DESC
-        LIMIT 20
-      `).all().reverse()
-      if (recentEpisodes.length > 0) {
-        const body = recentEpisodes.map(row => {
-          const prefix = row.role === 'user' ? 'u' : 'a'
-          return `${prefix}: ${row.content}`
-        }).join('\n')
-        writeFileSync(join(this.historyDir, 'recent.md'), `## Recent\n${body}`)
+      const serverStartedAt = options.serverStartedAt
+      let lines = []
+
+      // 1차: chunk 기반 (최근 10개)
+      const timeFilter = serverStartedAt ? 'AND e.ts < ?' : ''
+      const timeParams = serverStartedAt ? [serverStartedAt] : []
+      const chunkRows = this.db.prepare(`
+        SELECT mc.topic, mc.content, mc.importance
+        FROM memory_chunks mc
+        JOIN episodes e ON e.id = mc.episode_id
+        WHERE mc.status = 'active'
+          ${timeFilter}
+        ORDER BY e.ts DESC, mc.seq ASC
+        LIMIT 10
+      `).all(...timeParams)
+
+      if (chunkRows.length > 0) {
+        lines = chunkRows.map(r => {
+          const prefix = r.topic ? `${r.topic}: ` : ''
+          return `- ${prefix}${r.content}`
+        })
+      } else {
+        // fallback: 기존 episode 기반 (chunk가 없을 때)
+        const episodeSql = `
+          SELECT role, content FROM episodes
+          WHERE kind = 'message'
+            AND role IN ('user', 'assistant')
+            AND content NOT LIKE 'You are%'
+            AND LENGTH(content) >= 5
+            ${timeFilter}
+          ORDER BY ts DESC, id DESC
+          LIMIT 10
+        `
+        const recentEpisodes = this.db.prepare(episodeSql).all(...timeParams).reverse()
+        lines = recentEpisodes.map(r => `${r.role === 'user' ? 'u' : 'a'}: ${r.content}`)
       }
+
+      const text = lines.length > 0 ? `## Recent\n${lines.join('\n')}\n` : ''
+      writeFileSync(join(this.historyDir, 'recent.md'), text, 'utf8')
     } catch {}
   }
 
@@ -1138,6 +1227,24 @@ export class MemoryStore {
       })
     }
 
+    // Chunks: embed each chunk independently
+    try {
+      const chunkRows = this.db.prepare(`
+        SELECT id, content, topic FROM memory_chunks WHERE status = 'active'
+        ORDER BY created_at DESC LIMIT ?
+      `).all(perTypeLimit)
+      for (const row of chunkRows) {
+        const chunkContent = row.topic ? `${row.topic} | ${row.content}` : row.content
+        items.push({
+          key: embeddingItemKey('chunk', row.id),
+          entityType: 'chunk',
+          entityId: row.id,
+          subtype: 'chunk',
+          content: chunkContent,
+        })
+      }
+    } catch { /* memory_chunks table may not exist yet */ }
+
     return items
   }
 
@@ -1198,12 +1305,12 @@ export class MemoryStore {
 
   _vecRowId(entityType, entityId) {
     // Pack entity type + id into a single integer rowid (100M ceiling per type)
-    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5, entity: 6, relation: 7, classification: 8 }
+    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5, entity: 6, relation: 7, classification: 8, chunk: 9 }
     return (typePrefix[entityType] ?? 9) * 100000000 + Number(entityId)
   }
 
   _vecRowToEntity(rowid) {
-    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition', 6: 'entity', 7: 'relation', 8: 'classification' }
+    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition', 6: 'entity', 7: 'relation', 8: 'classification', 9: 'chunk' }
     const typeNum = Math.floor(rowid / 100000000)
     return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 100000000 }
   }
@@ -1524,6 +1631,29 @@ export class MemoryStore {
       } catch (error) { logIgnoredError('searchRelevantSparse episodes fts', error) }
     }
 
+    // Chunk FTS search
+    if (runFts) {
+      try {
+        const chunkHits = this.db.prepare(`
+          SELECT 'chunk' AS type, 'chunk' AS subtype, CAST(mc.id AS TEXT) AS ref,
+                 mc.content AS content, bm25(memory_chunks_fts) AS score,
+                 mc.created_at AS updated_at, mc.id AS entity_id, 0 AS retrieval_count,
+                 NULL AS quality_score, mc.importance AS importance,
+                 NULL AS source_ref, e.ts AS source_ts, e.kind AS source_kind, NULL AS source_backend,
+                 mc.topic AS classification_topic, mc.content AS classification_element,
+                 NULL AS classification_chunks, mc.episode_id AS chunk_episode_id
+          FROM memory_chunks_fts
+          JOIN memory_chunks mc ON mc.id = memory_chunks_fts.rowid
+          LEFT JOIN episodes e ON e.id = mc.episode_id
+          WHERE memory_chunks_fts MATCH ?
+            AND mc.status = 'active'
+          ORDER BY score
+          LIMIT ?
+        `).all(ftsQuery, Math.min(limit, 6))
+        results.push(...chunkHits)
+      } catch (error) { logIgnoredError('searchRelevantSparse chunks fts', error) }
+    }
+
     // LIKE supplement for 2-char Korean tokens that trigram can't index
     // Always run when short tokens exist — FTS misses these entirely
     if (shortTokens.length > 0) {
@@ -1611,7 +1741,7 @@ export class MemoryStore {
         const results = []
         for (const knn of knnRows) {
           const { entityType, entityId } = this._vecRowToEntity(knn.rowid)
-          if (entityType !== 'classification' && entityType !== 'episode') continue
+          if (entityType !== 'classification' && entityType !== 'episode' && entityType !== 'chunk') continue
           const meta = this._getEntityMeta(entityType, entityId, model, {})
           if (!meta) continue
           const similarity = 1 - knn.distance  // L2 distance → approximate similarity
@@ -1695,6 +1825,22 @@ export class MemoryStore {
           LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
           WHERE e.id = ?
             AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
+        `).get(model, entityId)
+      }
+      if (entityType === 'chunk') {
+        return this.db.prepare(`
+          SELECT 'chunk' AS type, 'chunk' AS subtype, mc.id AS entity_id,
+                 mc.content, mc.created_at AS updated_at, 0 AS retrieval_count,
+                 mc.importance AS importance,
+                 NULL AS source_ref, e.ts AS source_ts,
+                 e.kind AS source_kind, NULL AS source_backend,
+                 mv.vector_json,
+                 mc.topic AS classification_topic, mc.content AS classification_element,
+                 NULL AS classification_chunks, mc.episode_id AS chunk_episode_id
+          FROM memory_chunks mc
+          JOIN memory_vectors mv ON mv.entity_type = 'chunk' AND mv.entity_id = mc.id AND mv.model = ?
+          LEFT JOIN episodes e ON e.id = mc.episode_id
+          WHERE mc.id = ? AND mc.status = 'active'
         `).get(model, entityId)
       }
     } catch {}

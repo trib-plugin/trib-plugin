@@ -51,6 +51,13 @@ function mergeConfig(existing, incoming) {
     if (incoming.cycle2.schedule !== undefined) config.cycle2.schedule = incoming.cycle2.schedule;
   }
 
+  // user
+  if (incoming.user) {
+    if (!config.user) config.user = { name: '', title: '' };
+    if (incoming.user.name !== undefined) config.user.name = incoming.user.name;
+    if (incoming.user.title !== undefined) config.user.title = incoming.user.title;
+  }
+
   // models, embedding, reranker
   for (const section of ['models', 'embedding', 'reranker']) {
     if (incoming[section]) {

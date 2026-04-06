@@ -19,7 +19,6 @@ import {
   getSiteRule,
   loadConfig,
 } from './lib/config.mjs'
-import { loadSettings } from './lib/settings.mjs'
 import {
   buildCacheKey,
   buildCacheMeta,
@@ -445,19 +444,23 @@ const toolDefinitions = [
   },
 ]
 
-const bundledSettings = loadSettings()
+const SEARCH_INSTRUCTIONS = [
+  'Tools: `search`(query, mode: search_first|ai_first|ai_only), `firecrawl_scrape`(url), `firecrawl_map`(url), `crawl`(url), `batch`(items[]), `setup`.',
+  'Prefer `search` over built-in WebSearch/WebFetch when available.',
+  'Use `batch` for 2+ operations — no separate calls.',
+].join('\n');
 
 const server = new Server(
   {
     name: 'trib-search',
-    version: '0.0.3',
+    version: '0.0.4',
   },
   {
     capabilities: {
       elicitation: { form: {} },
       tools: {},
     },
-    instructions: bundledSettings,
+    instructions: SEARCH_INSTRUCTIONS,
   },
 )
 

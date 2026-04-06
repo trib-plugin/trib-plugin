@@ -1,37 +1,14 @@
 ---
-description: Read or update trib-channels config values directly.
-args: "[path] [value]"
+description: Open trib-channels settings
+disable-model-invocation: true
 allowed-tools:
-  - Read
-  - Write
-  - Edit
+  - Bash(node:*)
 ---
 
-# trib-channels Config
+Open the trib-channels settings UI:
 
-Manage `${CLAUDE_PLUGIN_DATA}/config.json` directly.
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/setup/setup-server.mjs"
+```
 
-## Behavior
-
-- If no args are provided:
-  - read the config file
-  - print a compact summary
-- If only `path` is provided:
-  - print the current value at that path
-- If both `path` and `value` are provided:
-  - update the config at that path
-  - write the file back
-
-## Supported paths
-
-- `discord.token`
-- `access.dmPolicy`
-- `access.allowFrom`
-- `access.channels`
-- `channelsConfig.main`
-- `channelsConfig.channels`
-
-## Special rules
-
-- If a path ends with `.token`, never print the full secret back. Show only `set` or `empty`.
-- If a path is missing, create the parent object as needed.
+Output the result verbatim.

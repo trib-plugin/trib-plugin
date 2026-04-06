@@ -124,53 +124,45 @@ const localConfig = readLocalConfig()
 // Bundle TypeScript source with esbuild
 const serverSrc = join(pluginRoot, 'src', 'index.ts')
 const serverJs = join(pluginData, 'server.bundle.mjs')
+const prebuiltBundle = join(pluginRoot, 'dist', 'server.bundle.mjs')
+let serverFile
 
-function getMaxSourceMtime() {
-  let max = 0
-  const srcDirs = [
-    join(pluginRoot, 'src'),
-    join(pluginRoot, 'src', 'providers'),
-    join(pluginRoot, 'src', 'session'),
-  ]
-  for (const dir of srcDirs) {
-    try {
-      for (const f of readdirSync(dir)) {
-        if (f.endsWith('.ts')) {
-          try { max = Math.max(max, statSync(join(dir, f)).mtimeMs) } catch {}
+try {
+  statSync(prebuiltBundle)
+  serverFile = prebuiltBundle
+  log('using pre-built bundle')
+} catch {
+  log('no pre-built bundle, building at runtime...')
+  function getMaxSourceMtime() {
+    let max = 0
+    const srcDirs = [join(pluginRoot, 'src'), join(pluginRoot, 'src', 'providers'), join(pluginRoot, 'src', 'session')]
+    for (const dir of srcDirs) {
+      try {
+        for (const f of readdirSync(dir)) {
+          if (f.endsWith('.ts')) { try { max = Math.max(max, statSync(join(dir, f)).mtimeMs) } catch {} }
         }
-      }
-    } catch {}
-  }
-  return max
-}
-
-function buildBundle() {
-  try {
-    const maxSourceMtime = getMaxSourceMtime()
-    try {
-      const bundleStat = statSync(serverJs)
-      if (bundleStat.mtimeMs >= maxSourceMtime) return true
-    } catch { /* bundle doesn't exist yet */ }
-    log('building server bundle...')
-    const result = spawnSync(esbuildBin, [
-      serverSrc, '--bundle', '--platform=node', '--format=esm',
-      `--outfile=${serverJs}`, '--packages=external',
-    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 30000 })
-    if (result.status === 0) {
-      log('bundle built successfully')
-      return true
+      } catch {}
     }
-    log(`bundle build failed: ${result.stderr?.toString().slice(0, 500)}`)
-    return false
-  } catch (e) {
-    log(`bundle build error: ${e.message}`)
-    return false
+    return max
   }
-}
-
-if (!buildBundle()) {
-  log('fatal: bundle build failed, cannot start server')
-  process.exit(1)
+  function buildBundle() {
+    try {
+      const maxSourceMtime = getMaxSourceMtime()
+      try {
+        const bundleStat = statSync(serverJs)
+        if (bundleStat.mtimeMs >= maxSourceMtime) return true
+      } catch {}
+      const result = spawnSync(esbuildBin, [
+        serverSrc, '--bundle', '--platform=node', '--format=esm',
+        `--outfile=${serverJs}`, '--packages=external',
+      ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 30000 })
+      if (result.status === 0) { log('bundle built'); return true }
+      log(`bundle build failed: ${result.stderr?.toString().slice(0, 500)}`)
+      return false
+    } catch (e) { log(`bundle build error: ${e.message}`); return false }
+  }
+  if (!buildBundle()) { log('fatal: bundle build failed'); process.exit(1) }
+  serverFile = serverJs
 }
 
 // Bundle CLI for slash commands
@@ -215,8 +207,8 @@ const spawnEnv = {
   ...(readNestedKey(localConfig, ['providers', 'xai', 'apiKey']) ? { XAI_API_KEY: readNestedKey(localConfig, ['providers', 'xai', 'apiKey']) } : {}),
 }
 
-log(`exec node ${serverJs} (bundled)`)
-const child = spawn('node', [serverJs], {
+log(`exec node ${serverFile}`)
+const child = spawn('node', [serverFile], {
   cwd: pluginRoot,
   stdio: 'inherit',
   env: spawnEnv,

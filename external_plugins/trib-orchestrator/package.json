@@ -7,8 +7,11 @@
     "@anthropic-ai/sdk": "^0.52.0",
     "@google/generative-ai": "^0.24.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "esbuild": "^0.25.0",
     "openai": "^5.8.0",
-    "zod": "^3.23.0",
-    "esbuild": "^0.25.0"
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2"
   }
 }

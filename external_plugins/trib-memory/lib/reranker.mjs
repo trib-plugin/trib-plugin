@@ -1,8 +1,9 @@
-import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers'
+import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from '@huggingface/transformers'
 
 let _tokenizer = null
 let _model = null
 let _loading = null
+let _device = 'cpu'
 const _scoreCache = new Map()
 const SCORE_CACHE_LIMIT = 2000
 const MAX_QUERY_CHARS = 192
@@ -13,6 +14,8 @@ const DEFAULT_MODEL_ID = 'Xenova/bge-reranker-large'
 export function getRerankerModelId() {
   return process.env.TRIB_MEMORY_RERANKER_MODEL_ID || DEFAULT_MODEL_ID
 }
+
+export function getRerankerDevice() { return _device }
 
 function normalizeRerankText(value, maxChars) {
   return String(value ?? '')
@@ -50,9 +53,29 @@ async function ensureModel() {
   if (_loading) return _loading
   _loading = (async () => {
     _tokenizer = await AutoTokenizer.from_pretrained(modelId)
-    _model = await AutoModelForSequenceClassification.from_pretrained(modelId, {
-      dtype: 'q4',
-    })
+
+    // Try GPU (DirectML on Windows, CUDA if available), fall back to CPU
+    const preferGpu = (process.env.TRIB_MEMORY_RERANKER_DEVICE || 'auto') !== 'cpu'
+    if (preferGpu) {
+      try {
+        hfEnv.backends.onnx = hfEnv.backends.onnx || {}
+        hfEnv.backends.onnx.executionProviders = [{ name: 'dml' }, { name: 'cpu' }]
+        _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4' })
+        _device = 'dml'
+        process.stderr.write(`[reranker] loaded ${modelId} on DirectML (GPU)\n`)
+      } catch (gpuErr) {
+        process.stderr.write(`[reranker] DML failed (${gpuErr.message?.slice(0, 80)}), falling back to CPU\n`)
+        hfEnv.backends.onnx.executionProviders = [{ name: 'cpu' }]
+        _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4' })
+        _device = 'cpu'
+        process.stderr.write(`[reranker] loaded ${modelId} on CPU\n`)
+      }
+    } else {
+      _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4' })
+      _device = 'cpu'
+      process.stderr.write(`[reranker] loaded ${modelId} on CPU (forced)\n`)
+    }
+
     _loading = null
   })()
   return _loading
@@ -78,7 +101,6 @@ export async function rerank(query, items, topK) {
   await ensureModel()
 
   const scored = []
-  let inferCount = 0
   for (const entry of entries) {
     const cached = getCachedScore(queryText, entry.text)
     if (cached != null) {
@@ -88,8 +110,8 @@ export async function rerank(query, items, topK) {
     const score = await scoreOne(queryText, entry.text)
     setCachedScore(queryText, entry.text, score)
     scored.push({ ...entry.item, reranker_score: score })
-    // yield CPU every 3 inferences to avoid sustained 100% load
-    if (++inferCount % 3 === 0) await new Promise(r => setTimeout(r, 5))
+    // yield CPU after each inference to prevent sustained 100% burst (skip on GPU)
+    if (_device === 'cpu') await new Promise(r => setTimeout(r, 10))
   }
 
   return scored.sort((a, b) => Number(b.reranker_score) - Number(a.reranker_score)).slice(0, limit)

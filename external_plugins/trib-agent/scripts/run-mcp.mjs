@@ -75,23 +75,28 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-// Build bundle if needed
+// Prefer pre-built bundle, fallback to runtime build
 const serverSrc = join(pluginRoot, 'server.mjs')
-if (!existsSync(bundlePath) || statSync(serverSrc).mtimeMs > statSync(bundlePath).mtimeMs) {
-  if (await isExecutable(esbuildBin)) {
-    log('building server bundle...')
-    const r = spawnSync(esbuildBin, [serverSrc, '--bundle', '--platform=node', '--format=esm', `--outfile=${bundlePath}`, '--packages=external'], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
-    if (r.status !== 0) {
-      log(`esbuild failed with status ${r.status}: ${r.stderr?.toString().trim() || '(no stderr)'}`)
-    } else {
-      log('bundle built successfully')
+const prebuiltBundle = join(pluginRoot, 'dist', 'server.bundle.mjs')
+let serverFile
+
+try {
+  statSync(prebuiltBundle)
+  serverFile = prebuiltBundle
+  log('using pre-built bundle')
+} catch {
+  if (!existsSync(bundlePath) || statSync(serverSrc).mtimeMs > statSync(bundlePath).mtimeMs) {
+    if (await isExecutable(esbuildBin)) {
+      log('building server bundle...')
+      const r = spawnSync(esbuildBin, [serverSrc, '--bundle', '--platform=node', '--format=esm', `--outfile=${bundlePath}`, '--packages=external'], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+      if (r.status !== 0) log(`esbuild failed: ${r.stderr?.toString().trim() || '(no stderr)'}`)
+      else log('bundle built')
     }
   }
+  serverFile = existsSync(bundlePath) ? bundlePath : serverSrc
 }
 
-// Run server
-const serverFile = existsSync(bundlePath) ? bundlePath : serverSrc
-log(`exec node ${serverFile} (${existsSync(bundlePath) ? 'bundled' : 'source'})`)
+log(`exec node ${serverFile}`)
 
 const child = spawn(process.execPath, [serverFile], {
   cwd: pluginRoot,

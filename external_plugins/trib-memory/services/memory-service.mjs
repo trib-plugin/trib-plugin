@@ -17,6 +17,13 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
+
+// ── CPU throttle: prevent inference from hogging all cores ──
+try { os.setPriority(os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
+try {
+  const { env } = await import('@huggingface/transformers')
+  env.backends.onnx.wasm.numThreads = 2
+} catch {}
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -31,6 +38,7 @@ import {
   sleepCycle,
   memoryFlush,
   rebuildRecent,
+  rebuildClassifications,
   pruneToRecent,
   getCycleStatus,
   runCycle1,
@@ -188,9 +196,9 @@ async function checkCycles(options = {}) {
       : cycle1Due
   ) {
     try {
-      const result = await runCycle1(WORKSPACE_PATH, mainConfig)
+      const result = await runCycle1(WORKSPACE_PATH, mainConfig, { maxItems: 50, maxAgeDays: 1 })
       process.stderr.write(
-        `[cycle1] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''} extracted=${Number(result?.extracted ?? 0)}\n`,
+        `[cycle1] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''} extracted=${Number(result?.extracted ?? 0)} classifications=${Number(result?.classifications ?? 0)}\n`,
       )
     } catch (e) {
       process.stderr.write(`[cycle1] error: ${e.message}\n`)
@@ -246,11 +254,32 @@ const startupDelayMs = Math.max(
 )
 setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
 
+// ── Server started timestamp (after startup backfill) ────────────────
+const serverStartedAt = new Date().toISOString()
+
+// ── Startup chunk sync: materialize classifications.chunks → memory_chunks ──
+try {
+  const synced = store.syncChunksFromClassifications()
+  if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications\n`)
+} catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
+
+// ── Startup embedding backfill: always check chunk coverage ──
+try {
+  const totalChunks = store.db.prepare('SELECT COUNT(*) as cnt FROM memory_chunks WHERE status = \'active\'').get()?.cnt || 0
+  const embeddedChunks = store.db.prepare('SELECT COUNT(*) as cnt FROM memory_vectors WHERE entity_type = \'chunk\'').get()?.cnt || 0
+  if (totalChunks > 0 && embeddedChunks < totalChunks) {
+    process.stderr.write(`[memory-service] chunk embeddings: ${embeddedChunks}/${totalChunks}, backfilling...\n`)
+    void store.ensureEmbeddings({ perTypeLimit: Math.max(256, totalChunks * 2) }).catch(e =>
+      process.stderr.write(`[memory-service] chunk embedding backfill error: ${e.message}\n`)
+    )
+  }
+} catch (e) { process.stderr.write(`[memory-service] embedding check error: ${e.message}\n`) }
+
 // Refresh context.md on every startup (Core Memory + Bot only)
 try {
   fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
   store.writeContextFile()
-  store.writeRecentFile()
+  store.writeRecentFile({ serverStartedAt })
   process.stderr.write(`[memory-service] context.md refreshed on startup\n`)
 } catch (e) {
   process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}\n`)
@@ -606,9 +635,12 @@ async function handleCycle(args) {
   if (action === 'rebuild') {
     _rebuildLock = true
     try {
-      await rebuildRecent(ws, { maxDays: Number(args.maxDays ?? 2) })
+      const maxDays = Number(args.maxDays ?? 2)
+      await rebuildRecent(ws, { maxDays })
+      store.syncChunksFromClassifications()
+      store.writeRecentFile({ serverStartedAt })
+      return { text: `Memory rebuild completed (maxDays=${maxDays}).` }
     } finally { _rebuildLock = false }
-    return { text: 'Memory rebuild completed.' }
   }
   if (action === 'prune') {
     await pruneToRecent(ws, { maxDays: Number(args.maxDays ?? 5) })
@@ -616,8 +648,52 @@ async function handleCycle(args) {
   }
   if (action === 'cycle1') {
     const force = Boolean(args.force)
-    const c1result = await runCycle1(ws, config, { force })
-    return { text: `Cycle1 completed: ${JSON.stringify(c1result)}` }
+    const maxItems = args.maxItems ? Number(args.maxItems) : undefined
+    const maxAgeDays = args.maxAgeDays ? Number(args.maxAgeDays) : undefined
+    const c1result = await runCycle1(ws, config, { force, maxItems, maxAgeDays })
+    return { text: `Cycle1 completed: extracted=${Number(c1result?.extracted ?? 0)} classifications=${Number(c1result?.classifications ?? 0)}` }
+  }
+  if (action === 'rebuild_classifications') {
+    const maxAgeDays = args.maxAgeDays ? Number(args.maxAgeDays) : undefined
+    const result = await rebuildClassifications(ws, { maxAgeDays })
+    return { text: `Rebuild classifications completed: total=${result.total} batches=${result.batches} classifications=${result.classifications}` }
+  }
+  if (action === 'backfill') {
+    const backfillLimit = Math.max(1, Math.min(Number(args.limit ?? 100), 500))
+    // Find episodes with no candidate entry
+    const uncovered = store.db.prepare(`
+      SELECT e.id, e.ts, e.day_key, e.role, e.content
+      FROM episodes e
+      LEFT JOIN memory_candidates mc ON mc.episode_id = e.id
+      WHERE mc.id IS NULL
+        AND e.kind IN ('message', 'turn')
+        AND e.role IN ('user', 'assistant')
+        AND LENGTH(e.content) >= 10
+        AND e.content NOT LIKE 'You are consolidating%'
+        AND e.content NOT LIKE 'You are improving%'
+      ORDER BY e.ts DESC
+      LIMIT ?
+    `).all(backfillLimit)
+
+    if (uncovered.length === 0) {
+      return { text: 'Backfill: no uncovered episodes found.' }
+    }
+
+    // Create pending candidates
+    let created = 0
+    for (const ep of uncovered) {
+      try {
+        store.db.prepare(`
+          INSERT OR IGNORE INTO memory_candidates (episode_id, ts, day_key, role, content, score, status)
+          VALUES (?, ?, ?, ?, ?, 0, 'pending')
+        `).run(ep.id, ep.ts, ep.day_key, ep.role, ep.content)
+        created++
+      } catch {}
+    }
+
+    // Run cycle1 with force to process them
+    const c1result = await runCycle1(ws, config, { force: true })
+    return { text: `Backfill: ${created} candidates created from ${uncovered.length} episodes. Cycle1: ${JSON.stringify(c1result)}` }
   }
   return { text: `unknown memory action: ${action}`, isError: true }
 }
@@ -627,21 +703,15 @@ async function handleCycle(args) {
 // ══════════════════════════════════════════════════════════════════════
 
 const MEMORY_INSTRUCTIONS = [
-  '## Memory System',
-  '',
-  '### Behavior',
-  '- Recall like remembering, not querying. Weave naturally into conversation.',
-  '- Proactively surface relevant context from past conversations.',
-  '',
-  '### Rules',
-  '- Use `queries` array for 2+ lookups in one call. No separate tool calls.',
-  '- Never query the database directly (sqlite, SQL). Always use search_memories.',
-  '- Trust current code/config over recalled memory if they conflict.',
-  '- Do not write to MEMORY.md or memory/ folder. This system handles persistence.',
+  'Tools: `search_memories`(queries[]), `memory_cycle`(action: sleep|flush|rebuild|prune|cycle1|status).',
+  'Recall: use `search_memories` with `queries` array for batch lookups. No separate calls per query.',
+  'Store: handled automatically. Never write to MEMORY.md or memory/ folder.',
+  'Never use sqlite/SQL directly. Trust current code over recalled memory if they conflict.',
+  'Weave recalled context naturally into conversation — recall like remembering, not querying.',
 ].join('\n')
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.4' },
+  { name: 'trib-memory', version: '0.0.5' },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 
@@ -653,12 +723,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'memory_cycle',
       title: 'Memory Cycle',
       annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), status.',
+      description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'prune', 'cycle1', 'status'], description: 'Memory operation to run' },
+          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status'], description: 'Memory operation to run' },
           maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
+          limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
         },
         required: ['action'],
       },
@@ -776,7 +847,7 @@ const httpServer = http.createServer(async (req, res) => {
       return
     }
     try {
-      const ctx = await store.buildInboundMemoryContext(q, { skipLowSignal: true })
+      const ctx = await store.buildInboundMemoryContext(q, { skipLowSignal: true, serverStartedAt })
       sendJson(res, { hints: ctx || '' })
     } catch {
       sendJson(res, { hints: '' })
@@ -799,7 +870,7 @@ const httpServer = http.createServer(async (req, res) => {
         sendJson(res, { hints: '' })
         return
       }
-      const ctx = await store.buildInboundMemoryContext(q, body.options ?? { skipLowSignal: true })
+      const ctx = await store.buildInboundMemoryContext(q, { ...body.options ?? { skipLowSignal: true }, serverStartedAt })
       sendJson(res, { hints: ctx || '' })
       return
     }

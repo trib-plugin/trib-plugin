@@ -10,6 +10,11 @@ export function buildHintKey(item, overrides = {}) {
 
 export function formatHintTag(item, overrides = {}, _options = {}) {
   const type = overrides.type ?? item?.type ?? 'episode'
+  if (type === 'chunk') {
+    const topic = item?.classification_topic || item?.topic || ''
+    const text = String(item?.content || '').trim()
+    return text ? `- ${topic ? topic + ': ' : ''}${text}` : ''
+  }
   if (type === 'classification') {
     const topic = item?.topic || ''
     const element = item?.element || ''

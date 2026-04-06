@@ -1,5 +1,5 @@
 {
   "name": "trib-agent",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "description": "Agent workflow orchestration — structured task flow, team agent management, and context-efficient delegation."
 }

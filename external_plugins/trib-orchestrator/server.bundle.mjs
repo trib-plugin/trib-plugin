@@ -25742,8 +25742,8 @@ function loadConfig() {
 
 // src/index.ts
 var mcp = new Server(
-  { name: "trib-orchestrator", version: "0.0.3" },
-  { capabilities: { tools: {}, experimental: { "claude/channel": {} } } }
+  { name: "trib-orchestrator", version: "0.0.5" },
+  { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: "Tools: `ask`(model, prompt), `create_session`, `close_session`, `inject`, `list_sessions`, `list_models`, `team_review`.\nUse `ask` to query external models. Use `list_models` to check available providers.\nSessions: `create_session` for multi-turn, `ask` for single-turn. `close_session` when done." }
 );
 function ok(data) {
   return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };

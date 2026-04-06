@@ -17,6 +17,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const CONTEXT_FILE = path.join(HISTORY_DIR, 'context.md');
 const RECENT_FILE = path.join(HISTORY_DIR, 'recent.md');
 const BOT_FILE = path.join(DATA_DIR, 'bot.md');
@@ -26,12 +27,25 @@ function readOptional(filePath) {
   try { return fs.readFileSync(filePath, 'utf8').trim(); } catch { return ''; }
 }
 
+function readJson(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
+}
+
+// Build user line from config
+let userLine = '';
+const cfg = readJson(CONFIG_FILE);
+const userName = (cfg.user && cfg.user.name || '').trim();
+const userTitle = (cfg.user && cfg.user.title || '').trim();
+if (userName) {
+  userLine = userTitle ? `User: ${userName} (${userTitle})` : `User: ${userName}`;
+}
+
 let contextContent = readOptional(CONTEXT_FILE);
 let recentContent = readOptional(RECENT_FILE);
 let botContent = readOptional(BOT_FILE);
 let userProfileContent = readOptional(USER_PROFILE_FILE);
 
-const merged = [botContent, userProfileContent, contextContent, recentContent].filter(Boolean).join('\n\n');
+const merged = [userLine, userProfileContent, botContent, contextContent, recentContent].filter(Boolean).join('\n\n');
 if (merged) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {

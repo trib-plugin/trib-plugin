@@ -60,5 +60,17 @@ export function computeFinalScore(baseScore, item, query, _options = {}) {
     timeFactor = 1 - actualLoss
   }
 
-  return (baseScore + exactBonus) * importanceBoost * timeFactor
+  // Role boost: assistant answers > user questions for hint quality
+  let roleFactor = 1.0
+  if (item.type === 'episode') {
+    if (item.subtype === 'assistant') roleFactor = 1.08
+    else if (item.subtype === 'user') roleFactor = 0.92
+  }
+
+  // Type boost: chunks > classifications > episodes (chunk = distilled knowledge)
+  let typeFactor = 1.0
+  if (item.type === 'chunk') typeFactor = 1.35
+  else if (item.type === 'classification') typeFactor = 1.15
+
+  return (baseScore + exactBonus) * importanceBoost * timeFactor * roleFactor * typeFactor
 }

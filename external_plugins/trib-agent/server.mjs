@@ -2,24 +2,14 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 const INSTRUCTIONS = [
-  '## Agent Orchestration',
-  '',
-  'This server manages agent workflow and team orchestration.',
-  'The agent skill handles workflow enforcement automatically.',
-  '',
-  '### NEVER',
-  '- NEVER start code changes, investigation, or any work without invoking the workflow skill first',
-  '- NEVER use Explore or Plan subagents — Workers handle exploration + execution',
-  '- NEVER spawn agents without team_name assignment',
-  '- NEVER terminate Workers without explicit user approval',
-  '- NEVER propose stopping or wrapping up unless user asks',
-  '',
-  'Future: agent registry, context management, session handoff tools.',
+  'Tools: `TeamCreate`, `TaskCreate`, `Agent`(subagent_type=Worker/Reviewer, team_name required).',
+  'Lead delegates all work to Workers via `Agent`. Lead never uses Read/Write/Edit/Bash/Glob/Grep.',
+  'Workflow skill must be invoked before any work begins.',
 ].join('\n');
 
 const server = new Server(
-  { name: 'trib-agent', version: '0.0.3' },
-  { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
+  { name: 'trib-agent', version: '0.0.4' },
+  { capabilities: {}, instructions: INSTRUCTIONS },
 );
 
 const transport = new StdioServerTransport();

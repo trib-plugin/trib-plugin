@@ -98,6 +98,11 @@ const MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES = 20
 const MEMORY_FLUSH_DEFAULT_MAX_BATCHES = 1
 const MEMORY_FLUSH_DEFAULT_MIN_PENDING = 8
 
+// ── Batch system constants ──
+const BATCH_SIZE = 50
+const MAX_CONCURRENT_BATCHES = 5
+const DEFAULT_MAX_AGE_DAYS = 1
+
 // Tier 2 (Auto-flush) thresholds
 const AUTO_FLUSH_THRESHOLD = 15
 const AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1000  // 2 hours
@@ -386,13 +391,14 @@ async function refreshEmbeddings(ws, options = {}) {
   const contextualizeProvider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   const kind = options.kind ?? 'cycle2'
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
+  const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit
   let contextMap = new Map()
 
   // Contextualize items for better embeddings (skipped when embedding.contextualize === false)
   if (contextualizeEnabled) {
     const promptPath = join(resourceDir(), 'defaults', 'memory-contextualize-prompt.md')
     if (existsSync(promptPath)) {
-      const items = store.getEmbeddableItems({ perTypeLimit: refreshOptions.perTypeLimit }).slice(0, refreshOptions.contextualizeItems)
+      const items = store.getEmbeddableItems({ perTypeLimit }).slice(0, refreshOptions.contextualizeItems)
       if (items.length > 0) {
         const template = readFileSync(promptPath, 'utf8')
         const itemsText = items.map((item, i) => [`#${i + 1}`, `key=${item.key}`, `type=${item.entityType}`, item.subtype ? `subtype=${item.subtype}` : '', `content=${item.content}`].filter(Boolean).join('\n')).join('\n\n')
@@ -414,7 +420,7 @@ async function refreshEmbeddings(ws, options = {}) {
     process.stderr.write('[memory-cycle] contextualize disabled by config (embedding.contextualize=false), embedding raw content\n')
   }
 
-  const updated = await store.ensureEmbeddings({ perTypeLimit: refreshOptions.perTypeLimit, contextMap })
+  const updated = await store.ensureEmbeddings({ perTypeLimit, contextMap })
   process.stderr.write(`[memory-cycle] embeddings refreshed: ${updated}\n`)
 }
 
@@ -594,6 +600,92 @@ export async function rebuildAll(ws) {
   return enqueueCycleWrite('cycle2', () => rebuildAllImpl(ws))
 }
 
+// ── Rebuild mode: concurrent batch cycle1 + embedding pairs ──
+
+async function rebuildClassificationsImpl(ws, options = {}) {
+  const store = options.store ?? getStore()
+  const config = readMainConfig()
+  const maxAgeDays = options.maxAgeDays ?? null // null = all
+  const maxConcurrent = Math.max(1, Math.min(Number(options.maxConcurrentBatches ?? MAX_CONCURRENT_BATCHES), 10))
+  const batchSize = Math.max(1, Number(options.batchSize ?? BATCH_SIZE))
+
+  try { store.backfillProject(ws, { limit: 500 }) } catch {}
+
+  const pendingDaysLimit = maxAgeDays ?? 9999
+  const pendingDays = store.getPendingCandidateDays(pendingDaysLimit, 1)
+  if (pendingDays.length === 0) {
+    process.stderr.write('[rebuild] no pending candidates.\n')
+    return { total: 0, batches: 0, classifications: 0 }
+  }
+
+  // Collect all pending candidates within maxAgeDays
+  const allCandidates = []
+  for (const { day_key } of pendingDays.sort((a, b) => b.day_key.localeCompare(a.day_key))) {
+    const dayCandidates = store.getCandidatesForDate(day_key)
+      .map(c => ({ ...c, content: cleanMemoryText(c.content) }))
+      .filter(c => c.content && !looksLowSignalCycle1(c.content))
+    allCandidates.push(...dayCandidates)
+  }
+  if (allCandidates.length === 0) {
+    process.stderr.write('[rebuild] no valid candidates after filtering.\n')
+    return { total: 0, batches: 0, classifications: 0 }
+  }
+
+  // Split into batches
+  const batches = []
+  for (let i = 0; i < allCandidates.length; i += batchSize) {
+    batches.push(allCandidates.slice(i, i + batchSize))
+  }
+
+  process.stderr.write(`[rebuild] ${allCandidates.length} candidates in ${batches.length} batches (concurrency=${maxConcurrent})\n`)
+
+  let totalExtracted = 0
+  let totalClassifications = 0
+  let batchesCompleted = 0
+
+  // Process batches in concurrent waves
+  for (let i = 0; i < batches.length; i += maxConcurrent) {
+    const wave = batches.slice(i, i + maxConcurrent)
+    const waveResults = await Promise.all(
+      wave.map((batch, idx) => {
+        const batchIdx = i + idx
+        return runCycle1Impl(ws, config, {
+          store,
+          force: true,
+          maxItems: batch.length,
+          _preSplitCandidates: batch,
+        }).catch(e => {
+          process.stderr.write(`[rebuild] batch ${batchIdx} error: ${e.message}\n`)
+          return { extracted: 0, classifications: 0 }
+        })
+      })
+    )
+
+    for (const result of waveResults) {
+      totalExtracted += result.extracted ?? 0
+      totalClassifications += result.classifications ?? 0
+      batchesCompleted++
+    }
+
+    process.stderr.write(`[rebuild] wave ${Math.floor(i / maxConcurrent) + 1}: ${waveResults.length} batches done, total=${totalExtracted}/${allCandidates.length}\n`)
+  }
+
+  // Final embedding pass with high limit to cover all new chunks
+  if (totalExtracted > 0) {
+    await refreshEmbeddings(ws, { store, kind: 'cycle1', perTypeLimit: Math.max(256, totalClassifications * 2) })
+  }
+
+  store.writeContextFile()
+  store.writeRecentFile()
+
+  process.stderr.write(`[rebuild] complete: ${totalExtracted} extracted, ${totalClassifications} classifications, ${batchesCompleted} batches\n`)
+  return { total: totalExtracted, batches: batchesCompleted, classifications: totalClassifications }
+}
+
+export async function rebuildClassifications(ws, options = {}) {
+  return enqueueCycleWrite('cycle1', () => rebuildClassificationsImpl(ws, options))
+}
+
 async function rebuildRecentImpl(ws, options = {}) {
   const store = getStore()
   const mainConfig = readMainConfig()
@@ -740,30 +832,36 @@ async function runCycle1Impl(ws, config, options = {}) {
   try { store.backfillProject(ws, { limit: 50 }) } catch {}
 
   const cycle1Config = config?.memory?.cycle1 ?? {}
-  const batchSize = Math.max(1, Number(cycle1Config.batchSize ?? 50))
-  const maxDays = force ? 9999 : Math.max(1, Number(cycle1Config.maxDays ?? 7))
+  const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config.batchSize ?? BATCH_SIZE))
+  const maxDays = force ? 9999 : Math.max(1, Number(options.maxAgeDays ?? cycle1Config.maxDays ?? 7))
   const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
   const timeout = config?.memory?.cycle1?.timeout || 300000
 
-  // pending candidates를 최근 maxDays 범위에서 가져옴
-  // getCandidatesForDate는 이미 status='pending'만 반환
-  const pendingDays = store.getPendingCandidateDays(maxDays, 1)
-  if (pendingDays.length === 0) {
-    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
-    return { extracted: 0, classifications: 0 }
-  }
+  // Support pre-split candidates from rebuildClassifications
+  let allCandidates
+  if (Array.isArray(options._preSplitCandidates) && options._preSplitCandidates.length > 0) {
+    allCandidates = options._preSplitCandidates
+  } else {
+    // pending candidates를 최근 maxDays 범위에서 가져옴
+    // getCandidatesForDate는 이미 status='pending'만 반환
+    const pendingDays = store.getPendingCandidateDays(maxDays, 1)
+    if (pendingDays.length === 0) {
+      writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
+      return { extracted: 0, classifications: 0 }
+    }
 
-  const allCandidates = []
-  for (const { day_key } of pendingDays.sort((a, b) => b.day_key.localeCompare(a.day_key))) {
-    const dayCandidates = store.getCandidatesForDate(day_key)
-      .map(c => ({ ...c, content: cleanMemoryText(c.content) }))
-      .filter(c => c.content && !looksLowSignalCycle1(c.content))
-    allCandidates.push(...dayCandidates)
-    if (!force && allCandidates.length >= batchSize) break
-  }
-  if (allCandidates.length === 0) {
-    writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
-    return { extracted: 0, classifications: 0 }
+    allCandidates = []
+    for (const { day_key } of pendingDays.sort((a, b) => b.day_key.localeCompare(a.day_key))) {
+      const dayCandidates = store.getCandidatesForDate(day_key)
+        .map(c => ({ ...c, content: cleanMemoryText(c.content) }))
+        .filter(c => c.content && !looksLowSignalCycle1(c.content))
+      allCandidates.push(...dayCandidates)
+      if (!force && allCandidates.length >= batchSize) break
+    }
+    if (allCandidates.length === 0) {
+      writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
+      return { extracted: 0, classifications: 0 }
+    }
   }
 
   let totalExtracted = 0, totalClassifications = 0
@@ -863,6 +961,29 @@ async function runCycle1Impl(ws, config, options = {}) {
 
       store.upsertClassifications(classificationRows, ts, null)
 
+      // Save chunks to memory_chunks table + FTS
+      for (const row of classificationRows) {
+        const epId = Number(row.episode_id)
+        if (!epId || !Array.isArray(row.chunks) || row.chunks.length === 0) continue
+        const clsRow = store.db.prepare('SELECT id FROM classifications WHERE episode_id = ?').get(epId)
+        const clsId = clsRow?.id ?? null
+        // Remove old chunks for this episode
+        try { store.db.prepare('DELETE FROM memory_chunks WHERE episode_id = ?').run(epId) } catch {}
+        for (let seq = 0; seq < row.chunks.length; seq++) {
+          const chunkText = String(row.chunks[seq]).trim()
+          if (!chunkText) continue
+          store.db.prepare(`
+            INSERT INTO memory_chunks (episode_id, classification_id, content, topic, importance, seq)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).run(epId, clsId, chunkText, row.topic || null, row.importance || null, seq)
+          // FTS
+          const chunkId = store.db.prepare('SELECT last_insert_rowid() as id').get().id
+          try {
+            store.db.prepare('INSERT INTO memory_chunks_fts(rowid, content, topic) VALUES (?, ?, ?)').run(chunkId, chunkText, row.topic || '')
+          } catch {}
+        }
+      }
+
       const processedIds = candidates.map(c => c.id).filter(id => id != null)
       if (processedIds.length > 0) {
         const placeholders = processedIds.map(() => '?').join(',')
@@ -879,7 +1000,8 @@ async function runCycle1Impl(ws, config, options = {}) {
   }
 
   if (totalExtracted > 0) {
-    await refreshEmbeddings(ws, { store, kind: 'cycle1' })
+    const pairLimit = Math.max(BATCH_SIZE, totalClassifications * 2)
+    await refreshEmbeddings(ws, { store, kind: 'cycle1', perTypeLimit: pairLimit })
   }
 
   // Update recent.md (last 20 turns)

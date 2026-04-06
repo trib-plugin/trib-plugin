@@ -239,6 +239,20 @@
 
       <div id="settings-body" class="settings-body">
         <div class="sec">
+          <div class="sec-title">User</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Name</span>
+              <input class="r-input" id="set-user-name" type="text" placeholder="John">
+            </div>
+            <div class="r">
+              <span class="r-name-wide">Title</span>
+              <input class="r-input" id="set-user-title" type="text" placeholder="Boss">
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
           <div class="sec-title">Extraction</div>
           <div class="sec-body">
             <div class="r">
@@ -527,6 +541,11 @@ function populateConfig(cfg) {
   document.getElementById('set-enabled').checked = enabled;
   toggleMemory();
 
+  // User
+  const usr = cfg.user || {};
+  if (usr.name) document.getElementById('set-user-name').value = usr.name;
+  if (usr.title) document.getElementById('set-user-title').value = usr.title;
+
   // Settings
   const c1 = cfg.cycle1 || {};
   const c2 = cfg.cycle2 || {};
@@ -571,6 +590,10 @@ function buildConfigData() {
 
   return {
     enabled: document.getElementById('set-enabled').checked,
+    user: {
+      name: document.getElementById('set-user-name').value,
+      title: document.getElementById('set-user-title').value,
+    },
     cycle1: {
       interval: document.getElementById('set-retention').value,
       timeout: timeoutSec > 0 ? timeoutSec * 1000 : undefined,

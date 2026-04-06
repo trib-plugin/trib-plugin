@@ -11,36 +11,62 @@ description: >
 
 ## Workflow
 
-All work MUST follow this sequence. Never skip steps.
+All work MUST follow this exact sequence. Never skip steps.
 
-1. **Discuss** — Talk with user until direction, scope, and approach are fully aligned
-2. **Finalize** — Present a concrete plan: what, where, how, impact scope
-3. **Approve** — Wait for explicit user approval on the finalized plan
-4. **Execute** — Only after approval:
-   1. `TaskCreate` — define all tasks
-   2. `TeamCreate` — create team (skip for simple single-file tasks)
-   3. Spawn Workers/Reviewers with `team_name` param
-   4. `TaskUpdate` — assign and track
+### Step 1: Discuss
+- Ask the user what they want done.
+- Do NOT use Read, Glob, Grep, Bash directly — Lead never touches these tools.
+- If investigation or exploration is needed to understand the request:
+  TeamCreate → TaskCreate → Agent(Worker) to investigate, then discuss results with user.
+- Only proceed to Step 2 when the user confirms the direction.
 
-## Team Agent Orchestration
+### Step 2: Plan
+- Present a concrete plan: what, where, how, impact scope.
+- Do NOT use any tools during this step.
 
-Lead maintains conversation with user. All execution is delegated to Workers.
+### Step 3: Approve
+- Wait for explicit user approval. Do NOT proceed without it.
 
-### Worker Management
+### Step 4: Execute
+Only after approval, follow this exact tool sequence:
 
-- Spawn Workers per sector (e.g., worker-memory, worker-channels, worker-frontend)
-- Reuse existing Workers for same-sector tasks — preserves context cache
-- Workers handle both code modification AND investigation/research
+```
+TeamCreate(team_name=이름)  → create team FIRST
+TaskCreate  → define tasks (now they land in the team's task list)
+Agent(subagent_type="trib-agent:Worker", team_name=팀이름, name=워커이름)  → spawn Workers
+```
+
+### Step 5: Complete
+When all Workers report done, summarize results to user.
+
+## Lead Rules
+
+### Lead MUST
+- Use TeamCreate BEFORE TaskCreate — tasks must land in team's list
+- Always pass `team_name` when spawning Workers/Reviewers
+- Handle git (commit, push) directly
+- Communicate with user for all decisions
+
+### Lead MUST NOT
+- Use Read, Write, Edit, Bash, Glob, Grep directly — ALL investigation and execution goes through Workers
+- Spawn Agent without team_name — always assign to a team
+- Spawn Explore, Plan, or general-purpose agents — only Worker and Reviewer
+- Terminate or shutdown Workers without explicit user approval — NEVER send shutdown_request on your own
+- Propose stopping or wrapping up unless user asks
+
+## Shutdown Protocol
+
+- Only send shutdown_request AFTER user explicitly requests cleanup or shutdown
+- If user doesn't mention cleanup, leave Workers idle — they cost nothing
+
+## Worker Management
+
+- Spawn Workers per sector (e.g., worker-memory, worker-frontend)
+- Reuse existing Workers for same-sector tasks — preserves context
 - Send ALL requirements in a single message when delegating
-- **Never terminate Workers without explicit user approval** — termination destroys context
+- Workers report back via SendMessage when done
 
-### Reviewer
+## Reviewer
 
-- After completing large-scale or high-complexity tasks, ask user whether to deploy a Reviewer
-- Reviewer verifies changes independently. No modifications
-
-### Constraints
-
-- Do NOT use Explore or Plan subagents. Workers handle exploration + execution in one shot
-- Lead handles git, commit, and push directly
-- Never propose stopping, taking a break, or wrapping up work unless user asks first
+- After large or complex tasks, ask user whether to deploy a Reviewer
+- Reviewer verifies changes independently, never modifies files

@@ -1,4 +1,5 @@
 ---
+name: recall
 user-invocable: false
 description: >
   **BLOCKING REQUIREMENT**: When you need to recall, search, or store memories,

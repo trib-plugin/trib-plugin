@@ -121,46 +121,56 @@ const spawnEnv = {
     : dataNodeModules,
 }
 
-// Pre-build TypeScript → JS bundle for fast MCP handshake (~40ms vs ~500ms with tsx)
-function buildBundle() {
-  try {
-    const srcStat = statSync(serverTs)
+// Prefer pre-built bundle shipped with the plugin (no runtime esbuild needed).
+// Falls back to runtime build if pre-built bundle is missing (dev mode).
+const prebuiltBundle = join(pluginRoot, 'dist', 'server.bundle.mjs')
+let serverFile
+
+try {
+  statSync(prebuiltBundle)
+  serverFile = prebuiltBundle
+  log('using pre-built bundle')
+} catch {
+  // No pre-built bundle — build at runtime
+  log('no pre-built bundle, building at runtime...')
+  function buildBundle() {
     try {
-      const bundleStat = statSync(serverJs)
-      if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true // bundle is fresh
-    } catch { /* bundle doesn't exist yet */ }
-    log('building server bundle...')
-    const result = spawnSync(esbuildBin, [
-      serverTs, '--bundle', '--platform=node', '--format=esm',
-      `--outfile=${serverJs}`, '--packages=external',
-    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
-    if (result.status === 0) {
-      log('bundle built successfully')
-      return true
-    }
-    log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
-    return false
-  } catch (e) {
-    log(`bundle build error: ${e.message}`)
-    return false
+      const srcStat = statSync(serverTs)
+      try {
+        const bundleStat = statSync(serverJs)
+        if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
+      } catch {}
+      const result = spawnSync(esbuildBin, [
+        serverTs, '--bundle', '--platform=node', '--format=esm',
+        `--outfile=${serverJs}`, '--packages=external',
+      ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+      if (result.status === 0) { log('bundle built'); return true }
+      log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
+      return false
+    } catch (e) { log(`bundle build error: ${e.message}`); return false }
+  }
+
+  if (buildBundle()) {
+    serverFile = serverJs
+  } else {
+    // tsx fallback
+    serverFile = null
   }
 }
 
-const hasBundled = buildBundle()
-
-const child = hasBundled
+const child = serverFile
   ? (() => {
-      log(`exec node ${serverJs} (bundled)`)
-      return spawn('node', [serverJs], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
+      log(`exec node ${serverFile}`)
+      return spawn('node', [serverFile], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
     })()
   : process.platform === 'win32'
   ? (() => {
       const tsxCliPath = join(dataNodeModules, 'tsx', 'dist', 'cli.mjs')
-      log(`exec node ${tsxCliPath} ${serverTs} (tsx fallback)`)
+      log(`exec tsx fallback ${serverTs}`)
       return spawn('node', [tsxCliPath, serverTs], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
     })()
   : (() => {
-      log(`exec ${tsxBin} ${serverTs} (tsx fallback)`)
+      log(`exec tsx fallback ${serverTs}`)
       return spawn(tsxBin, [serverTs], { cwd: pluginRoot, stdio: 'inherit', env: spawnEnv })
     })()
 
