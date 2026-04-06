@@ -641,7 +641,7 @@ const MEMORY_INSTRUCTIONS = [
 ].join('\n')
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.2' },
+  { name: 'trib-memory', version: '0.0.3' },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 

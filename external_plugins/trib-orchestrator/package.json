@@ -1,6 +1,6 @@
 {
   "name": "trib-orchestrator",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Multi-AI team orchestrator MCP server",
   "type": "module",
   "dependencies": {

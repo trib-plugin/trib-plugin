@@ -1,7 +1,7 @@
 {
   "name": "trib-orchestrator",
   "description": "Multi-AI team orchestrator — stateful sessions with OpenAI, Anthropic, Gemini, Groq, OpenRouter, xAI, Copilot, Ollama, and local models.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "author": {
     "name": "TRIBGAMES",
     "email": "dev@tribgames.com"
