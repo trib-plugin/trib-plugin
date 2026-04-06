@@ -27,6 +27,15 @@ function fileContents(path) {
   try { return readFileSync(path, 'utf8') } catch { return null }
 }
 
+function depsHash(path) {
+  try {
+    const pkg = JSON.parse(readFileSync(path, 'utf8'))
+    return JSON.stringify({ dependencies: pkg.dependencies || {}, devDependencies: pkg.devDependencies || {} })
+  } catch {
+    return null
+  }
+}
+
 async function isExecutable(path) {
   try { await access(path, process.platform === 'win32' ? constants.F_OK : constants.X_OK); return true } catch { return false }
 }
@@ -41,7 +50,7 @@ async function syncDependenciesIfNeeded() {
   const dataLockfilePath = join(pluginData, 'package-lock.json')
 
   let needsInstall = false
-  if (fileContents(manifestPath) !== fileContents(dataManifestPath)) needsInstall = true
+  if (depsHash(manifestPath) !== depsHash(dataManifestPath)) needsInstall = true
   if (!(await isExecutable(esbuildBin))) needsInstall = true
 
   if (!needsInstall) return

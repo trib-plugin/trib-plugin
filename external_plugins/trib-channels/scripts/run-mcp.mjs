@@ -46,6 +46,15 @@ function fileContents(path) {
   }
 }
 
+function depsHash(path) {
+  try {
+    const pkg = JSON.parse(readFileSync(path, 'utf8'))
+    return JSON.stringify({ dependencies: pkg.dependencies || {}, devDependencies: pkg.devDependencies || {} })
+  } catch {
+    return null
+  }
+}
+
 async function isExecutable(path) {
   try {
     await access(path, process.platform === "win32" ? constants.F_OK : constants.X_OK)
@@ -74,7 +83,7 @@ async function syncDependenciesIfNeeded() {
   log(`invoked root=${pluginRoot} data=${pluginData}`)
 
   let needsInstall = false
-  if (fileContents(manifestPath) !== fileContents(dataManifestPath)) {
+  if (depsHash(manifestPath) !== depsHash(dataManifestPath)) {
     needsInstall = true
   }
   if (!(await isExecutable(tsxBin))) {

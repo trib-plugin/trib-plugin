@@ -569,7 +569,6 @@ export class MemoryStore {
     } catch {
       if (this._retrievalTuningCache?.value) return this._retrievalTuningCache.value
       const value = mergeMemoryTuning()
-      value.reranker.enabled = false
       this._retrievalTuningCache = { mtimeMs: 0, value }
       return value
     }
@@ -1428,25 +1427,18 @@ export class MemoryStore {
     }
     // overFetch: pull extra candidates through MMR so reranker can promote buried hits
     const tuning = options.tuning ?? this.getRetrievalTuning()
-    const overFetchN = tuning?.reranker?.overFetch ?? 12
+    const overFetchN = tuning?.reranker?.overFetch ?? 15
     const overFetchLimit = Math.max(limit, Math.min(limit + overFetchN, capped.length))
     let finalResults = applyMMR(capped.slice(0, overFetchLimit))
 
-    // ── Stage 4: conditional rerank ──
-    // Only trigger when top scores are close (gap12 < threshold), skip when #1 is a clear winner
+    // ── Stage 4: rerank with cross-encoder ──
     if (tuning.reranker?.enabled && finalResults.length >= 3) {
-      const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[1]?.weighted_score || 0)
-      const gapThreshold = tuning.reranker.gapThreshold ?? 0.005
-      if (gap < gapThreshold) {
-        try {
-          const reranked = await jsRerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit)
-          if (reranked.length > 0) {
-            finalResults = reranked.slice(0, limit)
-          }
-        } catch {}
-      } else {
-        finalResults = finalResults.slice(0, limit)
-      }
+      try {
+        const reranked = await jsRerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit)
+        if (reranked.length > 0) {
+          finalResults = reranked.slice(0, limit)
+        }
+      } catch {}
     } else {
       finalResults = finalResults.slice(0, limit)
     }

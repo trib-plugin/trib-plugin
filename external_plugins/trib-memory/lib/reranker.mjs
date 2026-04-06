@@ -1,16 +1,14 @@
-import { AutoTokenizer, AutoModelForCausalLM } from '@huggingface/transformers'
+import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers'
 
 let _tokenizer = null
 let _model = null
 let _loading = null
-let _tokenYes = null
-let _tokenNo = null
 const _scoreCache = new Map()
 const SCORE_CACHE_LIMIT = 2000
 const MAX_QUERY_CHARS = 192
 const MAX_TEXT_CHARS = 240
 
-const DEFAULT_MODEL_ID = 'onnx-community/Qwen3-Reranker-0.6B-ONNX'
+const DEFAULT_MODEL_ID = 'Xenova/bge-reranker-large'
 
 export function getRerankerModelId() {
   return process.env.TRIB_MEMORY_RERANKER_MODEL_ID || DEFAULT_MODEL_ID
@@ -52,36 +50,18 @@ async function ensureModel() {
   if (_loading) return _loading
   _loading = (async () => {
     _tokenizer = await AutoTokenizer.from_pretrained(modelId)
-    _model = await AutoModelForCausalLM.from_pretrained(modelId, {
+    _model = await AutoModelForSequenceClassification.from_pretrained(modelId, {
       dtype: 'q4',
-      device: 'cpu',
     })
-    _tokenYes = _tokenizer.convert_tokens_to_ids('yes')
-    _tokenNo = _tokenizer.convert_tokens_to_ids('no')
     _loading = null
   })()
   return _loading
 }
 
-function buildPrompt(query, document) {
-  return `<|im_start|>system\nJudge whether the document is relevant to the search query. Answer only "yes" or "no".<|im_end|>\n<|im_start|>user\n<Query>: ${query}\n<Document>: ${document}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n`
-}
-
 async function scoreOne(queryText, docText) {
-  const prompt = buildPrompt(queryText, docText)
-  const inputs = _tokenizer(prompt, { truncation: true, max_length: 512 })
+  const inputs = _tokenizer(queryText, { text_pair: docText, truncation: true, max_length: 512 })
   const output = await _model(inputs)
-
-  const seqLen = output.logits.dims[1]
-  const vocabSize = output.logits.dims[2]
-  const lastLogits = output.logits.data.slice(
-    (seqLen - 1) * vocabSize,
-    seqLen * vocabSize,
-  )
-
-  const yesScore = Math.exp(lastLogits[_tokenYes])
-  const noScore = Math.exp(lastLogits[_tokenNo])
-  return yesScore / (yesScore + noScore)
+  return output.logits.data[0]
 }
 
 export async function rerank(query, items, topK) {
@@ -98,6 +78,7 @@ export async function rerank(query, items, topK) {
   await ensureModel()
 
   const scored = []
+  let inferCount = 0
   for (const entry of entries) {
     const cached = getCachedScore(queryText, entry.text)
     if (cached != null) {
@@ -107,6 +88,8 @@ export async function rerank(query, items, topK) {
     const score = await scoreOne(queryText, entry.text)
     setCachedScore(queryText, entry.text, score)
     scored.push({ ...entry.item, reranker_score: score })
+    // yield CPU every 3 inferences to avoid sustained 100% load
+    if (++inferCount % 3 === 0) await new Promise(r => setTimeout(r, 5))
   }
 
   return scored.sort((a, b) => Number(b.reranker_score) - Number(a.reranker_score)).slice(0, limit)
@@ -119,8 +102,6 @@ export async function disposeReranker() {
   _tokenizer = null
   _model = null
   _loading = null
-  _tokenYes = null
-  _tokenNo = null
   _scoreCache.clear()
 }
 
