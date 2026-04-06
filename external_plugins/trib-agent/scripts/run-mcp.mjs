@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync, existsSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { join } from 'path'
