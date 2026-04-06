@@ -55,11 +55,11 @@ async function syncDependenciesIfNeeded() {
   if (lockContent != null) {
     await copyFile(lockfilePath, dataLockfilePath)
     const r = spawnSync(npmCmd, ['ci', '--omit=dev', '--silent'], { cwd: pluginData, stdio: ['ignore', 'pipe', 'inherit'], shell: process.platform === 'win32' })
-    if (r.status !== 0) { log(`npm ci failed with status ${r.status}`); process.exit(r.status ?? 1) }
+    if (r.status !== 0) { log(`npm ci failed with status ${r.status}`); try { unlinkSync(dataManifestPath) } catch {}; process.exit(r.status ?? 1) }
     log('npm ci completed')
   } else {
     const r = spawnSync(npmCmd, ['install', '--omit=dev', '--silent'], { cwd: pluginData, stdio: ['ignore', 'pipe', 'inherit'], shell: process.platform === 'win32' })
-    if (r.status !== 0) { log(`npm install failed with status ${r.status}`); process.exit(r.status ?? 1) }
+    if (r.status !== 0) { log(`npm install failed with status ${r.status}`); try { unlinkSync(dataManifestPath) } catch {}; process.exit(r.status ?? 1) }
     log('npm install completed')
   }
 }

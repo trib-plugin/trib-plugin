@@ -1,6 +1,6 @@
 {
   "name": "trib-plugin",
-  "description": "trib-plugin ecosystem — channels, memory, search",
+  "description": "trib-plugin ecosystem — channels, memory, search, orchestrator",
   "owner": {
     "name": "trib-plugin",
     "email": "dev@tribgames.com"
@@ -29,6 +29,12 @@
       "description": "Agent workflow orchestration — structured task flow, team agent management, and context-efficient delegation",
       "category": "productivity",
       "source": "./external_plugins/trib-agent"
+    },
+    {
+      "name": "trib-orchestrator",
+      "description": "Multi-AI team orchestrator with stateful sessions and channel notifications",
+      "category": "productivity",
+      "source": "./external_plugins/trib-orchestrator"
     }
   ]
 }

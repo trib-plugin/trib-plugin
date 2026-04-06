@@ -64,6 +64,7 @@ function runInstall(command, args) {
   })
 
   if (result.status !== 0) {
+    try { unlinkSync(dataManifestPath) } catch {}
     process.exit(result.status ?? 1)
   }
 }

@@ -24,7 +24,8 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { getMemoryStore } from '../lib/memory.mjs'
-import { configureEmbedding } from '../lib/embedding-provider.mjs'
+import { configureEmbedding, embedText } from '../lib/embedding-provider.mjs'
+import { cosineSimilarity } from '../lib/memory-vector-utils.mjs'
 import { startLlmWorker, stopLlmWorker } from '../lib/llm-worker-host.mjs'
 import {
   sleepCycle,
@@ -288,25 +289,10 @@ async function handleGrep(query, options) {
 
   items = items.slice(offset, offset + limit)
 
-  // Auto-chunk: search mode gets context=3 by default for episode results
-  const ctx = context > 0 ? context : 3
+  // Semantic chunking: use embedding similarity to group related episodes
+  const SEMANTIC_WINDOW = 8   // scan +-8 episodes around each hit
+  const SEMANTIC_THRESH = 0.45 // cosine similarity threshold to include
   const hitIds = new Set(items.filter(i => i.type === 'episode').map(i => Number(i.entity_id)))
-
-  // Build chunks: collect ranges from all episode hits, merge overlaps
-  const ranges = []
-  for (const id of hitIds) {
-    ranges.push({ lo: id - ctx, hi: id + ctx })
-  }
-  ranges.sort((a, b) => a.lo - b.lo)
-  const merged = []
-  for (const r of ranges) {
-    const last = merged[merged.length - 1]
-    if (last && r.lo <= last.hi + 1) {
-      last.hi = Math.max(last.hi, r.hi)
-    } else {
-      merged.push({ ...r })
-    }
-  }
 
   const lines = []
 
@@ -318,29 +304,89 @@ async function handleGrep(query, options) {
     }
   }
 
-  // Chunked episode results
-  for (const range of merged) {
-    try {
-      const rows = store.db.prepare(`
-        SELECT id, ts, role, content FROM episodes
-        WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn')
+  // Semantic chunked episode results
+  if (hitIds.size > 0) {
+    // Gather hit vectors (from DB cache or compute)
+    const hitVectors = new Map()
+    for (const id of hitIds) {
+      try {
+        const row = store.db.prepare('SELECT content FROM episodes WHERE id = ?').get(id)
+        if (row?.content) {
+          const vec = await store.getStoredVector('episode', id, row.content)
+          if (vec?.length > 0) hitVectors.set(id, vec)
+        }
+      } catch {}
+    }
+
+    // For each hit, expand semantically
+    const included = new Map() // episodeId -> { sim, hitId }
+    for (const id of hitIds) {
+      included.set(id, { sim: 1.0, hitId: id })
+    }
+
+    for (const [hitId, hitVec] of hitVectors) {
+      const window = store.db.prepare(`
+        SELECT id, content FROM episodes
+        WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn') AND id != ?
         ORDER BY id ASC
-      `).all(range.lo, range.hi)
-      if (rows.length === 0) continue
-      const tsStart = String(rows[0].ts || '').slice(0, 16)
-      const tsEnd = String(rows[rows.length - 1].ts || '').slice(0, 16)
-      const chunkHits = rows.filter(r => hitIds.has(Number(r.id))).length
-      lines.push(`\n[${tsStart}~${tsEnd}] ${chunkHits} hit(s)`)
-      for (const ep of rows) {
-        const prefix = ep.role === 'user' ? 'u' : 'a'
-        const marker = hitIds.has(Number(ep.id)) ? '→' : ' '
-        lines.push(`${marker} ${prefix}: ${String(ep.content || '').slice(0, 150)}`)
+      `).all(hitId - SEMANTIC_WINDOW, hitId + SEMANTIC_WINDOW, hitId)
+
+      for (const ep of window) {
+        if (included.has(ep.id) && included.get(ep.id).sim >= 1.0) continue
+        try {
+          const epVec = await store.getStoredVector('episode', ep.id, ep.content)
+          if (!epVec?.length) continue
+          const sim = cosineSimilarity(hitVec, epVec)
+          if (sim >= SEMANTIC_THRESH) {
+            const existing = included.get(ep.id)
+            if (!existing || sim > existing.sim) {
+              included.set(ep.id, { sim, hitId })
+            }
+          }
+        } catch {}
       }
-    } catch {}
+    }
+
+    // Group by contiguous ID ranges and build chunks
+    const sortedIds = [...included.keys()].sort((a, b) => a - b)
+    const chunks = []
+    let chunk = [sortedIds[0]]
+    for (let i = 1; i < sortedIds.length; i++) {
+      if (sortedIds[i] - sortedIds[i - 1] <= 2) {
+        chunk.push(sortedIds[i])
+      } else {
+        chunks.push(chunk)
+        chunk = [sortedIds[i]]
+      }
+    }
+    if (chunk.length) chunks.push(chunk)
+
+    for (const chunkIds of chunks) {
+      try {
+        const rows = store.db.prepare(`
+          SELECT id, ts, role, content FROM episodes
+          WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn')
+          ORDER BY id ASC
+        `).all(chunkIds[0], chunkIds[chunkIds.length - 1])
+        if (rows.length === 0) continue
+        // Filter: only included episodes (semantic pass)
+        const filtered = rows.filter(r => included.has(Number(r.id)))
+        if (filtered.length === 0) continue
+        const tsStart = String(filtered[0].ts || '').slice(0, 16)
+        const tsEnd = String(filtered[filtered.length - 1].ts || '').slice(0, 16)
+        const chunkHits = filtered.filter(r => hitIds.has(Number(r.id))).length
+        lines.push(`\n[${tsStart}~${tsEnd}] ${chunkHits} hit(s)`)
+        for (const ep of filtered) {
+          const prefix = ep.role === 'user' ? 'u' : 'a'
+          const marker = hitIds.has(Number(ep.id)) ? '→' : ' '
+          lines.push(`${marker} ${prefix}: ${String(ep.content || '').slice(0, 200)}`)
+        }
+      } catch {}
+    }
   }
 
   // Fallback: if no chunks built, show flat results
-  if (merged.length === 0 && lines.length === 0) {
+  if (hitIds.size === 0 && lines.length === 0) {
     for (const item of items) {
       const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
       lines.push(`[${ts}] ${String(item.content || '').slice(0, 200)}`)

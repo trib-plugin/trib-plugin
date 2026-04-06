@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, unlinkSync, openSync, closeSync } from 'fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs'
 import { copyFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { join } from 'path'
@@ -26,7 +26,6 @@ const dataLockfilePath = join(pluginData, 'package-lock.json')
 const dataNodeModules = join(pluginData, 'node_modules')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
 const logPath = join(pluginData, 'run-mcp.log')
-const syncLockPath = join(pluginData, '.sync.lock')
 
 function log(message) {
   writeFileSync(
@@ -68,41 +67,6 @@ function runInstall(command, args) {
   }
 }
 
-function acquireLock(maxWaitMs = 60000) {
-  const pollMs = 500
-  const start = Date.now()
-  while (Date.now() - start < maxWaitMs) {
-    try {
-      const stat = statSync(syncLockPath)
-      // Stale lock: older than 120s means the holder crashed
-      if (Date.now() - stat.mtimeMs > 120000) {
-        log('removing stale sync lock')
-        try { unlinkSync(syncLockPath) } catch {}
-      } else {
-        spawnSync(process.platform === 'win32' ? 'timeout.exe' : 'sleep',
-          process.platform === 'win32' ? ['/t', '1', '/nobreak'] : ['0.5'],
-          { stdio: 'ignore', shell: process.platform === 'win32' })
-        continue
-      }
-    } catch { /* lock doesn't exist — good */ }
-    try {
-      const fd = openSync(syncLockPath, 'wx')
-      writeFileSync(fd, `${process.pid}`)
-      closeSync(fd)
-      return true
-    } catch {
-      // Another process grabbed it between our check and create
-      continue
-    }
-  }
-  log('failed to acquire sync lock after timeout')
-  return false
-}
-
-function releaseLock() {
-  try { unlinkSync(syncLockPath) } catch {}
-}
-
 async function syncDependenciesIfNeeded() {
   mkdirSync(pluginData, { recursive: true })
   log(`invoked root=${pluginRoot} data=${pluginData}`)
@@ -120,41 +84,33 @@ async function syncDependenciesIfNeeded() {
   }
 
   log('dependency sync required')
+  rmSync(dataNodeModules, { recursive: true, force: true })
+  await copyFile(manifestPath, dataManifestPath)
 
-  if (!acquireLock()) {
-    // Another process finished sync — recheck if install is still needed
-    if (fileContents(manifestPath) === fileContents(dataManifestPath) && await isExecutable(esbuildBin)) {
-      log('sync completed by another process, skipping')
-      return
-    }
-    log('lock timeout but sync still needed, proceeding anyway')
+  if (fileContents(lockfilePath) != null) {
+    await copyFile(lockfilePath, dataLockfilePath)
+    runInstall(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--silent'])
+    log('npm ci completed')
+    return
   }
 
-  try {
-    // Re-check after acquiring lock (another process may have finished)
-    if (fileContents(manifestPath) === fileContents(dataManifestPath) && await isExecutable(esbuildBin)) {
-      log('sync already completed by another process')
-      return
-    }
-
-    rmSync(dataNodeModules, { recursive: true, force: true })
-    await copyFile(manifestPath, dataManifestPath)
-
-    if (fileContents(lockfilePath) != null) {
-      await copyFile(lockfilePath, dataLockfilePath)
-      runInstall(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--silent'])
-      log('npm ci completed')
-      return
-    }
-
-    runInstall(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--silent'])
-    log('npm install completed')
-  } finally {
-    releaseLock()
-  }
+  runInstall(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--silent'])
+  log('npm install completed')
 }
 
 await syncDependenciesIfNeeded()
+
+// Config reading
+function readLocalConfig() {
+  try {
+    const configPath = join(pluginData, 'config.json')
+    return JSON.parse(readFileSync(configPath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+const localConfig = readLocalConfig()
 
 // Dev: auto-sync marketplace source to cache if newer
 function devSyncFromMarketplace() {
@@ -164,19 +120,21 @@ function devSyncFromMarketplace() {
     const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
     if (!marketName || !pluginName) return
     const marketSrc = join(pluginsBase, 'marketplaces', marketName, 'external_plugins', pluginName)
-    const dirs = ['lib', 'services', 'defaults']
+    const dirs = ['src', 'src/providers', 'src/session', '.']
     let synced = 0
     for (const dir of dirs) {
       try {
-        const entries = require('fs').readdirSync(join(marketSrc, dir))
+        const base = dir === '.' ? marketSrc : join(marketSrc, dir)
+        const entries = readdirSync(base).filter(f => f.endsWith('.ts') || f.endsWith('.mjs') || f.endsWith('.json') || f.endsWith('.md'))
         for (const f of entries) {
           try {
-            const src = join(marketSrc, dir, f)
-            const dst = join(pluginRoot, dir, f)
+            const src = join(base, f)
+            const dst = dir === '.' ? join(pluginRoot, f) : join(pluginRoot, dir, f)
             const srcMtime = statSync(src).mtimeMs
             let dstMtime = 0
             try { dstMtime = statSync(dst).mtimeMs } catch {}
             if (srcMtime > dstMtime) {
+              mkdirSync(join(pluginRoot, dir), { recursive: true })
               require('fs').copyFileSync(src, dst)
               synced++
             }
@@ -189,26 +147,46 @@ function devSyncFromMarketplace() {
 }
 devSyncFromMarketplace()
 
-const serverSrc = join(pluginRoot, 'services', 'memory-service.mjs')
+// Bundle TypeScript source with esbuild
+const serverSrc = join(pluginRoot, 'src', 'index.ts')
 const serverJs = join(pluginData, 'server.bundle.mjs')
+
+function getMaxSourceMtime() {
+  let max = 0
+  const srcDirs = [
+    join(pluginRoot, 'src'),
+    join(pluginRoot, 'src', 'providers'),
+    join(pluginRoot, 'src', 'session'),
+  ]
+  for (const dir of srcDirs) {
+    try {
+      for (const f of readdirSync(dir)) {
+        if (f.endsWith('.ts')) {
+          try { max = Math.max(max, statSync(join(dir, f)).mtimeMs) } catch {}
+        }
+      }
+    } catch {}
+  }
+  return max
+}
 
 function buildBundle() {
   try {
-    const srcStat = statSync(serverSrc)
+    const maxSourceMtime = getMaxSourceMtime()
     try {
       const bundleStat = statSync(serverJs)
-      if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
+      if (bundleStat.mtimeMs >= maxSourceMtime) return true
     } catch { /* bundle doesn't exist yet */ }
     log('building server bundle...')
     const result = spawnSync(esbuildBin, [
       serverSrc, '--bundle', '--platform=node', '--format=esm',
       `--outfile=${serverJs}`, '--packages=external',
-    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 30000 })
     if (result.status === 0) {
       log('bundle built successfully')
       return true
     }
-    log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
+    log(`bundle build failed: ${result.stderr?.toString().slice(0, 500)}`)
     return false
   } catch (e) {
     log(`bundle build error: ${e.message}`)
@@ -221,11 +199,53 @@ if (!buildBundle()) {
   process.exit(1)
 }
 
+// Bundle CLI for slash commands
+const cliSrc = join(pluginRoot, 'scripts', 'cli.mjs')
+const cliJs = join(pluginData, 'cli.bundle.mjs')
+try {
+  const cliMtime = statSync(cliSrc).mtimeMs
+  let cliBundleMtime = 0
+  try { cliBundleMtime = statSync(cliJs).mtimeMs } catch {}
+  if (cliMtime > cliBundleMtime) {
+    const result = spawnSync(esbuildBin, [
+      cliSrc, '--bundle', '--platform=node', '--format=esm',
+      `--outfile=${cliJs}`, '--packages=external',
+    ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+    if (result.status === 0) log('cli bundle built')
+    else log(`cli bundle failed: ${result.stderr?.toString().slice(0, 200)}`)
+  }
+} catch (e) {
+  log(`cli bundle skipped: ${e.message}`)
+}
+
+// Read API keys from config
+function readNestedKey(config, pathParts) {
+  let current = config
+  for (const part of pathParts) {
+    if (!current || typeof current !== 'object') return ''
+    current = current[part]
+  }
+  return typeof current === 'string' ? current : ''
+}
+
+const spawnEnv = {
+  ...process.env,
+  CLAUDE_PLUGIN_ROOT: pluginRoot,
+  CLAUDE_PLUGIN_DATA: pluginData,
+  // Pass API keys from config.json as env vars
+  ...(readNestedKey(localConfig, ['providers', 'openai', 'apiKey']) ? { OPENAI_API_KEY: readNestedKey(localConfig, ['providers', 'openai', 'apiKey']) } : {}),
+  ...(readNestedKey(localConfig, ['providers', 'anthropic', 'apiKey']) ? { ANTHROPIC_API_KEY: readNestedKey(localConfig, ['providers', 'anthropic', 'apiKey']) } : {}),
+  ...(readNestedKey(localConfig, ['providers', 'gemini', 'apiKey']) ? { GEMINI_API_KEY: readNestedKey(localConfig, ['providers', 'gemini', 'apiKey']) } : {}),
+  ...(readNestedKey(localConfig, ['providers', 'groq', 'apiKey']) ? { GROQ_API_KEY: readNestedKey(localConfig, ['providers', 'groq', 'apiKey']) } : {}),
+  ...(readNestedKey(localConfig, ['providers', 'openrouter', 'apiKey']) ? { OPENROUTER_API_KEY: readNestedKey(localConfig, ['providers', 'openrouter', 'apiKey']) } : {}),
+  ...(readNestedKey(localConfig, ['providers', 'xai', 'apiKey']) ? { XAI_API_KEY: readNestedKey(localConfig, ['providers', 'xai', 'apiKey']) } : {}),
+}
+
 log(`exec node ${serverJs} (bundled)`)
-const child = spawn('node', ['--no-warnings', serverJs], {
+const child = spawn('node', [serverJs], {
   cwd: pluginRoot,
   stdio: 'inherit',
-  env: process.env,
+  env: spawnEnv,
 })
 
 let shuttingDown = false
@@ -250,11 +270,11 @@ function relayShutdown(signal = 'SIGTERM') {
 }
 
 child.on('exit', (code, signal) => {
-  log(`child exit code=${code ?? 'null'} signal=${signal ?? 'null'}`)
+  log(`exit code=${code ?? 'null'} signal=${signal ?? 'null'}`)
   process.exit(code ?? 0)
 })
 child.on('error', err => {
-  log(`spawn failed: ${err}`)
+  log(`spawn error=${err}`)
   process.stderr.write(`run-mcp: spawn failed: ${err}\n`)
   process.exit(1)
 })

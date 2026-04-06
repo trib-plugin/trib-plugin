@@ -2015,23 +2015,29 @@ fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done\n`)
 // launched Claude Code in channel mode → auto-activate the bridge.
 function detectChannelFlag(): boolean {
   const isWin = process.platform === 'win32'
+  const flagRe = /--channels\b|--dangerously-load-development-channels\b/
+
+  // Windows: Claude Code spawns MCP servers via a subprocess whose CommandLine
+  // doesn't carry the original flags, breaking ppid-chain detection.
+  // Scan all claude.exe processes directly instead.
+  if (isWin) {
+    try {
+      const out: string = execSync(
+        'wmic process where "Name=\'claude.exe\'" get CommandLine /format:list',
+        { encoding: 'utf8', timeout: 5000 },
+      )
+      if (flagRe.test(out)) return true
+    } catch {}
+    return false
+  }
+
+  // macOS/Linux: ppid chain works reliably
   let pid = process.ppid
   for (let depth = 0; pid && pid > 1 && depth < 6; depth++) {
     try {
-      const cmdLine: string = isWin
-        ? execSync(`wmic process where ProcessId=${pid} get CommandLine /format:list`, { encoding: 'utf8', timeout: 3000 })
-        : execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 })
-      if (/--channels\b|--dangerously-load-development-channels\b/.test(cmdLine)) {
-        return true
-      }
-      // Walk to parent
-      if (isWin) {
-        const ppidOut: string = execSync(`wmic process where ProcessId=${pid} get ParentProcessId /format:list`, { encoding: 'utf8', timeout: 3000 })
-        const m = ppidOut.match(/ParentProcessId=(\d+)/)
-        pid = m ? parseInt(m[1], 10) : 0
-      } else {
-        pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10)
-      }
+      const cmdLine: string = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 })
+      if (flagRe.test(cmdLine)) return true
+      pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10)
     } catch { break }
   }
   return false

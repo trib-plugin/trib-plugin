@@ -37,6 +37,30 @@ try {
   process.exit(0);
 }
 
+// Double-check: verify this Claude Code process was actually started with --channels.
+// bridge-state.json can be stale from a previous session.
+function detectChannelFlagHook() {
+  const { execSync } = require('child_process');
+  const flagRe = /--channels\b|--dangerously-load-development-channels\b/;
+  if (process.platform === 'win32') {
+    try {
+      const out = execSync('wmic process where "Name=\'claude.exe\'" get CommandLine /format:list', { encoding: 'utf8', timeout: 5000 });
+      if (flagRe.test(out)) return true;
+    } catch {}
+    return false;
+  }
+  let pid = process.ppid;
+  for (let depth = 0; pid && pid > 1 && depth < 6; depth++) {
+    try {
+      const cmdLine = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 });
+      if (flagRe.test(cmdLine)) return true;
+      pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10);
+    } catch { break; }
+  }
+  return false;
+}
+if (!detectChannelFlagHook()) process.exit(0);
+
 const POLL_INTERVAL = 2000;
 const TIMEOUT = 900000; // 15 minutes
 const STALE_THRESHOLD = 30 * 60 * 1000; // 30 minutes

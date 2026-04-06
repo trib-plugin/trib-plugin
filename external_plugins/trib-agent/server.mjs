@@ -7,6 +7,13 @@ const INSTRUCTIONS = [
   'This server manages agent workflow and team orchestration.',
   'The agent skill handles workflow enforcement automatically.',
   '',
+  '### NEVER',
+  '- NEVER start code changes, investigation, or any work without invoking the workflow skill first',
+  '- NEVER use Explore or Plan subagents — Workers handle exploration + execution',
+  '- NEVER spawn agents without team_name assignment',
+  '- NEVER terminate Workers without explicit user approval',
+  '- NEVER propose stopping or wrapping up unless user asks',
+  '',
   'Future: agent registry, context management, session handoff tools.',
 ].join('\n');
 

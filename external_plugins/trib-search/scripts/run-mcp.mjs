@@ -62,6 +62,7 @@ function runInstall(command, args) {
 
   if (result.status !== 0) {
     log(`npm install failed with status ${result.status}`)
+    try { unlinkSync(dataManifestPath) } catch {}
     process.exit(result.status ?? 1)
   }
 }
