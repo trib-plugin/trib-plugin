@@ -1,5 +1,5 @@
 {
-  "description": "trib-memory hooks — deps sync, session context, per-turn hints, auto-memory blocking",
+  "description": "trib-memory hooks — deps sync, session context, auto-memory blocking",
   "hooks": {
     "SessionStart": [
       {
@@ -8,16 +8,6 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs",
             "timeout": 60
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/memory-hint.cjs"
           }
         ]
       }

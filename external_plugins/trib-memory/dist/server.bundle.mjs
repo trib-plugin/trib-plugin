@@ -5652,7 +5652,7 @@ async function handleRecallSingle(args) {
   const sort = String(args.sort ?? "relevance");
   const offset = Math.max(0, Number(args.offset ?? 0));
   const hasExplicitLimit = args.limit != null;
-  const defaultLimit = session && !hasExplicitLimit ? 200 : 10;
+  const defaultLimit = session && !hasExplicitLimit ? 20 : 10;
   const limit = Math.max(1, Number(args.limit ?? defaultLimit));
   const contextLines = Math.max(0, Number(args.context ?? 0));
   if (query === "stats") return handleStats();
@@ -5765,9 +5765,9 @@ async function handleCycle(args) {
 }
 var MEMORY_INSTRUCTIONS = [
   "Tools: `search_memories`(queries[]), `memory_cycle`(action: sleep|flush|rebuild|prune|cycle1|status).",
-  "Recall: use `search_memories` with `queries` array for batch lookups. No separate calls per query.",
-  "Store: handled automatically. Never write to MEMORY.md or memory/ folder.",
-  "Never use sqlite/SQL directly. Trust current code over recalled memory if they conflict.",
+  "Recall on demand: use `search_memories` when prior work context is needed. Use `queries` array for batch lookups.",
+  "Storage is automatic. Never write to MEMORY.md or memory/ folder. Never use sqlite/SQL directly.",
+  "Trust current code over recalled memory if they conflict.",
   "Weave recalled context naturally into conversation \u2014 recall like remembering, not querying."
 ].join("\n");
 var mcp = new Server(
@@ -5805,7 +5805,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           date: { type: "string", description: 'Date "2026-04-02" for read, or "2026-04-*" for listing (glob mode).' },
           sort: { type: "string", enum: ["relevance", "date", "asc"], default: "relevance", description: 'Sort order. Session mode defaults to newest first (DESC). Use "asc" to override to oldest first.' },
           offset: { type: "number", default: 0, description: "Skip N results." },
-          limit: { type: "number", default: 10, description: "Max results to return. Default 10 for search, 200 for session mode." },
+          limit: { type: "number", default: 10, description: "Max results to return. Default 10 for search, 20 for session mode." },
           context: { type: "number", default: 0, description: "Surrounding episodes count (grep mode, like grep -C)." },
           queries: { type: "array", description: "Batch: array of query objects. Each has same params (query, session, date, sort, offset, limit, context).", items: { type: "object", properties: { query: { type: "string" }, session: { type: "string" }, date: { type: "string" }, sort: { type: "string" }, offset: { type: "number" }, limit: { type: "number" }, context: { type: "number" } } } }
         },

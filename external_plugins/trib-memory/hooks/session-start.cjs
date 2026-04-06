@@ -42,6 +42,14 @@ if (userName) {
 
 let contextContent = readOptional(CONTEXT_FILE);
 let recentContent = readOptional(RECENT_FILE);
+// Limit recent items to last 10 entries
+if (recentContent) {
+  const lines = recentContent.split('\n');
+  const header = lines.filter(l => l.startsWith('#'));
+  const items = lines.filter(l => l.startsWith('- '));
+  const trimmed = items.slice(-10);
+  recentContent = [...header, ...trimmed].join('\n');
+}
 let botContent = readOptional(BOT_FILE);
 let userProfileContent = readOptional(USER_PROFILE_FILE);
 
