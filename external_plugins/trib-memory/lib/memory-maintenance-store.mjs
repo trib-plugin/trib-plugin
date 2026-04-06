@@ -144,7 +144,6 @@ export function rebuildCandidates(store) {
 export function resetConsolidatedMemory(store) {
   store.clearClassificationsStmt.run()
   store.clearClassificationsFtsStmt.run()
-  store.clearCandidatesStmt.run()
   store.clearVectorsStmt.run()
   if (store.vecEnabled) {
     try { store.db.exec('DELETE FROM vec_memory') } catch {}

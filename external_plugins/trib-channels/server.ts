@@ -2027,7 +2027,16 @@ function detectChannelFlag(): boolean {
         { encoding: 'utf8', timeout: 5000 },
       )
       if (flagRe.test(out)) return true
-    } catch {}
+    } catch {
+      // WMIC is deprecated on Windows 11 — fall back to PowerShell
+      try {
+        const out: string = execSync(
+          'powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'claude.exe\'\\" | Select-Object -ExpandProperty CommandLine"',
+          { encoding: 'utf8', timeout: 5000 },
+        )
+        if (flagRe.test(out)) return true
+      } catch {}
+    }
     return false
   }
 

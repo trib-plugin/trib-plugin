@@ -46,7 +46,13 @@ function detectChannelFlagHook() {
     try {
       const out = execSync('wmic process where "Name=\'claude.exe\'" get CommandLine /format:list', { encoding: 'utf8', timeout: 5000 });
       if (flagRe.test(out)) return true;
-    } catch {}
+    } catch {
+      // WMIC is deprecated on Windows 11 — fall back to PowerShell
+      try {
+        const out = execSync('powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'claude.exe\'\\" | Select-Object -ExpandProperty CommandLine"', { encoding: 'utf8', timeout: 5000 });
+        if (flagRe.test(out)) return true;
+      } catch {}
+    }
     return false;
   }
   let pid = process.ppid;

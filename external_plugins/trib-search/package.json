@@ -1,6 +1,6 @@
 {
   "name": "trib-search",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Unified search plugin for Claude Code with raw search, AI search, scrape, map, and crawl tools.",
   "license": "Apache-2.0",
   "type": "module",

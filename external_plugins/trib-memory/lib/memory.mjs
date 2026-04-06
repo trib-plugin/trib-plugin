@@ -1356,7 +1356,7 @@ export class MemoryStore {
 
     // Merge via RRF (Reciprocal Rank Fusion) — scale-independent
     // RRF score = 1/(k+rank_sparse) + 1/(k+rank_dense), k=60
-    const K = 30
+    const K = 60
     const sparseRanks = new Map()
     const denseRanks = new Map()
     sparse.forEach((item, i) => {
@@ -1426,22 +1426,21 @@ export class MemoryStore {
         capped.push(item)
       }
     }
-    let finalResults = applyMMR(capped.slice(0, limit))
+    // overFetch: pull limit*2 candidates through MMR, rerank narrows down
+    const overFetchLimit = Math.max(limit, Math.min(limit * 2, capped.length))
+    let finalResults = applyMMR(capped.slice(0, overFetchLimit))
 
     // ── Stage 4: conditional rerank ──
     const tuning = options.tuning ?? this.getRetrievalTuning()
     if (tuning.reranker?.enabled && finalResults.length >= 3) {
-      const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[2]?.weighted_score || 0)
-      if (gap < 0.03) {
-        try {
-          const top5 = finalResults.slice(0, 5)
-          const rest = finalResults.slice(5)
-          const reranked = await jsRerank(clean, top5, 5)
-          if (reranked.length > 0) {
-            finalResults = [...reranked, ...rest]
-          }
-        } catch {}
-      }
+      try {
+        const reranked = await jsRerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit)
+        if (reranked.length > 0) {
+          finalResults = reranked.slice(0, limit)
+        }
+      } catch {}
+    } else {
+      finalResults = finalResults.slice(0, limit)
     }
 
     if (options.recordRetrieval !== false) this.recordRetrieval(finalResults)

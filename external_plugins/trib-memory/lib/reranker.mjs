@@ -69,7 +69,7 @@ function buildPrompt(query, document) {
 
 async function scoreOne(queryText, docText) {
   const prompt = buildPrompt(queryText, docText)
-  const inputs = _tokenizer(prompt, { truncation: true, max_length: 8192 })
+  const inputs = _tokenizer(prompt, { truncation: true, max_length: 512 })
   const output = await _model(inputs)
 
   const seqLen = output.logits.dims[1]

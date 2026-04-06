@@ -71,8 +71,12 @@ const serverSrc = join(pluginRoot, 'server.mjs')
 if (!existsSync(bundlePath) || statSync(serverSrc).mtimeMs > statSync(bundlePath).mtimeMs) {
   if (await isExecutable(esbuildBin)) {
     log('building server bundle...')
-    spawnSync(esbuildBin, [serverSrc, '--bundle', '--platform=node', '--format=esm', `--outfile=${bundlePath}`, '--packages=external'], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
-    log('bundle built successfully')
+    const r = spawnSync(esbuildBin, [serverSrc, '--bundle', '--platform=node', '--format=esm', `--outfile=${bundlePath}`, '--packages=external'], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+    if (r.status !== 0) {
+      log(`esbuild failed with status ${r.status}: ${r.stderr?.toString().trim() || '(no stderr)'}`)
+    } else {
+      log('bundle built successfully')
+    }
   }
 }
 

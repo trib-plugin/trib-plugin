@@ -17,6 +17,21 @@ export interface Session {
 const sessions = new Map<string, Session>();
 let nextId = 1;
 
+const SESSION_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+
+/** Evict sessions older than 30 minutes. */
+export function evictStaleSessions(): number {
+  const now = Date.now();
+  let evicted = 0;
+  for (const [id, session] of sessions) {
+    if (now - session.updatedAt > SESSION_MAX_AGE_MS) {
+      sessions.delete(id);
+      evicted++;
+    }
+  }
+  return evicted;
+}
+
 // Rough context windows for common models
 const CONTEXT_WINDOWS: Record<string, number> = {
   'gpt-4o': 128000,
@@ -47,6 +62,9 @@ export function createSession(opts: {
   systemPrompt?: string;
   files?: Array<{ path: string; content: string }>;
 }): Session {
+  // Evict stale sessions on each create to bound memory usage
+  evictStaleSessions();
+
   const provider = getProvider(opts.provider);
   if (!provider) throw new Error(`Provider "${opts.provider}" not found or not enabled`);
 

@@ -448,7 +448,7 @@ const bundledSettings = loadSettings()
 const server = new Server(
   {
     name: 'trib-search',
-    version: '0.0.1',
+    version: '0.0.2',
   },
   {
     capabilities: {

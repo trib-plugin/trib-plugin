@@ -281,12 +281,8 @@ async function handleGrep(query, options) {
 
   // Cross-check: drop episode results with low cosine similarity to query
   const PRECISION_FLOOR = 0.65
-  const precisionLog = path.join(os.tmpdir(), 'trib-memory', 'precision.log')
-  try { fs.mkdirSync(path.dirname(precisionLog), { recursive: true }) } catch {}
-  try { fs.appendFileSync(precisionLog, `\n[${new Date().toISOString().slice(0,19)}] handleGrep query="${query}" results=${results.length} qvec=${queryVector?.length} DATA_DIR=${DATA_DIR}\n`) } catch (e) { process.stderr.write(`precision-log-fail: ${e.message}\n`) }
   const crossChecked = []
   for (const r of results) {
-    try { fs.appendFileSync(precisionLog, `  r: type=${r.type} id=${r.entity_id}\n`) } catch {}
     if (r.type === 'classification') { crossChecked.push(r); continue }
     if (r.type !== 'episode' || !queryVector?.length) { crossChecked.push(r); continue }
     try {
@@ -299,10 +295,8 @@ async function handleGrep(query, options) {
       }
       if (!Array.isArray(epVec) || epVec.length !== queryVector.length) { crossChecked.push(r); continue }
       const sim = cosineSimilarity(queryVector, epVec)
-      try { fs.appendFileSync(precisionLog, `  [sim] id=${r.entity_id} sim=${sim.toFixed(4)} ${sim >= PRECISION_FLOOR ? 'PASS' : 'DROP'} ${String(r.content || '').slice(0, 50)}\n`) } catch {}
       if (sim >= PRECISION_FLOOR) crossChecked.push(r)
     } catch (e) {
-      try { fs.appendFileSync(precisionLog, `  [ERR] id=${r.entity_id} type=${r.type} err=${e.message}\n`) } catch {}
       crossChecked.push(r)
     }
   }
@@ -647,7 +641,7 @@ const MEMORY_INSTRUCTIONS = [
 ].join('\n')
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.1' },
+  { name: 'trib-memory', version: '0.0.2' },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 

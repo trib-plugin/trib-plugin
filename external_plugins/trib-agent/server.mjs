@@ -18,7 +18,7 @@ const INSTRUCTIONS = [
 ].join('\n');
 
 const server = new Server(
-  { name: 'trib-agent', version: '0.0.1' },
+  { name: 'trib-agent', version: '0.0.2' },
   { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
 );
 

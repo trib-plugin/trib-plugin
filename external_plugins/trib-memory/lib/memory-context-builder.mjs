@@ -142,20 +142,30 @@ export async function buildInboundMemoryContext(store, query, options = {}) {
 
       // Fallback: history=3 days, event=7 days
       const fallbackDays = '-3 days'
-      const dateFilter = startDate
-        ? `AND ts >= '${startDate}' AND ts < '${endDate}'`
-        : `AND ts >= datetime('now', '${fallbackDays}')`
-
-      const recentEpisodes = store.db.prepare(`
-        SELECT ts, role, content FROM episodes
-        WHERE kind IN ('message', 'turn')
-          AND content NOT LIKE 'You are consolidating%'
-          AND content NOT LIKE 'You are improving%'
-          AND LENGTH(content) BETWEEN 10 AND 500
-          ${dateFilter}
-        ORDER BY ts DESC
-        LIMIT 5
-      `).all()
+      let recentEpisodes
+      if (startDate) {
+        recentEpisodes = store.db.prepare(`
+          SELECT ts, role, content FROM episodes
+          WHERE kind IN ('message', 'turn')
+            AND content NOT LIKE 'You are consolidating%'
+            AND content NOT LIKE 'You are improving%'
+            AND LENGTH(content) BETWEEN 10 AND 500
+            AND ts >= ? AND ts < ?
+          ORDER BY ts DESC
+          LIMIT 5
+        `).all(startDate, endDate)
+      } else {
+        recentEpisodes = store.db.prepare(`
+          SELECT ts, role, content FROM episodes
+          WHERE kind IN ('message', 'turn')
+            AND content NOT LIKE 'You are consolidating%'
+            AND content NOT LIKE 'You are improving%'
+            AND LENGTH(content) BETWEEN 10 AND 500
+            AND ts >= datetime('now', ?)
+          ORDER BY ts DESC
+          LIMIT 5
+        `).all(fallbackDays)
+      }
       for (const ep of recentEpisodes) {
         const prefix = ep.role === 'user' ? 'u' : 'a'
         const text = cleanMemoryText(ep.content).slice(0, 150)
