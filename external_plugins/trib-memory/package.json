@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@huggingface/transformers": "^4.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@huggingface/transformers": "~3.4.0",
-    "sqlite-vec": "^0.1.9",
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "sqlite-vec": "^0.1.9"
   }
 }
