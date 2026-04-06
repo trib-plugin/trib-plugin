@@ -185,15 +185,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       case 'list_models': {
-        const results: Array<{ provider: string; models: Array<{ id: string; name: string }> }> = [];
-        for (const [provName, provider] of getAllProviders()) {
-          try {
+        const allProviders = getAllProviders();
+        const settled = await Promise.allSettled(
+          Array.from(allProviders).map(async ([provName, provider]) => {
             const models = await provider.listModels();
-            results.push({ provider: provName, models: models.map(m => ({ id: m.id, name: m.name })) });
-          } catch {
-            results.push({ provider: provName, models: [] });
-          }
-        }
+            return { provider: provName, models: models.map(m => ({ id: m.id, name: m.name })) };
+          }),
+        );
+        const results = settled.map((outcome, idx) => {
+          if (outcome.status === 'fulfilled') return outcome.value;
+          const provName = Array.from(allProviders)[idx][0];
+          return { provider: provName, models: [] as Array<{ id: string; name: string }> };
+        });
         return ok(results);
       }
 

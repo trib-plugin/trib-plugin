@@ -1885,6 +1885,10 @@ backend.onMessage = (msg) => {
   })()
   inboundQueue(() => handleInbound(msg, route, {
     sessionId: boundTranscript?.sessionId ?? sessionIdFromTranscriptPath(transcriptPath),
+  }).catch(err => {
+    process.stderr.write(`trib-channels: handleInbound error: ${err}\n`)
+  }).finally(() => {
+    stopServerTyping()
   }))
 }
 

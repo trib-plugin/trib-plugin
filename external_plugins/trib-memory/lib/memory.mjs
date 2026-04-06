@@ -1426,19 +1426,27 @@ export class MemoryStore {
         capped.push(item)
       }
     }
-    // overFetch: pull limit*2 candidates through MMR, rerank narrows down
-    const overFetchLimit = Math.max(limit, Math.min(limit * 2, capped.length))
+    // overFetch: pull extra candidates through MMR so reranker can promote buried hits
+    const tuning = options.tuning ?? this.getRetrievalTuning()
+    const overFetchN = tuning?.reranker?.overFetch ?? 12
+    const overFetchLimit = Math.max(limit, Math.min(limit + overFetchN, capped.length))
     let finalResults = applyMMR(capped.slice(0, overFetchLimit))
 
     // ── Stage 4: conditional rerank ──
-    const tuning = options.tuning ?? this.getRetrievalTuning()
+    // Only trigger when top scores are close (gap12 < threshold), skip when #1 is a clear winner
     if (tuning.reranker?.enabled && finalResults.length >= 3) {
-      try {
-        const reranked = await jsRerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit)
-        if (reranked.length > 0) {
-          finalResults = reranked.slice(0, limit)
-        }
-      } catch {}
+      const gap = (finalResults[0]?.weighted_score || 0) - (finalResults[1]?.weighted_score || 0)
+      const gapThreshold = tuning.reranker.gapThreshold ?? 0.005
+      if (gap < gapThreshold) {
+        try {
+          const reranked = await jsRerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit)
+          if (reranked.length > 0) {
+            finalResults = reranked.slice(0, limit)
+          }
+        } catch {}
+      } else {
+        finalResults = finalResults.slice(0, limit)
+      }
     } else {
       finalResults = finalResults.slice(0, limit)
     }

@@ -164,15 +164,22 @@ export class Scheduler {
     ensureNopluginDir()
 
     // Scheduler-level lock: only one session runs the scheduler
-    if (existsSync(Scheduler.SCHEDULER_LOCK)) {
-      try {
-        const content = readFileSync(Scheduler.SCHEDULER_LOCK, 'utf8')
-        const pid = parseInt(content.split('\n')[0])
-        // Check if the process is still alive
-        try { process.kill(pid, 0); process.stderr.write(`trib-channels scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`); return } catch { /* dead, take over */ }
-      } catch { /* can't read, take over */ }
+    try {
+      writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`, { flag: 'wx' })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        try {
+          const content = readFileSync(Scheduler.SCHEDULER_LOCK, 'utf8')
+          const pid = parseInt(content.split('\n')[0])
+          // Check if the process is still alive
+          try { process.kill(pid, 0); process.stderr.write(`trib-channels scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`); return } catch { /* dead, take over */ }
+        } catch { /* can't read, take over */ }
+        // Previous owner is dead — reclaim the lock
+        writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`)
+      } else {
+        throw err
+      }
     }
-    writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`)
     process.on('exit', () => { try { unlinkSync(Scheduler.SCHEDULER_LOCK) } catch { /* ignore */ } })
 
     logSchedule(`${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, ${this.proactive?.items.length ?? 0} proactive\n`)

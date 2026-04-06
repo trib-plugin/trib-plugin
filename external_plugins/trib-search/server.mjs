@@ -23,12 +23,14 @@ import { loadSettings } from './lib/settings.mjs'
 import {
   buildCacheKey,
   buildCacheMeta,
+  flushCacheState,
   getCachedEntry,
   loadCacheState,
   setCachedEntry,
 } from './lib/cache.mjs'
 import { fetchProviderUsageSnapshot } from './lib/provider-usage.mjs'
 import {
+  flushUsageState,
   loadUsageState,
   noteProviderFailure,
   noteProviderSuccess,
@@ -1122,6 +1124,8 @@ await writeStartupSnapshot()
 await server.connect(transport)
 
 async function shutdown() {
+  flushUsageState()
+  flushCacheState()
   process.exit(0)
 }
 

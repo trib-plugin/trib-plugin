@@ -26,7 +26,7 @@ const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
 const CONFIG_PATH = join(PLUGIN_DATA_DIR, 'memory-cycle.json')
 
 // ── Cycle State (waterfall chaining) ──
-const CYCLE_STATE_PATH = join(tmpdir(), 'trib-memory', 'cycle-state.json')
+const CYCLE_STATE_PATH = join(PLUGIN_DATA_DIR, 'cycle-state.json')
 
 const DEFAULT_CYCLE_STATE = {
   cycle1: { lastRunAt: null, interval: '5m' },

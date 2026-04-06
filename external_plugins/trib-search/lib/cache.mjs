@@ -36,8 +36,8 @@ function flushCacheState() {
 }
 
 process.on('exit', flushCacheState)
-process.on('SIGTERM', () => { flushCacheState(); process.exit(0) })
-process.on('SIGINT', () => { flushCacheState(); process.exit(0) })
+
+export { flushCacheState }
 
 let _instance = null
 

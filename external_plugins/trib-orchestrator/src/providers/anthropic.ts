@@ -57,15 +57,6 @@ export class AnthropicProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
-    try {
-      await this.client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'hi' }],
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    return !!(this.client.apiKey || process.env.ANTHROPIC_API_KEY);
   }
 }

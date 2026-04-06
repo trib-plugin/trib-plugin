@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 
 export type StatusState = {
@@ -42,7 +42,10 @@ export function writeTextFile(filePath: string, value: string): void {
 }
 
 export function writeJsonFile(filePath: string, value: unknown): void {
-  writeTextFile(filePath, JSON.stringify(value))
+  const tmpPath = filePath + '.tmp'
+  ensureDir(dirname(filePath))
+  writeFileSync(tmpPath, JSON.stringify(value))
+  renameSync(tmpPath, filePath)
 }
 
 export class JsonStateFile<T extends Record<string, unknown>> {

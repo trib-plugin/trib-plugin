@@ -332,7 +332,7 @@ async function runGithubRead({ owner, repo, path, ref }) {
   if (!owner || !repo || !path) {
     throw new Error('owner, repo, and path are required for GitHub file read.')
   }
-  const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path}`)
+  const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path.split('/').map(s => encodeURIComponent(s)).join('/')}`)
   if (ref) url.searchParams.set('ref', ref)
 
   const response = await fetch(url, { headers: getGithubHeaders() })

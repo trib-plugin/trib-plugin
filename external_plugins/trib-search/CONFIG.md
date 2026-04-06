@@ -38,7 +38,7 @@ Controls raw (non-AI) search providers. This priority applies only to the raw se
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `priority` | string[] | `["serper", "brave", "perplexity", "firecrawl", "tavily", "xai"]` | Provider try order. First available + successful wins. |
-| `maxResults` | number | `5` | Default max results per search (overridable per call, max 20) |
+| `maxResults` | number | `10` | Default max results per search (overridable per call, max 20) |
 | `credentials` | object | — | Per-provider API key configuration |
 
 ### `rawSearch.credentials`
@@ -232,7 +232,7 @@ Old flat-key config formats are automatically normalized to the current structur
 {
   "rawSearch": {
     "priority": ["serper", "brave", "perplexity", "firecrawl", "tavily", "xai"],
-    "maxResults": 5,
+    "maxResults": 10,
     "credentials": {
       "serper": { "apiKey": "YOUR_SERPER_KEY" },
       "brave": { "apiKey": "YOUR_BRAVE_KEY" },

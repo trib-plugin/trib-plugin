@@ -136,7 +136,7 @@ function mergeConfig(existing, data) {
 
   if (data.aiPriority?.length) {
     // Filter out grok from saved priority
-    config.aiSearch.priority = data.aiPriority.filter(id => id !== 'grok');
+    config.aiSearch.priority = data.aiPriority;
   }
 
   if (data.aiModels) {

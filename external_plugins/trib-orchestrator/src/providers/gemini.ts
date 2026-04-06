@@ -54,12 +54,6 @@ export class GeminiProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
-    try {
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-      await model.generateContent('hi');
-      return true;
-    } catch {
-      return false;
-    }
+    return !!(this.genAI.apiKey || process.env.GEMINI_API_KEY);
   }
 }

@@ -40,7 +40,7 @@ function statusBlock(config) {
   lines.push('  Options')
   lines.push('  ────────────────────────────────────────')
   lines.push(`    priority    ${(config.rawSearch?.priority || []).join(' > ')}`)
-  lines.push(`    max results ${config.rawSearch?.maxResults || 5}`)
+  lines.push(`    max results ${config.rawSearch?.maxResults || 10}`)
   lines.push(`    crawl       ${config.crawl?.maxPages || 10} pages / depth ${config.crawl?.maxDepth || 1}`)
   lines.push('')
   return lines.join('\n')
@@ -181,7 +181,7 @@ export async function handleSetup(server) {
         '  │  Search Options                       │',
         '  ╰───────────────────────────────────────╯',
         '',
-        `    max results  ${config.rawSearch?.maxResults || 5}`,
+        `    max results  ${config.rawSearch?.maxResults || 10}`,
         `    crawl pages  ${config.crawl?.maxPages || 10}`,
         `    crawl depth  ${config.crawl?.maxDepth || 1}`,
         `    same domain  ${config.crawl?.sameDomainOnly ?? true}`,

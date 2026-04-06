@@ -41,8 +41,8 @@ function flushUsageState() {
 }
 
 process.on('exit', flushUsageState)
-process.on('SIGTERM', () => { flushUsageState(); process.exit(0) })
-process.on('SIGINT', () => { flushUsageState(); process.exit(0) })
+
+export { flushUsageState }
 
 let _instance = null
 

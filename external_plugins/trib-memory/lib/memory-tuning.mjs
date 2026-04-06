@@ -218,11 +218,12 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
     },
   },
   reranker: {
-    enabled: false,
-    model: 'Xenova/bge-reranker-large',
-    triggerThreshold: -0.4,
+    enabled: true,
+    model: 'onnx-community/Qwen3-Reranker-0.6B-ONNX',
+    overFetch: 12,
+    gapThreshold: 0.005,
     minRerankerScore: -2,
-    maxCandidates: 5,
+    maxCandidates: 12,
   },
 })
 
