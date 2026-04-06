@@ -19,7 +19,6 @@ if (!DATA_DIR) process.exit(0);
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const CONTEXT_FILE = path.join(HISTORY_DIR, 'context.md');
-const RECENT_FILE = path.join(HISTORY_DIR, 'recent.md');
 const BOT_FILE = path.join(DATA_DIR, 'bot.md');
 const USER_PROFILE_FILE = path.join(DATA_DIR, 'user_profile.md');
 
@@ -41,19 +40,10 @@ if (userName) {
 }
 
 let contextContent = readOptional(CONTEXT_FILE);
-let recentContent = readOptional(RECENT_FILE);
-// Limit recent items to last 10 entries
-if (recentContent) {
-  const lines = recentContent.split('\n');
-  const header = lines.filter(l => l.startsWith('#'));
-  const items = lines.filter(l => l.startsWith('- '));
-  const trimmed = items.slice(-10);
-  recentContent = [...header, ...trimmed].join('\n');
-}
 let botContent = readOptional(BOT_FILE);
 let userProfileContent = readOptional(USER_PROFILE_FILE);
 
-const merged = [userLine, userProfileContent, botContent, contextContent, recentContent].filter(Boolean).join('\n\n');
+const merged = [userLine, userProfileContent, botContent, contextContent].filter(Boolean).join('\n\n');
 if (merged) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
