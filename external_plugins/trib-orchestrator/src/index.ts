@@ -155,12 +155,14 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!session) return fail(`Session "${args.sessionId}" not found`);
 
         const startedAt = Date.now();
+        askSession(args.sessionId as string, args.prompt as string).then(response => {
+          const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+          notify(`### ${response.model || session.model} (${elapsed}s)\n${response.content}`);
+        }).catch(err => {
+          notify(`${session.model} error: ${err instanceof Error ? err.message : String(err)}`);
+        });
 
-        const response = await askSession(args.sessionId as string, args.prompt as string);
-        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-        notify(`${response.model || session.model} 응답 완료 (${elapsed}s)`);
-
-        return ok(response.content);
+        return ok(`${session.model}에 요청 전송됨`);
       }
 
       case 'inject': {
@@ -199,33 +201,22 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const targets = args.targets as Array<{ provider: string; model: string }>;
         const startedAt = Date.now();
 
-        const settled = await Promise.allSettled(
+        Promise.allSettled(
           targets.map(async (target) => {
             const session = createSession({ provider: target.provider, model: target.model, systemPrompt: args.systemPrompt as string | undefined, files: args.files as Array<{ path: string; content: string }> | undefined });
             try {
               const response = await askSession(session.id, args.prompt as string);
               const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-              notify(`${response.model || target.model} 응답 완료 (${elapsed}s)`);
-              return { model: response.model || target.model, content: response.content };
+              notify(`### ${response.model || target.model} (${elapsed}s)\n${response.content}`);
+            } catch (err) {
+              notify(`### ${target.model}\nError: ${err instanceof Error ? err.message : String(err)}`);
             } finally {
               closeSession(session.id);
             }
           }),
-        );
+        ).catch(() => {});
 
-        const parts: string[] = [];
-        for (let i = 0; i < settled.length; i++) {
-          const result = settled[i];
-          const label = targets[i].model;
-          if (result.status === 'fulfilled') {
-            parts.push(`### ${result.value.model}\n${result.value.content}`);
-          } else {
-            const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-            parts.push(`### ${label}\nError: ${msg}`);
-          }
-        }
-
-        return ok(parts.join('\n\n---\n\n'));
+        return ok(`${targets.length}개 모델에 요청 전송됨`);
       }
 
       default:
