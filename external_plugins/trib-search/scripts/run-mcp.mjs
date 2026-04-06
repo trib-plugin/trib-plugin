@@ -155,40 +155,6 @@ const githubToken =
   localConfig?.githubToken ||
   readNestedKey(localConfig, ['rawSearch', 'credentials', 'github', 'token'])
 
-// Dev: auto-sync marketplace source to cache if newer
-function devSyncFromMarketplace() {
-  try {
-    const pluginsBase = join(pluginRoot, '..', '..', '..', '..')
-    const marketName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[0]
-    const pluginName = pluginRoot.split(/[/\\]cache[/\\]/)[1]?.split(/[/\\]/)?.[1]
-    if (!marketName || !pluginName) return
-    const marketSrc = join(pluginsBase, 'marketplaces', marketName, 'external_plugins', pluginName)
-    const dirs = ['lib', 'services', 'defaults', 'hooks', '.']
-    let synced = 0
-    for (const dir of dirs) {
-      try {
-        const base = dir === '.' ? marketSrc : join(marketSrc, dir)
-        const entries = require('fs').readdirSync(base).filter(f => f.endsWith('.mjs') || f.endsWith('.ts') || f.endsWith('.md'))
-        for (const f of entries) {
-          try {
-            const src = join(base, f)
-            const dst = dir === '.' ? join(pluginRoot, f) : join(pluginRoot, dir, f)
-            const srcMtime = statSync(src).mtimeMs
-            let dstMtime = 0
-            try { dstMtime = statSync(dst).mtimeMs } catch {}
-            if (srcMtime > dstMtime) {
-              require('fs').copyFileSync(src, dst)
-              synced++
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-    if (synced > 0) log(`dev-sync: copied ${synced} newer files from marketplace`)
-  } catch {}
-}
-devSyncFromMarketplace()
-
 // Bundle
 const serverSrc = join(pluginRoot, 'server.mjs')
 const serverJs = join(pluginData, 'server.bundle.mjs')
