@@ -6,15 +6,9 @@ const DEFAULT_OPS_POLICY = {
   startup: {
     backfill: {
       mode: 'if-empty',
-      window: 'all',
+      window: '7d',
       scope: 'all',
       limit: 80,
-    },
-    embeddings: {
-      mode: 'light',
-      warmup: true,
-      perTypeLimit: 12,
-      fullPerTypeLimit: 48,
     },
     cycle1CatchUp: {
       mode: 'light',
@@ -42,6 +36,8 @@ function coercePositiveInt(value, fallback) {
 function normalizeBackfillWindow(value) {
   const normalized = String(value ?? 'all').trim().toLowerCase()
   if (['none', 'off', 'disabled', '0'].includes(normalized)) return 'none'
+  if (['1d', '1day', '1-day', '1 day', 'day', 'today'].includes(normalized)) return '1d'
+  if (['3d', '3days', '3-day', '3 day'].includes(normalized)) return '3d'
   if (['7d', '7days', '7-day', '7 day', 'week'].includes(normalized)) return '7d'
   if (['30d', '30days', '30-day', '30 day', 'month'].includes(normalized)) return '30d'
   return 'all'
@@ -76,11 +72,10 @@ function envFlag(value, fallback = false) {
 }
 
 export function readMemoryOpsPolicy(mainConfig = {}) {
-  const runtimeConfig = mainConfig?.memory?.runtime ?? {}
+  const runtimeConfig = mainConfig?.runtime ?? {}
   const featuresConfig = runtimeConfig?.features ?? {}
   const startupConfig = runtimeConfig?.startup ?? {}
-  const backfillConfig = startupConfig?.backfill ?? {}
-  const embeddingsConfig = startupConfig?.embeddings ?? {}
+  const backfillConfig = mainConfig?.backfill ?? startupConfig?.backfill ?? {}
   const cycle1CatchUpConfig = startupConfig?.cycle1CatchUp ?? {}
   const cycle2CatchUpConfig = startupConfig?.cycle2CatchUp ?? {}
   const schedulerConfig = runtimeConfig?.scheduler ?? {}
@@ -96,12 +91,6 @@ export function readMemoryOpsPolicy(mainConfig = {}) {
         window: normalizeBackfillWindow(backfillConfig.window ?? DEFAULT_OPS_POLICY.startup.backfill.window),
         scope: normalizeBackfillScope(backfillConfig.scope ?? DEFAULT_OPS_POLICY.startup.backfill.scope),
         limit: coercePositiveInt(backfillConfig.limit, DEFAULT_OPS_POLICY.startup.backfill.limit),
-      },
-      embeddings: {
-        mode: normalizeCatchUpMode(embeddingsConfig.mode, DEFAULT_OPS_POLICY.startup.embeddings.mode),
-        warmup: embeddingsConfig.warmup !== false,
-        perTypeLimit: coercePositiveInt(embeddingsConfig.perTypeLimit, DEFAULT_OPS_POLICY.startup.embeddings.perTypeLimit),
-        fullPerTypeLimit: coercePositiveInt(embeddingsConfig.fullPerTypeLimit, DEFAULT_OPS_POLICY.startup.embeddings.fullPerTypeLimit),
       },
       cycle1CatchUp: {
         mode: normalizeCatchUpMode(cycle1CatchUpConfig.mode, DEFAULT_OPS_POLICY.startup.cycle1CatchUp.mode),
@@ -134,6 +123,8 @@ export function readMemoryFeatureFlags(mainConfig = {}) {
 
 export function resolveBackfillSinceMs(windowValue, now = Date.now()) {
   const normalized = normalizeBackfillWindow(windowValue)
+  if (normalized === '1d') return now - (1 * 24 * 60 * 60 * 1000)
+  if (normalized === '3d') return now - (3 * 24 * 60 * 60 * 1000)
   if (normalized === '7d') return now - (7 * 24 * 60 * 60 * 1000)
   if (normalized === '30d') return now - (30 * 24 * 60 * 60 * 1000)
   return null
@@ -147,15 +138,6 @@ export function buildStartupBackfillOptions(policy, store, now = Date.now()) {
     scope: backfill.scope,
     limit: backfill.limit,
     sinceMs: resolveBackfillSinceMs(backfill.window, now),
-  }
-}
-
-export function resolveStartupEmbeddingOptions(policy) {
-  const embeddings = policy?.startup?.embeddings
-  if (!embeddings || embeddings.mode === 'off') return null
-  return {
-    warmup: embeddings.warmup !== false,
-    perTypeLimit: embeddings.mode === 'full' ? embeddings.fullPerTypeLimit : embeddings.perTypeLimit,
   }
 }
 

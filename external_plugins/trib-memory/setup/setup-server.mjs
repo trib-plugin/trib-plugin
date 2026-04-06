@@ -43,6 +43,13 @@ function mergeConfig(existing, incoming) {
     if (!config.cycle1) config.cycle1 = {};
     if (incoming.cycle1.interval !== undefined) config.cycle1.interval = incoming.cycle1.interval;
     if (incoming.cycle1.timeout !== undefined) config.cycle1.timeout = incoming.cycle1.timeout;
+    if (incoming.cycle1.batchSize !== undefined) config.cycle1.batchSize = incoming.cycle1.batchSize;
+  }
+
+  // backfill
+  if (incoming.backfill) {
+    if (!config.backfill) config.backfill = {};
+    if (incoming.backfill.window !== undefined) config.backfill.window = incoming.backfill.window;
   }
 
   // cycle2

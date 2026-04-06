@@ -8,9 +8,9 @@ import { homedir, tmpdir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
 import { classifyCandidateConcept } from './memory-extraction.mjs'
-import { embedText, configureEmbedding } from './embedding-provider.mjs'
+import { embedText, configureEmbedding, getEmbeddingModelId } from './embedding-provider.mjs'
 import { callLLM } from './llm-provider.mjs'
-import { cosineSimilarity as cosineSimilarityShared } from './memory-vector-utils.mjs'
+import { cosineSimilarity as cosineSimilarityShared, hashEmbeddingInput } from './memory-vector-utils.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
   const candidates = [
@@ -108,11 +108,11 @@ const AUTO_FLUSH_THRESHOLD = 15
 const AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1000  // 2 hours
 
 function resolveCycleBackfillLimit(mainConfig, fallback) {
-  return Math.max(1, Number(mainConfig?.memory?.runtime?.startup?.backfill?.limit ?? fallback))
+  return Math.max(1, Number(mainConfig?.runtime?.startup?.backfill?.limit ?? fallback))
 }
 
 function resolveEmbeddingRefreshOptions(mainConfig = {}, kind = 'cycle2') {
-  const cycleConfig = mainConfig?.memory?.[kind] ?? {}
+  const cycleConfig = mainConfig?.[kind] ?? {}
   const refreshConfig = cycleConfig?.embeddingRefresh ?? {}
   const contextualizeItems = Math.max(
     4,
@@ -279,7 +279,7 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
       candidates: options.candidates ?? [],
     })
   }
-  const provider = options.provider || readMainConfig()?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
+  const provider = options.provider || readMainConfig()?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
   return await callLLM(prompt, provider, { timeout: options.timeout ?? 180000, cwd: ws })
 }
 
@@ -303,7 +303,7 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
         return lines.join('\n')
       }).join('\n\n')
       const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidatesText)
-      const provider = options.provider || readMainConfig()?.memory?.cycle2?.provider || DEFAULT_CYCLE_PROVIDER
+      const provider = options.provider || readMainConfig()?.cycle2?.provider || DEFAULT_CYCLE_PROVIDER
       const raw = await resolveCycleLlmOutput(prompt, _ws, {
         ...options,
         mode: 'consolidate',
@@ -388,7 +388,7 @@ async function refreshEmbeddings(ws, options = {}) {
   const store = options.store ?? getStore()
   const mainConfig = readMainConfig()
   const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
-  const contextualizeProvider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  const contextualizeProvider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   const kind = options.kind ?? 'cycle2'
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit
@@ -435,7 +435,7 @@ async function sleepCycleImpl(ws) {
 
   const config = readCycleConfig()
   const mainConfig = readMainConfig()
-  const cycle2Config = mainConfig?.memory?.cycle2 ?? {}
+  const cycle2Config = mainConfig?.cycle2 ?? {}
   const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'context.md'))
   const backfillLimit = resolveCycleBackfillLimit(mainConfig, 120)
 
@@ -444,7 +444,7 @@ async function sleepCycleImpl(ws) {
 
   // 1. Consolidation (pass cycle2 provider if configured)
   const MAX_DAYS = Math.max(1, Number(cycle2Config.maxDays ?? 7))
-  const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort()
+  const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort().reverse()
   const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER }
   await consolidateRecent(pendingDays, ws, consolidateOpts)
 
@@ -550,9 +550,9 @@ export async function summarizeOnly(ws) {
   const store = getStore()
   const mainConfig = readMainConfig()
   store.backfillProject(ws, { limit: resolveCycleBackfillLimit(mainConfig, 120) })
-  const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort()
+  const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort().reverse()
   if (pendingDays.length > 0) {
-    const provider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+    const provider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
     await consolidateRecent(pendingDays, ws, { provider })
     await refreshEmbeddings(ws, { kind: 'cycle2' })
     store.writeContextFile()
@@ -568,9 +568,9 @@ async function memoryFlushImpl(ws, options = {}) {
   const minPending = Math.max(1, Number(options.minPending ?? MEMORY_FLUSH_DEFAULT_MIN_PENDING))
   const pendingDays = store.getPendingCandidateDays(maxDays * 3, minPending)
   if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
-  const targets = pendingDays.map(d => d.day_key).sort().slice(0, maxDays)
+  const targets = pendingDays.map(d => d.day_key).sort().reverse().slice(0, maxDays)
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
-  consolidateOpts.provider = options.provider ?? readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  consolidateOpts.provider = options.provider ?? readMainConfig()?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws)
   store.writeContextFile()
@@ -586,9 +586,9 @@ async function rebuildAllImpl(ws) {
   store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 400) })
   store.syncHistoryFromFiles()
   store.resetConsolidatedMemory()
-  const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort()
+  const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  const provider = mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  const provider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2' })
@@ -602,10 +602,12 @@ export async function rebuildAll(ws) {
 
 // ── Rebuild mode: concurrent batch cycle1 + embedding pairs ──
 
+const WINDOW_TO_DAYS = { '1d': 1, '3d': 3, '7d': 7, '30d': 30 }
+
 async function rebuildClassificationsImpl(ws, options = {}) {
   const store = options.store ?? getStore()
   const config = readMainConfig()
-  const maxAgeDays = options.maxAgeDays ?? null // null = all
+  const maxAgeDays = options.window ? (WINDOW_TO_DAYS[options.window] ?? null) : (options.maxAgeDays ?? null) // null = all
   const maxConcurrent = Math.max(1, Math.min(Number(options.maxConcurrentBatches ?? MAX_CONCURRENT_BATCHES), 10))
   const batchSize = Math.max(1, Number(options.batchSize ?? BATCH_SIZE))
 
@@ -691,11 +693,11 @@ async function rebuildRecentImpl(ws, options = {}) {
   const mainConfig = readMainConfig()
   store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 240) })
   store.syncHistoryFromFiles()
-  const maxDays = Math.max(1, Number(options.maxDays ?? 2))
-  const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort()
+  const maxDays = Math.max(1, Number(options.window ? (WINDOW_TO_DAYS[options.window] ?? options.maxDays ?? 2) : (options.maxDays ?? 2)))
+  const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.resetConsolidatedMemoryForDays(dayKeys)
-  const mergedOptions = options.provider ? options : { ...options, provider: mainConfig?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER }
+  const mergedOptions = options.provider ? options : { ...options, provider: mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER }
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2' })
@@ -713,7 +715,7 @@ async function pruneToRecentImpl(ws, options = {}) {
   store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 240) })
   store.syncHistoryFromFiles()
   const maxDays = Math.max(1, Number(options.maxDays ?? 5))
-  const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort()
+  const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.pruneConsolidatedMemoryOutsideDays(dayKeys)
   await refreshEmbeddings(ws, { kind: 'cycle2' })
@@ -732,7 +734,7 @@ export async function autoFlush(ws) {
   const store = getStore()
   const config = readCycleConfig()
   const mainConfig = readMainConfig()
-  const cycle1MaxPending = Number(mainConfig?.memory?.cycle1?.maxPending ?? mainConfig?.memory?.cycle2?.maxCandidates ?? 0)
+  const cycle1MaxPending = Number(mainConfig?.cycle1?.maxPending ?? mainConfig?.cycle2?.maxCandidates ?? 0)
   const now = Date.now()
   const lastFlushAt = config.lastFlushAt ?? 0
   const pending = store.getPendingCandidateDays(100, 1)
@@ -764,7 +766,7 @@ export function getCycleStatus() {
   const store = getStore()
   const pending = store.getPendingCandidateDays(100, 1)
   const cycleState = loadCycleState()
-  const memoryConfig = mainConfig?.memory ?? {}
+  const memoryConfig = mainConfig ?? {}
   return {
     lastSleepAt: config.lastSleepAt ? new Date(config.lastSleepAt).toISOString() : null,
     lastCycle1At: config.lastCycle1At ? new Date(config.lastCycle1At).toISOString() : null,
@@ -831,11 +833,11 @@ async function runCycle1Impl(ws, config, options = {}) {
   // Backfill recent transcripts (50 episodes per cycle)
   try { store.backfillProject(ws, { limit: 50 }) } catch {}
 
-  const cycle1Config = config?.memory?.cycle1 ?? {}
+  const cycle1Config = config?.cycle1 ?? {}
   const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config.batchSize ?? BATCH_SIZE))
   const maxDays = force ? 9999 : Math.max(1, Number(options.maxAgeDays ?? cycle1Config.maxDays ?? 7))
-  const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
-  const timeout = config?.memory?.cycle1?.timeout || 300000
+  const provider = config?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
+  const timeout = config?.cycle1?.timeout || 300000
 
   // Support pre-split candidates from rebuildClassifications
   let allCandidates
@@ -999,9 +1001,34 @@ async function runCycle1Impl(ws, config, options = {}) {
     }
   }
 
+  // Inline embedding: embed newly created classifications with 500ms rate limit
   if (totalExtracted > 0) {
-    const pairLimit = Math.max(BATCH_SIZE, totalClassifications * 2)
-    await refreshEmbeddings(ws, { store, kind: 'cycle1', perTypeLimit: pairLimit })
+    const embeddableItems = store.getEmbeddableItems({ perTypeLimit: Math.max(batchSize, totalClassifications * 2) })
+    const lookupModel = getEmbeddingModelId()
+    let embeddedCount = 0
+    for (const item of embeddableItems) {
+      const embedInput = cleanMemoryText(item.content ?? '')
+      if (!embedInput) continue
+      const contentHash = hashEmbeddingInput(embedInput)
+      const existing = store.getVectorStmt.get(item.entityType, item.entityId, lookupModel)
+      if (existing?.content_hash === contentHash) continue
+      const vector = await embedText(embedInput)
+      if (!Array.isArray(vector) || vector.length === 0) continue
+      const activeModel = getEmbeddingModelId()
+      store.upsertVectorStmt.run(
+        item.entityType,
+        item.entityId,
+        activeModel,
+        vector.length,
+        JSON.stringify(vector),
+        contentHash,
+      )
+      store._syncToVecTable(item.entityType, item.entityId, vector)
+      store.noteVectorWrite(activeModel, vector.length)
+      embeddedCount += 1
+      await new Promise(r => setTimeout(r, 500))
+    }
+    process.stderr.write(`[cycle1] inline embeddings: ${embeddedCount} items\n`)
   }
 
   // Update recent.md (last 20 turns)
@@ -1063,7 +1090,7 @@ function computeHeatScore(row) {
 async function runCycle3Impl(_ws, options = {}) {
   const store = getStore()
   const mainConfig = readMainConfig()
-  const cycle3Config = mainConfig?.memory?.cycle3 ?? {}
+  const cycle3Config = mainConfig?.cycle3 ?? {}
   const threshold = Number(cycle3Config.threshold ?? options.threshold ?? CYCLE3_HEAT_THRESHOLD)
   const graceDays = Number(cycle3Config.graceDays ?? options.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS)
   const hardDelete = Boolean(cycle3Config.hardDelete ?? options.hardDelete ?? false)
@@ -1145,7 +1172,7 @@ export async function runCycle3(ws, options = {}) {
 }
 
 export function shouldRunCycle3(config) {
-  const cycle3Config = config?.memory?.cycle3 ?? {}
+  const cycle3Config = config?.cycle3 ?? {}
   const today = new Date()
   const cycleState = loadCycleState()
   const targetDayRaw = String(cycle3Config.day ?? 'sunday').toLowerCase()

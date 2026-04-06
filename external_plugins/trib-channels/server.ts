@@ -274,20 +274,8 @@ const forwarder = new OutputForwarder({
     if (!channelBridgeActive) return
     await backend.sendMessage(ch, text)
   },
-  recordAssistantTurn: async ({ channelId, text, sessionId }) => {
-    // Memory episode recording always runs regardless of bridge state
-    void memoryAppendEpisode({
-      ts: new Date().toISOString(),
-      backend: backend.name,
-      channelId,
-      userId: 'assistant',
-      userName: 'assistant',
-      sessionId: sessionId ?? null,
-      role: 'assistant',
-      kind: 'turn',
-      content: text,
-      sourceRef: `assistant:${sessionId ?? INSTANCE_ID}:${Date.now()}`,
-    })
+  recordAssistantTurn: async () => {
+    // Memory ingestion handled by trib-memory's own transcript watcher
   },
   react: (ch, mid, emoji) => {
     // Bridge off: suppress auto emoji reactions

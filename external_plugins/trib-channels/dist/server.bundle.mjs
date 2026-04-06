@@ -3408,19 +3408,7 @@ var forwarder = new OutputForwarder({
     if (!channelBridgeActive) return;
     await backend.sendMessage(ch, text);
   },
-  recordAssistantTurn: async ({ channelId, text, sessionId }) => {
-    void appendEpisode({
-      ts: (/* @__PURE__ */ new Date()).toISOString(),
-      backend: backend.name,
-      channelId,
-      userId: "assistant",
-      userName: "assistant",
-      sessionId: sessionId ?? null,
-      role: "assistant",
-      kind: "turn",
-      content: text,
-      sourceRef: `assistant:${sessionId ?? INSTANCE_ID}:${Date.now()}`
-    });
+  recordAssistantTurn: async () => {
   },
   react: (ch, mid, emoji) => {
     if (!channelBridgeActive) return Promise.resolve();

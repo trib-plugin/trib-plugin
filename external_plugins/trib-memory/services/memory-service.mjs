@@ -52,7 +52,6 @@ import {
   readMemoryOpsPolicy,
   readMemoryFeatureFlags,
   buildStartupBackfillOptions,
-  resolveStartupEmbeddingOptions,
   shouldRunCycleCatchUp,
 } from '../lib/memory-ops-policy.mjs'
 
@@ -138,27 +137,17 @@ if (startupBackfill) {
   }
 }
 
-const startupEmbedding = resolveStartupEmbeddingOptions(opsPolicy)
-if (startupEmbedding) {
-  let startupEmbeddingJob = Promise.resolve()
-  if (startupEmbedding.warmup) {
-    startupEmbeddingJob = startupEmbeddingJob.then(() => store.warmupEmbeddings())
-  }
-  startupEmbeddingJob = startupEmbeddingJob.then(() => store.ensureEmbeddings({ perTypeLimit: startupEmbedding.perTypeLimit }))
-  void startupEmbeddingJob.catch(err => process.stderr.write(`[memory-service] startup embedding catch-up failed: ${err}\n`))
-}
-
 // Rebuild lock: pauses cycles during manual rebuild
 let _rebuildLock = false
 
 // ── Cycle schedulers (last-run based, not wall-clock) ────────────────
 
-const cycle1Config = mainConfig?.memory?.cycle1 ?? {}
+const cycle1Config = mainConfig?.cycle1 ?? {}
 const cycle1IntervalStr = cycle1Config.interval || '5m'
 const cycle1Ms = parseInterval(cycle1IntervalStr)
-const cycle2IntervalStr = mainConfig?.memory?.cycle2?.interval || '1h'
+const cycle2IntervalStr = mainConfig?.cycle2?.interval || '1h'
 const cycle2Ms = parseInterval(cycle2IntervalStr)
-const cycle3IntervalStr = mainConfig?.memory?.cycle3?.interval || '24h'
+const cycle3IntervalStr = mainConfig?.cycle3?.interval || '24h'
 const cycle3Ms = parseInterval(cycle3IntervalStr)
 
 function getCycleLastRun() {
@@ -174,7 +163,7 @@ function getCycleLastRun() {
 
 async function checkCycles(options = {}) {
   if (_rebuildLock) return
-  if (mainConfig?.memory?.enabled === false) return
+  if (mainConfig?.enabled === false) return
   const startup = options.startup === true
   const now = Date.now()
   const last = getCycleLastRun()
@@ -255,25 +244,63 @@ const startupDelayMs = Math.max(
 setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
 
 // ── Server started timestamp (after startup backfill) ────────────────
-const serverStartedAt = new Date().toISOString()
+const serverStartedAt = localNow()
+
+// ── Live transcript watcher: ingest new episodes in real-time ────────
+{
+  const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
+  const WATCH_INTERVAL_MS = 5_000  // check every 5s
+  let watchedFiles = new Map()     // path → mtime
+
+  function discoverActiveTranscripts() {
+    try {
+      if (!fs.existsSync(projectsRoot)) return []
+      const files = []
+      for (const d of fs.readdirSync(projectsRoot)) {
+        if (d.includes('tmp') || d.includes('cache') || d.includes('plugins')) continue
+        const full = path.join(projectsRoot, d)
+        try {
+          for (const f of fs.readdirSync(full)) {
+            if (!f.endsWith('.jsonl') || f.startsWith('agent-')) continue
+            const fp = path.join(full, f)
+            const mtime = fs.statSync(fp).mtimeMs
+            files.push({ path: fp, mtime })
+          }
+        } catch {}
+      }
+      // Only watch files modified in the last 30 minutes
+      const cutoff = Date.now() - 30 * 60_000
+      return files.filter(f => f.mtime > cutoff)
+    } catch { return [] }
+  }
+
+  function watchTick() {
+    try {
+      const active = discoverActiveTranscripts()
+      for (const { path: fp, mtime } of active) {
+        const prev = watchedFiles.get(fp)
+        if (prev && prev >= mtime) continue
+        watchedFiles.set(fp, mtime)
+        const n = store.ingestTranscriptFile(fp)
+        if (n > 0) {
+          process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path.basename(fp)}\n`)
+        }
+      }
+    } catch (e) {
+      process.stderr.write(`[transcript-watch] error: ${e.message}\n`)
+    }
+  }
+
+  // Initial scan after short delay
+  setTimeout(watchTick, 3_000)
+  setInterval(watchTick, WATCH_INTERVAL_MS)
+}
 
 // ── Startup chunk sync: materialize classifications.chunks → memory_chunks ──
 try {
   const synced = store.syncChunksFromClassifications()
   if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications\n`)
 } catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
-
-// ── Startup embedding backfill: always check chunk coverage ──
-try {
-  const totalChunks = store.db.prepare('SELECT COUNT(*) as cnt FROM memory_chunks WHERE status = \'active\'').get()?.cnt || 0
-  const embeddedChunks = store.db.prepare('SELECT COUNT(*) as cnt FROM memory_vectors WHERE entity_type = \'chunk\'').get()?.cnt || 0
-  if (totalChunks > 0 && embeddedChunks < totalChunks) {
-    process.stderr.write(`[memory-service] chunk embeddings: ${embeddedChunks}/${totalChunks}, backfilling...\n`)
-    void store.ensureEmbeddings({ perTypeLimit: Math.max(256, totalChunks * 2) }).catch(e =>
-      process.stderr.write(`[memory-service] chunk embedding backfill error: ${e.message}\n`)
-    )
-  }
-} catch (e) { process.stderr.write(`[memory-service] embedding check error: ${e.message}\n`) }
 
 // Refresh context.md on every startup (Core Memory + Bot only)
 try {
@@ -636,7 +663,8 @@ async function handleCycle(args) {
     _rebuildLock = true
     try {
       const maxDays = Number(args.maxDays ?? 2)
-      await rebuildRecent(ws, { maxDays })
+      const window = args.window || undefined
+      await rebuildRecent(ws, { maxDays, window })
       store.syncChunksFromClassifications()
       store.writeRecentFile({ serverStartedAt })
       return { text: `Memory rebuild completed (maxDays=${maxDays}).` }
@@ -655,7 +683,8 @@ async function handleCycle(args) {
   }
   if (action === 'rebuild_classifications') {
     const maxAgeDays = args.maxAgeDays ? Number(args.maxAgeDays) : undefined
-    const result = await rebuildClassifications(ws, { maxAgeDays })
+    const window = args.window || undefined
+    const result = await rebuildClassifications(ws, { maxAgeDays, window })
     return { text: `Rebuild classifications completed: total=${result.total} batches=${result.batches} classifications=${result.classifications}` }
   }
   if (action === 'backfill') {
@@ -729,6 +758,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status'], description: 'Memory operation to run' },
           maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
+          window: { type: 'string', description: 'Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all' },
           limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
         },
         required: ['action'],

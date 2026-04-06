@@ -450,6 +450,17 @@ export function localNow() {
 }
 
 /**
+ * Convert any Date-parseable string to local-timezone ISO-like format.
+ * e.g. "2026-04-06T10:15:00.000Z" → "2026-04-06T19:15:00.000" on KST system.
+ */
+export function toLocalTs(input) {
+  const d = new Date(input)
+  if (isNaN(d.getTime())) return input  // unparseable → return as-is
+  const pad = (n, len = 2) => String(n).padStart(len, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+}
+
+/**
  * Local-timezone date string: "2026-04-01"
  */
 export function localDateStr(date = new Date()) {

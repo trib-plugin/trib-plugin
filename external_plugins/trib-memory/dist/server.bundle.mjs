@@ -1057,6 +1057,12 @@ function localNow() {
   const pad = (n, len = 2) => String(n).padStart(len, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
+function toLocalTs(input) {
+  const d = new Date(input);
+  if (isNaN(d.getTime())) return input;
+  const pad = (n, len = 2) => String(n).padStart(len, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
 function localDateStr(date = /* @__PURE__ */ new Date()) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
@@ -1919,15 +1925,9 @@ var DEFAULT_OPS_POLICY = {
   startup: {
     backfill: {
       mode: "if-empty",
-      window: "all",
+      window: "7d",
       scope: "all",
       limit: 80
-    },
-    embeddings: {
-      mode: "light",
-      warmup: true,
-      perTypeLimit: 12,
-      fullPerTypeLimit: 48
     },
     cycle1CatchUp: {
       mode: "light",
@@ -1953,6 +1953,8 @@ function coercePositiveInt(value, fallback) {
 function normalizeBackfillWindow(value) {
   const normalized = String(value ?? "all").trim().toLowerCase();
   if (["none", "off", "disabled", "0"].includes(normalized)) return "none";
+  if (["1d", "1day", "1-day", "1 day", "day", "today"].includes(normalized)) return "1d";
+  if (["3d", "3days", "3-day", "3 day"].includes(normalized)) return "3d";
   if (["7d", "7days", "7-day", "7 day", "week"].includes(normalized)) return "7d";
   if (["30d", "30days", "30-day", "30 day", "month"].includes(normalized)) return "30d";
   return "all";
@@ -1982,11 +1984,10 @@ function envFlag(value, fallback = false) {
   return fallback;
 }
 function readMemoryOpsPolicy(mainConfig2 = {}) {
-  const runtimeConfig = mainConfig2?.memory?.runtime ?? {};
+  const runtimeConfig = mainConfig2?.runtime ?? {};
   const featuresConfig = runtimeConfig?.features ?? {};
   const startupConfig = runtimeConfig?.startup ?? {};
-  const backfillConfig = startupConfig?.backfill ?? {};
-  const embeddingsConfig = startupConfig?.embeddings ?? {};
+  const backfillConfig = mainConfig2?.backfill ?? startupConfig?.backfill ?? {};
   const cycle1CatchUpConfig = startupConfig?.cycle1CatchUp ?? {};
   const cycle2CatchUpConfig = startupConfig?.cycle2CatchUp ?? {};
   const schedulerConfig = runtimeConfig?.scheduler ?? {};
@@ -2001,12 +2002,6 @@ function readMemoryOpsPolicy(mainConfig2 = {}) {
         window: normalizeBackfillWindow(backfillConfig.window ?? DEFAULT_OPS_POLICY.startup.backfill.window),
         scope: normalizeBackfillScope(backfillConfig.scope ?? DEFAULT_OPS_POLICY.startup.backfill.scope),
         limit: coercePositiveInt(backfillConfig.limit, DEFAULT_OPS_POLICY.startup.backfill.limit)
-      },
-      embeddings: {
-        mode: normalizeCatchUpMode(embeddingsConfig.mode, DEFAULT_OPS_POLICY.startup.embeddings.mode),
-        warmup: embeddingsConfig.warmup !== false,
-        perTypeLimit: coercePositiveInt(embeddingsConfig.perTypeLimit, DEFAULT_OPS_POLICY.startup.embeddings.perTypeLimit),
-        fullPerTypeLimit: coercePositiveInt(embeddingsConfig.fullPerTypeLimit, DEFAULT_OPS_POLICY.startup.embeddings.fullPerTypeLimit)
       },
       cycle1CatchUp: {
         mode: normalizeCatchUpMode(cycle1CatchUpConfig.mode, DEFAULT_OPS_POLICY.startup.cycle1CatchUp.mode),
@@ -2037,6 +2032,8 @@ function readMemoryFeatureFlags(mainConfig2 = {}) {
 }
 function resolveBackfillSinceMs(windowValue, now = Date.now()) {
   const normalized = normalizeBackfillWindow(windowValue);
+  if (normalized === "1d") return now - 1 * 24 * 60 * 60 * 1e3;
+  if (normalized === "3d") return now - 3 * 24 * 60 * 60 * 1e3;
   if (normalized === "7d") return now - 7 * 24 * 60 * 60 * 1e3;
   if (normalized === "30d") return now - 30 * 24 * 60 * 60 * 1e3;
   return null;
@@ -2049,14 +2046,6 @@ function buildStartupBackfillOptions(policy, store2, now = Date.now()) {
     scope: backfill.scope,
     limit: backfill.limit,
     sinceMs: resolveBackfillSinceMs(backfill.window, now)
-  };
-}
-function resolveStartupEmbeddingOptions(policy) {
-  const embeddings = policy?.startup?.embeddings;
-  if (!embeddings || embeddings.mode === "off") return null;
-  return {
-    warmup: embeddings.warmup !== false,
-    perTypeLimit: embeddings.mode === "full" ? embeddings.fullPerTypeLimit : embeddings.perTypeLimit
   };
 }
 function shouldRunCycleCatchUp(kind, policy, state = {}) {
@@ -2935,7 +2924,8 @@ var MemoryStore = class {
     });
   }
   async processPendingEmbeds() {
-    const pending = this.db.prepare("SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT 50").all();
+    const batchSize = Number(this.getMetaValue("embedding.batchSize")) || 20;
+    const pending = this.db.prepare("SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT ?").all(batchSize);
     if (pending.length === 0) return 0;
     let processed = 0;
     for (const item of pending) {
@@ -2988,7 +2978,8 @@ var MemoryStore = class {
         const clean = cleanMemoryText(text);
         if (!clean || clean.includes("[Request interrupted by user]")) continue;
         if (isTranscriptQuarantineContent(clean)) continue;
-        const ts = parsed.timestamp ?? parsed.ts ?? localNow();
+        const rawTs = parsed.timestamp ?? parsed.ts ?? null;
+        const ts = rawTs ? toLocalTs(rawTs) : localNow();
         const sessionId = parsed.sessionId ?? "";
         const sourceRef = `transcript:${sessionId || resolve(transcriptPath)}:${index}:${role}`;
         const id = this.appendEpisode({
@@ -3192,7 +3183,6 @@ var MemoryStore = class {
     const allFiles = [];
     try {
       for (const d of readdirSync(projectsRoot)) {
-        if (!d.startsWith("-")) continue;
         if (d.includes("tmp") || d.includes("cache") || d.includes("plugins")) continue;
         const full = join(projectsRoot, d);
         try {
@@ -4246,10 +4236,10 @@ var MAX_CONCURRENT_BATCHES = 5;
 var AUTO_FLUSH_THRESHOLD = 15;
 var AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1e3;
 function resolveCycleBackfillLimit(mainConfig2, fallback) {
-  return Math.max(1, Number(mainConfig2?.memory?.runtime?.startup?.backfill?.limit ?? fallback));
+  return Math.max(1, Number(mainConfig2?.runtime?.startup?.backfill?.limit ?? fallback));
 }
 function resolveEmbeddingRefreshOptions(mainConfig2 = {}, kind = "cycle2") {
-  const cycleConfig = mainConfig2?.memory?.[kind] ?? {};
+  const cycleConfig = mainConfig2?.[kind] ?? {};
   const refreshConfig = cycleConfig?.embeddingRefresh ?? {};
   const contextualizeItems = Math.max(
     4,
@@ -4428,7 +4418,7 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
       candidates: options.candidates ?? []
     });
   }
-  const provider = options.provider || readMainConfig()?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER;
+  const provider = options.provider || readMainConfig()?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER;
   return await callLLM(prompt, provider, { timeout: options.timeout ?? 18e4, cwd: ws });
 }
 async function consolidateCandidateDay(dayKey, _ws, options = {}) {
@@ -4448,7 +4438,7 @@ ${c.span_content}`);
         return lines.join("\n");
       }).join("\n\n");
       const prompt = template.replace("{{DATE}}", dayKey).replace("{{CANDIDATES}}", candidatesText);
-      const provider = options.provider || readMainConfig()?.memory?.cycle2?.provider || DEFAULT_CYCLE_PROVIDER;
+      const provider = options.provider || readMainConfig()?.cycle2?.provider || DEFAULT_CYCLE_PROVIDER;
       const raw = await resolveCycleLlmOutput(prompt, _ws, {
         ...options,
         mode: "consolidate",
@@ -4529,7 +4519,7 @@ async function refreshEmbeddings(ws, options = {}) {
   const store2 = options.store ?? getStore();
   const mainConfig2 = readMainConfig();
   const contextualizeEnabled = mainConfig2?.embedding?.contextualize !== false;
-  const contextualizeProvider = mainConfig2?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER;
+  const contextualizeProvider = mainConfig2?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER;
   const kind = options.kind ?? "cycle2";
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig2, kind);
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit;
@@ -4578,14 +4568,14 @@ async function sleepCycleImpl(ws) {
   const now = Date.now();
   const config = readCycleConfig();
   const mainConfig2 = readMainConfig();
-  const cycle2Config = mainConfig2?.memory?.cycle2 ?? {};
+  const cycle2Config = mainConfig2?.cycle2 ?? {};
   const isFirstRun = !config.lastSleepAt && !existsSync2(join2(HISTORY_DIR, "context.md"));
   const backfillLimit = resolveCycleBackfillLimit(mainConfig2, 120);
   process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? " (FIRST RUN)" : ""}
 `);
   store2.backfillProject(ws, { limit: backfillLimit });
   const MAX_DAYS = Math.max(1, Number(cycle2Config.maxDays ?? 7));
-  const pendingDays = store2.getPendingCandidateDays(MAX_DAYS, 1).map((d) => d.day_key).sort();
+  const pendingDays = store2.getPendingCandidateDays(MAX_DAYS, 1).map((d) => d.day_key).sort().reverse();
   const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER };
   await consolidateRecent(pendingDays, ws, consolidateOpts);
   store2.syncHistoryFromFiles();
@@ -4672,9 +4662,9 @@ async function memoryFlushImpl(ws, options = {}) {
     process.stderr.write("[memory-cycle] no flushable batches.\n");
     return;
   }
-  const targets = pendingDays.map((d) => d.day_key).sort().slice(0, maxDays);
+  const targets = pendingDays.map((d) => d.day_key).sort().reverse().slice(0, maxDays);
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches };
-  consolidateOpts.provider = options.provider ?? readMainConfig()?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER;
+  consolidateOpts.provider = options.provider ?? readMainConfig()?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER;
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts);
   await refreshEmbeddings(ws);
   store2.writeContextFile();
@@ -4682,10 +4672,11 @@ async function memoryFlushImpl(ws, options = {}) {
 async function memoryFlush(ws, options = {}) {
   return enqueueCycleWrite("cycle2", () => memoryFlushImpl(ws, options));
 }
+var WINDOW_TO_DAYS = { "1d": 1, "3d": 3, "7d": 7, "30d": 30 };
 async function rebuildClassificationsImpl(ws, options = {}) {
   const store2 = options.store ?? getStore();
   const config = readMainConfig();
-  const maxAgeDays = options.maxAgeDays ?? null;
+  const maxAgeDays = options.window ? WINDOW_TO_DAYS[options.window] ?? null : options.maxAgeDays ?? null;
   const maxConcurrent = Math.max(1, Math.min(Number(options.maxConcurrentBatches ?? MAX_CONCURRENT_BATCHES), 10));
   const batchSize = Math.max(1, Number(options.batchSize ?? BATCH_SIZE));
   try {
@@ -4758,14 +4749,14 @@ async function rebuildRecentImpl(ws, options = {}) {
   const mainConfig2 = readMainConfig();
   store2.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig2, 120), 240) });
   store2.syncHistoryFromFiles();
-  const maxDays = Math.max(1, Number(options.maxDays ?? 2));
-  const dayKeys = store2.getRecentCandidateDays(maxDays).map((d) => d.day_key).sort();
+  const maxDays = Math.max(1, Number(options.window ? WINDOW_TO_DAYS[options.window] ?? options.maxDays ?? 2 : options.maxDays ?? 2));
+  const dayKeys = store2.getRecentCandidateDays(maxDays).map((d) => d.day_key).sort().reverse();
   if (!dayKeys.length) {
     process.stderr.write("[memory-cycle] no recent days.\n");
     return;
   }
   store2.resetConsolidatedMemoryForDays(dayKeys);
-  const mergedOptions = options.provider ? options : { ...options, provider: mainConfig2?.memory?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER };
+  const mergedOptions = options.provider ? options : { ...options, provider: mainConfig2?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER };
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions);
   store2.syncHistoryFromFiles();
   await refreshEmbeddings(ws, { kind: "cycle2" });
@@ -4782,7 +4773,7 @@ async function pruneToRecentImpl(ws, options = {}) {
   store2.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig2, 120), 240) });
   store2.syncHistoryFromFiles();
   const maxDays = Math.max(1, Number(options.maxDays ?? 5));
-  const dayKeys = store2.getRecentCandidateDays(maxDays).map((d) => d.day_key).sort();
+  const dayKeys = store2.getRecentCandidateDays(maxDays).map((d) => d.day_key).sort().reverse();
   if (!dayKeys.length) {
     process.stderr.write("[memory-cycle] no recent days.\n");
     return;
@@ -4802,7 +4793,7 @@ async function autoFlush(ws) {
   const store2 = getStore();
   const config = readCycleConfig();
   const mainConfig2 = readMainConfig();
-  const cycle1MaxPending = Number(mainConfig2?.memory?.cycle1?.maxPending ?? mainConfig2?.memory?.cycle2?.maxCandidates ?? 0);
+  const cycle1MaxPending = Number(mainConfig2?.cycle1?.maxPending ?? mainConfig2?.cycle2?.maxCandidates ?? 0);
   const now = Date.now();
   const lastFlushAt = config.lastFlushAt ?? 0;
   const pending = store2.getPendingCandidateDays(100, 1);
@@ -4831,7 +4822,7 @@ function getCycleStatus() {
   const store2 = getStore();
   const pending = store2.getPendingCandidateDays(100, 1);
   const cycleState = loadCycleState();
-  const memoryConfig = mainConfig2?.memory ?? {};
+  const memoryConfig = mainConfig2 ?? {};
   return {
     lastSleepAt: config.lastSleepAt ? new Date(config.lastSleepAt).toISOString() : null,
     lastCycle1At: config.lastCycle1At ? new Date(config.lastCycle1At).toISOString() : null,
@@ -4883,11 +4874,11 @@ async function runCycle1Impl(ws, config, options = {}) {
     store2.backfillProject(ws, { limit: 50 });
   } catch {
   }
-  const cycle1Config2 = config?.memory?.cycle1 ?? {};
+  const cycle1Config2 = config?.cycle1 ?? {};
   const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config2.batchSize ?? BATCH_SIZE));
   const maxDays = force ? 9999 : Math.max(1, Number(options.maxAgeDays ?? cycle1Config2.maxDays ?? 7));
-  const provider = config?.memory?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER;
-  const timeout = config?.memory?.cycle1?.timeout || 3e5;
+  const provider = config?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER;
+  const timeout = config?.cycle1?.timeout || 3e5;
   let allCandidates;
   if (Array.isArray(options._preSplitCandidates) && options._preSplitCandidates.length > 0) {
     allCandidates = options._preSplitCandidates;
@@ -5028,8 +5019,33 @@ async function runCycle1Impl(ws, config, options = {}) {
     }
   }
   if (totalExtracted > 0) {
-    const pairLimit = Math.max(BATCH_SIZE, totalClassifications * 2);
-    await refreshEmbeddings(ws, { store: store2, kind: "cycle1", perTypeLimit: pairLimit });
+    const embeddableItems = store2.getEmbeddableItems({ perTypeLimit: Math.max(batchSize, totalClassifications * 2) });
+    const lookupModel = getEmbeddingModelId();
+    let embeddedCount = 0;
+    for (const item of embeddableItems) {
+      const embedInput = cleanMemoryText(item.content ?? "");
+      if (!embedInput) continue;
+      const contentHash = hashEmbeddingInput(embedInput);
+      const existing = store2.getVectorStmt.get(item.entityType, item.entityId, lookupModel);
+      if (existing?.content_hash === contentHash) continue;
+      const vector = await embedText(embedInput);
+      if (!Array.isArray(vector) || vector.length === 0) continue;
+      const activeModel = getEmbeddingModelId();
+      store2.upsertVectorStmt.run(
+        item.entityType,
+        item.entityId,
+        activeModel,
+        vector.length,
+        JSON.stringify(vector),
+        contentHash
+      );
+      store2._syncToVecTable(item.entityType, item.entityId, vector);
+      store2.noteVectorWrite(activeModel, vector.length);
+      embeddedCount += 1;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    process.stderr.write(`[cycle1] inline embeddings: ${embeddedCount} items
+`);
   }
   store2.writeRecentFile();
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() });
@@ -5072,7 +5088,7 @@ function computeHeatScore(row) {
 async function runCycle3Impl(_ws, options = {}) {
   const store2 = getStore();
   const mainConfig2 = readMainConfig();
-  const cycle3Config = mainConfig2?.memory?.cycle3 ?? {};
+  const cycle3Config = mainConfig2?.cycle3 ?? {};
   const threshold = Number(cycle3Config.threshold ?? options.threshold ?? CYCLE3_HEAT_THRESHOLD);
   const graceDays = Number(cycle3Config.graceDays ?? options.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS);
   const hardDelete = Boolean(cycle3Config.hardDelete ?? options.hardDelete ?? false);
@@ -5220,23 +5236,13 @@ if (startupBackfill) {
 `);
   }
 }
-var startupEmbedding = resolveStartupEmbeddingOptions(opsPolicy);
-if (startupEmbedding) {
-  let startupEmbeddingJob = Promise.resolve();
-  if (startupEmbedding.warmup) {
-    startupEmbeddingJob = startupEmbeddingJob.then(() => store.warmupEmbeddings());
-  }
-  startupEmbeddingJob = startupEmbeddingJob.then(() => store.ensureEmbeddings({ perTypeLimit: startupEmbedding.perTypeLimit }));
-  void startupEmbeddingJob.catch((err) => process.stderr.write(`[memory-service] startup embedding catch-up failed: ${err}
-`));
-}
 var _rebuildLock = false;
-var cycle1Config = mainConfig?.memory?.cycle1 ?? {};
+var cycle1Config = mainConfig?.cycle1 ?? {};
 var cycle1IntervalStr = cycle1Config.interval || "5m";
 var cycle1Ms = parseInterval(cycle1IntervalStr);
-var cycle2IntervalStr = mainConfig?.memory?.cycle2?.interval || "1h";
+var cycle2IntervalStr = mainConfig?.cycle2?.interval || "1h";
 var cycle2Ms = parseInterval(cycle2IntervalStr);
-var cycle3IntervalStr = mainConfig?.memory?.cycle3?.interval || "24h";
+var cycle3IntervalStr = mainConfig?.cycle3?.interval || "24h";
 var cycle3Ms = parseInterval(cycle3IntervalStr);
 function getCycleLastRun() {
   try {
@@ -5252,7 +5258,7 @@ function getCycleLastRun() {
 }
 async function checkCycles(options = {}) {
   if (_rebuildLock) return;
-  if (mainConfig?.memory?.enabled === false) return;
+  if (mainConfig?.enabled === false) return;
   const startup = options.startup === true;
   const now = Date.now();
   const last = getCycleLastRun();
@@ -5325,28 +5331,60 @@ var startupDelayMs = Math.max(
 setTimeout(() => {
   void checkCycles({ startup: true });
 }, startupDelayMs);
-var serverStartedAt = (/* @__PURE__ */ new Date()).toISOString();
+var serverStartedAt = localNow();
+{
+  let discoverActiveTranscripts = function() {
+    try {
+      if (!fs2.existsSync(projectsRoot)) return [];
+      const files = [];
+      for (const d of fs2.readdirSync(projectsRoot)) {
+        if (d.includes("tmp") || d.includes("cache") || d.includes("plugins")) continue;
+        const full = path2.join(projectsRoot, d);
+        try {
+          for (const f of fs2.readdirSync(full)) {
+            if (!f.endsWith(".jsonl") || f.startsWith("agent-")) continue;
+            const fp = path2.join(full, f);
+            const mtime = fs2.statSync(fp).mtimeMs;
+            files.push({ path: fp, mtime });
+          }
+        } catch {
+        }
+      }
+      const cutoff = Date.now() - 30 * 6e4;
+      return files.filter((f) => f.mtime > cutoff);
+    } catch {
+      return [];
+    }
+  }, watchTick = function() {
+    try {
+      const active2 = discoverActiveTranscripts();
+      for (const { path: fp, mtime } of active2) {
+        const prev = watchedFiles.get(fp);
+        if (prev && prev >= mtime) continue;
+        watchedFiles.set(fp, mtime);
+        const n = store.ingestTranscriptFile(fp);
+        if (n > 0) {
+          process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path2.basename(fp)}
+`);
+        }
+      }
+    } catch (e) {
+      process.stderr.write(`[transcript-watch] error: ${e.message}
+`);
+    }
+  };
+  const projectsRoot = path2.join(os.homedir(), ".claude", "projects");
+  const WATCH_INTERVAL_MS = 5e3;
+  let watchedFiles = /* @__PURE__ */ new Map();
+  setTimeout(watchTick, 3e3);
+  setInterval(watchTick, WATCH_INTERVAL_MS);
+}
 try {
   const synced = store.syncChunksFromClassifications();
   if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications
 `);
 } catch (e) {
   process.stderr.write(`[memory-service] chunk sync error: ${e.message}
-`);
-}
-try {
-  const totalChunks = store.db.prepare("SELECT COUNT(*) as cnt FROM memory_chunks WHERE status = 'active'").get()?.cnt || 0;
-  const embeddedChunks = store.db.prepare("SELECT COUNT(*) as cnt FROM memory_vectors WHERE entity_type = 'chunk'").get()?.cnt || 0;
-  if (totalChunks > 0 && embeddedChunks < totalChunks) {
-    process.stderr.write(`[memory-service] chunk embeddings: ${embeddedChunks}/${totalChunks}, backfilling...
-`);
-    void store.ensureEmbeddings({ perTypeLimit: Math.max(256, totalChunks * 2) }).catch(
-      (e) => process.stderr.write(`[memory-service] chunk embedding backfill error: ${e.message}
-`)
-    );
-  }
-} catch (e) {
-  process.stderr.write(`[memory-service] embedding check error: ${e.message}
 `);
 }
 try {
@@ -5665,7 +5703,8 @@ async function handleCycle(args) {
     _rebuildLock = true;
     try {
       const maxDays = Number(args.maxDays ?? 2);
-      await rebuildRecent(ws, { maxDays });
+      const window = args.window || void 0;
+      await rebuildRecent(ws, { maxDays, window });
       store.syncChunksFromClassifications();
       store.writeRecentFile({ serverStartedAt });
       return { text: `Memory rebuild completed (maxDays=${maxDays}).` };
@@ -5686,7 +5725,8 @@ async function handleCycle(args) {
   }
   if (action === "rebuild_classifications") {
     const maxAgeDays = args.maxAgeDays ? Number(args.maxAgeDays) : void 0;
-    const result = await rebuildClassifications(ws, { maxAgeDays });
+    const window = args.window || void 0;
+    const result = await rebuildClassifications(ws, { maxAgeDays, window });
     return { text: `Rebuild classifications completed: total=${result.total} batches=${result.batches} classifications=${result.classifications}` };
   }
   if (action === "backfill") {
@@ -5746,6 +5786,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           action: { type: "string", enum: ["sleep", "flush", "rebuild", "rebuild_classifications", "prune", "cycle1", "backfill", "status"], description: "Memory operation to run" },
           maxDays: { type: "number", description: "Max days to process (default varies by action)" },
+          window: { type: "string", description: "Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all" },
           limit: { type: "number", description: "Max episodes to backfill (default 100)" }
         },
         required: ["action"]

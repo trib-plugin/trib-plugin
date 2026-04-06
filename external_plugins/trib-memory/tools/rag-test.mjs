@@ -911,7 +911,7 @@ async function runSample(n) {
 async function runCycle1Test(sampleCount) {
   const { runCycle1, readMainConfig, loadCycleState } = await getCycle1Imports()
   const mainConfig = readMainConfig()
-  const cycle1Config = mainConfig?.memory?.cycle1 ?? {}
+  const cycle1Config = mainConfig?.cycle1 ?? {}
   const providerConfig = cycle1Config.provider || { connection: 'codex', model: 'gpt-5.4-mini' }
   const providerLabel = typeof providerConfig === 'string'
     ? providerConfig

@@ -270,6 +270,26 @@
               <input class="r-input" id="set-timeout" type="number" placeholder="30" style="flex:1">
               <span class="r-unit">sec</span>
             </div>
+            <div class="r">
+              <span class="r-name-wide">Batch Size</span>
+              <input class="r-input" id="set-batch-size" type="number" placeholder="50" style="flex:1">
+            </div>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sec-title">Backfill</div>
+          <div class="sec-body">
+            <div class="r">
+              <span class="r-name-wide">Window</span>
+              <select class="r-select" id="set-backfill-window">
+                <option value="1d">1 day</option>
+                <option value="3d">3 days</option>
+                <option value="7d" selected>7 days</option>
+                <option value="30d">30 days</option>
+                <option value="unlimited">Unlimited</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -551,7 +571,12 @@ function populateConfig(cfg) {
   const c2 = cfg.cycle2 || {};
   if (c1.interval) document.getElementById('set-retention').value = c1.interval;
   if (c1.timeout != null) document.getElementById('set-timeout').value = Math.round(c1.timeout / 1000);
+  document.getElementById('set-batch-size').value = c1.batchSize != null ? c1.batchSize : '';
   if (c2.schedule) document.getElementById('set-schedule').value = c2.schedule;
+
+  // Backfill
+  const bf = cfg.backfill || {};
+  if (bf.window) document.getElementById('set-backfill-window').value = bf.window;
 
   // Models (LLM)
   const mdl = cfg.models || {};
@@ -597,6 +622,10 @@ function buildConfigData() {
     cycle1: {
       interval: document.getElementById('set-retention').value,
       timeout: timeoutSec > 0 ? timeoutSec * 1000 : undefined,
+      batchSize: parseInt(document.getElementById('set-batch-size').value) || undefined,
+    },
+    backfill: {
+      window: document.getElementById('set-backfill-window').value,
     },
     cycle2: {
       schedule: document.getElementById('set-schedule').value || undefined,

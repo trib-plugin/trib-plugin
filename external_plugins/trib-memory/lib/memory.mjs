@@ -27,6 +27,7 @@ import {
   tokenizeMemoryText,
   localNow,
   localDateStr,
+  toLocalTs,
 } from './memory-text-utils.mjs'
 import {
   parseTemporalHint,
@@ -727,7 +728,8 @@ export class MemoryStore {
   }
 
   async processPendingEmbeds() {
-    const pending = this.db.prepare('SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT 50').all()
+    const batchSize = Number(this.getMetaValue('embedding.batchSize')) || 20
+    const pending = this.db.prepare('SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT ?').all(batchSize)
     if (pending.length === 0) return 0
     let processed = 0
     for (const item of pending) {
@@ -778,7 +780,8 @@ export class MemoryStore {
         const clean = cleanMemoryText(text)
         if (!clean || clean.includes('[Request interrupted by user]')) continue
         if (isTranscriptQuarantineContent(clean)) continue
-        const ts = parsed.timestamp ?? parsed.ts ?? localNow()
+        const rawTs = parsed.timestamp ?? parsed.ts ?? null
+        const ts = rawTs ? toLocalTs(rawTs) : localNow()
         const sessionId = parsed.sessionId ?? ''
         const sourceRef = `transcript:${sessionId || resolve(transcriptPath)}:${index}:${role}`
         const id = this.appendEpisode({
@@ -1014,7 +1017,6 @@ export class MemoryStore {
     const allFiles = []
     try {
       for (const d of readdirSync(projectsRoot)) {
-        if (!d.startsWith('-')) continue
         if (d.includes('tmp') || d.includes('cache') || d.includes('plugins')) continue
         const full = join(projectsRoot, d)
         try {
