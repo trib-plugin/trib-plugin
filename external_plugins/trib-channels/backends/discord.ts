@@ -39,6 +39,7 @@ import type {
   ChannelAccessPolicy,
 } from './types.js'
 import { chunk } from '../lib/format.js'
+import { withConfigLock } from '../lib/config-lock.js'
 
 // ── Access control types ───────────────────────────────────────────────
 
@@ -446,31 +447,33 @@ export class DiscordBackend implements ChannelBackend {
   private saveAccess(a: Access): void {
     if (this.isStatic) return
     if (!this.configFile) return
-    mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
-    const current = (() => {
-      try {
-        return JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
-      } catch {
-        return {}
+    void withConfigLock(() => {
+      mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
+      const current = (() => {
+        try {
+          return JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
+        } catch {
+          return {}
+        }
+      })()
+      const next = {
+        ...current,
+        access: {
+          dmPolicy: a.dmPolicy,
+          allowFrom: a.allowFrom,
+          channels: a.channels,
+          pending: a.pending,
+          ...(a.mentionPatterns ? { mentionPatterns: a.mentionPatterns } : {}),
+          ...(a.ackReaction ? { ackReaction: a.ackReaction } : {}),
+          ...(a.replyToMode ? { replyToMode: a.replyToMode } : {}),
+          ...(a.textChunkLimit ? { textChunkLimit: a.textChunkLimit } : {}),
+          ...(a.chunkMode ? { chunkMode: a.chunkMode } : {}),
+        },
       }
-    })()
-    const next = {
-      ...current,
-      access: {
-        dmPolicy: a.dmPolicy,
-        allowFrom: a.allowFrom,
-        channels: a.channels,
-        pending: a.pending,
-        ...(a.mentionPatterns ? { mentionPatterns: a.mentionPatterns } : {}),
-        ...(a.ackReaction ? { ackReaction: a.ackReaction } : {}),
-        ...(a.replyToMode ? { replyToMode: a.replyToMode } : {}),
-        ...(a.textChunkLimit ? { textChunkLimit: a.textChunkLimit } : {}),
-        ...(a.chunkMode ? { chunkMode: a.chunkMode } : {}),
-      },
-    }
-    const tmp = this.configFile + '.tmp'
-    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
-    renameSync(tmp, this.configFile)
+      const tmp = this.configFile + '.tmp'
+      writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+      renameSync(tmp, this.configFile)
+    })
   }
 
   private pruneExpired(a: Access): boolean {
@@ -678,7 +681,12 @@ export class DiscordBackend implements ChannelBackend {
     const ch = await this.fetchTextChannel(id)
     const access = this.loadAccess()
     if (ch.type === ChannelType.DM) {
-      if (access.allowFrom.includes(ch.recipientId)) return ch
+      let recipientId = ch.recipientId
+      if (!recipientId && ch.partial) {
+        const fetched = await ch.fetch()
+        recipientId = fetched.recipientId
+      }
+      if (recipientId && access.allowFrom.includes(recipientId)) return ch
     } else {
       const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
       if (key in access.channels) return ch

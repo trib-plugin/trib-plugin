@@ -7,9 +7,10 @@
  * - Quoted strings preserve spaces
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { join } from 'path'
 import { DATA_DIR, loadConfig, loadBotConfig, saveBotConfig, loadProfileConfig, saveProfileConfig } from './config.js'
+import { withConfigLock } from './config-lock.js'
 import type { PluginConfig, TimedSchedule } from '../backends/types.js'
 import type { Scheduler } from './scheduler.js'
 import { t } from './i18n.js'
@@ -109,7 +110,11 @@ export function parseCommand(input: string): ParsedCommand | null {
 
 function savePluginConfig(config: PluginConfig): void {
   const configPath = join(DATA_DIR, 'config.json')
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+  void withConfigLock(() => {
+    const tmp = configPath + '.tmp'
+    writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n')
+    renameSync(tmp, configPath)
+  })
 }
 
 function refreshRuntime(ctx: CommandContext): void {
