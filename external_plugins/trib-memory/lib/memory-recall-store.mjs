@@ -11,24 +11,6 @@ export { applyMetadataFilters }
 const RECALL_EPISODE_KIND_SQL = `'message', 'turn'`
 const DEBUG_RECALL_EPISODE_KIND_SQL = `'message', 'turn', 'transcript'`
 
-
-
-export function getProfileRecallRows(_store, _query = '', _limit = 5) {
-  return []
-}
-
-export function getPolicyRecallRows(_store, _query = '', _limit = 5, _options = {}) {
-  return []
-}
-
-export function getEntityRecallRows(_store, _query = '', _limit = 5) {
-  return []
-}
-
-export function getRelationRecallRows(_store, _query = '', _limit = 5) {
-  return []
-}
-
 export async function verifyMemoryClaim(store, query, options = {}) {
   const clean = String(query ?? '').trim()
   if (!clean) return []

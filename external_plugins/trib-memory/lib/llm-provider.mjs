@@ -76,10 +76,10 @@ async function execWithInput(command, args, stdin, options = {}) {
 }
 
 /**
- * @param {string} prompt — LLM에 보낼 프롬프트
+ * @param {string} prompt — Prompt to send to LLM
  * @param {object} provider — { connection, model, effort?, fast?, baseUrl? }
  * @param {object} options — { timeout?, cwd? }
- * @returns {Promise<string>} — LLM 응답 텍스트
+ * @returns {Promise<string>} — LLM response text
  */
 export async function callLLM(prompt, provider, options = {}) {
   switch (provider.connection) {

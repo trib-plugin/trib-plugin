@@ -74,3 +74,14 @@ export function computeFinalScore(baseScore, item, query, _options = {}) {
 
   return (baseScore + exactBonus) * importanceBoost * timeFactor * roleFactor * typeFactor
 }
+
+// ── Importance sort score (for sort="importance") ───────────────────
+
+export function computeImportanceScore(item) {
+  const confidence = Number(item?.confidence ?? item?.quality_score ?? 0)
+  const retrievalCount = Number(item?.retrieval_count ?? 0)
+  // confidence is 0-1 range, retrieval_count is unbounded
+  // Normalize: confidence * 0.7 + log2(1 + retrieval_count) * 0.3
+  const retrievalFactor = Math.log2(1 + retrievalCount) / 10 // cap ~0.3 at ~1000 retrievals
+  return confidence * 0.7 + Math.min(0.3, retrievalFactor * 0.3)
+}

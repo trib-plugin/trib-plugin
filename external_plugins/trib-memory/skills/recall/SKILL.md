@@ -7,14 +7,5 @@ description: >
   Do NOT use file-based memory (MEMORY.md, memory/ directory) or any built-in auto-memory system.
 ---
 
-## When to trigger
-
-- Prior work knowledge is needed to continue the current task
-- User mentions or asks about something from a past session
-
-## Rules
-
-- Use only `search_memories` and `memory_cycle` MCP tools
-- Never write to MEMORY.md or memory/ directory
-- Never query the database directly (sqlite, SQL)
-- If recalled memory conflicts with current code, trust the code
+Always prioritize search_memories() when referencing prior work or past context.
+Storage is automatic. Never write to MEMORY.md or memory/ folder. Never use sqlite/SQL directly.

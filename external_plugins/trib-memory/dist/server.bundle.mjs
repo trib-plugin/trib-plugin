@@ -9,368 +9,13 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// lib/memory-extraction.mjs
-function cleanMemoryText(text) {
-  return String(text ?? "").replace(/```[\s\S]*?```/g, "").replace(/<memory-context>[\s\S]*?<\/memory-context>/gi, "").replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "").replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "").replace(/<command-name>[\s\S]*?<\/command-name>/gi, "").replace(/<command-message>[\s\S]*?<\/command-message>/gi, "").replace(/<command-args>[\s\S]*?<\/command-args>/gi, "").replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, "").replace(/<tool-use-id>[\s\S]*?<\/tool-use-id>/gi, "").replace(/<output-file>[\s\S]*?<\/output-file>/gi, "").replace(/^[ \t]*\|.*\|[ \t]*$/gm, "").replace(/`([^`]+)`/g, "$1").replace(/\*\*/g, "").replace(/^#{1,4}\s+/gm, "").replace(/^>\s?/gm, "").replace(/^[-*]\s+/gm, "").replace(/https?:\/\/\S+/g, "").replace(/<channel[^>]*>\n?([\s\S]*?)\n?<\/channel>/g, "$1").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/<schedule-context>[\s\S]*?<\/schedule-context>/g, "").replace(/<teammate-message[\s\S]*?<\/teammate-message>/g, "").replace(/^This session is being continued from a previous conversation[\s\S]*?(?=\n\n|$)/gim, "").replace(/^\[[^\]\n]{1,140}\]\s*$/gm, "").replace(/^\s*●\s.*$/gm, "").replace(/^\s*Ran .*$/gm, "").replace(/^\s*Command: .*$/gm, "").replace(/^\s*Process exited .*$/gm, "").replace(/^\s*Full transcript available at: .*$/gm, "").replace(/^\s*Read the output file to retrieve the result: .*$/gm, "").replace(/^\s*Original token count: .*$/gm, "").replace(/^\s*Wall time: .*$/gm, "").replace(/^\s*Chunk ID: .*$/gm, "").replace(/^\s*tool_uses: .*$/gm, "").replace(/^\s*menu item .*$/gm, "").replace(/<\/?[a-z][-a-z]*(?:\s[^>]*)?\/?>/gi, "").replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}]/gu, "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").replace(/^\s+|\s+$/gm, "").trim();
-}
-function classifyCandidateConcept(text, role = "user") {
-  const clean = cleanMemoryText(text);
-  if (!clean) return { category: "drop", admit: false };
-  const isQuestionOnly = /\?$/.test(clean) && !/\b(commit|push|build|deploy|json|schema|language|tone|timezone|source of truth|sqlite|context\.md)\b/i.test(clean);
-  const ruleLike = /\b(do not|don't|must not|should not|forbidden|blocked|approval|explicitly requested|json|schema)\b/i.test(clean) || /하지 마|하면 안|금지|승인|명시|JSON|스키마/.test(clean);
-  const preferenceLike = /\b(prefer|preferred|want|wants|style|tone|language|timezone)\b/i.test(clean) || /선호|원해|말투|어투|언어|시간대|존댓말/.test(clean);
-  const taskLike = /\b(fix|implement|investigate|review|refactor|cleanup|deduplicate|analyze|check|verify)\b/i.test(clean) || /수정|구현|조사|리뷰|리팩터|정리|중복 제거|분석|확인|검증/.test(clean);
-  const proposalLike = /\b(should|could|let's|what about|how about)\b/i.test(clean) || /어때|하자|넣자|두자|맞아|되게|가게|전환|구현하자|저장해서|방향이 맞아/.test(clean);
-  const storageDecisionLike = /\b(sqlite|context\.md|source of truth|long-term memory|profile data|identity storage|persistence)\b/i.test(clean) || /SQLite|context\.md|source of truth|장기 메모리|프로필 데이터|정체성 저장|저장 구조/.test(clean);
-  const internalArchitectureLike = /\b(provider|model selection|embedding model|update cadence|cycle schedule|schema|crud|action field|manual injection|profile\.md|bot\.json|bot role|context generation|memory architecture|three[- ]cycle|three[- ]tier|3[- ]cycle|3[- ]tier)\b/i.test(clean) || /프로바이더|모델 선택|임베딩 모델|갱신 주기|사이클 주기|스키마|CRUD|action 필드|수동 주입|Profile\.md|bot\.json|봇 역할|context 생성|메모리 구조|3-cycle|3-tier|3사이클|3티어/.test(clean);
-  const stateObservationLike = /\b(currently empty|currently noisy|data is missing|consolidation is not running|pipeline looks empty|memory is empty|backlog is high)\b/i.test(clean) || /데이터가 없|비어 있|노이즈|consolidation이 돌지 않|파이프라인이 비어|백로그/.test(clean);
-  const internalMetaLike = /\b(mcp|profile hints?|memory-context|notification|output|verify chain|state file|cycle status|cycle state|catch-up|pipeline|benchmark|provider abstraction|tool-call|latency|throughput)\b/i.test(clean) || /프로필 힌트|memory-context|알림|출력|verify 체인|state file|cycle status|cycle state|catch-up|파이프라인|벤치마크|provider abstraction|지연|처리량|주기 실행/.test(clean);
-  const requestNarrationLike = /\bthe user (asked|requested|wants|wanted)\b/i.test(clean) || /사용자가 .*요청했|유저가 .*요청했|심층분석해달라고/.test(clean);
-  if (role !== "user") return { category: "assistant_evidence", admit: false };
-  if (requestNarrationLike) return { category: "request_narration", admit: false };
-  if (stateObservationLike && (taskLike || proposalLike)) return { category: "maintenance_task", admit: true };
-  if (stateObservationLike) return { category: "internal_meta", admit: false };
-  if (internalArchitectureLike && (taskLike || proposalLike)) return { category: "maintenance_task", admit: true };
-  if (internalArchitectureLike && !ruleLike && !storageDecisionLike) return { category: "internal_meta", admit: false };
-  if (internalMetaLike && (taskLike || proposalLike)) return { category: "maintenance_task", admit: true };
-  if (internalMetaLike && !ruleLike && !storageDecisionLike) return { category: "internal_meta", admit: false };
-  if (ruleLike) return { category: "user_rule", admit: true };
-  if (preferenceLike) return { category: "preference", admit: true };
-  if (taskLike) return { category: "active_task", admit: true };
-  if (storageDecisionLike) return { category: "storage_decision", admit: true };
-  if (isQuestionOnly) return { category: "question", admit: false };
-  return { category: "generic", admit: false };
-}
-var init_memory_extraction = __esm({
-  "lib/memory-extraction.mjs"() {
-  }
-});
-
-// lib/ko-date-parser.mjs
-function fmt(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function addDays(d, n) {
-  const r = new Date(d);
-  r.setDate(r.getDate() + n);
-  return r;
-}
-function addMonths(d, n) {
-  const r = new Date(d);
-  r.setMonth(r.getMonth() + n);
-  return r;
-}
-function startOfWeek(d) {
-  const day = d.getDay();
-  const diff = (day + 6) % 7;
-  return addDays(d, -diff);
-}
-function lastDayOfMonth(year, month) {
-  const d = new Date(year, month + 1, 0);
-  return d.getDate();
-}
-function resolveResult(matched, match) {
-  if (!matched) return null;
-  if (matched.date) {
-    const s = fmt(matched.date);
-    return { text: match[0], start: s, end: null, exact: matched.exact ?? true };
-  }
-  if (matched.start) {
-    return {
-      text: match[0],
-      start: fmt(matched.start),
-      end: fmt(matched.end ?? matched.start),
-      exact: matched.exact ?? false
-    };
-  }
-  return null;
-}
-function parseKoreanDate(text, refDate) {
-  const ref = refDate ? new Date(refDate) : /* @__PURE__ */ new Date();
-  for (const { re, fn } of ALL_PATTERNS) {
-    const match = text.match(re);
-    if (match) {
-      const result = fn(ref, match);
-      const resolved = resolveResult(result, match);
-      if (resolved) return resolved;
-    }
-  }
-  return null;
-}
-function parseTemporalHint(query) {
-  const parsed = parseKoreanDate(query);
-  if (!parsed) return null;
-  return {
-    start: parsed.start,
-    end: parsed.end ?? parsed.start,
-    exact: parsed.exact ?? true
-  };
-}
-var WEEKDAY_MAP, KO_PATTERNS, EN_PATTERNS, NEUTRAL_PATTERNS, ALL_PATTERNS;
-var init_ko_date_parser = __esm({
-  "lib/ko-date-parser.mjs"() {
-    WEEKDAY_MAP = { "\uC77C": 0, "\uC6D4": 1, "\uD654": 2, "\uC218": 3, "\uBAA9": 4, "\uAE08": 5, "\uD1A0": 6 };
-    KO_PATTERNS = [
-      // Exact single-day (longer patterns first to prevent partial match)
-      { re: /오늘/, fn: (d) => ({ date: d, exact: true }) },
-      { re: /어제/, fn: (d) => ({ date: addDays(d, -1), exact: true }) },
-      { re: /엊그제|엊그저께/, fn: (d) => ({ start: addDays(d, -3), end: addDays(d, -2), exact: false }) },
-      { re: /그저께|그제/, fn: (d) => ({ date: addDays(d, -2), exact: true }) },
-      { re: /내일/, fn: (d) => ({ date: addDays(d, 1), exact: true }) },
-      { re: /모레/, fn: (d) => ({ date: addDays(d, 2), exact: true }) },
-      // N일/주/달/개월/년 전
-      { re: /(\d+)\s*일\s*전/, fn: (d, m) => ({ date: addDays(d, -parseInt(m[1])), exact: true }) },
-      { re: /(\d+)\s*주\s*전/, fn: (d, m) => {
-        const weeks = parseInt(m[1]);
-        return { start: addDays(d, -weeks * 7 - 6), end: addDays(d, -(weeks - 1) * 7), exact: false };
-      } },
-      { re: /(\d+)\s*(?:달|개월)\s*전/, fn: (d, m) => {
-        const n = parseInt(m[1]);
-        const s = addMonths(d, -n);
-        return { start: s, end: addDays(addMonths(d, -(n - 1)), -1), exact: false };
-      } },
-      { re: /(\d+)\s*년\s*전/, fn: (d, m) => {
-        const n = parseInt(m[1]);
-        const y = d.getFullYear() - n;
-        return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
-      } },
-      // 지난/이번/다음 주/달
-      { re: /지난\s*주/, fn: (d) => {
-        const thisMonday = startOfWeek(d);
-        return { start: addDays(thisMonday, -7), end: addDays(thisMonday, -1), exact: false };
-      } },
-      { re: /이번\s*주/, fn: (d) => {
-        const thisMonday = startOfWeek(d);
-        return { start: thisMonday, end: addDays(thisMonday, 6), exact: false };
-      } },
-      { re: /다음\s*주/, fn: (d) => {
-        const thisMonday = startOfWeek(d);
-        return { start: addDays(thisMonday, 7), end: addDays(thisMonday, 13), exact: false };
-      } },
-      { re: /지난\s*달/, fn: (d) => {
-        const prev = addMonths(d, -1);
-        const y = prev.getFullYear(), m = prev.getMonth();
-        return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
-      } },
-      { re: /이번\s*달/, fn: (d) => {
-        const y = d.getFullYear(), m = d.getMonth();
-        return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
-      } },
-      { re: /다음\s*달/, fn: (d) => {
-        const next = addMonths(d, 1);
-        const y = next.getFullYear(), m = next.getMonth();
-        return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
-      } },
-      // 작년/올해/내년
-      { re: /작년|지난\s*해/, fn: (d) => {
-        const y = d.getFullYear() - 1;
-        return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
-      } },
-      { re: /올해/, fn: (d) => {
-        const y = d.getFullYear();
-        return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
-      } },
-      { re: /내년/, fn: (d) => {
-        const y = d.getFullYear() + 1;
-        return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
-      } },
-      // 방금/아까/조금 전
-      { re: /방금|아까|조금\s*전/, fn: (d) => ({ date: d, exact: false }) },
-      // 최근/요즘
-      { re: /최근|요즘/, fn: (d) => ({ start: addDays(d, -3), end: d, exact: false }) },
-      // YYYY년 M월 D일
-      { re: /(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/, fn: (_d, m) => {
-        return { date: new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])), exact: true };
-      } },
-      // M월 D일 (current year)
-      { re: /(\d{1,2})월\s*(\d{1,2})일/, fn: (d, m) => {
-        return { date: new Date(d.getFullYear(), parseInt(m[1]) - 1, parseInt(m[2])), exact: true };
-      } },
-      // M월 (whole month, current year)
-      { re: /(\d{1,2})월/, fn: (d, m) => {
-        const mo = parseInt(m[1]) - 1;
-        const y = d.getFullYear();
-        return { start: new Date(y, mo, 1), end: new Date(y, mo, lastDayOfMonth(y, mo)), exact: false };
-      } },
-      // 지난 X요일
-      { re: /지난\s*([일월화수목금토])요일/, fn: (d, m) => {
-        const target = WEEKDAY_MAP[m[1]];
-        if (target == null) return null;
-        const current = d.getDay();
-        let diff = (current - target + 7) % 7 || 7;
-        return { date: addDays(d, -diff), exact: true };
-      } },
-      // 이번 X요일
-      { re: /이번\s*([일월화수목금토])요일/, fn: (d, m) => {
-        const target = WEEKDAY_MAP[m[1]];
-        if (target == null) return null;
-        const thisMonday = startOfWeek(d);
-        const targetOffset = (target + 6) % 7;
-        return { date: addDays(thisMonday, targetOffset), exact: true };
-      } },
-      // 다음 X요일
-      { re: /다음\s*([일월화수목금토])요일/, fn: (d, m) => {
-        const target = WEEKDAY_MAP[m[1]];
-        if (target == null) return null;
-        const thisMonday = startOfWeek(d);
-        const nextMonday = addDays(thisMonday, 7);
-        const targetOffset = (target + 6) % 7;
-        return { date: addDays(nextMonday, targetOffset), exact: true };
-      } }
-    ];
-    EN_PATTERNS = [
-      { re: /\btoday\b/i, fn: (d) => ({ date: d, exact: true }) },
-      { re: /\byesterday\b/i, fn: (d) => ({ date: addDays(d, -1), exact: true }) },
-      { re: /\btomorrow\b/i, fn: (d) => ({ date: addDays(d, 1), exact: true }) },
-      { re: /\b(?:two days ago|day before yesterday)\b/i, fn: (d) => ({ date: addDays(d, -2), exact: true }) },
-      { re: /\b(\d+)\s+days?\s+ago\b/i, fn: (d, m) => ({ date: addDays(d, -parseInt(m[1])), exact: true }) },
-      { re: /\b(\d+)\s+weeks?\s+ago\b/i, fn: (d, m) => {
-        const w = parseInt(m[1]);
-        return { start: addDays(d, -w * 7 - 6), end: addDays(d, -(w - 1) * 7), exact: false };
-      } },
-      { re: /\b(\d+)\s+months?\s+ago\b/i, fn: (d, m) => {
-        const n = parseInt(m[1]);
-        return { start: addMonths(d, -n), end: addDays(addMonths(d, -(n - 1)), -1), exact: false };
-      } },
-      { re: /\blast\s*week\b/i, fn: (d) => {
-        const thisMonday = startOfWeek(d);
-        return { start: addDays(thisMonday, -7), end: addDays(thisMonday, -1), exact: false };
-      } },
-      { re: /\bthis[-_\s]*week\b/i, fn: (d) => {
-        const thisMonday = startOfWeek(d);
-        return { start: thisMonday, end: addDays(thisMonday, 6), exact: false };
-      } },
-      { re: /\bnext\s*week\b/i, fn: (d) => {
-        const thisMonday = startOfWeek(d);
-        return { start: addDays(thisMonday, 7), end: addDays(thisMonday, 13), exact: false };
-      } },
-      { re: /\blast\s*month\b/i, fn: (d) => {
-        const prev = addMonths(d, -1);
-        const y = prev.getFullYear(), m = prev.getMonth();
-        return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
-      } },
-      { re: /\bthis\s*month\b/i, fn: (d) => {
-        const y = d.getFullYear(), m = d.getMonth();
-        return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
-      } },
-      { re: /\blast\s*year\b/i, fn: (d) => {
-        const y = d.getFullYear() - 1;
-        return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
-      } },
-      { re: /\bthis\s*year\b/i, fn: (d) => {
-        const y = d.getFullYear();
-        return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
-      } },
-      { re: /\brecently\b/i, fn: (d) => ({ start: addDays(d, -3), end: d, exact: false }) }
-    ];
-    NEUTRAL_PATTERNS = [
-      // YYYY-MM-DD or YYYY.MM.DD
-      { re: /(\d{4})[-.](\d{2})[-.](\d{2})/, fn: (_d, m) => {
-        return { date: new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])), exact: true };
-      } },
-      // YYYY-MM (whole month)
-      { re: /(\d{4})[-.](\d{2})(?![-.]\d)/, fn: (_d, m) => {
-        const y = parseInt(m[1]), mo = parseInt(m[2]) - 1;
-        if (mo < 0 || mo > 11) return null;
-        return { start: new Date(y, mo, 1), end: new Date(y, mo, lastDayOfMonth(y, mo)), exact: false };
-      } },
-      // M/D (current year)
-      { re: /\b(\d{1,2})\/(\d{1,2})\b/, fn: (d, m) => {
-        const mo = parseInt(m[1]) - 1, day = parseInt(m[2]);
-        if (mo < 0 || mo > 11 || day < 1 || day > 31) return null;
-        return { date: new Date(d.getFullYear(), mo, day), exact: true };
-      } }
-    ];
-    ALL_PATTERNS = [...KO_PATTERNS, ...EN_PATTERNS, ...NEUTRAL_PATTERNS];
-  }
-});
-
-// lib/memory-query-plan.mjs
-var memory_query_plan_exports = {};
-__export(memory_query_plan_exports, {
-  buildMemoryQueryPlan: () => buildMemoryQueryPlan,
-  getExactHistoryTypePriority: () => getExactHistoryTypePriority,
-  getResultDayKey: () => getResultDayKey,
-  isDoneTaskQuery: () => isDoneTaskQuery,
-  isHistoryQuery: () => isHistoryQuery,
-  isOngoingTaskQuery: () => isOngoingTaskQuery,
-  isRelationQuery: () => isRelationQuery,
-  isRuleQuery: () => isRuleQuery,
-  parseTemporalHint: () => parseTemporalHint
-});
-function isDoneTaskQuery(query = "") {
-  const clean = cleanMemoryText(query).toLowerCase();
-  const explicitDone = /\b(done|completed|finished|resolved)\b/.test(clean) || /완료|끝났|끝난|끝난거/.test(query);
-  const statusCue = /\bstatus\b/.test(clean) || /상태/.test(query);
-  const taskCue = /\b(task|tasks|work|issue|todo|ticket|bug|fix|compatibility)\b/.test(clean) || /작업|할 일|할일|이슈|버그|수정|호환성/.test(query);
-  return explicitDone || statusCue && taskCue;
-}
-function isOngoingTaskQuery(query = "") {
-  const clean = cleanMemoryText(query).toLowerCase();
-  const taskCue = /\b(task|tasks|work|working|project|todo|ticket|issue)\b/.test(clean) || /작업|할 일|할일|일|프로젝트/.test(query);
-  const ongoingCue = /\b(current|currently|ongoing|still|active|in progress|right now|these days|lately|keep doing)\b/.test(clean) || /현재|지금|진행 중|진행중|요즘|계속|아직|지속/.test(query);
-  return taskCue && ongoingCue;
-}
-function isRuleQuery(query = "") {
-  const clean = cleanMemoryText(query).toLowerCase();
-  return /\b(rule|policy|forbidden|allowed|constraint|prompt|transcript|durable memory)\b/.test(clean) || /규칙|정책|제약|금지|허용|prompt|transcript|durable memory/.test(query);
-}
-function isRelationQuery(query = "") {
-  const clean = cleanMemoryText(query).toLowerCase();
-  return /\b(relation|related|relationship|between|connect|connected|uses|use|depends|dependency|integrates|integrated|part of|where.*used|what.*used|role|pair|pairing|frontend|backend|client|server|boundary|ownership|integration point)\b/.test(clean) || /관계|연결|역할|용도|어디에 쓰|어디 쓰|의존|통합|연동|사용|짝|쌍|클라|서버|프론트|백엔드|경계|소유권|연결점/.test(query);
-}
-function isHistoryQuery(query = "") {
-  const clean = cleanMemoryText(query).toLowerCase();
-  return /\b(history|timeline|discuss|discussion|discussed|happened|what did we discuss|summarize the discussion)\b/.test(clean) || /기억|타임라인|논의|대화|얘기|뭐라고 했|요약/.test(query);
-}
-function getResultDayKey(item) {
-  const sourceTs = String(item?.source_ts ?? "").trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(sourceTs)) return sourceTs.slice(0, 10);
-  const updatedAt = String(item?.updated_at ?? "").trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(updatedAt)) return updatedAt.slice(0, 10);
-  return "";
-}
-function getExactHistoryTypePriority(item) {
-  if (item?.type === "episode") return 0;
-  if (item?.type === "classification") return 1;
-  return 4;
-}
-function buildMemoryQueryPlan(query, intent, options = {}) {
-  const clean = cleanMemoryText(query);
-  const temporal = options.temporal ?? parseTemporalHint(clean);
-  const includeDoneTasks = Boolean(options.includeDoneTasks) || isDoneTaskQuery(clean);
-  const preferActiveTasks = Boolean(options.preferActiveTasks) || isOngoingTaskQuery(clean);
-  const isHistoryExact = Boolean(temporal?.exact) && (intent?.primary === "history" || intent?.primary === "event");
-  const filters = options.filters ?? {};
-  const retriever = intent?.primary === "history" || intent?.primary === "event" ? "history" : "decision";
-  return {
-    query: clean,
-    intent,
-    temporal,
-    includeDoneTasks,
-    preferActiveTasks,
-    explicitRelationQuery: false,
-    preferRelations: false,
-    isHistoryExact,
-    retriever,
-    graphFirst: false,
-    filters,
-    limit: Math.max(1, Number(options.limit ?? 8))
-  };
-}
-var init_memory_query_plan = __esm({
-  "lib/memory-query-plan.mjs"() {
-    init_memory_extraction();
-    init_ko_date_parser();
-  }
-});
-
 // lib/memory-score-utils.mjs
 var memory_score_utils_exports = {};
 __export(memory_score_utils_exports, {
   computeExactMatchBonus: () => computeExactMatchBonus,
   computeFinalScore: () => computeFinalScore,
   computeImportanceBoost: () => computeImportanceBoost,
+  computeImportanceScore: () => computeImportanceScore,
   getScoringConfig: () => getScoringConfig,
   getTagFactor: () => getTagFactor
 });
@@ -417,6 +62,12 @@ function computeFinalScore(baseScore, item, query, _options = {}) {
   if (item.type === "chunk") typeFactor = 1.35;
   else if (item.type === "classification") typeFactor = 1.15;
   return (baseScore + exactBonus) * importanceBoost * timeFactor * roleFactor * typeFactor;
+}
+function computeImportanceScore(item) {
+  const confidence = Number(item?.confidence ?? item?.quality_score ?? 0);
+  const retrievalCount = Number(item?.retrieval_count ?? 0);
+  const retrievalFactor = Math.log2(1 + retrievalCount) / 10;
+  return confidence * 0.7 + Math.min(0.3, retrievalFactor * 0.3);
 }
 var TAG_FACTORS;
 var init_memory_score_utils = __esm({
@@ -543,11 +194,40 @@ ${clean}`;
   return vector;
 }
 
-// lib/memory.mjs
-init_memory_extraction();
+// lib/memory-extraction.mjs
+function cleanMemoryText(text) {
+  return String(text ?? "").replace(/```[\s\S]*?```/g, "").replace(/<memory-context>[\s\S]*?<\/memory-context>/gi, "").replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "").replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "").replace(/<command-name>[\s\S]*?<\/command-name>/gi, "").replace(/<command-message>[\s\S]*?<\/command-message>/gi, "").replace(/<command-args>[\s\S]*?<\/command-args>/gi, "").replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, "").replace(/<tool-use-id>[\s\S]*?<\/tool-use-id>/gi, "").replace(/<output-file>[\s\S]*?<\/output-file>/gi, "").replace(/^[ \t]*\|.*\|[ \t]*$/gm, "").replace(/`([^`]+)`/g, "$1").replace(/\*\*/g, "").replace(/^#{1,4}\s+/gm, "").replace(/^>\s?/gm, "").replace(/^[-*]\s+/gm, "").replace(/https?:\/\/\S+/g, "").replace(/<channel[^>]*>\n?([\s\S]*?)\n?<\/channel>/g, "$1").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/<schedule-context>[\s\S]*?<\/schedule-context>/g, "").replace(/<teammate-message[\s\S]*?<\/teammate-message>/g, "").replace(/^This session is being continued from a previous conversation[\s\S]*?(?=\n\n|$)/gim, "").replace(/^\[[^\]\n]{1,140}\]\s*$/gm, "").replace(/^\s*●\s.*$/gm, "").replace(/^\s*Ran .*$/gm, "").replace(/^\s*Command: .*$/gm, "").replace(/^\s*Process exited .*$/gm, "").replace(/^\s*Full transcript available at: .*$/gm, "").replace(/^\s*Read the output file to retrieve the result: .*$/gm, "").replace(/^\s*Original token count: .*$/gm, "").replace(/^\s*Wall time: .*$/gm, "").replace(/^\s*Chunk ID: .*$/gm, "").replace(/^\s*tool_uses: .*$/gm, "").replace(/^\s*menu item .*$/gm, "").replace(/<\/?[a-z][-a-z]*(?:\s[^>]*)?\/?>/gi, "").replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}]/gu, "").replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").replace(/^\s+|\s+$/gm, "").trim();
+}
+function classifyCandidateConcept(text, role = "user") {
+  const clean = cleanMemoryText(text);
+  if (!clean) return { category: "drop", admit: false };
+  const isQuestionOnly = /\?$/.test(clean) && !/\b(commit|push|build|deploy|json|schema|language|tone|timezone|source of truth|sqlite|context\.md)\b/i.test(clean);
+  const ruleLike = /\b(do not|don't|must not|should not|forbidden|blocked|approval|explicitly requested|json|schema)\b/i.test(clean) || /하지 마|하면 안|금지|승인|명시|JSON|스키마/.test(clean);
+  const preferenceLike = /\b(prefer|preferred|want|wants|style|tone|language|timezone)\b/i.test(clean) || /선호|원해|말투|어투|언어|시간대|존댓말/.test(clean);
+  const taskLike = /\b(fix|implement|investigate|review|refactor|cleanup|deduplicate|analyze|check|verify)\b/i.test(clean) || /수정|구현|조사|리뷰|리팩터|정리|중복 제거|분석|확인|검증/.test(clean);
+  const proposalLike = /\b(should|could|let's|what about|how about)\b/i.test(clean) || /어때|하자|넣자|두자|맞아|되게|가게|전환|구현하자|저장해서|방향이 맞아/.test(clean);
+  const storageDecisionLike = /\b(sqlite|context\.md|source of truth|long-term memory|profile data|identity storage|persistence)\b/i.test(clean) || /SQLite|context\.md|source of truth|장기 메모리|프로필 데이터|정체성 저장|저장 구조/.test(clean);
+  const internalArchitectureLike = /\b(provider|model selection|embedding model|update cadence|cycle schedule|schema|crud|action field|manual injection|profile\.md|bot\.json|bot role|context generation|memory architecture|three[- ]cycle|three[- ]tier|3[- ]cycle|3[- ]tier)\b/i.test(clean) || /프로바이더|모델 선택|임베딩 모델|갱신 주기|사이클 주기|스키마|CRUD|action 필드|수동 주입|Profile\.md|bot\.json|봇 역할|context 생성|메모리 구조|3-cycle|3-tier|3사이클|3티어/.test(clean);
+  const stateObservationLike = /\b(currently empty|currently noisy|data is missing|consolidation is not running|pipeline looks empty|memory is empty|backlog is high)\b/i.test(clean) || /데이터가 없|비어 있|노이즈|consolidation이 돌지 않|파이프라인이 비어|백로그/.test(clean);
+  const internalMetaLike = /\b(mcp|profile hints?|memory-context|notification|output|verify chain|state file|cycle status|cycle state|catch-up|pipeline|benchmark|provider abstraction|tool-call|latency|throughput)\b/i.test(clean) || /프로필 힌트|memory-context|알림|출력|verify 체인|state file|cycle status|cycle state|catch-up|파이프라인|벤치마크|provider abstraction|지연|처리량|주기 실행/.test(clean);
+  const requestNarrationLike = /\bthe user (asked|requested|wants|wanted)\b/i.test(clean) || /사용자가 .*요청했|유저가 .*요청했|심층분석해달라고/.test(clean);
+  if (role !== "user") return { category: "assistant_evidence", admit: false };
+  if (requestNarrationLike) return { category: "request_narration", admit: false };
+  if (stateObservationLike && (taskLike || proposalLike)) return { category: "maintenance_task", admit: true };
+  if (stateObservationLike) return { category: "internal_meta", admit: false };
+  if (internalArchitectureLike && (taskLike || proposalLike)) return { category: "maintenance_task", admit: true };
+  if (internalArchitectureLike && !ruleLike && !storageDecisionLike) return { category: "internal_meta", admit: false };
+  if (internalMetaLike && (taskLike || proposalLike)) return { category: "maintenance_task", admit: true };
+  if (internalMetaLike && !ruleLike && !storageDecisionLike) return { category: "internal_meta", admit: false };
+  if (ruleLike) return { category: "user_rule", admit: true };
+  if (preferenceLike) return { category: "preference", admit: true };
+  if (taskLike) return { category: "active_task", admit: true };
+  if (storageDecisionLike) return { category: "storage_decision", admit: true };
+  if (isQuestionOnly) return { category: "question", admit: false };
+  return { category: "generic", admit: false };
+}
 
 // lib/memory-text-utils.mjs
-init_memory_extraction();
 var MEMORY_TOKEN_ALIASES = /* @__PURE__ */ new Map([
   ["\uC708\uB3C4\uC6B0", "windows"],
   ["\uD638\uD658\uC131", "compatibility"],
@@ -1068,8 +748,239 @@ function localDateStr(date = /* @__PURE__ */ new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-// lib/memory.mjs
-init_ko_date_parser();
+// lib/ko-date-parser.mjs
+function fmt(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function addDays(d, n) {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+function addMonths(d, n) {
+  const r = new Date(d);
+  r.setMonth(r.getMonth() + n);
+  return r;
+}
+function startOfWeek(d) {
+  const day = d.getDay();
+  const diff = (day + 6) % 7;
+  return addDays(d, -diff);
+}
+function lastDayOfMonth(year, month) {
+  const d = new Date(year, month + 1, 0);
+  return d.getDate();
+}
+var WEEKDAY_MAP = { "\uC77C": 0, "\uC6D4": 1, "\uD654": 2, "\uC218": 3, "\uBAA9": 4, "\uAE08": 5, "\uD1A0": 6 };
+var KO_PATTERNS = [
+  // Exact single-day (longer patterns first to prevent partial match)
+  { re: /오늘/, fn: (d) => ({ date: d, exact: true }) },
+  { re: /어제/, fn: (d) => ({ date: addDays(d, -1), exact: true }) },
+  { re: /엊그제|엊그저께/, fn: (d) => ({ start: addDays(d, -3), end: addDays(d, -2), exact: false }) },
+  { re: /그저께|그제/, fn: (d) => ({ date: addDays(d, -2), exact: true }) },
+  { re: /내일/, fn: (d) => ({ date: addDays(d, 1), exact: true }) },
+  { re: /모레/, fn: (d) => ({ date: addDays(d, 2), exact: true }) },
+  // N일/주/달/개월/년 전
+  { re: /(\d+)\s*일\s*전/, fn: (d, m) => ({ date: addDays(d, -parseInt(m[1])), exact: true }) },
+  { re: /(\d+)\s*주\s*전/, fn: (d, m) => {
+    const weeks = parseInt(m[1]);
+    return { start: addDays(d, -weeks * 7 - 6), end: addDays(d, -(weeks - 1) * 7), exact: false };
+  } },
+  { re: /(\d+)\s*(?:달|개월)\s*전/, fn: (d, m) => {
+    const n = parseInt(m[1]);
+    const s = addMonths(d, -n);
+    return { start: s, end: addDays(addMonths(d, -(n - 1)), -1), exact: false };
+  } },
+  { re: /(\d+)\s*년\s*전/, fn: (d, m) => {
+    const n = parseInt(m[1]);
+    const y = d.getFullYear() - n;
+    return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
+  } },
+  // 지난/이번/다음 주/달
+  { re: /지난\s*주/, fn: (d) => {
+    const thisMonday = startOfWeek(d);
+    return { start: addDays(thisMonday, -7), end: addDays(thisMonday, -1), exact: false };
+  } },
+  { re: /이번\s*주/, fn: (d) => {
+    const thisMonday = startOfWeek(d);
+    return { start: thisMonday, end: addDays(thisMonday, 6), exact: false };
+  } },
+  { re: /다음\s*주/, fn: (d) => {
+    const thisMonday = startOfWeek(d);
+    return { start: addDays(thisMonday, 7), end: addDays(thisMonday, 13), exact: false };
+  } },
+  { re: /지난\s*달/, fn: (d) => {
+    const prev = addMonths(d, -1);
+    const y = prev.getFullYear(), m = prev.getMonth();
+    return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
+  } },
+  { re: /이번\s*달/, fn: (d) => {
+    const y = d.getFullYear(), m = d.getMonth();
+    return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
+  } },
+  { re: /다음\s*달/, fn: (d) => {
+    const next = addMonths(d, 1);
+    const y = next.getFullYear(), m = next.getMonth();
+    return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
+  } },
+  // 작년/올해/내년
+  { re: /작년|지난\s*해/, fn: (d) => {
+    const y = d.getFullYear() - 1;
+    return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
+  } },
+  { re: /올해/, fn: (d) => {
+    const y = d.getFullYear();
+    return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
+  } },
+  { re: /내년/, fn: (d) => {
+    const y = d.getFullYear() + 1;
+    return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
+  } },
+  // 방금/아까/조금 전
+  { re: /방금|아까|조금\s*전/, fn: (d) => ({ date: d, exact: false }) },
+  // 최근/요즘
+  { re: /최근|요즘/, fn: (d) => ({ start: addDays(d, -3), end: d, exact: false }) },
+  // YYYY년 M월 D일
+  { re: /(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/, fn: (_d, m) => {
+    return { date: new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])), exact: true };
+  } },
+  // M월 D일 (current year)
+  { re: /(\d{1,2})월\s*(\d{1,2})일/, fn: (d, m) => {
+    return { date: new Date(d.getFullYear(), parseInt(m[1]) - 1, parseInt(m[2])), exact: true };
+  } },
+  // M월 (whole month, current year)
+  { re: /(\d{1,2})월/, fn: (d, m) => {
+    const mo = parseInt(m[1]) - 1;
+    const y = d.getFullYear();
+    return { start: new Date(y, mo, 1), end: new Date(y, mo, lastDayOfMonth(y, mo)), exact: false };
+  } },
+  // 지난 X요일
+  { re: /지난\s*([일월화수목금토])요일/, fn: (d, m) => {
+    const target = WEEKDAY_MAP[m[1]];
+    if (target == null) return null;
+    const current = d.getDay();
+    let diff = (current - target + 7) % 7 || 7;
+    return { date: addDays(d, -diff), exact: true };
+  } },
+  // 이번 X요일
+  { re: /이번\s*([일월화수목금토])요일/, fn: (d, m) => {
+    const target = WEEKDAY_MAP[m[1]];
+    if (target == null) return null;
+    const thisMonday = startOfWeek(d);
+    const targetOffset = (target + 6) % 7;
+    return { date: addDays(thisMonday, targetOffset), exact: true };
+  } },
+  // 다음 X요일
+  { re: /다음\s*([일월화수목금토])요일/, fn: (d, m) => {
+    const target = WEEKDAY_MAP[m[1]];
+    if (target == null) return null;
+    const thisMonday = startOfWeek(d);
+    const nextMonday = addDays(thisMonday, 7);
+    const targetOffset = (target + 6) % 7;
+    return { date: addDays(nextMonday, targetOffset), exact: true };
+  } }
+];
+var EN_PATTERNS = [
+  { re: /\btoday\b/i, fn: (d) => ({ date: d, exact: true }) },
+  { re: /\byesterday\b/i, fn: (d) => ({ date: addDays(d, -1), exact: true }) },
+  { re: /\btomorrow\b/i, fn: (d) => ({ date: addDays(d, 1), exact: true }) },
+  { re: /\b(?:two days ago|day before yesterday)\b/i, fn: (d) => ({ date: addDays(d, -2), exact: true }) },
+  { re: /\b(\d+)\s+days?\s+ago\b/i, fn: (d, m) => ({ date: addDays(d, -parseInt(m[1])), exact: true }) },
+  { re: /\b(\d+)\s+weeks?\s+ago\b/i, fn: (d, m) => {
+    const w = parseInt(m[1]);
+    return { start: addDays(d, -w * 7 - 6), end: addDays(d, -(w - 1) * 7), exact: false };
+  } },
+  { re: /\b(\d+)\s+months?\s+ago\b/i, fn: (d, m) => {
+    const n = parseInt(m[1]);
+    return { start: addMonths(d, -n), end: addDays(addMonths(d, -(n - 1)), -1), exact: false };
+  } },
+  { re: /\blast\s*week\b/i, fn: (d) => {
+    const thisMonday = startOfWeek(d);
+    return { start: addDays(thisMonday, -7), end: addDays(thisMonday, -1), exact: false };
+  } },
+  { re: /\bthis[-_\s]*week\b/i, fn: (d) => {
+    const thisMonday = startOfWeek(d);
+    return { start: thisMonday, end: addDays(thisMonday, 6), exact: false };
+  } },
+  { re: /\bnext\s*week\b/i, fn: (d) => {
+    const thisMonday = startOfWeek(d);
+    return { start: addDays(thisMonday, 7), end: addDays(thisMonday, 13), exact: false };
+  } },
+  { re: /\blast\s*month\b/i, fn: (d) => {
+    const prev = addMonths(d, -1);
+    const y = prev.getFullYear(), m = prev.getMonth();
+    return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
+  } },
+  { re: /\bthis\s*month\b/i, fn: (d) => {
+    const y = d.getFullYear(), m = d.getMonth();
+    return { start: new Date(y, m, 1), end: new Date(y, m, lastDayOfMonth(y, m)), exact: false };
+  } },
+  { re: /\blast\s*year\b/i, fn: (d) => {
+    const y = d.getFullYear() - 1;
+    return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
+  } },
+  { re: /\bthis\s*year\b/i, fn: (d) => {
+    const y = d.getFullYear();
+    return { start: new Date(y, 0, 1), end: new Date(y, 11, 31), exact: false };
+  } },
+  { re: /\brecently\b/i, fn: (d) => ({ start: addDays(d, -3), end: d, exact: false }) }
+];
+var NEUTRAL_PATTERNS = [
+  // YYYY-MM-DD or YYYY.MM.DD
+  { re: /(\d{4})[-.](\d{2})[-.](\d{2})/, fn: (_d, m) => {
+    return { date: new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])), exact: true };
+  } },
+  // YYYY-MM (whole month)
+  { re: /(\d{4})[-.](\d{2})(?![-.]\d)/, fn: (_d, m) => {
+    const y = parseInt(m[1]), mo = parseInt(m[2]) - 1;
+    if (mo < 0 || mo > 11) return null;
+    return { start: new Date(y, mo, 1), end: new Date(y, mo, lastDayOfMonth(y, mo)), exact: false };
+  } },
+  // M/D (current year)
+  { re: /\b(\d{1,2})\/(\d{1,2})\b/, fn: (d, m) => {
+    const mo = parseInt(m[1]) - 1, day = parseInt(m[2]);
+    if (mo < 0 || mo > 11 || day < 1 || day > 31) return null;
+    return { date: new Date(d.getFullYear(), mo, day), exact: true };
+  } }
+];
+var ALL_PATTERNS = [...KO_PATTERNS, ...EN_PATTERNS, ...NEUTRAL_PATTERNS];
+function resolveResult(matched, match) {
+  if (!matched) return null;
+  if (matched.date) {
+    const s = fmt(matched.date);
+    return { text: match[0], start: s, end: null, exact: matched.exact ?? true };
+  }
+  if (matched.start) {
+    return {
+      text: match[0],
+      start: fmt(matched.start),
+      end: fmt(matched.end ?? matched.start),
+      exact: matched.exact ?? false
+    };
+  }
+  return null;
+}
+function parseKoreanDate(text, refDate) {
+  const ref = refDate ? new Date(refDate) : /* @__PURE__ */ new Date();
+  for (const { re, fn } of ALL_PATTERNS) {
+    const match = text.match(re);
+    if (match) {
+      const result = fn(ref, match);
+      const resolved = resolveResult(result, match);
+      if (resolved) return resolved;
+    }
+  }
+  return null;
+}
+function parseTemporalHint(query) {
+  const parsed = parseKoreanDate(query);
+  if (!parsed) return null;
+  return {
+    start: parsed.start,
+    end: parsed.end ?? parsed.start,
+    exact: parsed.exact ?? true
+  };
+}
 
 // lib/reranker.mjs
 import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from "@huggingface/transformers";
@@ -1171,11 +1082,7 @@ async function rerank(query, items, topK) {
   return scored.sort((a, b) => Number(b.reranker_score) - Number(a.reranker_score)).slice(0, limit);
 }
 
-// lib/memory-recall-store.mjs
-init_memory_extraction();
-
 // lib/memory-vector-utils.mjs
-init_memory_extraction();
 import { createHash } from "crypto";
 function vecToHex(vector) {
   const hex = Buffer.from(new Float32Array(vector).buffer).toString("hex");
@@ -1248,9 +1155,6 @@ ${content}`);
   }
   return content;
 }
-
-// lib/memory-retrievers.mjs
-init_memory_query_plan();
 
 // lib/memory-tuning.mjs
 function isPlainObject(value) {
@@ -1638,7 +1542,6 @@ function getRecallShortcutRows(store2, kind = "all", limit = 5, options = {}) {
 }
 
 // lib/memory-maintenance-store.mjs
-init_memory_extraction();
 function getEpisodesSince(store2, timestamp) {
   const ts = typeof timestamp === "number" ? new Date(timestamp).toISOString() : String(timestamp);
   return store2.db.prepare(`
@@ -1679,15 +1582,6 @@ function getPendingCandidateDays(store2, limit = 7, minCount = 1) {
 }
 function getDecayRows(_store, _kind = "fact") {
   return [];
-}
-function markRowsDeprecated(_store, _kind = "fact", _ids = [], _seenAt = null) {
-  return 0;
-}
-function listDeprecatedIds(_store, _kind = "fact", _olderThan = "") {
-  return [];
-}
-function deleteRowsByIds(_store, _kind = "fact", _ids = []) {
-  return 0;
 }
 function resetEmbeddingIndex(store2, options = {}) {
   store2.clearVectorsStmt.run();
@@ -1871,10 +1765,8 @@ function markCandidatesConsolidated(store2, dayKey) {
 // lib/memory-context-builder.mjs
 import fs from "node:fs";
 import path from "node:path";
-init_memory_extraction();
 
 // lib/memory-context-utils.mjs
-init_memory_extraction();
 function buildHintKey(item, overrides = {}) {
   const type = overrides.type ?? item?.type ?? "episode";
   const rawText = String(overrides.text ?? item?.content ?? item?.text ?? item?.value ?? "").trim();
@@ -2066,7 +1958,6 @@ function shouldRunCycleCatchUp(kind, policy, state = {}) {
 }
 
 // lib/memory-context-builder.mjs
-init_ko_date_parser();
 function nextDateStr(value) {
   const date = /* @__PURE__ */ new Date(`${String(value).slice(0, 10)}T00:00:00`);
   if (Number.isNaN(date.getTime())) return "";
@@ -2980,15 +2871,14 @@ var MemoryStore = class {
         if (isTranscriptQuarantineContent(clean)) continue;
         const rawTs = parsed.timestamp ?? parsed.ts ?? null;
         const ts = rawTs ? toLocalTs(rawTs) : localNow();
-        const sessionId = parsed.sessionId ?? "";
-        const sourceRef = `transcript:${sessionId || resolve(transcriptPath)}:${index}:${role}`;
+        const sourceRef = `transcript:${resolve(transcriptPath)}:${index}:${role}`;
         const id = this.appendEpisode({
           ts,
           backend: "claude-session",
           channelId: null,
           userId: role === "user" ? "session:user" : "session:assistant",
           userName: role,
-          sessionId: sessionId || null,
+          sessionId: null,
           role,
           kind: "message",
           content: clean,
@@ -3049,15 +2939,6 @@ var MemoryStore = class {
   }
   getDecayRows(kind = "fact") {
     return getDecayRows(this, kind);
-  }
-  markRowsDeprecated(kind = "fact", ids = [], seenAt = null) {
-    return markRowsDeprecated(this, kind, ids, seenAt);
-  }
-  listDeprecatedIds(kind = "fact", olderThan = "") {
-    return listDeprecatedIds(this, kind, olderThan);
-  }
-  deleteRowsByIds(kind = "fact", ids = []) {
-    return deleteRowsByIds(this, kind, ids);
   }
   resetEmbeddingIndex(options = {}) {
     return resetEmbeddingIndex(this, options);
@@ -3650,10 +3531,22 @@ ${item.content}`);
       }
     }
     scored.sort((a, b) => b.weighted_score - a.weighted_score);
-    const maxClassifications = Math.min(limit, Math.max(2, Math.ceil(scored.length * 0.3)));
+    const semanticResults = scored.filter((item) => item.type === "chunk" || item.type === "classification");
+    const episodeResults = scored.filter((item) => item.type === "episode");
+    const fallbackThreshold = Math.ceil(limit / 2);
+    let merged;
+    if (semanticResults.length >= fallbackThreshold) {
+      const remaining = limit - semanticResults.length;
+      merged = [...semanticResults, ...episodeResults.slice(0, Math.max(0, remaining))];
+    } else {
+      const episodeSlots = limit - semanticResults.length;
+      merged = [...semanticResults, ...episodeResults.slice(0, episodeSlots)];
+    }
+    merged.sort((a, b) => b.weighted_score - a.weighted_score);
+    const maxClassifications = Math.min(limit, Math.max(2, Math.ceil(merged.length * 0.3)));
     let classCount = 0;
     const capped = [];
-    for (const item of scored) {
+    for (const item of merged) {
       if (item.type === "classification") {
         if (classCount < maxClassifications) {
           capped.push(item);
@@ -3667,7 +3560,7 @@ ${item.content}`);
     const overFetchN = tuning?.reranker?.overFetch ?? 15;
     const overFetchLimit = Math.max(limit, Math.min(limit + overFetchN, capped.length));
     let finalResults = applyMMR(capped.slice(0, overFetchLimit));
-    if (tuning.reranker?.enabled && finalResults.length >= 3) {
+    if (!options.skipReranker && tuning.reranker?.enabled && finalResults.length >= 3) {
       try {
         const reranked = await rerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit);
         if (reranked.length > 0) {
@@ -4000,7 +3893,6 @@ async function stopLlmWorker() {
 import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir2, tmpdir } from "os";
 import { join as join2 } from "path";
-init_memory_extraction();
 
 // lib/llm-provider.mjs
 import { execFile, spawn } from "child_process";
@@ -5397,24 +5289,47 @@ try {
   process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}
 `);
 }
-async function handleGrep(query, options) {
-  const { date, sort, offset, limit, context } = options;
-  const { parseTemporalHint: parseTemporalHint2 } = await Promise.resolve().then(() => (init_memory_query_plan(), memory_query_plan_exports));
-  const temporal = parseTemporalHint2(query);
-  let searchTemporal = temporal ? { start: temporal.start, end: temporal.end ?? temporal.start } : null;
-  if (!searchTemporal && date) {
-    searchTemporal = { start: date, end: date, exact: true };
+function parsePeriod(period, hasQuery) {
+  if (!period && hasQuery) period = "30d";
+  if (!period) return null;
+  if (period === "all") return null;
+  if (period === "last") return { mode: "last" };
+  const relMatch = period.match(/^(\d+)(h|d)$/);
+  if (relMatch) {
+    const n = parseInt(relMatch[1]);
+    const unit = relMatch[2];
+    const now = /* @__PURE__ */ new Date();
+    if (unit === "h") {
+      const start2 = new Date(now.getTime() - n * 36e5);
+      return { start: fmt2(start2), end: fmt2(now) };
+    }
+    const start = new Date(now);
+    start.setDate(start.getDate() - n);
+    return { start: fmt2(start), end: fmt2(now) };
   }
+  const rangeMatch = period.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/);
+  if (rangeMatch) return { start: rangeMatch[1], end: rangeMatch[2] };
+  const dateMatch = period.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (dateMatch) return { start: dateMatch[1], end: dateMatch[1], exact: true };
+  return null;
+}
+function fmt2(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+async function handleGrep(query, options) {
+  const { sort, offset, limit, temporal: searchTemporal } = options;
   const queryVector = await embedText(query);
+  const skipReranker = sort === "date";
   const results = await store.searchRelevantHybrid(query, limit * 2, {
     temporal: searchTemporal,
     recordRetrieval: true,
-    queryVector
+    queryVector,
+    skipReranker
   });
   const PRECISION_FLOOR = 0.65;
   const crossChecked = [];
   for (const r of results) {
-    if (r.type === "classification") {
+    if (r.type === "classification" || r.type === "chunk") {
       crossChecked.push(r);
       continue;
     }
@@ -5440,7 +5355,24 @@ async function handleGrep(query, options) {
     }
   }
   let items = crossChecked;
-  if (sort === "date") {
+  if (sort === "importance") {
+    const { computeImportanceScore: computeImportanceScore2 } = await Promise.resolve().then(() => (init_memory_score_utils(), memory_score_utils_exports));
+    for (const item of items) {
+      if (item.type === "chunk" && item.chunk_episode_id && !item.confidence) {
+        try {
+          const cls = store.db.prepare(
+            `SELECT confidence, retrieval_count FROM classifications WHERE episode_id = ? AND status = 'active' ORDER BY confidence DESC LIMIT 1`
+          ).get(item.chunk_episode_id);
+          if (cls) {
+            item.confidence = cls.confidence;
+            item.retrieval_count = cls.retrieval_count;
+          }
+        } catch {
+        }
+      }
+    }
+    items.sort((a, b) => computeImportanceScore2(b) - computeImportanceScore2(a));
+  } else if (sort === "date") {
     items.sort((a, b) => {
       const tsA = a.source_ts || a.updated_at || "";
       const tsB = b.source_ts || b.updated_at || "";
@@ -5453,6 +5385,13 @@ async function handleGrep(query, options) {
   const NEIGHBORS_PER_HIT = 3;
   const hitIds = new Set(items.filter((i) => i.type === "episode").map((i) => Number(i.entity_id)));
   const lines = [];
+  for (const item of items) {
+    if (item.type === "chunk") {
+      const ts = String(item.source_ts || item.updated_at || "").slice(0, 16);
+      const topic = item.classification_topic ? ` [${item.classification_topic}]` : "";
+      lines.push(`[${ts}]${topic} ${String(item.content || "").slice(0, 200)}`);
+    }
+  }
   for (const item of items) {
     if (item.type === "classification") {
       const ts = String(item.source_ts || item.updated_at || "").slice(0, 16);
@@ -5545,38 +5484,58 @@ async function handleGrep(query, options) {
   return { text: lines.join("\n") || "(no results)" };
 }
 async function handleRead(options) {
-  const { session, date, offset, limit, sort } = options;
+  const { offset, limit, sort, temporal } = options;
   let whereClause = "kind IN ('message', 'turn')";
   const params = [];
-  if (session === "last" || session === "current") {
-    const recentSessions = store.db.prepare(`
-      SELECT DISTINCT substr(source_ref, 12, instr(substr(source_ref, 12), ':') - 1) AS session_id,
-             MAX(ts) AS last_ts
-      FROM episodes
-      WHERE source_ref LIKE 'transcript:%'
-      GROUP BY session_id
-      ORDER BY last_ts DESC
-      LIMIT 2
-    `).all();
-    const targetSession = session === "last" ? recentSessions[1]?.session_id : recentSessions[0]?.session_id;
-    if (targetSession) {
-      whereClause += " AND source_ref LIKE ?";
-      params.push(`transcript:${targetSession}:%`);
+  if (temporal?.mode === "last") {
+  } else if (temporal?.start) {
+    if (temporal.end && temporal.end !== temporal.start) {
+      whereClause += " AND ts >= ? AND ts < date(?, '+1 day')";
+      params.push(temporal.start, temporal.end);
+    } else {
+      whereClause += " AND ts >= ? AND ts < date(?, '+1 day')";
+      params.push(temporal.start, temporal.start);
     }
-  } else if (session) {
-    whereClause += " AND source_ref LIKE ?";
-    params.push(`transcript:${session}:%`);
   }
-  if (date) {
-    whereClause += " AND ts >= ? AND ts < date(?, '+1 day')";
-    params.push(date, date);
+  if (sort === "importance") {
+    const halfLimit = Math.ceil(limit / 2);
+    let classWhereDate = "";
+    const classParams = [];
+    if (temporal?.start && temporal.mode !== "last") {
+      classWhereDate = " AND day_key >= ? AND day_key <= ?";
+      classParams.push(temporal.start, temporal.end ?? temporal.start);
+    }
+    const classifications = store.db.prepare(`
+      SELECT 'classification' AS type, classification AS subtype,
+             trim(classification || ' | ' || topic || ' | ' || element || CASE WHEN state IS NOT NULL AND state != '' THEN ' | ' || state ELSE '' END) AS content,
+             confidence, retrieval_count, updated_at
+      FROM classifications
+      WHERE status = 'active'${classWhereDate}
+      ORDER BY (CAST(confidence AS REAL) + CAST(COALESCE(retrieval_count, 0) AS REAL) * 0.1) DESC
+      LIMIT ? OFFSET ?
+    `).all(...classParams, halfLimit, offset);
+    const episodeLimit = Math.max(1, limit - classifications.length);
+    const episodes2 = store.db.prepare(`
+      SELECT ts, role, content FROM episodes
+      WHERE ${whereClause}
+      ORDER BY ts DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, episodeLimit, offset);
+    const lines2 = [];
+    for (const c of classifications) {
+      const ts = String(c.updated_at || "").slice(0, 10);
+      lines2.push(`[${ts}] ${String(c.content || "").slice(0, 200)}`);
+    }
+    for (const ep of episodes2) {
+      const prefix = ep.role === "user" ? "u" : "a";
+      lines2.push(`[${String(ep.ts || "").slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 200)}`);
+    }
+    return { text: lines2.join("\n") || "(no results found)" };
   }
-  const isSessionMode = Boolean(session);
-  const orderDir = sort === "asc" ? "ASC" : sort === "date" || isSessionMode ? "DESC" : "ASC";
   const episodes = store.db.prepare(`
     SELECT ts, role, content FROM episodes
     WHERE ${whereClause}
-    ORDER BY ts ${orderDir}, id ${orderDir}
+    ORDER BY ts DESC, id DESC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset);
   const lines = episodes.map((ep) => {
@@ -5584,22 +5543,6 @@ async function handleRead(options) {
     return `[${String(ep.ts || "").slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 200)}`;
   });
   return { text: lines.join("\n") || "(no episodes found)" };
-}
-async function handleGlob(options) {
-  const { date, offset, limit } = options;
-  const likePattern = date.replace(/\*/g, "%");
-  const days = store.db.prepare(`
-    SELECT substr(ts, 1, 10) AS day, COUNT(*) AS episodes,
-           MIN(ts) AS first_ts, MAX(ts) AS last_ts
-    FROM episodes
-    WHERE kind IN ('message', 'turn')
-      AND substr(ts, 1, 10) LIKE ?
-    GROUP BY day
-    ORDER BY day DESC
-    LIMIT ? OFFSET ?
-  `).all(likePattern, limit, offset);
-  const lines = days.map((d) => `${d.day}: ${d.episodes} episodes (${String(d.first_ts).slice(11, 16)}~${String(d.last_ts).slice(11, 16)})`);
-  return { text: lines.join("\n") || "(no matching dates)" };
 }
 function handleTagQuery(tag, limit = 20) {
   const rows = store.db.prepare(`
@@ -5645,16 +5588,12 @@ function handleStats() {
   ];
   return { text: lines.join("\n") };
 }
-async function handleRecallSingle(args) {
+async function handleRecall(args) {
   const query = String(args.query ?? "").trim();
-  const session = String(args.session ?? "").trim();
-  const date = String(args.date ?? "").trim();
-  const sort = String(args.sort ?? "relevance");
+  const period = String(args.period ?? "").trim() || void 0;
+  const explicitSort = args.sort != null ? String(args.sort) : null;
   const offset = Math.max(0, Number(args.offset ?? 0));
-  const hasExplicitLimit = args.limit != null;
-  const defaultLimit = session && !hasExplicitLimit ? 20 : 10;
-  const limit = Math.max(1, Number(args.limit ?? defaultLimit));
-  const contextLines = Math.max(0, Number(args.context ?? 0));
+  const limit = Math.max(1, Number(args.limit ?? 20));
   if (query === "stats") return handleStats();
   if (query === "rules") return handleTagQuery("rule", limit);
   if (query === "decisions") return handleTagQuery("decision", limit);
@@ -5662,27 +5601,13 @@ async function handleRecallSingle(args) {
   if (query === "preferences") return handleTagQuery("preference", limit);
   if (query === "incidents") return handleTagQuery("incident", limit);
   if (query === "directives") return handleTagQuery("directive", limit);
-  if (query && !session) {
-    return handleGrep(query, { date, sort, offset, limit, context: contextLines });
+  const temporal = parsePeriod(period, Boolean(query));
+  const sort = explicitSort ?? (temporal?.mode === "last" ? "date" : "importance");
+  if (query) {
+    const searchTemporal = temporal ? temporal.mode === "last" ? null : { start: temporal.start, end: temporal.end, exact: temporal.exact } : null;
+    return handleGrep(query, { sort, offset, limit, temporal: searchTemporal });
   }
-  if (session || date && !date.includes("*") && !query) {
-    return handleRead({ session, date, offset, limit, sort });
-  }
-  if (date && date.includes("*")) {
-    return handleGlob({ date, offset, limit });
-  }
-  return handleRead({ session: "last", date: "", offset, limit, sort });
-}
-async function handleRecall(args) {
-  if (Array.isArray(args.queries) && args.queries.length > 0) {
-    const results = [];
-    for (const q of args.queries) {
-      const result = await handleRecallSingle(q);
-      results.push(result.text);
-    }
-    return { text: results.join("\n\n---\n\n") };
-  }
-  return handleRecallSingle(args);
+  return handleRead({ offset, limit, sort, temporal: temporal ?? { mode: "last" } });
 }
 async function handleCycle(args) {
   const action = String(args.action ?? "");
@@ -5763,15 +5688,9 @@ async function handleCycle(args) {
   }
   return { text: `unknown memory action: ${action}`, isError: true };
 }
-var MEMORY_INSTRUCTIONS = [
-  "Tools: `search_memories`(queries[]), `memory_cycle`(action: sleep|flush|rebuild|prune|cycle1|status).",
-  "Recall on demand: use `search_memories` when prior work context is needed. Use `queries` array for batch lookups.",
-  "Storage is automatic. Never write to MEMORY.md or memory/ folder. Never use sqlite/SQL directly.",
-  "Trust current code over recalled memory if they conflict.",
-  "Weave recalled context naturally into conversation \u2014 recall like remembering, not querying."
-].join("\n");
+var MEMORY_INSTRUCTIONS = "Recall naturally, like remembering \u2014 use search_memories() to recall.";
 var mcp = new Server(
-  { name: "trib-memory", version: "0.0.5" },
+  { name: "trib-memory", version: "0.0.15" },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS }
 );
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -5796,18 +5715,15 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "search_memories",
       title: "Search Memories",
       annotations: { title: "Search Memories", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: 'Search and retrieve memory. Auto-routes by params: query\u2192search, session\u2192read, date+wildcard\u2192list, query="stats"\u2192status, query="rules"\u2192tag browse.',
+      description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Search text. Triggers hybrid search (grep mode)." },
-          session: { type: "string", description: '"last", "current", or session UUID. Triggers session read mode.' },
-          date: { type: "string", description: 'Date "2026-04-02" for read, or "2026-04-*" for listing (glob mode).' },
-          sort: { type: "string", enum: ["relevance", "date", "asc"], default: "relevance", description: 'Sort order. Session mode defaults to newest first (DESC). Use "asc" to override to oldest first.' },
-          offset: { type: "number", default: 0, description: "Skip N results." },
-          limit: { type: "number", default: 10, description: "Max results to return. Default 10 for search, 20 for session mode." },
-          context: { type: "number", default: 0, description: "Surrounding episodes count (grep mode, like grep -C)." },
-          queries: { type: "array", description: "Batch: array of query objects. Each has same params (query, session, date, sort, offset, limit, context).", items: { type: "object", properties: { query: { type: "string" }, session: { type: "string" }, date: { type: "string" }, sort: { type: "string" }, offset: { type: "number" }, limit: { type: "number" }, context: { type: "number" } } } }
+          query: { type: "string", description: "Search text. Triggers semantic hybrid search." },
+          period: { type: "string", description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
+          sort: { type: "string", enum: ["date", "importance"], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
+          limit: { type: "number", default: 20, description: "Max results to return." },
+          offset: { type: "number", default: 0, description: "Skip N results for pagination." }
         },
         required: []
       }

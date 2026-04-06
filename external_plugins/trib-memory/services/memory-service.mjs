@@ -316,30 +316,59 @@ try {
 //  SHARED HELPERS (used by both MCP and HTTP)
 // ══════════════════════════════════════════════════════════════════════
 
-// ── Recall handler (grep/read/glob modes) ───────────────────────────
+// ── Period parser ────────────────────────────────────────────────────
+
+function parsePeriod(period, hasQuery) {
+  if (!period && hasQuery) period = '30d'
+  if (!period) return null
+  if (period === 'all') return null
+  if (period === 'last') return { mode: 'last' }
+  // Relative: 24h, 3d, 7d, 30d
+  const relMatch = period.match(/^(\d+)(h|d)$/)
+  if (relMatch) {
+    const n = parseInt(relMatch[1])
+    const unit = relMatch[2]
+    const now = new Date()
+    if (unit === 'h') {
+      const start = new Date(now.getTime() - n * 3600_000)
+      return { start: fmt(start), end: fmt(now) }
+    }
+    const start = new Date(now)
+    start.setDate(start.getDate() - n)
+    return { start: fmt(start), end: fmt(now) }
+  }
+  // Date range: 2026-04-01~2026-04-05
+  const rangeMatch = period.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/)
+  if (rangeMatch) return { start: rangeMatch[1], end: rangeMatch[2] }
+  // Single date: 2026-04-05
+  const dateMatch = period.match(/^(\d{4}-\d{2}-\d{2})$/)
+  if (dateMatch) return { start: dateMatch[1], end: dateMatch[1], exact: true }
+  return null
+}
+
+function fmt(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// ── Recall handler ──────────────────────────────────────────────────
 
 async function handleGrep(query, options) {
-  const { date, sort, offset, limit, context } = options
-
-  const { parseTemporalHint } = await import('../lib/memory-query-plan.mjs')
-  const temporal = parseTemporalHint(query)
-  let searchTemporal = temporal ? { start: temporal.start, end: temporal.end ?? temporal.start } : null
-  if (!searchTemporal && date) {
-    searchTemporal = { start: date, end: date, exact: true }
-  }
+  const { sort, offset, limit, temporal: searchTemporal } = options
 
   const queryVector = await embedText(query)
+  const skipReranker = sort === 'date'
   const results = await store.searchRelevantHybrid(query, limit * 2, {
     temporal: searchTemporal,
     recordRetrieval: true,
     queryVector,
+    skipReranker,
   })
 
   // Cross-check: drop episode results with low cosine similarity to query
   const PRECISION_FLOOR = 0.65
   const crossChecked = []
   for (const r of results) {
-    if (r.type === 'classification') { crossChecked.push(r); continue }
+    if (r.type === 'classification' || r.type === 'chunk') { crossChecked.push(r); continue }
     if (r.type !== 'episode' || !queryVector?.length) { crossChecked.push(r); continue }
     try {
       let epVec = null
@@ -358,7 +387,24 @@ async function handleGrep(query, options) {
   }
   let items = crossChecked
 
-  if (sort === 'date') {
+  if (sort === 'importance') {
+    const { computeImportanceScore } = await import('../lib/memory-score-utils.mjs')
+    // For chunks, inherit importance from linked classification
+    for (const item of items) {
+      if (item.type === 'chunk' && item.chunk_episode_id && !item.confidence) {
+        try {
+          const cls = store.db.prepare(
+            `SELECT confidence, retrieval_count FROM classifications WHERE episode_id = ? AND status = 'active' ORDER BY confidence DESC LIMIT 1`
+          ).get(item.chunk_episode_id)
+          if (cls) {
+            item.confidence = cls.confidence
+            item.retrieval_count = cls.retrieval_count
+          }
+        } catch {}
+      }
+    }
+    items.sort((a, b) => computeImportanceScore(b) - computeImportanceScore(a))
+  } else if (sort === 'date') {
     items.sort((a, b) => {
       const tsA = a.source_ts || a.updated_at || ''
       const tsB = b.source_ts || b.updated_at || ''
@@ -376,7 +422,16 @@ async function handleGrep(query, options) {
 
   const lines = []
 
-  // Classification results first (no chunking)
+  // Chunk results first (highest quality semantic segments)
+  for (const item of items) {
+    if (item.type === 'chunk') {
+      const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
+      const topic = item.classification_topic ? ` [${item.classification_topic}]` : ''
+      lines.push(`[${ts}]${topic} ${String(item.content || '').slice(0, 200)}`)
+    }
+  }
+
+  // Classification results (no chunking)
   for (const item of items) {
     if (item.type === 'classification') {
       const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
@@ -469,7 +524,7 @@ async function handleGrep(query, options) {
     }
   }
 
-  // Fallback: if no chunks built, show flat results
+  // Fallback: if no results rendered yet, show flat results
   if (hitIds.size === 0 && lines.length === 0) {
     for (const item of items) {
       const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
@@ -481,47 +536,67 @@ async function handleGrep(query, options) {
 }
 
 async function handleRead(options) {
-  const { session, date, offset, limit, sort } = options
+  const { offset, limit, sort, temporal } = options
 
   let whereClause = "kind IN ('message', 'turn')"
   const params = []
 
-  if (session === 'last' || session === 'current') {
-    const recentSessions = store.db.prepare(`
-      SELECT DISTINCT substr(source_ref, 12, instr(substr(source_ref, 12), ':') - 1) AS session_id,
-             MAX(ts) AS last_ts
-      FROM episodes
-      WHERE source_ref LIKE 'transcript:%'
-      GROUP BY session_id
-      ORDER BY last_ts DESC
-      LIMIT 2
-    `).all()
-
-    const targetSession = session === 'last'
-      ? recentSessions[1]?.session_id
-      : recentSessions[0]?.session_id
-
-    if (targetSession) {
-      whereClause += " AND source_ref LIKE ?"
-      params.push(`transcript:${targetSession}:%`)
+  if (temporal?.mode === 'last') {
+    // No additional filter — just use ORDER BY ts DESC LIMIT below
+  } else if (temporal?.start) {
+    if (temporal.end && temporal.end !== temporal.start) {
+      whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
+      params.push(temporal.start, temporal.end)
+    } else {
+      whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
+      params.push(temporal.start, temporal.start)
     }
-  } else if (session) {
-    whereClause += " AND source_ref LIKE ?"
-    params.push(`transcript:${session}:%`)
   }
 
-  if (date) {
-    whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
-    params.push(date, date)
+  if (sort === 'importance') {
+    // Importance mode: mix classifications (by confidence) + episodes (by recency)
+    const halfLimit = Math.ceil(limit / 2)
+    let classWhereDate = ''
+    const classParams = []
+    if (temporal?.start && temporal.mode !== 'last') {
+      classWhereDate = ' AND day_key >= ? AND day_key <= ?'
+      classParams.push(temporal.start, temporal.end ?? temporal.start)
+    }
+    const classifications = store.db.prepare(`
+      SELECT 'classification' AS type, classification AS subtype,
+             trim(classification || ' | ' || topic || ' | ' || element || CASE WHEN state IS NOT NULL AND state != '' THEN ' | ' || state ELSE '' END) AS content,
+             confidence, retrieval_count, updated_at
+      FROM classifications
+      WHERE status = 'active'${classWhereDate}
+      ORDER BY (CAST(confidence AS REAL) + CAST(COALESCE(retrieval_count, 0) AS REAL) * 0.1) DESC
+      LIMIT ? OFFSET ?
+    `).all(...classParams, halfLimit, offset)
+
+    const episodeLimit = Math.max(1, limit - classifications.length)
+    const episodes = store.db.prepare(`
+      SELECT ts, role, content FROM episodes
+      WHERE ${whereClause}
+      ORDER BY ts DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, episodeLimit, offset)
+
+    const lines = []
+    for (const c of classifications) {
+      const ts = String(c.updated_at || '').slice(0, 10)
+      lines.push(`[${ts}] ${String(c.content || '').slice(0, 200)}`)
+    }
+    for (const ep of episodes) {
+      const prefix = ep.role === 'user' ? 'u' : 'a'
+      lines.push(`[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 200)}`)
+    }
+    return { text: lines.join('\n') || '(no results found)' }
   }
 
-  // Session mode defaults to DESC (newest first); explicit sort overrides
-  const isSessionMode = Boolean(session)
-  const orderDir = sort === 'asc' ? 'ASC' : sort === 'date' || isSessionMode ? 'DESC' : 'ASC'
+  // Date mode: newest first
   const episodes = store.db.prepare(`
     SELECT ts, role, content FROM episodes
     WHERE ${whereClause}
-    ORDER BY ts ${orderDir}, id ${orderDir}
+    ORDER BY ts DESC, id DESC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset)
 
@@ -531,26 +606,6 @@ async function handleRead(options) {
   })
 
   return { text: lines.join('\n') || '(no episodes found)' }
-}
-
-async function handleGlob(options) {
-  const { date, offset, limit } = options
-  const likePattern = date.replace(/\*/g, '%')
-
-  const days = store.db.prepare(`
-    SELECT substr(ts, 1, 10) AS day, COUNT(*) AS episodes,
-           MIN(ts) AS first_ts, MAX(ts) AS last_ts
-    FROM episodes
-    WHERE kind IN ('message', 'turn')
-      AND substr(ts, 1, 10) LIKE ?
-    GROUP BY day
-    ORDER BY day DESC
-    LIMIT ? OFFSET ?
-  `).all(likePattern, limit, offset)
-
-  const lines = days.map(d => `${d.day}: ${d.episodes} episodes (${String(d.first_ts).slice(11,16)}~${String(d.last_ts).slice(11,16)})`)
-
-  return { text: lines.join('\n') || '(no matching dates)' }
 }
 
 function handleTagQuery(tag, limit = 20) {
@@ -597,16 +652,12 @@ function handleStats() {
   return { text: lines.join('\n') }
 }
 
-async function handleRecallSingle(args) {
+async function handleRecall(args) {
   const query = String(args.query ?? '').trim()
-  const session = String(args.session ?? '').trim()
-  const date = String(args.date ?? '').trim()
-  const sort = String(args.sort ?? 'relevance')
+  const period = String(args.period ?? '').trim() || undefined
+  const explicitSort = args.sort != null ? String(args.sort) : null
   const offset = Math.max(0, Number(args.offset ?? 0))
-  const hasExplicitLimit = args.limit != null
-  const defaultLimit = (session && !hasExplicitLimit) ? 20 : 10
-  const limit = Math.max(1, Number(args.limit ?? defaultLimit))
-  const contextLines = Math.max(0, Number(args.context ?? 0))
+  const limit = Math.max(1, Number(args.limit ?? 20))
 
   // Shortcut queries
   if (query === 'stats') return handleStats()
@@ -616,28 +667,22 @@ async function handleRecallSingle(args) {
   if (query === 'preferences') return handleTagQuery('preference', limit)
   if (query === 'incidents') return handleTagQuery('incident', limit)
   if (query === 'directives') return handleTagQuery('directive', limit)
-  if (query && !session) {
-    return handleGrep(query, { date, sort, offset, limit, context: contextLines })
-  }
-  if (session || (date && !date.includes('*') && !query)) {
-    return handleRead({ session, date, offset, limit, sort })
-  }
-  if (date && date.includes('*')) {
-    return handleGlob({ date, offset, limit })
-  }
-  return handleRead({ session: 'last', date: '', offset, limit, sort })
-}
 
-async function handleRecall(args) {
-  if (Array.isArray(args.queries) && args.queries.length > 0) {
-    const results = []
-    for (const q of args.queries) {
-      const result = await handleRecallSingle(q)
-      results.push(result.text)
-    }
-    return { text: results.join('\n\n---\n\n') }
+  const temporal = parsePeriod(period, Boolean(query))
+
+  // Default sort: "date" when period="last", "importance" otherwise
+  const sort = explicitSort ?? (temporal?.mode === 'last' ? 'date' : 'importance')
+
+  if (query) {
+    // Semantic search mode (handleGrep)
+    const searchTemporal = temporal
+      ? (temporal.mode === 'last' ? null : { start: temporal.start, end: temporal.end, exact: temporal.exact })
+      : null
+    return handleGrep(query, { sort, offset, limit, temporal: searchTemporal })
   }
-  return handleRecallSingle(args)
+
+  // Browse mode (handleRead) — no query
+  return handleRead({ offset, limit, sort, temporal: temporal ?? { mode: 'last' } })
 }
 
 // ── Cycle handler ────────────────────────────────────────────────────
@@ -730,16 +775,10 @@ async function handleCycle(args) {
 //  MCP SERVER (stdio transport — Claude Code tools)
 // ══════════════════════════════════════════════════════════════════════
 
-const MEMORY_INSTRUCTIONS = [
-  'Tools: `search_memories`(queries[]), `memory_cycle`(action: sleep|flush|rebuild|prune|cycle1|status).',
-  'Recall on demand: use `search_memories` when prior work context is needed. Use `queries` array for batch lookups.',
-  'Storage is automatic. Never write to MEMORY.md or memory/ folder. Never use sqlite/SQL directly.',
-  'Trust current code over recalled memory if they conflict.',
-  'Weave recalled context naturally into conversation — recall like remembering, not querying.',
-].join('\n')
+const MEMORY_INSTRUCTIONS = 'Recall naturally, like remembering — use search_memories() to recall.'
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.5' },
+  { name: 'trib-memory', version: '0.0.15' },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 
@@ -767,18 +806,15 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'search_memories',
       title: 'Search Memories',
       annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: 'Search and retrieve memory. Auto-routes by params: query→search, session→read, date+wildcard→list, query="stats"→status, query="rules"→tag browse.',
+      description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search text. Triggers hybrid search (grep mode).' },
-          session: { type: 'string', description: '"last", "current", or session UUID. Triggers session read mode.' },
-          date: { type: 'string', description: 'Date "2026-04-02" for read, or "2026-04-*" for listing (glob mode).' },
-          sort: { type: 'string', enum: ['relevance', 'date', 'asc'], default: 'relevance', description: 'Sort order. Session mode defaults to newest first (DESC). Use "asc" to override to oldest first.' },
-          offset: { type: 'number', default: 0, description: 'Skip N results.' },
-          limit: { type: 'number', default: 10, description: 'Max results to return. Default 10 for search, 20 for session mode.' },
-          context: { type: 'number', default: 0, description: 'Surrounding episodes count (grep mode, like grep -C).' },
-          queries: { type: 'array', description: 'Batch: array of query objects. Each has same params (query, session, date, sort, offset, limit, context).', items: { type: 'object', properties: { query: { type: 'string' }, session: { type: 'string' }, date: { type: 'string' }, sort: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, context: { type: 'number' } } } },
+          query: { type: 'string', description: 'Search text. Triggers semantic hybrid search.' },
+          period: { type: 'string', description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
+          sort: { type: 'string', enum: ['date', 'importance'], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
+          limit: { type: 'number', default: 20, description: 'Max results to return.' },
+          offset: { type: 'number', default: 0, description: 'Skip N results for pagination.' },
         },
         required: [],
       },

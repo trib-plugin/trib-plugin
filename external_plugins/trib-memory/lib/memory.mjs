@@ -41,16 +41,13 @@ import {
 import {
   countEpisodes as countEpisodesImpl,
   countPendingCandidates as countPendingCandidatesImpl,
-  deleteRowsByIds as deleteRowsByIdsImpl,
   getCandidatesForDate as getCandidatesForDateImpl,
   getDecayRows as getDecayRowsImpl,
   getEpisodesSince as getEpisodesSinceImpl,
   getPendingCandidateDays as getPendingCandidateDaysImpl,
   getRecentCandidateDays as getRecentCandidateDaysImpl,
-  listDeprecatedIds as listDeprecatedIdsImpl,
   markCandidateIdsConsolidated as markCandidateIdsConsolidatedImpl,
   markCandidatesConsolidated as markCandidatesConsolidatedImpl,
-  markRowsDeprecated as markRowsDeprecatedImpl,
   pruneConsolidatedMemoryOutsideDays as pruneConsolidatedMemoryOutsideDaysImpl,
   rebuildCandidates as rebuildCandidatesImpl,
   resetConsolidatedMemory as resetConsolidatedMemoryImpl,
@@ -782,15 +779,14 @@ export class MemoryStore {
         if (isTranscriptQuarantineContent(clean)) continue
         const rawTs = parsed.timestamp ?? parsed.ts ?? null
         const ts = rawTs ? toLocalTs(rawTs) : localNow()
-        const sessionId = parsed.sessionId ?? ''
-        const sourceRef = `transcript:${sessionId || resolve(transcriptPath)}:${index}:${role}`
+        const sourceRef = `transcript:${resolve(transcriptPath)}:${index}:${role}`
         const id = this.appendEpisode({
           ts,
           backend: 'claude-session',
           channelId: null,
           userId: role === 'user' ? 'session:user' : 'session:assistant',
           userName: role,
-          sessionId: sessionId || null,
+          sessionId: null,
           role,
           kind: 'message',
           content: clean,
@@ -861,18 +857,6 @@ export class MemoryStore {
 
   getDecayRows(kind = 'fact') {
     return getDecayRowsImpl(this, kind)
-  }
-
-  markRowsDeprecated(kind = 'fact', ids = [], seenAt = null) {
-    return markRowsDeprecatedImpl(this, kind, ids, seenAt)
-  }
-
-  listDeprecatedIds(kind = 'fact', olderThan = '') {
-    return listDeprecatedIdsImpl(this, kind, olderThan)
-  }
-
-  deleteRowsByIds(kind = 'fact', ids = []) {
-    return deleteRowsByIdsImpl(this, kind, ids)
   }
 
   resetEmbeddingIndex(options = {}) {
@@ -1102,7 +1086,7 @@ export class MemoryStore {
       }
     }
 
-    // FTS 누락분 보충
+    // Backfill missing FTS entries
     const missingFts = this.db.prepare(`
       SELECT mc.id, mc.content, mc.topic FROM memory_chunks mc
       WHERE mc.id NOT IN (SELECT rowid FROM memory_chunks_fts)
@@ -1123,7 +1107,7 @@ export class MemoryStore {
       const serverStartedAt = options.serverStartedAt
       let lines = []
 
-      // 1차: chunk 기반 (최근 10개)
+      // Primary: chunk-based (latest 10)
       const timeFilter = serverStartedAt ? 'AND e.ts < ?' : ''
       const timeParams = serverStartedAt ? [serverStartedAt] : []
       const chunkRows = this.db.prepare(`
@@ -1142,7 +1126,7 @@ export class MemoryStore {
           return `- ${prefix}${r.content}`
         })
       } else {
-        // fallback: 기존 episode 기반 (chunk가 없을 때)
+        // Fallback: episode-based (when no chunks available)
         const episodeSql = `
           SELECT role, content FROM episodes
           WHERE kind = 'message'
@@ -1425,7 +1409,7 @@ export class MemoryStore {
     const clean = cleanMemoryText(query)
     if (!clean) return []
 
-    // ── Temporal parsing: "어제", "3월 30일", "지난주" → date range ──
+    // ── Temporal parsing: "yesterday", "March 30", "last week" → date range ──
     const temporal = options.temporal ?? (() => {
       const hint = parseTemporalHint(clean)
       if (!hint) return null
@@ -1454,7 +1438,7 @@ export class MemoryStore {
     }
     let dense = await this.searchRelevantDense(clean, limit * 3, queryVector, null, {})
 
-    // temporal 필터: 날짜 범위가 있으면 해당 범위 + 범위 밖 결과 섞어서 범위 내 우선
+    // Temporal filter: prioritize in-range results, mix with out-of-range
     if (temporal?.start) {
       const inRange = (ts) => {
         if (!ts) return false
@@ -1488,7 +1472,7 @@ export class MemoryStore {
     for (const item of [...sparse, ...dense]) {
       const key = `${item.type}:${item.entity_id}`
       if (seen.has(key)) {
-        // dense 항목이 vector_json을 갖고 있으면 보존
+        // Preserve vector_json from dense items if present
         if (item.vector_json && !seen.get(key).vector_json) {
           seen.get(key).vector_json = item.vector_json
         }
@@ -1528,11 +1512,30 @@ export class MemoryStore {
 
     scored.sort((a, b) => b.weighted_score - a.weighted_score)
 
-    // ── Stage 3: cap classifications, fill with episodes ──
-    const maxClassifications = Math.min(limit, Math.max(2, Math.ceil(scored.length * 0.3)))
+    // ── Stage 3: smart fallback — semantic (chunks + classifications) first, episodes as fallback ──
+    const semanticResults = scored.filter(item => item.type === 'chunk' || item.type === 'classification')
+    const episodeResults = scored.filter(item => item.type === 'episode')
+    const fallbackThreshold = Math.ceil(limit / 2)
+
+    let merged
+    if (semanticResults.length >= fallbackThreshold) {
+      // Enough semantic results — use them, fill remaining with episodes
+      const remaining = limit - semanticResults.length
+      merged = [...semanticResults, ...episodeResults.slice(0, Math.max(0, remaining))]
+    } else {
+      // Not enough semantic results — fallback: fill with episodes
+      const episodeSlots = limit - semanticResults.length
+      merged = [...semanticResults, ...episodeResults.slice(0, episodeSlots)]
+    }
+
+    // Re-sort merged results by weighted_score (type boost already applied in computeFinalScore)
+    merged.sort((a, b) => b.weighted_score - a.weighted_score)
+
+    // Cap classifications within merged set
+    const maxClassifications = Math.min(limit, Math.max(2, Math.ceil(merged.length * 0.3)))
     let classCount = 0
     const capped = []
-    for (const item of scored) {
+    for (const item of merged) {
       if (item.type === 'classification') {
         if (classCount < maxClassifications) {
           capped.push(item)
@@ -1542,14 +1545,15 @@ export class MemoryStore {
         capped.push(item)
       }
     }
+
     // overFetch: pull extra candidates through MMR so reranker can promote buried hits
     const tuning = options.tuning ?? this.getRetrievalTuning()
     const overFetchN = tuning?.reranker?.overFetch ?? 15
     const overFetchLimit = Math.max(limit, Math.min(limit + overFetchN, capped.length))
     let finalResults = applyMMR(capped.slice(0, overFetchLimit))
 
-    // ── Stage 4: rerank with cross-encoder ──
-    if (tuning.reranker?.enabled && finalResults.length >= 3) {
+    // ── Stage 4: rerank with cross-encoder (skipped when sort=date) ──
+    if (!options.skipReranker && tuning.reranker?.enabled && finalResults.length >= 3) {
       try {
         const reranked = await jsRerank(clean, finalResults.slice(0, overFetchLimit), overFetchLimit)
         if (reranked.length > 0) {

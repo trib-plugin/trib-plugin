@@ -50,18 +50,6 @@ export function getDecayRows(_store, _kind = 'fact') {
   return []
 }
 
-export function markRowsDeprecated(_store, _kind = 'fact', _ids = [], _seenAt = null) {
-  return 0
-}
-
-export function listDeprecatedIds(_store, _kind = 'fact', _olderThan = '') {
-  return []
-}
-
-export function deleteRowsByIds(_store, _kind = 'fact', _ids = []) {
-  return 0
-}
-
 export function resetEmbeddingIndex(store, options = {}) {
   store.clearVectorsStmt.run()
   try { store.db.prepare('DELETE FROM pending_embeds').run() } catch {}
