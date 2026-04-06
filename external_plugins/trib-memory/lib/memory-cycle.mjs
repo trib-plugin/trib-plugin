@@ -86,8 +86,7 @@ export function loadCycleState() {
 }
 
 export function saveCycleState(state) {
-  const dir = join(tmpdir(), 'trib-memory')
-  mkdirSync(dir, { recursive: true })
+  mkdirSync(PLUGIN_DATA_DIR, { recursive: true })
   writeFileSync(CYCLE_STATE_PATH, JSON.stringify(state, null, 2) + '\n', 'utf8')
 }
 

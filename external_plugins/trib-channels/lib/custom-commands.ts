@@ -111,8 +111,12 @@ export function parseCommand(input: string): ParsedCommand | null {
 function savePluginConfig(config: PluginConfig): void {
   const configPath = join(DATA_DIR, 'config.json')
   void withConfigLock(() => {
+    const current = (() => {
+      try { return JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown> } catch { return {} }
+    })()
+    const merged = { ...current, ...config }
     const tmp = configPath + '.tmp'
-    writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n')
+    writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n')
     renameSync(tmp, configPath)
   })
 }

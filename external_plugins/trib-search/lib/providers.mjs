@@ -608,7 +608,7 @@ export async function runRawSearch({
   providers,
   site,
   type = 'web',
-  maxResults = 5,
+  maxResults = 10,
   github_type,
   owner,
   repo,

@@ -13,7 +13,7 @@ import {
 import { loadConfig } from './config.js';
 
 const mcp = new Server(
-  { name: 'trib-orchestrator', version: '0.1.0' },
+  { name: 'trib-orchestrator', version: '0.0.2' },
   { capabilities: { tools: {}, experimental: { 'claude/channel': {} } } },
 );
 
