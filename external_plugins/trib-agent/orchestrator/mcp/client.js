@@ -1,9 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 // --- Types ---
 /** Known auto-detect targets: port file path relative to tmpdir */
 const AUTO_DETECT_PORTS = {
@@ -92,7 +92,10 @@ export function loadMcpConfig(configPath) {
         const result = {};
         for (const [name, cfg] of Object.entries(mcpServers)) {
             const c = cfg;
-            if (typeof c.autoDetect === 'string') {
+            if (typeof c.pluginCache === 'string') {
+                result[name] = { pluginCache: c.pluginCache, script: c.script };
+            }
+            else if (typeof c.autoDetect === 'string') {
                 result[name] = { autoDetect: c.autoDetect };
             }
             else if (c.transport === 'http' && typeof c.url === 'string') {
@@ -117,10 +120,36 @@ export function loadMcpConfig(configPath) {
 }
 // --- Internal ---
 async function connectServer(name, cfg) {
-    const client = new Client({ name: `trib-orchestrator/${name}`, version: '1.0.0' });
+    const client = new Client({ name: `trib-agent/${name}`, version: '1.0.0' });
     let transport;
+    // pluginCache: resolve latest cached plugin version as stdio transport
+    if (cfg.pluginCache) {
+        const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'trib-plugin', cfg.pluginCache);
+        if (!existsSync(cacheBase)) throw new Error(`Plugin cache not found: ${cacheBase}`);
+        const versions = readdirSync(cacheBase).filter(d => /^\d+\.\d+\.\d+/.test(d)).sort((a, b) => {
+            const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+            return (pa[0] - pb[0]) || (pa[1] - pb[1]) || (pa[2] - pb[2]);
+        });
+        if (!versions.length) throw new Error(`No versions in ${cacheBase}`);
+        const latest = versions[versions.length - 1];
+        const dir = join(cacheBase, latest);
+        const script = cfg.script || 'scripts/run-mcp.mjs';
+        const scriptPath = join(dir, script);
+        if (!existsSync(scriptPath)) throw new Error(`Script not found: ${scriptPath}`);
+        transport = new StdioClientTransport({
+            command: 'node',
+            args: [scriptPath],
+            cwd: dir,
+            env: {
+                ...process.env,
+                CLAUDE_PLUGIN_ROOT: dir,
+                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', `${cfg.pluginCache}-trib-plugin`),
+            },
+        });
+        process.stderr.write(`[mcp-client] Connecting "${name}" via pluginCache: ${cfg.pluginCache}@${latest}\n`);
+    }
     // Auto-detect: read port from a running service's port file
-    if (cfg.autoDetect) {
+    else if (cfg.autoDetect) {
         const spec = AUTO_DETECT_PORTS[cfg.autoDetect];
         if (!spec)
             throw new Error(`Unknown autoDetect target: "${cfg.autoDetect}"`);
@@ -174,7 +203,7 @@ async function connectServer(name, cfg) {
         description: t.description ? t.description.slice(0, 2048) : '',
         inputSchema: (t.inputSchema || { type: 'object', properties: {} }),
     }));
-    const mode = cfg.autoDetect ? `autoDetect(${cfg.autoDetect})` : cfg.transport || 'stdio';
+    const mode = cfg.pluginCache ? `pluginCache(${cfg.pluginCache})` : cfg.autoDetect ? `autoDetect(${cfg.autoDetect})` : cfg.transport || 'stdio';
     servers.set(name, { name, client, transport, tools });
     process.stderr.write(`[mcp-client] Connected "${name}" via ${mode} — ${tools.length} tools\n`);
 }

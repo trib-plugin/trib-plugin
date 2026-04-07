@@ -1,7 +1,25 @@
 import { readFileSync, existsSync, renameSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 import { loadGitHubToken } from './providers/copilot-auth.js';
+
+/**
+ * Resolve CLAUDE_PLUGIN_DATA directory.
+ * If the env var is set (MCP server context), use it directly.
+ * Otherwise derive from CLAUDE_PLUGIN_ROOT (CLI command context):
+ *   CLAUDE_PLUGIN_ROOT = .../marketplaces/{marketplace}/external_plugins/{plugin}
+ *   CLAUDE_PLUGIN_DATA = ~/.claude/plugins/data/{plugin}-{marketplace}
+ */
+export function getPluginData() {
+    if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    if (root) {
+        const pluginName = basename(root);
+        const marketplace = basename(join(root, '..', '..'));
+        return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
+    }
+    return join(homedir(), '.claude', 'plugins', 'data', 'trib-agent-trib-plugin');
+}
 const ENV_KEY_MAP = {
     openai: 'OPENAI_API_KEY',
     anthropic: 'ANTHROPIC_API_KEY',
@@ -27,9 +45,7 @@ function buildDefaultConfig() {
     };
     // OpenAI OAuth (ChatGPT subscription) — enabled if ~/.codex/auth.json or own tokens exist
     const hasCodexAuth = existsSync(join(homedir(), '.codex', 'auth.json'));
-    const pluginData = process.env.CLAUDE_PLUGIN_DATA;
-    const hasOwnAuth = (pluginData && existsSync(join(pluginData, 'openai-oauth.json')))
-        || existsSync(join(homedir(), '.config', 'trib-orchestrator', 'openai-oauth.json'));
+    const hasOwnAuth = existsSync(join(getPluginData(), 'openai-oauth.json'));
     providers['openai-oauth'] = { enabled: hasCodexAuth || hasOwnAuth };
     // Local providers — opt-in via setup UI after HTTP ping confirms server is running
     providers.ollama = { enabled: false, baseURL: 'http://localhost:11434/v1' };
@@ -76,46 +92,30 @@ function migrateMcpToolsFile(configPath) {
         writeFileSync(tmp, JSON.stringify(configRaw, null, 2) + '\n', 'utf-8');
         renameSync(tmp, configPath);
         renameSync(legacyPath, legacyPath + '.bak');
-        process.stderr.write(`[trib-orchestrator] Migrated mcp-tools.json -> config.json (backup at ${legacyPath}.bak)\n`);
+        process.stderr.write(`[trib-agent] Migrated mcp-tools.json -> config.json (backup at ${legacyPath}.bak)\n`);
     }
     catch (err) {
-        process.stderr.write(`[trib-orchestrator] mcp-tools.json migration failed: ${err}\n`);
+        process.stderr.write(`[trib-agent] mcp-tools.json migration failed: ${err}\n`);
     }
 }
 function getConfigPath() {
-    const pluginData = process.env.CLAUDE_PLUGIN_DATA;
-    if (pluginData)
-        return join(pluginData, 'config.json');
-    return join(homedir(), '.config', 'trib-orchestrator', 'config.json');
+    return join(getPluginData(), 'config.json');
 }
 export function loadConfig() {
-    // Try config file first — CLAUDE_PLUGIN_DATA takes priority
-    const pluginData = process.env.CLAUDE_PLUGIN_DATA;
-    const configPaths = [
-        ...(pluginData ? [join(pluginData, 'config.json')] : []),
-        join(process.cwd(), 'trib-orchestrator.json'),
-        join(homedir(), '.config', 'trib-orchestrator', 'config.json'),
-        join(homedir(), '.trib-orchestrator.json'),
-    ];
-    for (const configPath of configPaths) {
-        if (existsSync(configPath)) {
-            // Run migration before loading so the merge picks up legacy mcpServers
-            migrateMcpToolsFile(configPath);
-            try {
-                const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-                const defaults = buildDefaultConfig();
-                // Merge: file config overrides env defaults
-                return {
-                    providers: { ...defaults.providers, ...raw.providers },
-                    mcpServers: raw.mcpServers || {},
-                    presets: Array.isArray(raw.presets) ? raw.presets : [],
-                    default: raw.default || null,
-                };
-            }
-            catch {
-                // Fall through to defaults
-            }
+    const configPath = getConfigPath();
+    if (existsSync(configPath)) {
+        migrateMcpToolsFile(configPath);
+        try {
+            const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+            const defaults = buildDefaultConfig();
+            return {
+                providers: { ...defaults.providers, ...raw.providers },
+                mcpServers: raw.mcpServers || {},
+                presets: Array.isArray(raw.presets) ? raw.presets : [],
+                default: raw.default || null,
+            };
         }
+        catch { /* fall through */ }
     }
     const defaults = buildDefaultConfig();
     return { ...defaults, mcpServers: {}, presets: [], default: null };

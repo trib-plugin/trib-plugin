@@ -11,7 +11,7 @@ const PRESETS = {
     openrouter: {
         baseURL: 'https://openrouter.ai/api/v1',
         defaultModel: 'anthropic/claude-sonnet-4',
-        extraHeaders: { 'HTTP-Referer': 'trib-orchestrator', 'X-Title': 'trib-orchestrator' },
+        extraHeaders: { 'HTTP-Referer': 'trib-agent', 'X-Title': 'trib-agent' },
     },
     xai: {
         baseURL: 'https://api.x.ai/v1',
@@ -109,7 +109,7 @@ export class OpenAICompatProvider {
                 params.reasoning_effort = opts.effort;
             }
             if (opts.fast === true) {
-                params.service_tier = 'fast';
+                params.service_tier = 'priority';
             }
         }
         const response = await this.client.chat.completions.create(params);

@@ -13,7 +13,7 @@
  * Active session pointer: pluginData/active-session.txt
  */
 import { initProviders, getAllProviders, getProvider } from './providers/registry.js';
-import { loadConfig, listPresets, getPreset, getDefaultPreset, setDefaultPreset } from './config.js';
+import { loadConfig, listPresets, getPreset, getDefaultPreset, setDefaultPreset, getPluginData } from './config.js';
 import { connectMcpServers } from './mcp/client.js';
 import {
     createSession,
@@ -32,8 +32,7 @@ import { spawn } from 'child_process';
 // --- Active session pointer ---
 
 function getActivePath() {
-    const dir = process.env.CLAUDE_PLUGIN_DATA
-        || join(homedir(), '.config', 'trib-orchestrator');
+    const dir = getPluginData();
     return join(dir, 'active-session.txt');
 }
 
@@ -144,15 +143,15 @@ async function cmdAsk(args) {
         const inTok = fmtTokens(result.usage?.inputTokens);
         const outTok = fmtTokens(result.usage?.outputTokens);
         const loopNote = result.iterations > 1
-            ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-        const output = `**[${session.provider}/${session.model}]**\n\n${result.content}\n\n---\n_${inTok} in · ${outTok} out${loopNote}_\n`;
+            ? ` · ${result.iterations} loops, ${result.toolCallsTotal} calls` : '';
+        const output = `${result.content}\n\n\`${session.model} · ${inTok} in · ${outTok} out${loopNote}\`\n`;
         process.stdout.write(output);
         const jobId = process.env.ORCHESTRATOR_JOB_ID;
         if (jobId) completeJob(jobId, output);
         process.exit(0);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const output = `**[${session.provider}/${session.model}]** FAILED\n\n${msg}\n`;
+        const output = `**FAILED** ${msg}\n\n\`${session.model}\`\n`;
         process.stdout.write(output);
         const jobId = process.env.ORCHESTRATOR_JOB_ID;
         if (jobId) completeJob(jobId, output, true);

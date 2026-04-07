@@ -436,13 +436,16 @@ export class MemoryStore {
       CREATE TABLE IF NOT EXISTS core_memory (
         id INTEGER PRIMARY KEY,
         classification_id INTEGER NOT NULL UNIQUE,
+        chunk_id INTEGER,
         topic TEXT NOT NULL,
         element TEXT NOT NULL,
         importance TEXT,
         final_score REAL NOT NULL DEFAULT 0,
         promoted_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'demoted')),
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        last_mentioned_at TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'pending', 'demoted', 'processed', 'archived')),
         FOREIGN KEY(classification_id) REFERENCES classifications(id) ON DELETE CASCADE
       );
 
@@ -492,6 +495,46 @@ export class MemoryStore {
     try {
       this.db.exec(`ALTER TABLE memory_vectors ADD COLUMN content_hash TEXT;`)
     } catch { /* already present */ }
+
+    // core_memory schema migration: add chunk_id, mention_count, last_mentioned_at, expand status
+    try { this.db.exec(`ALTER TABLE core_memory ADD COLUMN chunk_id INTEGER`) } catch { /* already exists */ }
+    try { this.db.exec(`ALTER TABLE core_memory ADD COLUMN mention_count INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+    try { this.db.exec(`ALTER TABLE core_memory ADD COLUMN last_mentioned_at TEXT`) } catch { /* already exists */ }
+    // Migrate status CHECK constraint: recreate if 'pending'/'processed' not allowed
+    try {
+      // Test insert with 'pending' status — if CHECK fails, we need to migrate
+      this.db.exec(`INSERT INTO core_memory (classification_id, topic, element, promoted_at, last_seen_at, status) VALUES (-999, '__test__', '__test__', '', '', 'archived')`)
+      this.db.exec(`DELETE FROM core_memory WHERE classification_id = -999`)
+    } catch {
+      // Old CHECK missing archived — rebuild table with expanded CHECK
+      try {
+        this.db.exec(`
+          PRAGMA foreign_keys = OFF;
+          CREATE TABLE IF NOT EXISTS core_memory_new (
+            id INTEGER PRIMARY KEY,
+            classification_id INTEGER NOT NULL UNIQUE,
+            chunk_id INTEGER,
+            topic TEXT NOT NULL,
+            element TEXT NOT NULL,
+            importance TEXT,
+            final_score REAL NOT NULL DEFAULT 0,
+            promoted_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            mention_count INTEGER NOT NULL DEFAULT 0,
+            last_mentioned_at TEXT,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'pending', 'demoted', 'processed', 'archived')),
+            FOREIGN KEY(classification_id) REFERENCES classifications(id) ON DELETE CASCADE
+          );
+          INSERT INTO core_memory_new (id, classification_id, chunk_id, topic, element, importance, final_score, promoted_at, last_seen_at, mention_count, last_mentioned_at, status)
+            SELECT id, classification_id, chunk_id, topic, element, importance, final_score, promoted_at, last_seen_at, mention_count, last_mentioned_at, status FROM core_memory;
+          DROP TABLE core_memory;
+          ALTER TABLE core_memory_new RENAME TO core_memory;
+          CREATE INDEX IF NOT EXISTS idx_core_memory_status ON core_memory(status, final_score DESC);
+          CREATE INDEX IF NOT EXISTS idx_core_memory_cls ON core_memory(classification_id);
+          PRAGMA foreign_keys = ON;
+        `)
+      } catch (e) { logIgnoredError('core_memory CHECK migration', e) }
+    }
 
     this.insertEpisodeStmt = this.db.prepare(`
       INSERT OR IGNORE INTO episodes (
@@ -1255,12 +1298,12 @@ export class MemoryStore {
       }
     } catch { /* memory_chunks table may not exist yet */ }
 
-    // Core memory: embed active core_memory items
+    // Core memory: embed active + pending core_memory items
     try {
       const coreLimit = Math.max(8, Math.floor(perTypeLimit / 4))
       const coreRows = this.db.prepare(`
         SELECT id, topic, element, importance FROM core_memory
-        WHERE status = 'active'
+        WHERE status IN ('active', 'pending')
         ORDER BY final_score DESC, id DESC
         LIMIT ?
       `).all(coreLimit)
@@ -1289,9 +1332,20 @@ export class MemoryStore {
       if (cfg?.embedding?.contextualize === false) contextualizeLocal = false
     } catch {}
 
+    // Batch-load existing content hashes to avoid per-item DB queries
+    const lookupModel = getEmbeddingModelId()
+    const existingHashes = new Map()
+    try {
+      const rows = this.db.prepare(
+        `SELECT entity_type, entity_id, content_hash FROM memory_vectors WHERE model = ?`
+      ).all(lookupModel)
+      for (const r of rows) {
+        existingHashes.set(`${r.entity_type}:${r.entity_id}`, r.content_hash)
+      }
+    } catch {}
+
     let updated = 0
     for (const item of candidates) {
-      const lookupModel = getEmbeddingModelId()
       const contextText = contextMap.get(item.key)
       let embedInput
       if (contextText) {
@@ -1303,8 +1357,8 @@ export class MemoryStore {
       }
       if (!embedInput) continue
       const contentHash = hashEmbeddingInput(embedInput)
-      const existing = this.getVectorStmt.get(item.entityType, item.entityId, lookupModel)
-      if (existing?.content_hash === contentHash) continue
+      const existingHash = existingHashes.get(`${item.entityType}:${item.entityId}`)
+      if (existingHash === contentHash) continue
       const vector = await embedText(embedInput)
       if (!Array.isArray(vector) || vector.length === 0) continue
       const activeModel = getEmbeddingModelId()
@@ -1676,7 +1730,7 @@ export class MemoryStore {
           AND LENGTH(e.content) >= 10
         ORDER BY score
         LIMIT ?
-      `).all(ftsQuery, Math.min(limit, 6))
+      `).all(ftsQuery, limit)
         results.push(...episodeHits)
       } catch (error) { logIgnoredError('searchRelevantSparse episodes fts', error) }
     }
@@ -1696,10 +1750,10 @@ export class MemoryStore {
           JOIN memory_chunks mc ON mc.id = memory_chunks_fts.rowid
           LEFT JOIN episodes e ON e.id = mc.episode_id
           WHERE memory_chunks_fts MATCH ?
-            AND mc.status = 'active'
+            AND mc.status NOT IN ('archived', 'demoted')
           ORDER BY score
           LIMIT ?
-        `).all(ftsQuery, Math.min(limit, 6))
+        `).all(ftsQuery, limit)
         results.push(...chunkHits)
       } catch (error) { logIgnoredError('searchRelevantSparse chunks fts', error) }
     }
@@ -1890,7 +1944,7 @@ export class MemoryStore {
           FROM memory_chunks mc
           JOIN memory_vectors mv ON mv.entity_type = 'chunk' AND mv.entity_id = mc.id AND mv.model = ?
           LEFT JOIN episodes e ON e.id = mc.episode_id
-          WHERE mc.id = ? AND mc.status = 'active'
+          WHERE mc.id = ? AND mc.status NOT IN ('archived', 'demoted')
         `).get(model, entityId)
       }
     } catch {}
@@ -1900,6 +1954,7 @@ export class MemoryStore {
   recordRetrieval(results = []) {
     const now = localNow()
     const seen = new Set()
+    const bumpedClassificationIds = new Set()
     for (const item of results) {
       const entityId = Number(item?.entity_id ?? item?.id)
       const dedupeKey = `${String(item?.type ?? '')}:${entityId}`
@@ -1907,9 +1962,21 @@ export class MemoryStore {
       seen.add(dedupeKey)
       if (item.type === 'classification') {
         this.bumpClassificationRetrievalStmt.run(now, entityId)
+        bumpedClassificationIds.add(entityId)
       } else if (!Number.isFinite(entityId) || entityId <= 0) {
         continue
       }
+    }
+    // Bump mention_count for core_memory items linked to retrieved classifications
+    if (bumpedClassificationIds.size > 0) {
+      try {
+        const bumpCoreStmt = this.db.prepare(
+          `UPDATE core_memory SET mention_count = mention_count + 1, last_mentioned_at = ? WHERE classification_id = ? AND status IN ('active', 'pending', 'demoted')`
+        )
+        for (const clsId of bumpedClassificationIds) {
+          bumpCoreStmt.run(now, clsId)
+        }
+      } catch { /* core_memory table may not exist yet */ }
     }
   }
 

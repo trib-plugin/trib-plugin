@@ -5,11 +5,9 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { getPluginData } from '../config.js';
 function getStoreDir() {
-    const dir = process.env.CLAUDE_PLUGIN_DATA
-        ? join(process.env.CLAUDE_PLUGIN_DATA, 'sessions')
-        : join(homedir(), '.config', 'trib-orchestrator', 'sessions');
+    const dir = join(getPluginData(), 'sessions');
     if (!existsSync(dir))
         mkdirSync(dir, { recursive: true });
     return dir;

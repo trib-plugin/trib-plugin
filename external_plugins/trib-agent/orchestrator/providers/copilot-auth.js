@@ -51,7 +51,7 @@ export async function getCopilotBearerToken() {
     const response = await fetch('https://api.github.com/copilot_internal/v2/token', {
         headers: {
             'Authorization': `Token ${githubToken}`,
-            'User-Agent': 'trib-orchestrator/1.0',
+            'User-Agent': 'trib-agent/1.0',
         },
     });
     if (!response.ok)

@@ -5,7 +5,7 @@ import { initProviders, getAllProviders } from './providers/registry.js';
 import { createSession, resumeSession, listSessions, closeSession, } from './session/manager.js';
 import { loadConfig } from './config.js';
 import { connectMcpServers, disconnectAll } from './mcp/client.js';
-const mcp = new Server({ name: 'trib-orchestrator', version: '0.3.0' }, { capabilities: { tools: {} } });
+const mcp = new Server({ name: 'trib-agent', version: '0.3.0' }, { capabilities: { tools: {} } });
 function ok(data) {
     return { content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }] };
 }
@@ -144,6 +144,6 @@ async function main() {
     process.on('SIGINT', async () => { await disconnectAll(); process.exit(0); });
 }
 main().catch((err) => {
-    process.stderr.write(`Failed to start trib-orchestrator: ${err}\n`);
+    process.stderr.write(`Failed to start trib-agent: ${err}\n`);
     process.exit(1);
 });

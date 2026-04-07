@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, unlinkSync, openSync, closeSync } from 'fs'
-import { copyFile, access } from 'fs/promises'
-import { constants } from 'fs'
+import { copyFile } from 'fs/promises'
 import { join } from 'path'
 import { spawn, spawnSync } from 'child_process'
 
@@ -24,7 +23,6 @@ const lockfilePath = join(pluginRoot, 'package-lock.json')
 const dataManifestPath = join(pluginData, 'package.json')
 const dataLockfilePath = join(pluginData, 'package-lock.json')
 const dataNodeModules = join(pluginData, 'node_modules')
-const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
 const logPath = join(pluginData, 'run-mcp.log')
 const syncLockPath = join(pluginData, '.sync.lock')
 
@@ -50,15 +48,6 @@ function depsHash(path) {
     return JSON.stringify({ dependencies: pkg.dependencies || {}, devDependencies: pkg.devDependencies || {} })
   } catch {
     return null
-  }
-}
-
-async function isExecutable(path) {
-  try {
-    await access(path, process.platform === 'win32' ? constants.F_OK : constants.X_OK)
-    return true
-  } catch {
-    return false
   }
 }
 
@@ -120,9 +109,6 @@ async function syncDependenciesIfNeeded() {
   if (depsHash(manifestPath) !== depsHash(dataManifestPath)) {
     needsInstall = true
   }
-  if (!(await isExecutable(esbuildBin))) {
-    needsInstall = true
-  }
 
   if (!needsInstall) {
     return
@@ -132,7 +118,7 @@ async function syncDependenciesIfNeeded() {
 
   if (!acquireLock()) {
     // Another process finished sync — recheck if install is still needed
-    if (depsHash(manifestPath) === depsHash(dataManifestPath) && await isExecutable(esbuildBin)) {
+    if (depsHash(manifestPath) === depsHash(dataManifestPath)) {
       log('sync completed by another process, skipping')
       return
     }
@@ -141,7 +127,7 @@ async function syncDependenciesIfNeeded() {
 
   try {
     // Re-check after acquiring lock (another process may have finished)
-    if (depsHash(manifestPath) === depsHash(dataManifestPath) && await isExecutable(esbuildBin)) {
+    if (depsHash(manifestPath) === depsHash(dataManifestPath)) {
       log('sync already completed by another process')
       return
     }
@@ -165,36 +151,7 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-const serverSrc = join(pluginRoot, 'services', 'memory-service.mjs')
-const serverJs = join(pluginData, 'server.bundle.mjs')
-const prebuiltBundle = join(pluginRoot, 'dist', 'server.bundle.mjs')
-let serverFile
-
-try {
-  statSync(prebuiltBundle)
-  serverFile = prebuiltBundle
-  log('using pre-built bundle')
-} catch {
-  log('no pre-built bundle, building at runtime...')
-  function buildBundle() {
-    try {
-      const srcStat = statSync(serverSrc)
-      try {
-        const bundleStat = statSync(serverJs)
-        if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
-      } catch {}
-      const result = spawnSync(esbuildBin, [
-        serverSrc, '--bundle', '--platform=node', '--format=esm',
-        `--outfile=${serverJs}`, '--packages=external',
-      ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
-      if (result.status === 0) { log('bundle built'); return true }
-      log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
-      return false
-    } catch (e) { log(`bundle build error: ${e.message}`); return false }
-  }
-  if (!buildBundle()) { log('fatal: bundle build failed'); process.exit(1) }
-  serverFile = serverJs
-}
+const serverFile = join(pluginRoot, 'services', 'memory-service.mjs')
 
 log(`exec node ${serverFile}`)
 // Cap ONNX Runtime thread usage so embedding/reranker don't pin all CPU cores.
@@ -204,12 +161,24 @@ const child = spawn('node', ['--no-warnings', serverFile], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || '2',
-    OMP_THREAD_LIMIT: process.env.OMP_THREAD_LIMIT || '2',
-    ORT_INTRA_OP_PARALLELISM_THREADS: process.env.ORT_INTRA_OP_PARALLELISM_THREADS || '2',
+    OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || '4',
+    OMP_THREAD_LIMIT: process.env.OMP_THREAD_LIMIT || '4',
+    ORT_INTRA_OP_PARALLELISM_THREADS: process.env.ORT_INTRA_OP_PARALLELISM_THREADS || '4',
     ORT_INTER_OP_PARALLELISM_THREADS: process.env.ORT_INTER_OP_PARALLELISM_THREADS || '1',
   },
 })
+
+// Lower process priority so embedding yields CPU to other programs
+if (child.pid) {
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('wmic', ['process', 'where', `ProcessId=${child.pid}`, 'CALL', 'setpriority', 'below normal'], { stdio: 'ignore', shell: true })
+    } else {
+      spawnSync('renice', ['-n', '10', '-p', String(child.pid)], { stdio: 'ignore' })
+    }
+    log(`process priority lowered (pid=${child.pid})`)
+  } catch (e) { log(`priority change failed: ${e.message}`) }
+}
 
 let shuttingDown = false
 function relayShutdown(signal = 'SIGTERM') {

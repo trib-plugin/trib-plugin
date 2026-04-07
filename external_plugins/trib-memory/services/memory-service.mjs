@@ -62,7 +62,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || (() => {
     // Fallback: find plugin data dir by convention
     const candidates = [
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-memory-tribgames'),
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-memory-trib-plugin'),
     ]
     for (const c of candidates) {
       if (fs.existsSync(path.join(c, 'memory.sqlite'))) return c
@@ -74,6 +74,41 @@ if (!DATA_DIR) {
   process.exit(1)
 }
 process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
+
+// ── Singleton guard: prevent multiple instances ─────────────────────
+const LOCK_FILE = path.join(DATA_DIR, '.memory-service.lock')
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+function acquireLock() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      const content = fs.readFileSync(LOCK_FILE, 'utf8').trim()
+      const lockedPid = Number(content)
+      if (lockedPid > 0 && isProcessAlive(lockedPid)) {
+        process.stderr.write(`[memory-service] Another instance running (PID ${lockedPid}). Exiting.\n`)
+        process.exit(0)
+      }
+      // Stale lock — previous process died without cleanup
+      process.stderr.write(`[memory-service] Removing stale lock (PID ${lockedPid})\n`)
+    }
+    fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8')
+  } catch (e) {
+    process.stderr.write(`[memory-service] Lock acquisition failed: ${e.message}\n`)
+    // Non-fatal: proceed anyway rather than blocking startup
+  }
+}
+
+function releaseLock() {
+  try {
+    const content = fs.readFileSync(LOCK_FILE, 'utf8').trim()
+    if (Number(content) === process.pid) fs.unlinkSync(LOCK_FILE)
+  } catch {}
+}
+
+acquireLock()
 
 const RUNTIME_DIR = path.join(os.tmpdir(), 'trib-memory')
 try { fs.mkdirSync(RUNTIME_DIR, { recursive: true }) } catch {}
@@ -410,47 +445,17 @@ async function handleGrep(query, options) {
     skipReranker,
   })
 
-  // Cross-check: drop episode results with low cosine similarity to query
-  const PRECISION_FLOOR = 0.65
-  const crossChecked = []
-  for (const r of results) {
-    if (r.type === 'classification' || r.type === 'chunk') { crossChecked.push(r); continue }
-    if (r.type !== 'episode' || !queryVector?.length) { crossChecked.push(r); continue }
-    try {
-      let epVec = null
-      if (r.vector_json) {
-        epVec = JSON.parse(r.vector_json)
-      } else {
-        // FTS-only results: look up stored vector
-        epVec = await store.getStoredVector('episode', Number(r.entity_id), String(r.content || '').slice(0, 768))
-      }
-      if (!Array.isArray(epVec) || epVec.length !== queryVector.length) { crossChecked.push(r); continue }
-      const sim = cosineSimilarity(queryVector, epVec)
-      if (sim >= PRECISION_FLOOR) crossChecked.push(r)
-    } catch (e) {
-      crossChecked.push(r)
-    }
-  }
-  let items = crossChecked
+  // Score and sort
+  const { computeFinalScore } = await import('../lib/memory-score-utils.mjs')
+  let items = results.map(item => {
+    const baseScore = item.base_score ?? 0
+    item._finalScore = computeFinalScore(baseScore, item, query)
+    return item
+  })
 
   if (sort === 'importance') {
-    const { computeImportanceScore } = await import('../lib/memory-score-utils.mjs')
-    // For chunks, inherit importance from linked classification
-    for (const item of items) {
-      if (item.type === 'chunk' && item.chunk_episode_id && !item.confidence) {
-        try {
-          const cls = store.db.prepare(
-            `SELECT confidence, retrieval_count FROM classifications WHERE episode_id = ? AND status = 'active' ORDER BY confidence DESC LIMIT 1`
-          ).get(item.chunk_episode_id)
-          if (cls) {
-            item.confidence = cls.confidence
-            item.retrieval_count = cls.retrieval_count
-          }
-        } catch {}
-      }
-    }
-    items.sort((a, b) => computeImportanceScore(b) - computeImportanceScore(a))
-  } else if (sort === 'date') {
+    items.sort((a, b) => b._finalScore - a._finalScore)
+  } else {
     items.sort((a, b) => {
       const tsA = a.source_ts || a.updated_at || ''
       const tsB = b.source_ts || b.updated_at || ''
@@ -460,121 +465,48 @@ async function handleGrep(query, options) {
 
   items = items.slice(offset, offset + limit)
 
-  // Semantic chunking: top-N most similar neighbors per hit
-  const SEMANTIC_WINDOW = 5   // scan +-5 episodes around each hit
-  const SEMANTIC_FLOOR = 0.50 // minimum cosine similarity
-  const NEIGHBORS_PER_HIT = 3 // max context episodes per hit
-  const hitIds = new Set(items.filter(i => i.type === 'episode').map(i => Number(i.entity_id)))
-
+  // Render results — chunks and classifications inline, episodes with context
   const lines = []
+  const renderedEpisodes = new Set()
 
-  // Chunk results first (highest quality semantic segments)
   for (const item of items) {
-    if (item.type === 'chunk') {
-      const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
+    const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
+
+    if (item.type === 'chunk' || item.type === 'classification') {
       const topic = item.classification_topic ? ` [${item.classification_topic}]` : ''
-      lines.push(`[${ts}]${topic} ${String(item.content || '').slice(0, 200)}`)
-    }
-  }
-
-  // Classification results (no chunking)
-  for (const item of items) {
-    if (item.type === 'classification') {
-      const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
-      lines.push(`[${ts}] ${String(item.content || '').slice(0, 200)}`)
-    }
-  }
-
-  // Semantic chunked episode results
-  if (hitIds.size > 0) {
-    // Gather hit vectors (from DB cache or compute)
-    const hitVectors = new Map()
-    for (const id of hitIds) {
-      try {
-        const row = store.db.prepare('SELECT content FROM episodes WHERE id = ?').get(id)
-        if (row?.content) {
-          const vec = await store.getStoredVector('episode', id, row.content)
-          if (vec?.length > 0) hitVectors.set(id, vec)
-        }
-      } catch {}
-    }
-
-    // For each hit, pick top-N most similar neighbors
-    const included = new Map() // episodeId -> { sim, hitId }
-    for (const id of hitIds) {
-      included.set(id, { sim: 1.0, hitId: id })
-    }
-
-    for (const [hitId, hitVec] of hitVectors) {
-      const window = store.db.prepare(`
-        SELECT id, content FROM episodes
-        WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn') AND id != ?
-        ORDER BY id ASC
-      `).all(hitId - SEMANTIC_WINDOW, hitId + SEMANTIC_WINDOW, hitId)
-
-      const scored = []
-      for (const ep of window) {
-        if (hitIds.has(ep.id)) continue // other hits are already included
-        try {
-          const epVec = await store.getStoredVector('episode', ep.id, ep.content)
-          if (!epVec?.length) continue
-          const sim = cosineSimilarity(hitVec, epVec)
-          if (sim >= SEMANTIC_FLOOR) scored.push({ id: ep.id, sim })
-        } catch {}
-      }
-      // Take top N by similarity
-      scored.sort((a, b) => b.sim - a.sim)
-      for (const pick of scored.slice(0, NEIGHBORS_PER_HIT)) {
-        const existing = included.get(pick.id)
-        if (!existing || pick.sim > existing.sim) {
-          included.set(pick.id, { sim: pick.sim, hitId })
-        }
-      }
-    }
-
-    // Group by contiguous ID ranges and build chunks
-    const sortedIds = [...included.keys()].sort((a, b) => a - b)
-    const chunks = []
-    let chunk = [sortedIds[0]]
-    for (let i = 1; i < sortedIds.length; i++) {
-      if (sortedIds[i] - sortedIds[i - 1] <= 1) {
-        chunk.push(sortedIds[i])
-      } else {
-        chunks.push(chunk)
-        chunk = [sortedIds[i]]
-      }
-    }
-    if (chunk.length) chunks.push(chunk)
-
-    for (const chunkIds of chunks) {
+      const imp = item.importance ? ` (${item.importance})` : ''
+      lines.push(`[${ts}]${topic}${imp} ${String(item.content || '').slice(0, 500)}`)
+    } else if (item.type === 'episode' && !renderedEpisodes.has(Number(item.entity_id))) {
+      // Show episode with surrounding context (±3 messages)
+      const epId = Number(item.entity_id)
+      renderedEpisodes.add(epId)
       try {
         const rows = store.db.prepare(`
           SELECT id, ts, role, content FROM episodes
           WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn')
           ORDER BY id ASC
-        `).all(chunkIds[0], chunkIds[chunkIds.length - 1])
-        if (rows.length === 0) continue
-        // Filter: only included episodes (semantic pass)
-        const filtered = rows.filter(r => included.has(Number(r.id)))
-        if (filtered.length === 0) continue
-        const tsStart = String(filtered[0].ts || '').slice(0, 16)
-        const tsEnd = String(filtered[filtered.length - 1].ts || '').slice(0, 16)
-        const chunkHits = filtered.filter(r => hitIds.has(Number(r.id))).length
-        lines.push(`\n[${tsStart}~${tsEnd}] ${chunkHits} hit(s)`)
-        for (const ep of filtered) {
-          const prefix = ep.role === 'user' ? 'u' : 'a'
-          const marker = hitIds.has(Number(ep.id)) ? '→' : ' '
-          lines.push(`${marker} ${prefix}: ${String(ep.content || '').slice(0, 200)}`)
+        `).all(epId - 3, epId + 3)
+        if (rows.length > 0) {
+          const tsStart = String(rows[0].ts || '').slice(0, 16)
+          const tsEnd = String(rows[rows.length - 1].ts || '').slice(0, 16)
+          lines.push(`\n[${tsStart}~${tsEnd}]`)
+          for (const ep of rows) {
+            const prefix = ep.role === 'user' ? 'u' : 'a'
+            const marker = ep.id === epId ? '→' : ' '
+            renderedEpisodes.add(Number(ep.id))
+            lines.push(`${marker} ${prefix}: ${String(ep.content || '').slice(0, 500)}`)
+          }
         }
-      } catch {}
+      } catch {
+        lines.push(`[${ts}] ${String(item.content || '').slice(0, 500)}`)
+      }
     }
   }
 
-  // Fallback: if no results rendered yet, show flat results
-  if (hitIds.size === 0 && lines.length === 0) {
+  if (lines.length === 0) {
     for (const item of items) {
       const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
-      lines.push(`[${ts}] ${String(item.content || '').slice(0, 200)}`)
+      lines.push(`[${ts}] ${String(item.content || '').slice(0, 500)}`)
     }
   }
 
@@ -629,11 +561,11 @@ async function handleRead(options) {
     const lines = []
     for (const c of classifications) {
       const ts = String(c.updated_at || '').slice(0, 10)
-      lines.push(`[${ts}] ${String(c.content || '').slice(0, 200)}`)
+      lines.push(`[${ts}] ${String(c.content || '').slice(0, 500)}`)
     }
     for (const ep of episodes) {
       const prefix = ep.role === 'user' ? 'u' : 'a'
-      lines.push(`[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 200)}`)
+      lines.push(`[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 500)}`)
     }
     return { text: lines.join('\n') || '(no results found)' }
   }
@@ -648,7 +580,7 @@ async function handleRead(options) {
 
   const lines = episodes.map(ep => {
     const prefix = ep.role === 'user' ? 'u' : 'a'
-    return `[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 200)}`
+    return `[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 500)}`
   })
 
   return { text: lines.join('\n') || '(no episodes found)' }
@@ -689,9 +621,18 @@ function handleStats() {
     } catch { return 'unknown' }
   })()
 
+  let coreStats = ''
+  try {
+    const coreRows = store.db.prepare(
+      `SELECT status, COUNT(*) as c FROM core_memory GROUP BY status ORDER BY c DESC`
+    ).all()
+    coreStats = coreRows.map(r => `${r.status}:${r.c}`).join(', ') || 'empty'
+  } catch { coreStats = 'n/a' }
+
   const lines = [
     `episodes: ${episodes}`,
     `classifications: ${classifications} (${tags.map(t => `${t.importance}:${t.c}`).join(', ')})`,
+    `core_memory: ${coreStats}`,
     `candidates: pending=${pending}`,
     `pending_embeds: ${embeds}`,
     `last_cycle1: ${lastCycle}`,
@@ -825,7 +766,7 @@ async function handleCycle(args) {
 const MEMORY_INSTRUCTIONS = 'Recall naturally, like remembering — use search_memories() to recall.'
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.18' },
+  { name: 'trib-memory', version: '0.0.19' },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 
@@ -910,7 +851,7 @@ mcp.setRequestHandler(CallToolRequestSchema, handleToolCall)
 
 function createHttpMcpServer() {
   const s = new Server(
-    { name: 'trib-memory', version: '0.0.18' },
+    { name: 'trib-memory', version: '0.0.19' },
     { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
   )
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
@@ -1128,6 +1069,7 @@ function shutdown() {
   process.stderr.write('[memory-service] shutting down...\n')
   void stopLlmWorker().catch(() => {})
   removePortFile()
+  releaseLock()
   void mcp.close()
   httpServer.close(() => process.exit(0))
   setTimeout(() => process.exit(0), 3000)

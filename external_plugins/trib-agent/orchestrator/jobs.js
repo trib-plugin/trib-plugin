@@ -1,10 +1,8 @@
 import { join } from 'path';
-import { homedir } from 'os';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { getPluginData } from './config.js';
 function getJobsDir() {
-    const dir = process.env.CLAUDE_PLUGIN_DATA
-        ? join(process.env.CLAUDE_PLUGIN_DATA, 'jobs')
-        : join(homedir(), '.config', 'trib-orchestrator', 'jobs');
+    const dir = join(getPluginData(), 'jobs');
     if (!existsSync(dir))
         mkdirSync(dir, { recursive: true });
     return dir;

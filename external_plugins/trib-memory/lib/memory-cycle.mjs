@@ -429,92 +429,22 @@ export function readMainConfig() {
 
 async function sleepCycleImpl(ws) {
   const store = getStore()
-  const now = Date.now()
-
-  const config = readCycleConfig()
   const mainConfig = readMainConfig()
-  const cycle2Config = mainConfig?.cycle2 ?? {}
-  const isFirstRun = !config.lastSleepAt
-  const backfillLimit = resolveCycleBackfillLimit(mainConfig, 120)
 
-  process.stderr.write(`[memory-cycle2] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
-  store.backfillProject(ws, { limit: backfillLimit })
+  process.stderr.write(`[memory-cycle2] Starting.\n`)
 
-  // 1. Consolidation — pending candidates -> classifications
-  const MAX_DAYS = Math.max(1, Number(cycle2Config.maxDays ?? 7))
-  const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort().reverse()
-  const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER }
-  await consolidateRecent(pendingDays, ws, consolidateOpts)
-
-  // 2. Sync history files
-  store.syncHistoryFromFiles()
-
-  // 3. Dedup/merge (cosine similarity 0.85)
+  // 1. Dedup — merge similar classifications (cosine >= 0.85)
   const dedupResult = await deduplicateClassifications(store, { dryRun: false })
   if (dedupResult.merged > 0) {
     process.stderr.write(`[memory-cycle2] dedup: merged=${dedupResult.merged}\n`)
   }
 
-  // 4. Core memory promotion — LLM 4-stage (cycle2 exclusive)
+  // 2. Core memory promotion — LLM judges chunks, manages active/pending/demoted/processed
   try {
     await coreMemoryPromote(store, ws, mainConfig)
   } catch (e) {
     process.stderr.write(`[memory-cycle2] core-promote error: ${e.message}\n`)
   }
-
-  // 5. Daily journal generation
-  try {
-    const today = new Date().toISOString().slice(0, 10)
-    const dailyDir = join(HISTORY_DIR, 'daily')
-    mkdirSync(dailyDir, { recursive: true })
-    const journalPath = join(dailyDir, `${today}.md`)
-    if (!existsSync(journalPath)) {
-      const dayEpisodes = store.getEpisodesForDate(today)
-      const dayClassifications = store.db.prepare(`
-        SELECT topic, element, importance FROM classifications
-        WHERE status = 'active' AND updated_at >= ? AND updated_at < ?
-        ORDER BY updated_at
-      `).all(`${today}T00:00:00`, `${today}T23:59:59`)
-
-      if (dayEpisodes.length > 0 || dayClassifications.length > 0) {
-        const episodeSummary = dayEpisodes.slice(0, 60).map(ep => {
-          const role = ep.role === 'user' ? 'User' : 'Assistant'
-          return `- ${role}: ${String(ep.content ?? '').slice(0, 200)}`
-        }).join('\n')
-        const classificationSummary = dayClassifications.map(c =>
-          `- [${c.importance}] ${c.topic}: ${c.element}`
-        ).join('\n')
-
-        const journalPrompt = [
-          `Today's date: ${today}`,
-          '', 'Episodes:', episodeSummary || '(none)',
-          '', 'Classifications:', classificationSummary || '(none)',
-          '', 'Write a daily journal entry in a natural, readable style. Include key tasks, discussions, decisions, and issues. Write it as a personal daily log, not a formal report. Write in Korean.',
-        ].join('\n')
-
-        try {
-          const provider = cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER
-          const journalContent = await resolveCycleLlmOutput(journalPrompt, ws, {
-            mode: 'journal', provider, timeout: 120000,
-          })
-          if (journalContent && journalContent.trim().length > 20) {
-            writeFileSync(journalPath, `# ${today} Daily Journal\n\n${journalContent.trim()}\n`, 'utf8')
-            process.stderr.write(`[memory-cycle2] daily journal written: ${journalPath}\n`)
-          }
-        } catch (e) {
-          process.stderr.write(`[memory-cycle2] journal generation failed: ${e.message}\n`)
-        }
-      }
-    }
-  } catch (e) {
-    process.stderr.write(`[memory-cycle2] journal error: ${e.message}\n`)
-  }
-
-  // 6. Save timestamp
-  writeCycleConfig({ ...config, lastSleepAt: now })
-  const cycleState = loadCycleState()
-  cycleState.cycle2.lastRunAt = new Date().toISOString()
-  saveCycleState(cycleState)
 
   process.stderr.write('[memory-cycle2] Cycle complete.\n')
 }
@@ -1102,7 +1032,7 @@ async function runCycle1Impl(ws, config, options = {}) {
       store._syncToVecTable(item.entityType, item.entityId, vector)
       store.noteVectorWrite(activeModel, vector.length)
       embeddedCount += 1
-      await new Promise(r => setTimeout(r, 500))
+      // no delay — embedding is fast (~14ms/item)
     }
     if (changedClassificationIds.size > 0) {
       process.stderr.write(`[cycle1] element-changed classifications refreshed: ${changedClassificationIds.size}\n`)
@@ -1133,64 +1063,20 @@ async function runCycle1Impl(ws, config, options = {}) {
 }
 
 /**
- * Core memory 4-stage LLM promotion (cycle2 exclusive).
- * Stage 1: Fact-check + correct
- * Stage 2: Extract long-term value
- * Stage 3: Compare with existing core_memory
- * Stage 4: Cleanup (dedup, demote, merge)
+ * Core memory LLM-based promotion (cycle2 exclusive).
  *
- * Only top-K (20~30) classifications by final_score are sent to LLM.
- * LLM decides all add/update/demote/merge — no code-level filtering.
+ * Three-phase flow:
+ *   Phase 1: Unprocessed chunks → LLM judges active/pending/skip → mark chunks processed
+ *   Phase 2: Re-evaluate pending + demoted → promote(active)/keep/processed
+ *   Phase 3: Review active → enforce 50-item cap, demote stale/low-value
+ *
+ * States: active (injected), pending (not injected, re-eval), demoted (can revive), processed (done)
  */
 async function coreMemoryPromote(store, ws, config) {
   const cycle2Config = config?.cycle2 ?? {}
   const provider = cycle2Config.provider || resolveDefaultProvider()
-  const topK = Math.max(1, Math.min(Number(cycle2Config.coreMemoryTopK ?? 30), 50))
-
-  // Collect today's pending episodes + recent classifications, apply 1st-pass noise filter
-  const activeRows = store.db.prepare(`
-    SELECT c.id, c.episode_id, c.topic, c.element, c.importance, c.confidence, c.updated_at,
-           COALESCE(c.retrieval_count, 0) AS retrieval_count
-    FROM classifications c
-    WHERE c.status = 'active'
-    ORDER BY c.updated_at DESC
-  `).all()
-
-  if (activeRows.length === 0) {
-    process.stderr.write(`[memory-cycle2] core-promote: no active classifications\n`)
-    return
-  }
-
-  // Compute final_score and take Top-K
-  for (const row of activeRows) {
-    try {
-      const stats = store.db.prepare(
-        `SELECT mention_count, last_seen FROM classification_stats WHERE classification_id = ?`
-      ).get(row.id)
-      if (stats) { row.mention_count = stats.mention_count; row.last_seen = stats.last_seen }
-    } catch {}
-    // Simple heat score: recency + retrieval + mention
-    const retrievalCount = Number(row.retrieval_count ?? 0)
-    const mentionCount = Number(row.mention_count ?? 0)
-    const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : (row.updated_at ? new Date(row.updated_at).getTime() : 0)
-    const daysSince = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 86400000) : 999
-    row.final_score = Number((
-      Math.log1p(mentionCount) * 0.7 +
-      Math.log1p(retrievalCount) * 0.95 +
-      Math.exp(-daysSince / 21) * 0.55
-    ).toFixed(4))
-  }
-  activeRows.sort((a, b) => b.final_score - a.final_score)
-
-  // Top-K: LLM input limited to manageable size
-  const topRows = activeRows.slice(0, topK)
-
-  // Load existing core_memory (both active and staged)
-  // staged items are not injected at session start, but LLM should see them to decide
-  // whether to promote them (staged → active) or demote them.
-  const existingCoreRows = store.db.prepare(
-    `SELECT id, classification_id, topic, element, importance, final_score, status FROM core_memory WHERE status IN ('active', 'staged') ORDER BY status DESC, final_score DESC`
-  ).all()
+  const ACTIVE_CAP = 50
+  const CHUNK_BATCH_SIZE = 50
 
   const corePromptPath = join(resourceDir(), 'defaults', 'memory-core-promote-prompt.md')
   if (!existsSync(corePromptPath)) {
@@ -1198,105 +1084,249 @@ async function coreMemoryPromote(store, ws, config) {
     return
   }
   const coreTemplate = readFileSync(corePromptPath, 'utf8')
-
-  const coreMemoryText = existingCoreRows.length > 0
-    ? existingCoreRows.map(cm =>
-      `- id:${cm.id} status:${cm.status} topic:${cm.topic} importance:${cm.importance} element:${cm.element}`
-    ).join('\n')
-    : '(empty)'
-
-  const classificationsText = topRows.map(r =>
-    `- id:${r.id} topic:${r.topic} importance:${r.importance} score:${r.final_score} element:${r.element}`
-  ).join('\n')
-
-  const prompt = coreTemplate
-    .replace('{{CORE_MEMORY}}', coreMemoryText)
-    .replace('{{CLASSIFICATIONS}}', classificationsText)
-
-  // Single LLM call with Top-K sized input (20~30 items) to avoid MCP timeout
-  let allActions = []
-  try {
-    const raw = await resolveCycleLlmOutput(prompt, ws, {
-      mode: 'core-promote',
-      provider,
-      timeout: 180000,
-    })
-    const parsed = extractJsonObject(raw)
-    if (parsed?.actions && Array.isArray(parsed.actions)) {
-      allActions = parsed.actions
-    }
-  } catch (e) {
-    process.stderr.write(`[memory-cycle2] core-promote LLM failed: ${e.message}\n`)
-    return
-  }
-
-  if (allActions.length === 0) {
-    process.stderr.write(`[memory-cycle2] core-promote: no actions (LLM judged no changes needed)\n`)
-    return
-  }
-
-  // Apply LLM actions to core_memory
-  let addCount = 0, stageCount = 0, promoteCount = 0, updateCount = 0, demoteCount = 0, mergeCount = 0
   const ts = new Date().toISOString()
 
-  for (const act of allActions) {
+  // ── Helper: load current active list for LLM context ──
+  function loadActiveList() {
+    return store.db.prepare(
+      `SELECT id, topic, element, importance, mention_count, last_mentioned_at
+       FROM core_memory WHERE status = 'active'
+       ORDER BY mention_count DESC, last_mentioned_at DESC NULLS LAST`
+    ).all()
+  }
+
+  // ── Helper: sync linked chunk status when core_memory status changes ──
+  function syncChunkStatus(coreMemoryId, newStatus) {
     try {
-      if (act.action === 'add' && act.element) {
-        const matchingCls = topRows.find(r => r.topic === act.topic || r.element === act.element)
-        const clsId = matchingCls?.id ?? 0
-        if (clsId <= 0) continue
-        store.db.prepare(`
-          INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-          ON CONFLICT(classification_id) DO UPDATE SET
-            topic = excluded.topic, element = excluded.element, importance = excluded.importance,
-            final_score = excluded.final_score, last_seen_at = excluded.last_seen_at, status = 'active'
-        `).run(clsId, act.topic ?? '', act.element, act.importance ?? 'fact',
-          matchingCls?.final_score ?? 0, ts, ts)
-        addCount++
-      } else if (act.action === 'stage' && act.element) {
-        // Stage: not injected at session start, but kept for future review
-        const matchingCls = topRows.find(r => r.topic === act.topic || r.element === act.element)
-        const clsId = matchingCls?.id ?? 0
-        if (clsId <= 0) continue
-        store.db.prepare(`
-          INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'staged')
-          ON CONFLICT(classification_id) DO UPDATE SET
-            topic = excluded.topic, element = excluded.element, importance = excluded.importance,
-            final_score = excluded.final_score, last_seen_at = excluded.last_seen_at, status = 'staged'
-        `).run(clsId, act.topic ?? '', act.element, act.importance ?? 'fact',
-          matchingCls?.final_score ?? 0, ts, ts)
-        stageCount++
-      } else if (act.action === 'promote' && act.id) {
-        // Promote: staged → active
-        store.db.prepare(`UPDATE core_memory SET status = 'active', last_seen_at = ? WHERE id = ? AND status = 'staged'`).run(ts, act.id)
-        promoteCount++
-      } else if (act.action === 'update' && act.id && act.element) {
-        store.db.prepare(`
-          UPDATE core_memory SET element = ?, importance = ?, last_seen_at = ? WHERE id = ?
-        `).run(act.element, act.importance ?? 'fact', ts, act.id)
-        updateCount++
-      } else if (act.action === 'demote' && act.id) {
-        store.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(act.id)
-        demoteCount++
-      } else if (act.action === 'merge' && Array.isArray(act.ids) && act.ids.length >= 2 && act.element) {
-        const [keepId, ...removeIds] = act.ids
-        store.db.prepare(`
-          UPDATE core_memory SET element = ?, topic = ?, importance = ?, last_seen_at = ? WHERE id = ?
-        `).run(act.element, act.topic ?? '', act.importance ?? 'fact', ts, keepId)
-        for (const rid of removeIds) {
-          store.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(rid)
-        }
-        mergeCount++
-        demoteCount += removeIds.length
+      const row = store.db.prepare(`SELECT chunk_id FROM core_memory WHERE id = ?`).get(coreMemoryId)
+      if (row?.chunk_id) {
+        store.db.prepare(`UPDATE memory_chunks SET status = ? WHERE id = ?`).run(newStatus, row.chunk_id)
       }
     } catch (e) {
-      process.stderr.write(`[memory-cycle2] core-promote action error: ${e.message}\n`)
+      process.stderr.write(`[memory-cycle2] syncChunkStatus error: ${e.message}\n`)
     }
   }
 
-  process.stderr.write(`[memory-cycle2] core_memory: add=${addCount} stage=${stageCount} promote=${promoteCount} update=${updateCount} demote=${demoteCount} merge=${mergeCount}\n`)
+  // ── Helper: apply LLM actions array to core_memory ──
+  function applyActions(allActions, chunkRows) {
+    let addCount = 0, pendingCount = 0, promoteCount = 0, updateCount = 0, demoteCount = 0, mergeCount = 0, processedCount = 0, archivedCount = 0
+
+    for (const act of allActions) {
+      try {
+        if (act.action === 'add' && act.element) {
+          // Find matching chunk or classification to link
+          const matchChunk = chunkRows?.find(r => r.topic === act.topic || r.content?.includes(act.element?.slice(0, 60)))
+          const clsId = matchChunk?.classification_id ?? act.classification_id ?? 0
+          const chunkId = matchChunk?.id ?? act.chunk_id ?? null
+          if (clsId <= 0) continue
+          store.db.prepare(`
+            INSERT INTO core_memory (classification_id, chunk_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'active')
+            ON CONFLICT(classification_id) DO UPDATE SET
+              chunk_id = excluded.chunk_id, topic = excluded.topic, element = excluded.element,
+              importance = excluded.importance, last_seen_at = excluded.last_seen_at, status = 'active'
+          `).run(clsId, chunkId, act.topic ?? '', act.element, act.importance ?? 'fact', ts, ts)
+          // Sync linked chunk to active
+          if (chunkId) {
+            store.db.prepare(`UPDATE memory_chunks SET status = 'active' WHERE id = ?`).run(chunkId)
+          }
+          addCount++
+        } else if (act.action === 'pending' && act.element) {
+          const matchChunk = chunkRows?.find(r => r.topic === act.topic || r.content?.includes(act.element?.slice(0, 60)))
+          const clsId = matchChunk?.classification_id ?? act.classification_id ?? 0
+          const chunkId = matchChunk?.id ?? act.chunk_id ?? null
+          if (clsId <= 0) continue
+          store.db.prepare(`
+            INSERT INTO core_memory (classification_id, chunk_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'pending')
+            ON CONFLICT(classification_id) DO UPDATE SET
+              chunk_id = excluded.chunk_id, topic = excluded.topic, element = excluded.element,
+              importance = excluded.importance, last_seen_at = excluded.last_seen_at, status = 'pending'
+          `).run(clsId, chunkId, act.topic ?? '', act.element, act.importance ?? 'fact', ts, ts)
+          // Sync linked chunk to pending
+          if (chunkId) {
+            store.db.prepare(`UPDATE memory_chunks SET status = 'pending' WHERE id = ?`).run(chunkId)
+          }
+          pendingCount++
+        } else if (act.action === 'promote' && act.id) {
+          store.db.prepare(
+            `UPDATE core_memory SET status = 'active', last_seen_at = ? WHERE id = ? AND status IN ('pending', 'demoted')`
+          ).run(ts, act.id)
+          syncChunkStatus(act.id, 'active')
+          promoteCount++
+        } else if (act.action === 'update' && act.id && act.element) {
+          store.db.prepare(
+            `UPDATE core_memory SET element = ?, importance = ?, last_seen_at = ? WHERE id = ?`
+          ).run(act.element, act.importance ?? 'fact', ts, act.id)
+          updateCount++
+        } else if (act.action === 'demote' && act.id) {
+          store.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(act.id)
+          syncChunkStatus(act.id, 'demoted')
+          demoteCount++
+        } else if (act.action === 'archived' && act.id) {
+          store.db.prepare(`UPDATE core_memory SET status = 'archived' WHERE id = ?`).run(act.id)
+          syncChunkStatus(act.id, 'archived')
+          archivedCount++
+        } else if (act.action === 'processed' && act.id) {
+          store.db.prepare(`UPDATE core_memory SET status = 'processed' WHERE id = ?`).run(act.id)
+          syncChunkStatus(act.id, 'processed')
+          processedCount++
+        } else if (act.action === 'merge' && Array.isArray(act.ids) && act.ids.length >= 2 && act.element) {
+          const [keepId, ...removeIds] = act.ids
+          store.db.prepare(
+            `UPDATE core_memory SET element = ?, topic = ?, importance = ?, last_seen_at = ? WHERE id = ?`
+          ).run(act.element, act.topic ?? '', act.importance ?? 'fact', ts, keepId)
+          for (const rid of removeIds) {
+            store.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(rid)
+            syncChunkStatus(rid, 'demoted')
+          }
+          mergeCount++
+          demoteCount += removeIds.length
+        }
+      } catch (e) {
+        process.stderr.write(`[memory-cycle2] core-promote action error: ${e.message}\n`)
+      }
+    }
+    return { addCount, pendingCount, promoteCount, updateCount, demoteCount, mergeCount, processedCount, archivedCount }
+  }
+
+  // ── Helper: format active list for LLM ──
+  function formatActiveList(activeList) {
+    if (activeList.length === 0) return '(empty)'
+    return activeList.map(cm =>
+      `- id:${cm.id} topic:${cm.topic} importance:${cm.importance} mentions:${cm.mention_count ?? 0} element:${cm.element}`
+    ).join('\n')
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Phase 1: Unprocessed chunks → LLM judgment
+  // ═══════════════════════════════════════════════════════════════
+
+  // Track which chunks cycle2 has already processed via memory_meta
+  let lastProcessedChunkId = 0
+  try {
+    const meta = store.db.prepare(`SELECT value FROM memory_meta WHERE key = 'cycle2_last_chunk_id'`).get()
+    if (meta?.value) lastProcessedChunkId = Number(meta.value)
+  } catch {}
+
+  const unprocessedChunks = store.db.prepare(`
+    SELECT mc.id, mc.episode_id, mc.classification_id, mc.content, mc.topic, mc.importance
+    FROM memory_chunks mc
+    WHERE mc.status = 'active' AND mc.id > ?
+    ORDER BY mc.id ASC
+    LIMIT ?
+  `).all(lastProcessedChunkId, CHUNK_BATCH_SIZE)
+
+  let phase1Stats = { addCount: 0, pendingCount: 0 }
+
+  if (unprocessedChunks.length > 0) {
+    const activeList = loadActiveList()
+    const chunksText = unprocessedChunks.map(c =>
+      `- chunk_id:${c.id} cls_id:${c.classification_id} topic:${c.topic || '(none)'} importance:${c.importance || '(none)'} content:${String(c.content).slice(0, 300)}`
+    ).join('\n')
+
+    const phase1Prompt = coreTemplate
+      .replace('{{PHASE}}', 'phase1_new_chunks')
+      .replace('{{CORE_MEMORY}}', formatActiveList(activeList))
+      .replace('{{ITEMS}}', chunksText)
+
+    try {
+      const raw = await resolveCycleLlmOutput(phase1Prompt, ws, {
+        mode: 'core-promote', provider, timeout: 180000,
+      })
+      const parsed = extractJsonObject(raw)
+      if (parsed?.actions && Array.isArray(parsed.actions)) {
+        phase1Stats = applyActions(parsed.actions, unprocessedChunks)
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-cycle2] phase1 LLM failed: ${e.message}\n`)
+    }
+
+    // Mark chunks as processed by updating watermark
+    const maxChunkId = unprocessedChunks[unprocessedChunks.length - 1].id
+    store.db.prepare(
+      `INSERT INTO memory_meta (key, value) VALUES ('cycle2_last_chunk_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(String(maxChunkId))
+
+    process.stderr.write(`[memory-cycle2] phase1: chunks=${unprocessedChunks.length} add=${phase1Stats.addCount} pending=${phase1Stats.pendingCount}\n`)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Phase 2: Re-evaluate pending + demoted
+  // ═══════════════════════════════════════════════════════════════
+
+  const pendingDemotedRows = store.db.prepare(`
+    SELECT id, topic, element, importance, mention_count, last_mentioned_at, status
+    FROM core_memory
+    WHERE status IN ('pending', 'demoted')
+    ORDER BY mention_count DESC, last_mentioned_at DESC NULLS LAST
+    LIMIT 50
+  `).all()
+
+  let phase2Stats = { promoteCount: 0, processedCount: 0 }
+
+  if (pendingDemotedRows.length > 0) {
+    const activeList = loadActiveList()
+    const itemsText = pendingDemotedRows.map(r =>
+      `- id:${r.id} status:${r.status} topic:${r.topic} importance:${r.importance} mentions:${r.mention_count ?? 0} last_mentioned:${r.last_mentioned_at ?? 'never'} element:${r.element}`
+    ).join('\n')
+
+    const phase2Prompt = coreTemplate
+      .replace('{{PHASE}}', 'phase2_reevaluate')
+      .replace('{{CORE_MEMORY}}', formatActiveList(activeList))
+      .replace('{{ITEMS}}', itemsText)
+
+    try {
+      const raw = await resolveCycleLlmOutput(phase2Prompt, ws, {
+        mode: 'core-promote', provider, timeout: 180000,
+      })
+      const parsed = extractJsonObject(raw)
+      if (parsed?.actions && Array.isArray(parsed.actions)) {
+        phase2Stats = applyActions(parsed.actions, null)
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-cycle2] phase2 LLM failed: ${e.message}\n`)
+    }
+
+    process.stderr.write(`[memory-cycle2] phase2: reviewed=${pendingDemotedRows.length} promote=${phase2Stats.promoteCount} processed=${phase2Stats.processedCount}\n`)
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Phase 3: Active review — enforce cap + demote stale
+  // ═══════════════════════════════════════════════════════════════
+
+  const currentActive = loadActiveList()
+
+  if (currentActive.length > 0) {
+    const activeList = currentActive
+    const needsTrim = activeList.length > ACTIVE_CAP
+    const itemsText = activeList.map(r =>
+      `- id:${r.id} topic:${r.topic} importance:${r.importance} mentions:${r.mention_count ?? 0} last_mentioned:${r.last_mentioned_at ?? 'never'} element:${r.element}`
+    ).join('\n')
+
+    const phase3Prompt = coreTemplate
+      .replace('{{PHASE}}', 'phase3_active_review')
+      .replace('{{CORE_MEMORY}}', formatActiveList(activeList))
+      .replace('{{ITEMS}}', itemsText)
+      .replace('{{ACTIVE_CAP}}', String(ACTIVE_CAP))
+      .replace('{{ACTIVE_COUNT}}', String(activeList.length))
+
+    try {
+      const raw = await resolveCycleLlmOutput(phase3Prompt, ws, {
+        mode: 'core-promote', provider, timeout: 180000,
+      })
+      const parsed = extractJsonObject(raw)
+      if (parsed?.actions && Array.isArray(parsed.actions)) {
+        const phase3Stats = applyActions(parsed.actions, null)
+        process.stderr.write(`[memory-cycle2] phase3: active=${activeList.length}→${loadActiveList().length} demote=${phase3Stats.demoteCount} merge=${phase3Stats.mergeCount}\n`)
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-cycle2] phase3 LLM failed: ${e.message}\n`)
+    }
+  }
+
+  const finalActive = loadActiveList()
+  process.stderr.write(`[memory-cycle2] core_memory final: active=${finalActive.length}\n`)
 }
 
 export async function runCycle1(ws, config, options = {}) {

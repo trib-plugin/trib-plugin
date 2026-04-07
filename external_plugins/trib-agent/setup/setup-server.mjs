@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execSync, exec } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import http from 'http';
@@ -11,9 +11,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
 
-// Use plugin data dir if available, otherwise ~/.config
-const pluginDataDir = process.env.CLAUDE_PLUGIN_DATA
-  || join(home, '.config', 'trib-orchestrator');
+// Resolve plugin data dir (same logic as orchestrator/config.js getPluginData)
+function resolveDataDir() {
+    if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    if (root) {
+        const pluginName = basename(root);
+        const marketplace = basename(join(root, '..', '..'));
+        return join(home, '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
+    }
+    return join(home, '.claude', 'plugins', 'data', 'trib-agent-trib-plugin');
+}
+const pluginDataDir = resolveDataDir();
 const CONFIG_PATH = join(pluginDataDir, 'config.json');
 const PORT = 3459;
 const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');

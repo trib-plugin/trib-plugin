@@ -4,8 +4,8 @@ import { mkdirSync } from 'fs'
 import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from '@huggingface/transformers'
 
 const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
-const INTRA_OP_THREADS = 0
-const INTER_OP_THREADS = 0
+const INTRA_OP_THREADS = 4
+const INTER_OP_THREADS = 1
 let _ortPatched = false
 
 function patchOrtThreads() {

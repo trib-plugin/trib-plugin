@@ -9,6 +9,7 @@ import { randomBytes, createHash } from 'crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { getPluginData } from '../config.js';
 // --- Constants ---
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
@@ -18,8 +19,7 @@ const SCOPE = 'openid profile email offline_access';
 const CODEX_API_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CALLBACK_PORT = 1455;
 function getOwnTokenPath() {
-    const pluginData = process.env.CLAUDE_PLUGIN_DATA;
-    const dir = pluginData || join(homedir(), '.config', 'trib-orchestrator');
+    const dir = getPluginData();
     if (!existsSync(dir))
         mkdirSync(dir, { recursive: true });
     return join(dir, 'openai-oauth.json');
@@ -226,7 +226,7 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         reasoning: { effort: opts.effort || 'medium' },
     };
     if (opts.fast === true) {
-        body.service_tier = 'fast';
+        body.service_tier = 'priority';
     }
     // Add tools
     if (tools?.length) {

@@ -156,6 +156,17 @@ function buildInputSchema(zodSchema) {
   return jsonSchema
 }
 
+const GITHUB_CODE_KEYWORDS = /\b(function|class|import|require|package|module|npm|pip|cargo|crate|library|lib|sdk|api|source\s*code|implementation|snippet|middleware|decorator|hook)\b/
+const GITHUB_REPO_KEYWORDS = /\b(repo|repository|github|project|framework|boilerplate|starter|template|toolkit|open\s*source|oss)\b/
+const GITHUB_ISSUE_KEYWORDS = /\b(bug|issue|error|fix|patch|regression|crash|pr\b|pull\s*request|changelog|breaking\s*change|deprecat)/
+
+function inferGithubType(query) {
+  if (GITHUB_ISSUE_KEYWORDS.test(query)) return 'issues'
+  if (GITHUB_CODE_KEYWORDS.test(query)) return 'code'
+  if (GITHUB_REPO_KEYWORDS.test(query)) return 'repositories'
+  return null
+}
+
 function getSearchCacheTtlMs(type = 'web') {
   switch (type) {
     case 'news':
@@ -551,6 +562,32 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
             tool: 'search',
             github_type: args.github_type,
           }), isError: true }
+        }
+      }
+
+      // Auto-route to GitHub when query implies code/repo/issue intent
+      if (!args.github_type && !args.site && args.keywords) {
+        const queryLower = (Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords).toLowerCase()
+        const autoGithubType = inferGithubType(queryLower)
+        if (autoGithubType) {
+          try {
+            const response = await runRawSearch({
+              ...args,
+              providers: ['github'],
+              github_type: autoGithubType,
+              maxResults: args.maxResults || getRawSearchMaxResults(config),
+            })
+            saveUsageState(usageState)
+            return formattedText('search', {
+              tool: 'search',
+              provider: 'github',
+              github_type: autoGithubType,
+              autoRouted: true,
+              response,
+            })
+          } catch {
+            // GitHub auto-route failed, fall through to normal search
+          }
         }
       }
 

@@ -8,7 +8,7 @@ import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.js';
 
 const INSTRUCTIONS = [
   'Tools: `TeamCreate`, `TaskCreate`, `Agent`(subagent_type=Worker/Reviewer, team_name required).',
-  'Lead delegates all work to Workers via `Agent`. Lead never uses Read/Write/Edit/Bash/Glob/Grep.',
+  'Lead can use any tool directly if it does not delay user response. Delegate long-running or parallel work to agents.',
   'Workflow skill must be invoked before any work begins.',
   '',
   'Orchestrator MCP tools: `create_session`, `list_sessions`, `close_session`, `list_models`.',
@@ -38,7 +38,7 @@ function notify(text) {
     method: 'notifications/claude/channel',
     params: {
       content: text,
-      meta: { user: 'trib-orchestrator', user_id: 'system', ts: new Date().toISOString() },
+      meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
     },
   }).catch(() => {});
 }

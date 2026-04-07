@@ -1168,7 +1168,6 @@ function detectDeviceLanguage(): string {
     process.env.LANG,
     Intl.DateTimeFormat().resolvedOptions().locale,
     config.language,
-    profile.lang,
   ]
 
   for (const candidate of candidates) {

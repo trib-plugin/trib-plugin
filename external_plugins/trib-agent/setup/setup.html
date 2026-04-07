@@ -22,6 +22,7 @@
     --orange: #d29922;
     --orange-dim: rgba(210,153,34,0.12);
     --red: #e5534b;
+    --red-dim: rgba(229,83,75,0.12);
     --radius: 8px;
     --cat-w: 150px;
   }
@@ -85,7 +86,7 @@
   }
   .r {
     display: flex; align-items: center;
-    padding: 0 14px; min-height: 44px;
+    padding: 0 14px; min-height: 48px;
     border-bottom: 1px solid var(--border);
     transition: background 0.15s;
   }
@@ -96,7 +97,7 @@
     font-weight: 500; flex-shrink: 0;
   }
   .r-input {
-    flex: 1; height: 34px; padding: 0 10px;
+    width: 280px; flex: 0 0 280px; height: 34px; padding: 0 10px;
     background: rgba(0,0,0,0.25); border: 1px solid var(--border);
     border-radius: 5px; color: var(--text-1);
     font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', monospace;
@@ -115,15 +116,19 @@
   .r-tag {
     font-size: 11px; padding: 3px 8px; border-radius: 4px;
     font-weight: 500; margin-left: auto; flex-shrink: 0;
+    min-width: 64px; text-align: center; display: inline-block;
   }
   .r-tag.ok { background: var(--green-dim); color: var(--green); }
-  .r-tag.no { background: rgba(255,255,255,0.03); color: var(--text-4); }
+  .r-tag.no { background: var(--red-dim); color: var(--red); }
   .r-tag.oauth { background: var(--orange-dim); color: var(--orange); }
   .r-tag.env { background: rgba(139,145,240,0.08); color: var(--accent); }
+  .r-tag.running { background: var(--green-dim); color: var(--green); }
+  .r-tag.not-running { background: var(--red-dim); color: var(--red); }
   .input-group {
-    display: flex; flex: 1; align-items: center; gap: 0;
+    display: flex; width: 280px; flex: 0 0 280px; align-items: center; gap: 0;
   }
   .input-group .r-input {
+    flex: 1; width: auto;
     border-top-right-radius: 0; border-bottom-right-radius: 0;
     border-right: none;
   }
@@ -185,6 +190,7 @@
     padding: 12px 14px;
     border-bottom: 1px solid var(--border);
     display: flex; align-items: center; gap: 10px;
+    min-height: 48px;
   }
   .preset-card:last-child { border-bottom: none; }
   .preset-card:hover { background: rgba(255,255,255,0.015); }
@@ -206,14 +212,18 @@
     transition: all 0.15s;
   }
   .icon-btn:hover { color: var(--text-1); border-color: var(--border-focus); }
-  .icon-btn.danger:hover { color: var(--red); border-color: var(--red); }
+  .icon-btn.edit-btn { border-color: rgba(139,145,240,0.3); color: var(--accent); }
+  .icon-btn.edit-btn:hover { background: rgba(139,145,240,0.1); border-color: var(--accent); color: var(--accent); }
+  .icon-btn.danger { border-color: rgba(229,83,75,0.3); color: var(--red); }
+  .icon-btn.danger:hover { background: var(--red-dim); border-color: var(--red); }
   .form-row {
     display: flex; align-items: center;
-    padding: 0 14px; min-height: 44px;
+    padding: 0 14px; min-height: 48px;
     border-bottom: 1px solid var(--border);
   }
   .form-row:last-child { border-bottom: none; }
   .form-row .r-name { width: 90px; }
+  .form-row .r-input { flex: 1; width: auto; }
   .form-actions {
     display: flex; gap: 8px; padding: 12px 14px;
     border-top: 1px solid var(--border);
@@ -224,7 +234,7 @@
     border: none; border-radius: 5px;
     font-family: 'Inter', sans-serif;
     font-size: 12px; font-weight: 600;
-    cursor: pointer; transition: filter 0.15s;
+    cursor: pointer; transition: all 0.15s;
   }
   .btn.primary { background: var(--accent); color: #fff; }
   .btn.primary:hover { filter: brightness(1.1); }
@@ -258,6 +268,19 @@
   .main::-webkit-scrollbar, .cat-bar::-webkit-scrollbar { width: 6px; }
   .main::-webkit-scrollbar-track, .cat-bar::-webkit-scrollbar-track { background: transparent; }
   .main::-webkit-scrollbar-thumb, .cat-bar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+  .advanced-toggle {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 14px; min-height: 40px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+    font-size: 12px; color: var(--text-3);
+    transition: color 0.15s;
+  }
+  .advanced-toggle:hover { color: var(--text-2); }
+  .advanced-toggle .arrow { transition: transform 0.2s; display: inline-block; font-size: 10px; }
+  .advanced-toggle .arrow.open { transform: rotate(90deg); }
+  .advanced-content { display: none; }
+  .advanced-content.open { display: block; }
 </style>
 </head>
 <body>
@@ -299,26 +322,22 @@
     <div class="panel" id="panel-presets">
       <div class="hdr">
         <h1>Presets</h1>
-        <button class="hdr-btn" onclick="openPresetForm(null)">+ New preset</button>
+        <button class="hdr-btn" onclick="openPresetForm(null)">+ New Preset</button>
       </div>
 
       <div class="sec">
-        <div class="sec-title">Saved presets</div>
+        <div class="sec-title">Saved Presets</div>
         <div class="sec-body" id="preset-list">
           <div class="empty">Loading...</div>
         </div>
       </div>
 
       <div class="sec" id="preset-form-sec" style="display:none">
-        <div class="sec-title" id="preset-form-title">New preset</div>
+        <div class="sec-title" id="preset-form-title">New Preset</div>
         <div class="sec-body">
           <div class="form-row">
-            <span class="r-name">ID</span>
-            <input class="r-input" id="pf-id" placeholder="my-preset" maxlength="40">
-          </div>
-          <div class="form-row">
             <span class="r-name">Name</span>
-            <input class="r-input" id="pf-name" placeholder="optional friendly label">
+            <input class="r-input" id="pf-name" placeholder="my-preset" maxlength="40">
           </div>
           <div class="form-row">
             <span class="r-name">Provider</span>
@@ -330,24 +349,29 @@
           </div>
           <div class="form-row">
             <span class="r-name">Effort</span>
-            <select class="r-select" id="pf-effort"><option value="">(provider default)</option></select>
+            <select class="r-select" id="pf-effort"><option value="">(Provider Default)</option></select>
           </div>
           <div class="form-row" id="pf-fast-row" style="display:none">
-            <span class="r-name">Fast mode</span>
+            <span class="r-name">Fast Mode</span>
             <div class="r-toggle" id="pf-fast" onclick="this.classList.toggle('on')"></div>
-            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Anthropic Opus 4.6 only — speed=fast (premium)</span>
+            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Speed optimized output (premium)</span>
           </div>
-          <div class="form-row">
-            <span class="r-name">Tools</span>
-            <div class="radio-group" id="pf-tools">
-              <div class="radio-btn on" data-v="full" onclick="selectTools(this)">Full</div>
-              <div class="radio-btn" data-v="readonly" onclick="selectTools(this)">Readonly</div>
-              <div class="radio-btn" data-v="mcp" onclick="selectTools(this)">MCP only</div>
+          <div class="advanced-toggle" onclick="toggleAdvanced(this)">
+            <span class="arrow">&#9654;</span> Advanced Options
+          </div>
+          <div class="advanced-content" id="pf-access-section">
+            <div class="form-row">
+              <span class="r-name">Access</span>
+              <div class="radio-group" id="pf-tools">
+                <div class="radio-btn on" data-v="full" onclick="selectTools(this)">Read & Write</div>
+                <div class="radio-btn" data-v="readonly" onclick="selectTools(this)">Read Only</div>
+                <div class="radio-btn" data-v="mcp" onclick="selectTools(this)">None</div>
+              </div>
             </div>
           </div>
           <div class="form-actions">
             <button class="btn secondary" onclick="closePresetForm()">Cancel</button>
-            <button class="btn primary" onclick="savePreset()">Save preset</button>
+            <button class="btn primary" onclick="savePreset()">Save Preset</button>
           </div>
         </div>
       </div>
@@ -386,34 +410,34 @@ const LOCAL_PROVIDERS = [
   {id:'lmstudio',name:'LM Studio',url:'http://localhost:1234/v1'},
 ];
 
-// Effort labels per provider. Empty array means: hide effort field.
 const EFFORT_OPTIONS = {
   openai: [
-    { v: '', label: '(default)' },
-    { v: 'none', label: 'none' },
-    { v: 'low', label: 'low' },
-    { v: 'medium', label: 'medium' },
-    { v: 'high', label: 'high' },
-    { v: 'xhigh', label: 'xhigh' },
+    { v: '', label: '(Default)' },
+    { v: 'none', label: 'None' },
+    { v: 'low', label: 'Low' },
+    { v: 'medium', label: 'Medium' },
+    { v: 'high', label: 'High' },
+    { v: 'xhigh', label: 'Extra High' },
   ],
   'openai-oauth': [
-    { v: '', label: '(default)' },
-    { v: 'none', label: 'none' },
-    { v: 'low', label: 'low' },
-    { v: 'medium', label: 'medium' },
-    { v: 'high', label: 'high' },
-    { v: 'xhigh', label: 'xhigh' },
+    { v: '', label: '(Default)' },
+    { v: 'none', label: 'None' },
+    { v: 'low', label: 'Low' },
+    { v: 'medium', label: 'Medium' },
+    { v: 'high', label: 'High' },
+    { v: 'xhigh', label: 'Extra High' },
   ],
   anthropic: [
-    { v: '', label: '(default)' },
-    { v: 'low', label: 'low' },
-    { v: 'medium', label: 'medium' },
-    { v: 'high', label: 'high' },
-    { v: 'max', label: 'max' },
+    { v: '', label: '(Default)' },
+    { v: 'low', label: 'Low' },
+    { v: 'medium', label: 'Medium' },
+    { v: 'high', label: 'High' },
+    { v: 'max', label: 'Max' },
   ],
 };
-// Providers that support a "fast" mode (Anthropic Opus speed:"fast", OpenAI service_tier:"fast").
 const FAST_PROVIDERS = new Set(['anthropic', 'openai', 'openai-oauth']);
+
+const ACCESS_LABELS = { full: 'Read & Write', readonly: 'Read Only', mcp: 'None' };
 
 let config = {}, auth = {}, presets = [], isDirty = false;
 let editingPresetId = null;
@@ -443,6 +467,13 @@ function toggleVis(btn) {
   else { inp.type = 'password'; btn.innerHTML = '&#128065;'; }
 }
 
+function toggleAdvanced(el) {
+  const arrow = el.querySelector('.arrow');
+  const content = el.nextElementSibling;
+  arrow.classList.toggle('open');
+  content.classList.toggle('open');
+}
+
 async function loadData() {
   const r = await fetch('/config').then(r => r.json()).catch(() => ({}));
   config = r.config || {};
@@ -459,7 +490,17 @@ function renderAll() {
   for (const p of API_PROVIDERS) {
     const key = c[p.id]?.apiKey || '';
     const hasEnv = auth.envKeys?.[p.id];
-    const tag = key ? '<span class="r-tag ok">set</span>' : hasEnv ? '<span class="r-tag env">env</span>' : '<span class="r-tag no">not set</span>';
+    let tag, link;
+    if (key) {
+      tag = '<span class="r-tag ok">Set</span>';
+      link = '';
+    } else if (hasEnv) {
+      tag = '<span class="r-tag env">Env</span>';
+      link = '';
+    } else {
+      tag = '<span class="r-tag no">Not Set</span>';
+      link = `<a class="r-link" href="${p.url}" target="_blank">Get &#8599;</a>`;
+    }
     apiSec.innerHTML += `<div class="r">
       <span class="r-name">${p.name}</span>
       <div class="input-group">
@@ -467,7 +508,7 @@ function renderAll() {
         <button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button>
       </div>
       ${tag}
-      <a class="r-link" href="${p.url}" target="_blank">Get &#8599;</a>
+      ${link}
     </div>`;
   }
 
@@ -476,7 +517,7 @@ function renderAll() {
   oauthSec.innerHTML = '';
   for (const p of OAUTH_PROVIDERS) {
     const detected = p.id === 'openai-oauth' ? auth.codexOAuth : auth.copilot;
-    const tag = detected ? '<span class="r-tag oauth">detected</span>' : '<span class="r-tag no">not found</span>';
+    const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>';
     oauthSec.innerHTML += `<div class="r">
       <span class="r-name">${p.name}</span>
       <span style="flex:1;font-size:12px;color:var(--text-4)">${p.desc}</span>
@@ -488,14 +529,12 @@ function renderAll() {
   const localSec = document.getElementById('local-sec');
   localSec.innerHTML = '';
   for (const p of LOCAL_PROVIDERS) {
-    const enabled = c[p.id]?.enabled === true;
     const url = c[p.id]?.baseURL || p.url;
     const detected = auth[p.id];
-    const tag = detected ? '<span class="r-tag oauth">running</span>' : '<span class="r-tag no">not running</span>';
+    const tag = detected ? '<span class="r-tag running">Running</span>' : '<span class="r-tag not-running">Not Running</span>';
     localSec.innerHTML += `<div class="r">
       <span class="r-name">${p.name}</span>
-      <div class="r-toggle ${enabled?'on':''}" id="local-${p.id}" onclick="this.classList.toggle('on')"></div>
-      <input class="r-input" id="url-${p.id}" value="${escapeAttr(url)}" placeholder="${p.url}" style="margin-left:10px">
+      <input class="r-input" id="url-${p.id}" value="${escapeAttr(url)}" placeholder="${p.url}">
       ${tag}
     </div>`;
   }
@@ -518,22 +557,22 @@ function renderStatus() {
   for (const p of API_PROVIDERS) {
     const hasKey = !!c[p.id]?.apiKey;
     const hasEnv = auth.envKeys?.[p.id];
-    const tag = hasKey ? '<span class="r-tag ok">API key</span>' : hasEnv ? '<span class="r-tag env">env var</span>' : '<span class="r-tag no">off</span>';
+    const tag = hasKey ? '<span class="r-tag ok">API Key</span>' : hasEnv ? '<span class="r-tag env">Env Var</span>' : '<span class="r-tag no">Off</span>';
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
   for (const p of OAUTH_PROVIDERS) {
     const detected = p.id === 'openai-oauth' ? auth.codexOAuth : auth.copilot;
-    const tag = detected ? '<span class="r-tag oauth">OAuth</span>' : '<span class="r-tag no">off</span>';
+    const tag = detected ? '<span class="r-tag oauth">OAuth</span>' : '<span class="r-tag no">Off</span>';
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
   for (const p of LOCAL_PROVIDERS) {
     const enabled = c[p.id]?.enabled === true;
     const detected = auth[p.id];
     let tag;
-    if (enabled && detected) tag = '<span class="r-tag ok">enabled · running</span>';
-    else if (enabled) tag = '<span class="r-tag env">enabled · not running</span>';
-    else if (detected) tag = '<span class="r-tag no">running · disabled</span>';
-    else tag = '<span class="r-tag no">off</span>';
+    if (enabled && detected) tag = '<span class="r-tag ok">Enabled</span>';
+    else if (enabled) tag = '<span class="r-tag oauth">Enabled</span>';
+    else if (detected) tag = '<span class="r-tag not-running">Disabled</span>';
+    else tag = '<span class="r-tag no">Off</span>';
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
   sec.innerHTML = h;
@@ -546,9 +585,9 @@ async function saveProviders() {
     if (key) providers[p.id] = { apiKey: key, enabled: true };
   }
   for (const p of LOCAL_PROVIDERS) {
-    const enabled = document.getElementById('local-'+p.id)?.classList.contains('on');
     const url = document.getElementById('url-'+p.id)?.value.trim();
-    providers[p.id] = { enabled, baseURL: url || p.url };
+    const detected = auth[p.id];
+    providers[p.id] = { enabled: detected, baseURL: url || p.url };
   }
   await doSave({ providers }, 'providers');
 }
@@ -564,7 +603,6 @@ async function doSave(data, panelId) {
     isDirty = false;
     if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500); }
     await loadData();
-    // refresh preset provider dropdown — enabled set may have changed
     await loadPresets();
   } catch {
     if (warn) warn.textContent = 'Save failed';
@@ -601,24 +639,25 @@ async function loadPresets() {
 function renderPresetList() {
   const list = document.getElementById('preset-list');
   if (presets.length === 0) {
-    list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New preset</strong> to create one.</div>';
+    list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New Preset</strong> to create one.</div>';
     return;
   }
   list.innerHTML = presets.map(p => {
+    const accessLabel = ACCESS_LABELS[p.tools] || 'Read & Write';
     const meta = [
       `${p.provider}/${p.model}`,
-      `tools=${p.tools}`,
+      p.tools && p.tools !== 'full' ? accessLabel : null,
       p.effort ? `effort=${p.effort}` : null,
-      p.fast ? 'fast' : null,
+      p.fast ? 'Fast' : null,
     ].filter(Boolean).join(' · ');
-    const label = p.name ? `${escapeHtml(p.name)} <span style="color:var(--text-4);font-weight:400">(${escapeHtml(p.id)})</span>` : escapeHtml(p.id);
+    const label = escapeHtml(p.name || p.id);
     return `<div class="preset-card">
       <div class="preset-info">
         <div class="preset-id">${label}</div>
         <div class="preset-meta">${escapeHtml(meta)}</div>
       </div>
       <div class="preset-actions">
-        <button class="icon-btn" onclick="openPresetForm('${escapeAttr(p.id)}')">Edit</button>
+        <button class="icon-btn edit-btn" onclick="openPresetForm('${escapeAttr(p.id)}')">Edit</button>
         <button class="icon-btn danger" onclick="deletePreset('${escapeAttr(p.id)}')">Delete</button>
       </div>
     </div>`;
@@ -631,11 +670,17 @@ function openPresetForm(id) {
   const title = document.getElementById('preset-form-title');
   sec.style.display = 'block';
 
+  // Reset advanced section to collapsed
+  const advToggle = sec.querySelector('.advanced-toggle');
+  const advContent = document.getElementById('pf-access-section');
+  if (advToggle) advToggle.querySelector('.arrow').classList.remove('open');
+  if (advContent) advContent.classList.remove('open');
+
   // Populate provider dropdown with enabled providers only
   const providerSel = document.getElementById('pf-provider');
   const enabled = getEnabledProviders();
   if (enabled.length === 0) {
-    providerSel.innerHTML = '<option value="">No enabled providers — configure one in Providers tab first</option>';
+    providerSel.innerHTML = '<option value="">No enabled providers</option>';
     providerSel.disabled = true;
   } else {
     providerSel.disabled = false;
@@ -643,12 +688,10 @@ function openPresetForm(id) {
   }
 
   if (id) {
-    title.textContent = `Edit preset: ${id}`;
+    title.textContent = 'Edit Preset';
     const p = presets.find(x => x.id === id);
     if (p) {
-      document.getElementById('pf-id').value = p.id;
-      document.getElementById('pf-id').disabled = true;
-      document.getElementById('pf-name').value = p.name || '';
+      document.getElementById('pf-name').value = p.name || p.id;
       providerSel.value = p.provider;
       onProviderChange().then(() => {
         document.getElementById('pf-model').value = p.model;
@@ -656,15 +699,18 @@ function openPresetForm(id) {
         const fastEl = document.getElementById('pf-fast');
         fastEl.classList.toggle('on', !!p.fast);
         document.querySelectorAll('#pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === (p.tools || 'full')));
+        // If non-default access, open advanced
+        if (p.tools && p.tools !== 'full') {
+          if (advToggle) advToggle.querySelector('.arrow').classList.add('open');
+          if (advContent) advContent.classList.add('open');
+        }
       });
       return;
     }
   }
 
   // New preset defaults
-  title.textContent = 'New preset';
-  document.getElementById('pf-id').value = '';
-  document.getElementById('pf-id').disabled = false;
+  title.textContent = 'New Preset';
   document.getElementById('pf-name').value = '';
   document.getElementById('pf-fast').classList.remove('on');
   document.querySelectorAll('#pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === 'full'));
@@ -687,29 +733,28 @@ async function onProviderChange() {
   const fastRow = document.getElementById('pf-fast-row');
 
   // Effort options
-  const opts = EFFORT_OPTIONS[provider] || [{ v: '', label: '(provider default)' }];
+  const opts = EFFORT_OPTIONS[provider] || [{ v: '', label: '(Provider Default)' }];
   effortSel.innerHTML = opts.map(o => `<option value="${o.v}">${o.label}</option>`).join('');
 
   // Fast toggle
   fastRow.style.display = FAST_PROVIDERS.has(provider) ? 'flex' : 'none';
   if (!FAST_PROVIDERS.has(provider)) document.getElementById('pf-fast').classList.remove('on');
 
-  // Models — fetched dynamically
+  // Models
   modelSel.disabled = true;
   modelSel.innerHTML = '<option value="">Loading...</option>';
   try {
     const r = await fetch(`/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
     const models = r.models || [];
     if (models.length === 0) {
-      modelSel.innerHTML = '<option value="">No models found — type below</option>';
-      // Allow free-form: replace select with input
+      modelSel.innerHTML = '<option value="">No models found</option>';
       replaceModelWithInput('');
     } else {
       modelSel.innerHTML = models.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');
       modelSel.disabled = false;
     }
   } catch {
-    modelSel.innerHTML = '<option value="">Failed to fetch — type below</option>';
+    modelSel.innerHTML = '<option value="">Failed to fetch</option>';
     replaceModelWithInput('');
   }
 }
@@ -720,7 +765,7 @@ function replaceModelWithInput(value) {
   const inp = document.createElement('input');
   inp.id = 'pf-model';
   inp.className = 'r-input';
-  inp.placeholder = 'Enter model id manually';
+  inp.placeholder = 'Enter model ID manually';
   inp.value = value || '';
   old.replaceWith(inp);
 }
@@ -733,7 +778,6 @@ function selectTools(el) {
 async function savePreset() {
   const warn = document.getElementById('warn-presets');
   warn.textContent = '';
-  const id = document.getElementById('pf-id').value.trim();
   const name = document.getElementById('pf-name').value.trim();
   const provider = document.getElementById('pf-provider').value;
   const modelEl = document.getElementById('pf-model');
@@ -742,12 +786,15 @@ async function savePreset() {
   const fast = document.getElementById('pf-fast').classList.contains('on');
   const tools = document.querySelector('#pf-tools .radio-btn.on')?.dataset.v || 'full';
 
-  if (!id) { warn.textContent = 'ID is required'; return; }
+  if (!name) { warn.textContent = 'Name is required'; return; }
   if (!provider) { warn.textContent = 'Provider is required'; return; }
   if (!model) { warn.textContent = 'Model is required'; return; }
 
-  const body = { id, provider, model, tools };
-  if (name) body.name = name;
+  // Use name as id (sanitized)
+  const id = editingPresetId || name.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
+
+  const body = { id, name, provider, model, tools };
   if (effort) body.effort = effort;
   if (fast && FAST_PROVIDERS.has(provider)) body.fast = true;
 

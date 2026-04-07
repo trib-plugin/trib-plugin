@@ -11,9 +11,11 @@ Fields:
   Bad: "모델 선택"
   Bad: "설정"
 - importance: ONE of [rule, goal, directive, preference, decision, incident] or empty
-- chunks: array of 1-3 self-contained semantic chunks extracted from the text. Each chunk is a meaningful unit of information (a fact, decision, or action) that can stand alone. Strip filler phrases ("죄송합니다", "바로 하겠습니다", "네,"). Max 60 chars per chunk.
-  Good: ["채널 모드 감지: --channels 플래그로 notifications/claude/channel 수신 여부 판단", "서버는 직접 감지 불가, notification 응답으로 간접 감지"]
-  Bad: ["채널 모드", "감지"]
+- chunks: array of complete factual sentences summarizing the conversation flow, context, and conclusion. Each chunk must be a self-contained record that makes sense without the original conversation. Include who decided what, why, and the outcome. Max 200 chars per chunk. Strip filler phrases.
+  Good: ["사용자가 Worker 종료는 명시적 요청 시에만 하도록 결정했으며, Lead가 자발적으로 shutdown_request를 보내는 것은 금지됨"]
+  Good: ["cycle2 승격 로직을 score 기반에서 LLM 판단으로 전환하기로 협의. core_memory에 active/pending/demoted/processed 4상태를 두고 active 상한 50개로 제한"]
+  Bad: ["Worker 종료", "shutdown 금지"]
+  Bad: ["cycle2 변경"]
   If the text has only one idea, return a single-element array.
 
 Items:

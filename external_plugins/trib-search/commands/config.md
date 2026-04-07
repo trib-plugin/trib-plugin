@@ -5,10 +5,6 @@ allowed-tools:
   - Bash(node:*)
 ---
 
-Open the trib-search settings UI:
+!`node "${CLAUDE_PLUGIN_ROOT}/setup/setup-server.mjs" &`
 
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/setup/setup-server.mjs"
-```
-
-Output the result verbatim.
+Present the output verbatim. The setup UI should open in a browser window — if not, visit http://localhost:3456 manually.

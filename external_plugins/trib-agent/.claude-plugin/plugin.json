@@ -1,5 +1,5 @@
 {
   "name": "trib-agent",
-  "version": "0.0.20",
+  "version": "0.0.23",
   "description": "Agent workflow + multi-AI orchestration — team management, external model sessions with tool loop and context injection."
 }
