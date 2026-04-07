@@ -48,7 +48,7 @@ var DEFAULT_CONFIG = {
   },
   aiSearch: {
     priority: ["codex", "claude", "grok", "gemini"],
-    timeoutMs: 12e4,
+    timeoutMs: 6e4,
     profiles: {
       grok: {
         connection: "api",
@@ -74,7 +74,7 @@ var DEFAULT_CONFIG = {
       }
     }
   },
-  requestTimeoutMs: 3e4,
+  requestTimeoutMs: 15e3,
   crawl: {
     maxPages: 10,
     maxDepth: 2,
@@ -2242,8 +2242,7 @@ var searchArgsSchema = z.object({
   number: z.number().int().optional().describe("Issue or PR number. Required for github_type: issue."),
   ref: z.string().optional().describe("Git ref (branch, tag, SHA). Optional for github_type: file."),
   state: z.enum(["open", "closed", "all"]).optional().describe("Filter state for github_type: pulls. Default: open."),
-  maxResults: z.number().int().min(1).max(20).optional(),
-  mode: z.enum(["search_first", "ai_first", "ai_only"]).optional().describe("Search strategy: search_first (default) = raw search first with AI fallback, ai_first = AI search first with raw fallback, ai_only = AI search only")
+  maxResults: z.number().int().min(1).max(20).optional()
 }).refine(
   (data) => {
     const isGithubRead = ["file", "repo", "issue", "pulls"].includes(data.github_type);
@@ -2285,8 +2284,7 @@ var batchItemSchema = z.discriminatedUnion("action", [
     number: z.number().int().optional(),
     ref: z.string().optional(),
     state: z.enum(["open", "closed", "all"]).optional(),
-    maxResults: z.number().int().min(1).max(20).optional(),
-    mode: z.enum(["search_first", "ai_first", "ai_only"]).optional()
+    maxResults: z.number().int().min(1).max(20).optional()
   }),
   z.object({
     action: z.literal("firecrawl_scrape"),
@@ -2523,7 +2521,7 @@ var toolDefinitions = [
   {
     name: "search",
     title: "Search",
-    description: "Unified search tool. Use mode to control strategy: search_first (default) = raw search first with AI fallback, ai_first = AI search first with raw fallback, ai_only = AI search only. Providers are auto-selected based on configured priority.",
+    description: "Unified search tool. Providers are auto-selected based on configured priority.",
     inputSchema: buildInputSchema(searchArgsSchema),
     annotations: { title: "Search", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
@@ -2550,10 +2548,10 @@ var toolDefinitions = [
   },
   {
     name: "batch",
-    title: "Batch",
+    title: "Search",
     description: "Execute multiple search, firecrawl_scrape, and firecrawl_map actions in a single request. Each item runs in parallel. Crawl is not supported in batch.",
     inputSchema: buildInputSchema(batchArgsSchema),
-    annotations: { title: "Batch", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+    annotations: { title: "Search", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   },
   {
     name: "setup",
@@ -2563,7 +2561,7 @@ var toolDefinitions = [
   }
 ];
 var SEARCH_INSTRUCTIONS = [
-  "Tools: `search`(query, mode: search_first|ai_first|ai_only), `firecrawl_scrape`(url), `firecrawl_map`(url), `crawl`(url), `batch`(items[]), `setup`.",
+  "Tools: `search`(query), `firecrawl_scrape`(url), `firecrawl_map`(url), `crawl`(url), `batch`(items[]), `setup`.",
   "Prefer `search` over built-in WebSearch/WebFetch when available.",
   "Use `batch` for 2+ operations \u2014 no separate calls."
 ].join("\n");

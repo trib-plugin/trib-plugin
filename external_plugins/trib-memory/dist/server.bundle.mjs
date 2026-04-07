@@ -90,6 +90,7 @@ import fs2 from "node:fs";
 import path2 from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema
@@ -101,7 +102,7 @@ import {
   appendFileSync,
   closeSync,
   existsSync,
-  mkdirSync,
+  mkdirSync as mkdirSync3,
   openSync,
   readFileSync,
   readSync,
@@ -110,16 +111,23 @@ import {
   statSync,
   writeFileSync
 } from "fs";
-import { dirname, join, resolve } from "path";
+import { dirname, join as join3, resolve } from "path";
 import { homedir } from "os";
 
 // lib/embedding-provider.mjs
+import { createRequire } from "module";
+import { join } from "path";
+import { mkdirSync } from "fs";
 var MODEL_ID = "Xenova/bge-m3";
 var DEFAULT_DIMS = 1024;
 var DEFAULT_DTYPE = "q8";
+var INTRA_OP_THREADS = 2;
+var INTER_OP_THREADS = 1;
+var MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, ".cache", "trib-memory", "models");
 var extractorPromise = null;
 var cachedDims = null;
 var configuredDtype = DEFAULT_DTYPE;
+var ortPatched = false;
 var queryEmbeddingCache = /* @__PURE__ */ new Map();
 var QUERY_EMBEDDING_CACHE_LIMIT = 1e3;
 function cacheEmbedding(key, vector) {
@@ -146,18 +154,51 @@ function configureEmbedding(config = {}) {
   cachedDims = null;
   queryEmbeddingCache.clear();
 }
+function patchOrtThreads() {
+  if (ortPatched) return;
+  try {
+    const require2 = createRequire(import.meta.url);
+    const ort = require2("onnxruntime-node");
+    if (!ort?.InferenceSession?.create) {
+      process.stderr.write("[embed] ORT patch skipped: InferenceSession.create not found\n");
+      return;
+    }
+    const origCreate = ort.InferenceSession.create.bind(ort.InferenceSession);
+    ort.InferenceSession.create = async function(pathOrBuffer, options = {}) {
+      if (!options.intraOpNumThreads) options.intraOpNumThreads = INTRA_OP_THREADS;
+      if (!options.interOpNumThreads) options.interOpNumThreads = INTER_OP_THREADS;
+      return origCreate(pathOrBuffer, options);
+    };
+    ortPatched = true;
+    process.stderr.write(`[embed] ORT patched OK: intra=${INTRA_OP_THREADS} inter=${INTER_OP_THREADS}
+`);
+  } catch (err) {
+    process.stderr.write(`[embed] ORT patch failed: ${err?.message || err}
+`);
+  }
+}
 async function loadExtractor() {
   if (!extractorPromise) {
     extractorPromise = (async () => {
+      patchOrtThreads();
       const { pipeline, env } = await import("@huggingface/transformers");
       env.allowLocalModels = false;
+      try {
+        mkdirSync(MODEL_CACHE_DIR, { recursive: true });
+      } catch {
+      }
+      env.cacheDir = MODEL_CACHE_DIR;
+      try {
+        env.backends.onnx.wasm.numThreads = INTRA_OP_THREADS;
+      } catch {
+      }
       const opts = {};
       if (configuredDtype && configuredDtype !== "fp32") {
         opts.dtype = configuredDtype;
       }
       const startMs = Date.now();
       const extractor = await pipeline("feature-extraction", MODEL_ID, opts);
-      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} in ${Date.now() - startMs}ms
+      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} threads=${INTRA_OP_THREADS} in ${Date.now() - startMs}ms
 `);
       return extractor;
     })();
@@ -983,7 +1024,37 @@ function parseTemporalHint(query) {
 }
 
 // lib/reranker.mjs
+import { createRequire as createRequire2 } from "module";
+import { join as join2 } from "path";
+import { mkdirSync as mkdirSync2 } from "fs";
 import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from "@huggingface/transformers";
+var MODEL_CACHE_DIR2 = join2(process.env.HOME || process.env.USERPROFILE, ".cache", "trib-memory", "models");
+var INTRA_OP_THREADS2 = 2;
+var INTER_OP_THREADS2 = 1;
+var _ortPatched = false;
+function patchOrtThreads2() {
+  if (_ortPatched) return;
+  try {
+    const require2 = createRequire2(import.meta.url);
+    const ort = require2("onnxruntime-node");
+    if (!ort?.InferenceSession?.create) {
+      process.stderr.write("[reranker] ORT patch skipped: InferenceSession.create not found\n");
+      return;
+    }
+    const origCreate = ort.InferenceSession.create.bind(ort.InferenceSession);
+    ort.InferenceSession.create = async function(pathOrBuffer, options = {}) {
+      if (!options.intraOpNumThreads) options.intraOpNumThreads = INTRA_OP_THREADS2;
+      if (!options.interOpNumThreads) options.interOpNumThreads = INTER_OP_THREADS2;
+      return origCreate(pathOrBuffer, options);
+    };
+    _ortPatched = true;
+    process.stderr.write(`[reranker] ORT patched OK: intra=${INTRA_OP_THREADS2} inter=${INTER_OP_THREADS2}
+`);
+  } catch (err) {
+    process.stderr.write(`[reranker] ORT patch failed: ${err?.message || err}
+`);
+  }
+}
 var _tokenizer = null;
 var _model = null;
 var _loading = null;
@@ -1026,6 +1097,12 @@ async function ensureModel() {
   if (_model && _tokenizer) return;
   if (_loading) return _loading;
   _loading = (async () => {
+    patchOrtThreads2();
+    try {
+      mkdirSync2(MODEL_CACHE_DIR2, { recursive: true });
+    } catch {
+    }
+    hfEnv.cacheDir = MODEL_CACHE_DIR2;
     _tokenizer = await AutoTokenizer.from_pretrained(modelId);
     const preferGpu = (process.env.TRIB_MEMORY_RERANKER_DEVICE || "auto") !== "cpu";
     if (preferGpu) {
@@ -1746,8 +1823,7 @@ function markCandidateIdsConsolidated(store2, candidateIds = []) {
   if (ids.length === 0) return 0;
   const placeholders = ids.map(() => "?").join(", ");
   const stmt = store2.db.prepare(`
-    UPDATE memory_candidates
-    SET status = 'consolidated'
+    DELETE FROM memory_candidates
     WHERE status = 'pending'
       AND id IN (${placeholders})
   `);
@@ -1756,8 +1832,7 @@ function markCandidateIdsConsolidated(store2, candidateIds = []) {
 }
 function markCandidatesConsolidated(store2, dayKey) {
   return Number(store2.db.prepare(`
-    UPDATE memory_candidates
-    SET status = 'consolidated'
+    DELETE FROM memory_candidates
     WHERE day_key = ? AND status = 'pending'
   `).run(dayKey).changes ?? 0);
 }
@@ -1821,14 +1896,17 @@ var DEFAULT_OPS_POLICY = {
       scope: "all",
       limit: 80
     },
+    // Startup catch-up disabled by default: was running inline embeddings
+    // ~5s after server start, causing perceptible lag right after user typed.
+    // Pending work is still handled by the regular 5-min cycle1 interval.
     cycle1CatchUp: {
-      mode: "light",
+      mode: "off",
       delayMs: 5e3,
       minPendingCandidates: 8,
       requireDue: false
     },
     cycle2CatchUp: {
-      mode: "light",
+      mode: "off",
       delayMs: 5e3,
       requireDue: true
     }
@@ -1885,7 +1963,10 @@ function readMemoryOpsPolicy(mainConfig2 = {}) {
   const schedulerConfig = runtimeConfig?.scheduler ?? {};
   return {
     features: {
-      reranker: featuresConfig.reranker !== false,
+      // Opt-in: reranker must be explicitly `true` in config.
+      // Previous `!== false` treated undefined as true, contradicting
+      // DEFAULT_OPS_POLICY.features.reranker=false.
+      reranker: featuresConfig.reranker === true,
       temporalParser: featuresConfig.temporalParser === true
     },
     startup: {
@@ -2231,7 +2312,7 @@ function logIgnoredError(scope, error) {
 `);
 }
 function ensureDir(dirPath) {
-  mkdirSync(dirPath, { recursive: true });
+  mkdirSync3(dirPath, { recursive: true });
 }
 function workspaceToProjectSlug(workspacePath) {
   return resolve(workspacePath).replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1-").replace(/\//g, "-");
@@ -2258,8 +2339,8 @@ function isTranscriptQuarantineContent(text) {
 var MemoryStore = class {
   constructor(dataDir) {
     this.dataDir = dataDir;
-    this.historyDir = join(dataDir, "history");
-    this.dbPath = join(dataDir, "memory.sqlite");
+    this.historyDir = join3(dataDir, "history");
+    this.dbPath = join3(dataDir, "memory.sqlite");
     ensureDir(dirname(this.dbPath));
     this.db = new DatabaseSync(this.dbPath, { allowExtension: true });
     this.vecEnabled = false;
@@ -2386,13 +2467,13 @@ var MemoryStore = class {
     const directFiles = ["context.md", "identity.md", "ongoing.md", "lifetime.md", "interests.json"];
     for (const name of directFiles) {
       try {
-        rmSync(join(this.historyDir, name), { force: true });
+        rmSync(join3(this.historyDir, name), { force: true });
       } catch {
       }
     }
     for (const dir of ["daily", "weekly", "monthly", "yearly"]) {
       try {
-        rmSync(join(this.historyDir, dir), { recursive: true, force: true });
+        rmSync(join3(this.historyDir, dir), { recursive: true, force: true });
       } catch {
       }
     }
@@ -2538,6 +2619,30 @@ var MemoryStore = class {
 
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts
         USING fts5(content, topic, tokenize='trigram');
+
+      CREATE TABLE IF NOT EXISTS core_memory (
+        id INTEGER PRIMARY KEY,
+        classification_id INTEGER NOT NULL UNIQUE,
+        topic TEXT NOT NULL,
+        element TEXT NOT NULL,
+        importance TEXT,
+        final_score REAL NOT NULL DEFAULT 0,
+        promoted_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'demoted')),
+        FOREIGN KEY(classification_id) REFERENCES classifications(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_core_memory_status ON core_memory(status, final_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_core_memory_cls ON core_memory(classification_id);
+
+      CREATE TABLE IF NOT EXISTS classification_stats (
+        classification_id INTEGER NOT NULL UNIQUE,
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        retrieval_count INTEGER NOT NULL DEFAULT 0,
+        last_seen TEXT,
+        FOREIGN KEY(classification_id) REFERENCES classifications(id) ON DELETE CASCADE
+      );
     `);
     try {
       this.db.exec(`
@@ -2680,7 +2785,7 @@ var MemoryStore = class {
     return row?.value ?? fallback;
   }
   getRetrievalTuning() {
-    const configPath = join(this.dataDir, "config.json");
+    const configPath = join3(this.dataDir, "config.json");
     try {
       const mtimeMs = statSync(configPath).mtimeMs;
       if (this._retrievalTuningCache?.mtimeMs === mtimeMs) return this._retrievalTuningCache.value;
@@ -3043,11 +3148,11 @@ var MemoryStore = class {
   backfillProject(workspacePath, options = {}) {
     const limit = Number(options.limit ?? 50);
     const sinceMs = Number.isFinite(Number(options.sinceMs)) ? Number(options.sinceMs) : null;
-    const projectDir = join(homedir(), ".claude", "projects", workspaceToProjectSlug(workspacePath));
+    const projectDir = join3(homedir(), ".claude", "projects", workspaceToProjectSlug(workspacePath));
     if (!existsSync(projectDir)) return this.backfillAllProjects(options);
     const files = readdirSync(projectDir).filter((file) => file.endsWith(".jsonl") && !file.startsWith("agent-")).map((file) => ({
-      path: join(projectDir, file),
-      mtime: statSync(join(projectDir, file)).mtimeMs
+      path: join3(projectDir, file),
+      mtime: statSync(join3(projectDir, file)).mtimeMs
     })).filter((item) => !sinceMs || item.mtime >= sinceMs).sort((a, b) => b.mtime - a.mtime).slice(0, limit).map((item) => item.path).reverse();
     return this.ingestTranscriptFiles(files);
   }
@@ -3059,17 +3164,17 @@ var MemoryStore = class {
   backfillAllProjects(options = {}) {
     const limit = Number(options.limit ?? 50);
     const sinceMs = Number.isFinite(Number(options.sinceMs)) ? Number(options.sinceMs) : null;
-    const projectsRoot = join(homedir(), ".claude", "projects");
+    const projectsRoot = join3(homedir(), ".claude", "projects");
     if (!existsSync(projectsRoot)) return 0;
     const allFiles = [];
     try {
       for (const d of readdirSync(projectsRoot)) {
         if (d.includes("tmp") || d.includes("cache") || d.includes("plugins")) continue;
-        const full = join(projectsRoot, d);
+        const full = join3(projectsRoot, d);
         try {
           for (const f of readdirSync(full)) {
             if (!f.endsWith(".jsonl") || f.startsWith("agent-")) continue;
-            const fp = join(full, f);
+            const fp = join3(full, f);
             const mtime = statSync(fp).mtimeMs;
             if (sinceMs && mtime < sinceMs) continue;
             allFiles.push({ path: fp, mtime });
@@ -3104,7 +3209,7 @@ ${lines.join("\n")}`);
     return parts.join("\n\n").trim();
   }
   writeContextFile() {
-    const contextPath = join(this.historyDir, "context.md");
+    const contextPath = join3(this.historyDir, "context.md");
     ensureDir(this.historyDir);
     const content = this.buildContextText();
     writeFileSync(contextPath, `<!-- Auto-generated by memory store -->
@@ -3197,14 +3302,14 @@ ${content}
       const text = lines.length > 0 ? `## Recent
 ${lines.join("\n")}
 ` : "";
-      writeFileSync(join(this.historyDir, "recent.md"), text, "utf8");
+      writeFileSync(join3(this.historyDir, "recent.md"), text, "utf8");
     } catch {
     }
   }
   appendRetrievalTrace(record = {}) {
     try {
       ensureDir(this.historyDir);
-      const tracePath = join(this.historyDir, "retrieval-trace.jsonl");
+      const tracePath = join3(this.historyDir, "retrieval-trace.jsonl");
       appendFileSync(tracePath, `${JSON.stringify(record)}
 `, "utf8");
     } catch (error) {
@@ -3279,6 +3384,25 @@ ${lines.join("\n")}
       }
     } catch {
     }
+    try {
+      const coreLimit = Math.max(8, Math.floor(perTypeLimit / 4));
+      const coreRows = this.db.prepare(`
+        SELECT id, topic, element, importance FROM core_memory
+        WHERE status = 'active'
+        ORDER BY final_score DESC, id DESC
+        LIMIT ?
+      `).all(coreLimit);
+      for (const row of coreRows) {
+        items.push({
+          key: embeddingItemKey("core_memory", row.id),
+          entityType: "core_memory",
+          entityId: row.id,
+          subtype: row.importance || "fact",
+          content: [row.element, row.topic, row.importance].filter(Boolean).join(" | ")
+        });
+      }
+    } catch {
+    }
     return items;
   }
   async ensureEmbeddings(options = {}) {
@@ -3286,7 +3410,7 @@ ${lines.join("\n")}
     const contextMap = options.contextMap instanceof Map ? options.contextMap : /* @__PURE__ */ new Map();
     let contextualizeLocal = true;
     try {
-      const cfg = JSON.parse(readFileSync(join(this.dataDir, "config.json"), "utf8"));
+      const cfg = JSON.parse(readFileSync(join3(this.dataDir, "config.json"), "utf8"));
       if (cfg?.embedding?.contextualize === false) contextualizeLocal = false;
     } catch {
     }
@@ -3890,9 +4014,9 @@ async function stopLlmWorker() {
 }
 
 // lib/memory-cycle.mjs
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir2, tmpdir } from "os";
-import { join as join2 } from "path";
+import { join as join4 } from "path";
 
 // lib/llm-provider.mjs
 import { execFile, spawn } from "child_process";
@@ -3952,17 +4076,31 @@ async function execWithInput(command, args, stdin, options = {}) {
   });
 }
 async function callLLM(prompt, provider, options = {}) {
-  switch (provider.connection) {
-    case "codex":
-      return callCodex(prompt, provider, options);
-    case "cli":
-      return callClaude(prompt, provider, options);
-    case "ollama":
-      return callOllama(prompt, provider, options);
-    case "api":
-      return callAPI(prompt, provider, options);
-    default:
-      throw new Error(`Unknown provider connection: ${provider.connection}`);
+  const maxRetries = Math.max(0, Number(options.retries ?? 1));
+  const baseTimeout = options.timeout || 18e4;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const attemptTimeout = baseTimeout + attempt * 6e4;
+    const attemptOptions = { ...options, timeout: attemptTimeout };
+    try {
+      switch (provider.connection) {
+        case "codex":
+          return await callCodex(prompt, provider, attemptOptions);
+        case "cli":
+          return await callClaude(prompt, provider, attemptOptions);
+        case "ollama":
+          return await callOllama(prompt, provider, attemptOptions);
+        case "api":
+          return await callAPI(prompt, provider, attemptOptions);
+        default:
+          throw new Error(`Unknown provider connection: ${provider.connection}`);
+      }
+    } catch (e) {
+      const isTimeout = /timed?\s*out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up/i.test(e.message);
+      if (!isTimeout || attempt >= maxRetries) throw e;
+      process.stderr.write(`[llm-provider] timeout on attempt ${attempt + 1}, retrying (${attemptTimeout}ms -> ${attemptTimeout + 6e4}ms)...
+`);
+      await new Promise((r) => setTimeout(r, 2e3 * (attempt + 1)));
+    }
   }
 }
 async function callCodex(prompt, provider, options) {
@@ -4050,26 +4188,24 @@ async function callAPI(prompt, provider, options) {
 // lib/memory-cycle.mjs
 var PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
   const candidates = [
-    join2(homedir2(), ".claude", "plugins", "data", "trib-memory-trib-plugin"),
-    join2(homedir2(), ".claude", "plugins", "data", "trib-memory-trib-memory")
+    join4(homedir2(), ".claude", "plugins", "data", "trib-memory-trib-plugin"),
+    join4(homedir2(), ".claude", "plugins", "data", "trib-memory-trib-memory")
   ];
   for (const c of candidates) {
-    if (existsSync2(join2(c, "memory.sqlite"))) return c;
+    if (existsSync2(join4(c, "memory.sqlite"))) return c;
   }
   return candidates[0];
 })();
-var HISTORY_DIR = join2(PLUGIN_DATA_DIR, "history");
-var CONFIG_PATH = join2(PLUGIN_DATA_DIR, "memory-cycle.json");
-var CYCLE_STATE_PATH = join2(PLUGIN_DATA_DIR, "cycle-state.json");
+var HISTORY_DIR = join4(PLUGIN_DATA_DIR, "history");
+var CONFIG_PATH = join4(PLUGIN_DATA_DIR, "memory-cycle.json");
+var CYCLE_STATE_PATH = join4(PLUGIN_DATA_DIR, "cycle-state.json");
 var DEFAULT_CYCLE_STATE = {
   cycle1: { lastRunAt: null, interval: "5m" },
-  cycle2: { lastRunAt: null, schedule: "03:00" },
-  cycle3: { lastRunAt: null, schedule: "sunday 03:00" }
+  cycle2: { lastRunAt: null, schedule: "03:00" }
 };
 var CYCLE_WRITE_PRIORITY = {
   cycle1: 1,
-  cycle2: 1,
-  cycle3: 2
+  cycle2: 1
 };
 var _cycleWriteActive = false;
 var _cycleWriteSeq = 0;
@@ -4113,7 +4249,7 @@ function loadCycleState() {
   }
 }
 function saveCycleState(state) {
-  mkdirSync2(PLUGIN_DATA_DIR, { recursive: true });
+  mkdirSync4(PLUGIN_DATA_DIR, { recursive: true });
   writeFileSync2(CYCLE_STATE_PATH, JSON.stringify(state, null, 2) + "\n", "utf8");
 }
 var MAX_MEMORY_CONSOLIDATE_DAYS = 2;
@@ -4125,7 +4261,6 @@ var MEMORY_FLUSH_DEFAULT_MAX_BATCHES = 1;
 var MEMORY_FLUSH_DEFAULT_MIN_PENDING = 8;
 var BATCH_SIZE = 50;
 var MAX_CONCURRENT_BATCHES = 5;
-var AUTO_FLUSH_THRESHOLD = 15;
 var AUTO_FLUSH_INTERVAL_MS = 2 * 60 * 60 * 1e3;
 function resolveCycleBackfillLimit(mainConfig2, fallback) {
   return Math.max(1, Number(mainConfig2?.runtime?.startup?.backfill?.limit ?? fallback));
@@ -4168,11 +4303,11 @@ function writeCycleConfig(config) {
 function resourceDir() {
   if (process.env.CLAUDE_PLUGIN_ROOT) return process.env.CLAUDE_PLUGIN_ROOT;
   try {
-    const pluginJson = JSON.parse(readFileSync2(join2(PLUGIN_DATA_DIR, "..", "..", "cache", "trib-memory", "trib-memory", "plugin.json"), "utf8"));
-    if (pluginJson?.version) return join2(PLUGIN_DATA_DIR, "..", "..", "cache", "trib-memory", "trib-memory", pluginJson.version);
+    const pluginJson = JSON.parse(readFileSync2(join4(PLUGIN_DATA_DIR, "..", "..", "cache", "trib-memory", "trib-memory", "plugin.json"), "utf8"));
+    if (pluginJson?.version) return join4(PLUGIN_DATA_DIR, "..", "..", "cache", "trib-memory", "trib-memory", pluginJson.version);
   } catch {
   }
-  return join2(PLUGIN_DATA_DIR, "..", "..", "cache", "trib-memory", "trib-memory", "0.0.1");
+  return join4(PLUGIN_DATA_DIR, "..", "..", "cache", "trib-memory", "trib-memory", "0.0.1");
 }
 function extractJsonObject(text) {
   const trimmed = String(text ?? "").trim();
@@ -4320,7 +4455,7 @@ async function consolidateCandidateDay(dayKey, _ws, options = {}) {
   if (candidates.length === 0) return;
   let llmSuccess = false;
   try {
-    const promptPath = join2(resourceDir(), "defaults", "memory-consolidate-prompt.md");
+    const promptPath = join4(resourceDir(), "defaults", "memory-consolidate-prompt.md");
     if (existsSync2(promptPath)) {
       const template = readFileSync2(promptPath, "utf8");
       const candidatesText = candidates.map((c, i) => {
@@ -4417,7 +4552,7 @@ async function refreshEmbeddings(ws, options = {}) {
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit;
   let contextMap = /* @__PURE__ */ new Map();
   if (contextualizeEnabled) {
-    const promptPath = join2(resourceDir(), "defaults", "memory-contextualize-prompt.md");
+    const promptPath = join4(resourceDir(), "defaults", "memory-contextualize-prompt.md");
     if (existsSync2(promptPath)) {
       const items = store2.getEmbeddableItems({ perTypeLimit }).slice(0, refreshOptions.contextualizeItems);
       if (items.length > 0) {
@@ -4448,7 +4583,7 @@ async function refreshEmbeddings(ws, options = {}) {
 `);
 }
 function readMainConfig() {
-  const mainConfigPath = join2(PLUGIN_DATA_DIR, "config.json");
+  const mainConfigPath = join4(PLUGIN_DATA_DIR, "config.json");
   try {
     return JSON.parse(readFileSync2(mainConfigPath, "utf8"));
   } catch {
@@ -4461,9 +4596,9 @@ async function sleepCycleImpl(ws) {
   const config = readCycleConfig();
   const mainConfig2 = readMainConfig();
   const cycle2Config = mainConfig2?.cycle2 ?? {};
-  const isFirstRun = !config.lastSleepAt && !existsSync2(join2(HISTORY_DIR, "context.md"));
+  const isFirstRun = !config.lastSleepAt;
   const backfillLimit = resolveCycleBackfillLimit(mainConfig2, 120);
-  process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? " (FIRST RUN)" : ""}
+  process.stderr.write(`[memory-cycle2] Starting.${isFirstRun ? " (FIRST RUN)" : ""}
 `);
   store2.backfillProject(ws, { limit: backfillLimit });
   const MAX_DAYS = Math.max(1, Number(cycle2Config.maxDays ?? 7));
@@ -4476,18 +4611,78 @@ async function sleepCycleImpl(ws) {
     process.stderr.write(`[memory-cycle2] dedup: merged=${dedupResult.merged}
 `);
   }
-  store2.writeContextFile();
-  await refreshEmbeddings(ws, { kind: "cycle2" });
+  try {
+    await coreMemoryPromote(store2, ws, mainConfig2);
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] core-promote error: ${e.message}
+`);
+  }
+  try {
+    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const dailyDir = join4(HISTORY_DIR, "daily");
+    mkdirSync4(dailyDir, { recursive: true });
+    const journalPath = join4(dailyDir, `${today}.md`);
+    if (!existsSync2(journalPath)) {
+      const dayEpisodes = store2.getEpisodesForDate(today);
+      const dayClassifications = store2.db.prepare(`
+        SELECT topic, element, importance FROM classifications
+        WHERE status = 'active' AND updated_at >= ? AND updated_at < ?
+        ORDER BY updated_at
+      `).all(`${today}T00:00:00`, `${today}T23:59:59`);
+      if (dayEpisodes.length > 0 || dayClassifications.length > 0) {
+        const episodeSummary = dayEpisodes.slice(0, 60).map((ep) => {
+          const role = ep.role === "user" ? "User" : "Assistant";
+          return `- ${role}: ${String(ep.content ?? "").slice(0, 200)}`;
+        }).join("\n");
+        const classificationSummary = dayClassifications.map(
+          (c) => `- [${c.importance}] ${c.topic}: ${c.element}`
+        ).join("\n");
+        const journalPrompt = [
+          `Today's date: ${today}`,
+          "",
+          "Episodes:",
+          episodeSummary || "(none)",
+          "",
+          "Classifications:",
+          classificationSummary || "(none)",
+          "",
+          "Write a daily journal entry in a natural, readable style. Include key tasks, discussions, decisions, and issues. Write it as a personal daily log, not a formal report. Write in Korean."
+        ].join("\n");
+        try {
+          const provider = cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER;
+          const journalContent = await resolveCycleLlmOutput(journalPrompt, ws, {
+            mode: "journal",
+            provider,
+            timeout: 12e4
+          });
+          if (journalContent && journalContent.trim().length > 20) {
+            writeFileSync2(journalPath, `# ${today} Daily Journal
+
+${journalContent.trim()}
+`, "utf8");
+            process.stderr.write(`[memory-cycle2] daily journal written: ${journalPath}
+`);
+          }
+        } catch (e) {
+          process.stderr.write(`[memory-cycle2] journal generation failed: ${e.message}
+`);
+        }
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] journal error: ${e.message}
+`);
+  }
   writeCycleConfig({ ...config, lastSleepAt: now });
   const cycleState = loadCycleState();
   cycleState.cycle2.lastRunAt = (/* @__PURE__ */ new Date()).toISOString();
   saveCycleState(cycleState);
-  process.stderr.write("[memory-cycle] Cycle complete.\n");
+  process.stderr.write("[memory-cycle2] Cycle complete.\n");
 }
 async function sleepCycle(ws) {
   return enqueueCycleWrite("cycle2", () => sleepCycleImpl(ws));
 }
-var DEDUP_SIMILARITY_THRESHOLD = 0.92;
+var DEDUP_SIMILARITY_THRESHOLD = 0.85;
 async function deduplicateClassifications(store2, options = {}) {
   const dryRun = Boolean(options.dryRun ?? false);
   const threshold = Number(options.threshold ?? DEDUP_SIMILARITY_THRESHOLD);
@@ -4559,7 +4754,6 @@ async function memoryFlushImpl(ws, options = {}) {
   consolidateOpts.provider = options.provider ?? readMainConfig()?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER;
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts);
   await refreshEmbeddings(ws);
-  store2.writeContextFile();
 }
 async function memoryFlush(ws, options = {}) {
   return enqueueCycleWrite("cycle2", () => memoryFlushImpl(ws, options));
@@ -4625,9 +4819,8 @@ async function rebuildClassificationsImpl(ws, options = {}) {
 `);
   }
   if (totalExtracted > 0) {
-    await refreshEmbeddings(ws, { store: store2, kind: "cycle1", perTypeLimit: Math.max(256, totalClassifications * 2) });
+    await refreshEmbeddings(ws, { store: store2, kind: "cycle1", perTypeLimit: Math.min(128, Math.max(64, totalClassifications)) });
   }
-  store2.writeContextFile();
   store2.writeRecentFile();
   process.stderr.write(`[rebuild] complete: ${totalExtracted} extracted, ${totalClassifications} classifications, ${batchesCompleted} batches
 `);
@@ -4652,7 +4845,6 @@ async function rebuildRecentImpl(ws, options = {}) {
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions);
   store2.syncHistoryFromFiles();
   await refreshEmbeddings(ws, { kind: "cycle2" });
-  store2.writeContextFile();
   process.stderr.write(`[memory-cycle] rebuilt recent ${dayKeys.length} day(s).
 `);
 }
@@ -4672,41 +4864,11 @@ async function pruneToRecentImpl(ws, options = {}) {
   }
   store2.pruneConsolidatedMemoryOutsideDays(dayKeys);
   await refreshEmbeddings(ws, { kind: "cycle2" });
-  store2.writeContextFile();
   process.stderr.write(`[memory-cycle] pruned to ${dayKeys.join(", ")}.
 `);
 }
 async function pruneToRecent(ws, options = {}) {
   return enqueueCycleWrite("cycle2", () => pruneToRecentImpl(ws, options));
-}
-var _flushLock = false;
-async function autoFlush(ws) {
-  if (_flushLock) return { flushed: false, reason: "locked" };
-  const store2 = getStore();
-  const config = readCycleConfig();
-  const mainConfig2 = readMainConfig();
-  const cycle1MaxPending = Number(mainConfig2?.cycle1?.maxPending ?? mainConfig2?.cycle2?.maxCandidates ?? 0);
-  const now = Date.now();
-  const lastFlushAt = config.lastFlushAt ?? 0;
-  const pending = store2.getPendingCandidateDays(100, 1);
-  const totalPending = pending.reduce((sum, d) => sum + d.n, 0);
-  if (totalPending === 0) return { flushed: false, candidates: 0 };
-  const elapsed = now - lastFlushAt;
-  const exceedsMaxCandidates = cycle1MaxPending > 0 && totalPending >= cycle1MaxPending;
-  if (!exceedsMaxCandidates && totalPending < AUTO_FLUSH_THRESHOLD && elapsed < AUTO_FLUSH_INTERVAL_MS) {
-    return { flushed: false, candidates: totalPending };
-  }
-  _flushLock = true;
-  try {
-    const reason = exceedsMaxCandidates ? `maxPending(${cycle1MaxPending})` : "threshold";
-    process.stderr.write(`[auto-flush] triggered: ${totalPending} pending, ${Math.round(elapsed / 6e4)}min elapsed, reason=${reason}
-`);
-    await runCycle1(ws, mainConfig2, { skipWaterfall: true, trigger: reason });
-    writeCycleConfig({ ...readCycleConfig(), lastFlushAt: now });
-    return { flushed: true, candidates: totalPending };
-  } finally {
-    _flushLock = false;
-  }
 }
 function getCycleStatus() {
   const config = readCycleConfig();
@@ -4747,7 +4909,7 @@ function looksLowSignalCycle1(text) {
   return false;
 }
 function loadClassificationPrompt() {
-  const promptPath = join2(resourceDir(), "defaults", "memory-classification-prompt.md");
+  const promptPath = join4(resourceDir(), "defaults", "memory-classification-prompt.md");
   if (existsSync2(promptPath)) return readFileSync2(promptPath, "utf8");
   return "Fill the missing classification columns for each row. Output JSON only.\n\n{{ROWS}}";
 }
@@ -4757,13 +4919,19 @@ function buildCycle1ClassificationRows(candidates = []) {
     return `- id:${candidate.episode_id} text:${text}`;
   }).join("\n");
 }
-var DEFAULT_CYCLE_PROVIDER = { connection: "codex", model: "gpt-5.4-mini", effort: "medium", fast: true };
+var FALLBACK_CYCLE_PROVIDER = { connection: "codex", model: "gpt-5.4-mini", effort: "medium", fast: true };
+function resolveDefaultProvider() {
+  const config = readMainConfig();
+  return config?.defaultProvider ?? FALLBACK_CYCLE_PROVIDER;
+}
+var DEFAULT_CYCLE_PROVIDER = FALLBACK_CYCLE_PROVIDER;
 async function runCycle1Impl(ws, config, options = {}) {
   const store2 = options.store ?? getStore();
   const cycleConfig = readCycleConfig();
   const force = Boolean(options.force);
+  const backfillLimit = resolveCycleBackfillLimit(config, 50);
   try {
-    store2.backfillProject(ws, { limit: 50 });
+    store2.backfillProject(ws, { limit: backfillLimit });
   } catch {
   }
   const cycle1Config2 = config?.cycle1 ?? {};
@@ -4792,6 +4960,7 @@ async function runCycle1Impl(ws, config, options = {}) {
     }
   }
   let totalExtracted = 0, totalClassifications = 0;
+  const changedClassificationIds = /* @__PURE__ */ new Set();
   const batches = [];
   for (let i = 0; i < allCandidates.length; i += batchSize) {
     batches.push(allCandidates.slice(i, i + batchSize));
@@ -4872,6 +5041,15 @@ async function runCycle1Impl(ws, config, options = {}) {
     for (const result2 of results) {
       if (!result2) continue;
       const { candidates, classificationRows, batchIndex } = result2;
+      const elementChangedIds = /* @__PURE__ */ new Set();
+      for (const row of classificationRows) {
+        const epId = Number(row.episode_id);
+        if (!epId) continue;
+        const existing = store2.db.prepare("SELECT id, element FROM classifications WHERE episode_id = ?").get(epId);
+        if (existing && existing.element !== row.element) {
+          elementChangedIds.add(existing.id);
+        }
+      }
       store2.upsertClassifications(classificationRows, ts, null);
       for (const row of classificationRows) {
         const epId = Number(row.episode_id);
@@ -4900,7 +5078,7 @@ async function runCycle1Impl(ws, config, options = {}) {
       if (processedIds.length > 0) {
         const placeholders = processedIds.map(() => "?").join(",");
         store2.db.prepare(`
-          UPDATE memory_candidates SET status = 'consolidated'
+          DELETE FROM memory_candidates
           WHERE id IN (${placeholders}) AND status = 'pending'
         `).run(...processedIds);
       }
@@ -4908,18 +5086,24 @@ async function runCycle1Impl(ws, config, options = {}) {
       totalClassifications += classificationRows.length;
       process.stderr.write(`[cycle1] batch ${batchIndex}: ${candidates.length} candidates \u2192 ${classificationRows.length} classifications
 `);
+      for (const id of elementChangedIds) {
+        changedClassificationIds.add(id);
+      }
     }
   }
   if (totalExtracted > 0) {
-    const embeddableItems = store2.getEmbeddableItems({ perTypeLimit: Math.max(batchSize, totalClassifications * 2) });
+    const EMBED_LIMIT = 64;
+    const embeddableItems = store2.getEmbeddableItems({ perTypeLimit: EMBED_LIMIT }).filter((item) => item.entityType === "classification" || item.entityType === "chunk");
     const lookupModel = getEmbeddingModelId();
     let embeddedCount = 0;
     for (const item of embeddableItems) {
+      if (embeddedCount >= EMBED_LIMIT) break;
       const embedInput = cleanMemoryText(item.content ?? "");
       if (!embedInput) continue;
       const contentHash = hashEmbeddingInput(embedInput);
       const existing = store2.getVectorStmt.get(item.entityType, item.entityId, lookupModel);
-      if (existing?.content_hash === contentHash) continue;
+      const forceRefresh = item.entityType === "classification" && changedClassificationIds.has(item.entityId);
+      if (!forceRefresh && existing?.content_hash === contentHash) continue;
       const vector = await embedText(embedInput);
       if (!Array.isArray(vector) || vector.length === 0) continue;
       const activeModel = getEmbeddingModelId();
@@ -4935,6 +5119,10 @@ async function runCycle1Impl(ws, config, options = {}) {
       store2.noteVectorWrite(activeModel, vector.length);
       embeddedCount += 1;
       await new Promise((r) => setTimeout(r, 500));
+    }
+    if (changedClassificationIds.size > 0) {
+      process.stderr.write(`[cycle1] element-changed classifications refreshed: ${changedClassificationIds.size}
+`);
     }
     process.stderr.write(`[cycle1] inline embeddings: ${embeddedCount} items
 `);
@@ -4954,6 +5142,153 @@ async function runCycle1Impl(ws, config, options = {}) {
   }
   return result;
 }
+async function coreMemoryPromote(store2, ws, config) {
+  const cycle2Config = config?.cycle2 ?? {};
+  const provider = cycle2Config.provider || resolveDefaultProvider();
+  const topK = Math.max(1, Math.min(Number(cycle2Config.coreMemoryTopK ?? 30), 50));
+  const activeRows = store2.db.prepare(`
+    SELECT c.id, c.episode_id, c.topic, c.element, c.importance, c.confidence, c.updated_at,
+           COALESCE(c.retrieval_count, 0) AS retrieval_count
+    FROM classifications c
+    WHERE c.status = 'active'
+    ORDER BY c.updated_at DESC
+  `).all();
+  if (activeRows.length === 0) {
+    process.stderr.write(`[memory-cycle2] core-promote: no active classifications
+`);
+    return;
+  }
+  for (const row of activeRows) {
+    try {
+      const stats = store2.db.prepare(
+        `SELECT mention_count, last_seen FROM classification_stats WHERE classification_id = ?`
+      ).get(row.id);
+      if (stats) {
+        row.mention_count = stats.mention_count;
+        row.last_seen = stats.last_seen;
+      }
+    } catch {
+    }
+    const retrievalCount = Number(row.retrieval_count ?? 0);
+    const mentionCount = Number(row.mention_count ?? 0);
+    const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : row.updated_at ? new Date(row.updated_at).getTime() : 0;
+    const daysSince = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 864e5) : 999;
+    row.final_score = Number((Math.log1p(mentionCount) * 0.7 + Math.log1p(retrievalCount) * 0.95 + Math.exp(-daysSince / 21) * 0.55).toFixed(4));
+  }
+  activeRows.sort((a, b) => b.final_score - a.final_score);
+  const topRows = activeRows.slice(0, topK);
+  const existingCoreRows = store2.db.prepare(
+    `SELECT id, classification_id, topic, element, importance, final_score, status FROM core_memory WHERE status IN ('active', 'staged') ORDER BY status DESC, final_score DESC`
+  ).all();
+  const corePromptPath = join4(resourceDir(), "defaults", "memory-core-promote-prompt.md");
+  if (!existsSync2(corePromptPath)) {
+    process.stderr.write(`[memory-cycle2] core-promote prompt not found, skipping
+`);
+    return;
+  }
+  const coreTemplate = readFileSync2(corePromptPath, "utf8");
+  const coreMemoryText = existingCoreRows.length > 0 ? existingCoreRows.map(
+    (cm) => `- id:${cm.id} status:${cm.status} topic:${cm.topic} importance:${cm.importance} element:${cm.element}`
+  ).join("\n") : "(empty)";
+  const classificationsText = topRows.map(
+    (r) => `- id:${r.id} topic:${r.topic} importance:${r.importance} score:${r.final_score} element:${r.element}`
+  ).join("\n");
+  const prompt = coreTemplate.replace("{{CORE_MEMORY}}", coreMemoryText).replace("{{CLASSIFICATIONS}}", classificationsText);
+  let allActions = [];
+  try {
+    const raw = await resolveCycleLlmOutput(prompt, ws, {
+      mode: "core-promote",
+      provider,
+      timeout: 18e4
+    });
+    const parsed = extractJsonObject(raw);
+    if (parsed?.actions && Array.isArray(parsed.actions)) {
+      allActions = parsed.actions;
+    }
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] core-promote LLM failed: ${e.message}
+`);
+    return;
+  }
+  if (allActions.length === 0) {
+    process.stderr.write(`[memory-cycle2] core-promote: no actions (LLM judged no changes needed)
+`);
+    return;
+  }
+  let addCount = 0, stageCount = 0, promoteCount = 0, updateCount = 0, demoteCount = 0, mergeCount = 0;
+  const ts = (/* @__PURE__ */ new Date()).toISOString();
+  for (const act of allActions) {
+    try {
+      if (act.action === "add" && act.element) {
+        const matchingCls = topRows.find((r) => r.topic === act.topic || r.element === act.element);
+        const clsId = matchingCls?.id ?? 0;
+        if (clsId <= 0) continue;
+        store2.db.prepare(`
+          INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+          ON CONFLICT(classification_id) DO UPDATE SET
+            topic = excluded.topic, element = excluded.element, importance = excluded.importance,
+            final_score = excluded.final_score, last_seen_at = excluded.last_seen_at, status = 'active'
+        `).run(
+          clsId,
+          act.topic ?? "",
+          act.element,
+          act.importance ?? "fact",
+          matchingCls?.final_score ?? 0,
+          ts,
+          ts
+        );
+        addCount++;
+      } else if (act.action === "stage" && act.element) {
+        const matchingCls = topRows.find((r) => r.topic === act.topic || r.element === act.element);
+        const clsId = matchingCls?.id ?? 0;
+        if (clsId <= 0) continue;
+        store2.db.prepare(`
+          INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'staged')
+          ON CONFLICT(classification_id) DO UPDATE SET
+            topic = excluded.topic, element = excluded.element, importance = excluded.importance,
+            final_score = excluded.final_score, last_seen_at = excluded.last_seen_at, status = 'staged'
+        `).run(
+          clsId,
+          act.topic ?? "",
+          act.element,
+          act.importance ?? "fact",
+          matchingCls?.final_score ?? 0,
+          ts,
+          ts
+        );
+        stageCount++;
+      } else if (act.action === "promote" && act.id) {
+        store2.db.prepare(`UPDATE core_memory SET status = 'active', last_seen_at = ? WHERE id = ? AND status = 'staged'`).run(ts, act.id);
+        promoteCount++;
+      } else if (act.action === "update" && act.id && act.element) {
+        store2.db.prepare(`
+          UPDATE core_memory SET element = ?, importance = ?, last_seen_at = ? WHERE id = ?
+        `).run(act.element, act.importance ?? "fact", ts, act.id);
+        updateCount++;
+      } else if (act.action === "demote" && act.id) {
+        store2.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(act.id);
+        demoteCount++;
+      } else if (act.action === "merge" && Array.isArray(act.ids) && act.ids.length >= 2 && act.element) {
+        const [keepId, ...removeIds] = act.ids;
+        store2.db.prepare(`
+          UPDATE core_memory SET element = ?, topic = ?, importance = ?, last_seen_at = ? WHERE id = ?
+        `).run(act.element, act.topic ?? "", act.importance ?? "fact", ts, keepId);
+        for (const rid of removeIds) {
+          store2.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(rid);
+        }
+        mergeCount++;
+        demoteCount += removeIds.length;
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-cycle2] core-promote action error: ${e.message}
+`);
+    }
+  }
+  process.stderr.write(`[memory-cycle2] core_memory: add=${addCount} stage=${stageCount} promote=${promoteCount} update=${updateCount} demote=${demoteCount} merge=${mergeCount}
+`);
+}
 async function runCycle1(ws, config, options = {}) {
   return enqueueCycleWrite("cycle1", () => runCycle1Impl(ws, config, options));
 }
@@ -4964,88 +5299,6 @@ function parseInterval(s) {
   const [, num, unit] = match;
   const multiplier = { s: 1e3, m: 6e4, h: 36e5 };
   return Number(num) * multiplier[unit];
-}
-var CYCLE3_HEAT_THRESHOLD = 0.6;
-var CYCLE3_DEPRECATED_GRACE_DAYS = 30;
-function computeHeatScore(row) {
-  const mentionCount = Number(row.mention_count ?? 0);
-  const retrievalCount = Number(row.retrieval_count ?? 0);
-  const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : 0;
-  const daysSinceLastSeen = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 864e5) : 999;
-  const mentionTerm = Math.log1p(Math.max(0, mentionCount)) * 0.7;
-  const retrievalTerm = Math.log1p(Math.max(0, retrievalCount)) * 0.95;
-  const recencyTerm = Math.exp(-daysSinceLastSeen / 21) * 0.55;
-  return Number((mentionTerm + retrievalTerm + recencyTerm).toFixed(3));
-}
-async function runCycle3Impl(_ws, options = {}) {
-  const store2 = getStore();
-  const mainConfig2 = readMainConfig();
-  const cycle3Config = mainConfig2?.cycle3 ?? {};
-  const threshold = Number(cycle3Config.threshold ?? options.threshold ?? CYCLE3_HEAT_THRESHOLD);
-  const graceDays = Number(cycle3Config.graceDays ?? options.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS);
-  const hardDelete = Boolean(cycle3Config.hardDelete ?? options.hardDelete ?? false);
-  const now = /* @__PURE__ */ new Date();
-  const nowISO = now.toISOString();
-  process.stderr.write(`[memory-cycle3] Starting decay cycle (threshold=${threshold}, graceDays=${graceDays})
-`);
-  let deprecatedClassifications = 0;
-  let deletedClassifications = 0;
-  const MIN_SURVIVAL_DAYS = 30;
-  const rows = store2.db.prepare(`
-    SELECT id, ts, retrieval_count, updated_at
-    FROM classifications
-    WHERE status = 'active'
-  `).all();
-  const coldIds = rows.filter((row) => {
-    const firstSeen = row.ts ? new Date(row.ts).getTime() : 0;
-    const ageDays = firstSeen ? (Date.now() - firstSeen) / 864e5 : 999;
-    if (ageDays < MIN_SURVIVAL_DAYS) return false;
-    return computeHeatScore({
-      mention_count: 1,
-      retrieval_count: row.retrieval_count,
-      last_seen: row.ts
-    }) < threshold;
-  }).map((row) => row.id);
-  if (coldIds.length > 0) {
-    const placeholders = coldIds.map(() => "?").join(",");
-    deprecatedClassifications = Number(store2.db.prepare(`
-      UPDATE classifications
-      SET status = 'deprecated'
-      WHERE id IN (${placeholders})
-    `).run(...coldIds).changes ?? 0);
-  }
-  if (hardDelete) {
-    const graceThreshold = new Date(Date.now() - graceDays * 864e5).getTime();
-    const deletable = store2.db.prepare(`
-      SELECT id
-      FROM classifications
-      WHERE status = 'deprecated'
-        AND updated_at < ?
-    `).all(graceThreshold).map((row) => row.id);
-    if (deletable.length > 0) {
-      const placeholders = deletable.map(() => "?").join(",");
-      deletedClassifications = Number(store2.db.prepare(`
-        DELETE FROM classifications
-        WHERE id IN (${placeholders})
-      `).run(...deletable).changes ?? 0);
-    }
-  }
-  store2.writeContextFile();
-  const cycleState = loadCycleState();
-  cycleState.cycle3.lastRunAt = nowISO;
-  saveCycleState(cycleState);
-  const result = {
-    deprecated: { classifications: deprecatedClassifications },
-    deleted: { classifications: deletedClassifications }
-  };
-  process.stderr.write(
-    `[memory-cycle3] deprecated classifications=${deprecatedClassifications} | deleted classifications=${deletedClassifications}
-`
-  );
-  return result;
-}
-async function runCycle3(ws, options = {}) {
-  return enqueueCycleWrite("cycle3", () => runCycle3Impl(ws, options));
 }
 
 // services/memory-service.mjs
@@ -5134,18 +5387,15 @@ var cycle1IntervalStr = cycle1Config.interval || "5m";
 var cycle1Ms = parseInterval(cycle1IntervalStr);
 var cycle2IntervalStr = mainConfig?.cycle2?.interval || "1h";
 var cycle2Ms = parseInterval(cycle2IntervalStr);
-var cycle3IntervalStr = mainConfig?.cycle3?.interval || "24h";
-var cycle3Ms = parseInterval(cycle3IntervalStr);
 function getCycleLastRun() {
   try {
     const state = JSON.parse(fs2.readFileSync(path2.join(DATA_DIR, "memory-cycle.json"), "utf8"));
     return {
-      cycle1: state?.cycle1?.lastRunAt ? new Date(state.cycle1.lastRunAt).getTime() : 0,
-      cycle2: state?.lastSleepAt ? new Date(state.lastSleepAt).getTime() : 0,
-      cycle3: state?.lastCycle3At ? new Date(state.lastCycle3At).getTime() : 0
+      cycle1: Number(state?.lastCycle1At) || 0,
+      cycle2: Number(state?.lastSleepAt) || 0
     };
   } catch {
-    return { cycle1: 0, cycle2: 0, cycle3: 0 };
+    return { cycle1: 0, cycle2: 0 };
   }
 }
 async function checkCycles(options = {}) {
@@ -5158,7 +5408,6 @@ async function checkCycles(options = {}) {
   const pendingEmbeds = getPendingEmbedCount();
   const cycle1Due = now - last.cycle1 >= cycle1Ms;
   const cycle2Due = now - last.cycle2 >= cycle2Ms;
-  const cycle3Due = now - last.cycle3 >= cycle3Ms;
   if (startup ? shouldRunCycleCatchUp("cycle1", opsPolicy, {
     due: cycle1Due,
     lastRunAt: last.cycle1 || null,
@@ -5190,28 +5439,6 @@ async function checkCycles(options = {}) {
 `);
     }
   }
-  if (cycle3Due) {
-    try {
-      await runCycle3(WORKSPACE_PATH);
-      process.stderr.write(`[cycle3] completed at ${localNow()}
-`);
-    } catch (e) {
-      process.stderr.write(`[cycle3] error: ${e.message}
-`);
-    }
-  }
-  try {
-    const flushResult = await autoFlush(WORKSPACE_PATH);
-    if (flushResult?.flushed) {
-      process.stderr.write(
-        `[cycle1-auto] flushed pending=${Number(flushResult?.candidates ?? 0)} at ${localNow()}
-`
-      );
-    }
-  } catch (e) {
-    process.stderr.write(`[cycle1-auto] error: ${e.message}
-`);
-  }
 }
 setInterval(() => {
   void checkCycles();
@@ -5225,7 +5452,36 @@ setTimeout(() => {
 }, startupDelayMs);
 var serverStartedAt = localNow();
 {
-  let discoverActiveTranscripts = function() {
+  let isWatchable = function(relOrBase) {
+    const base = path2.basename(relOrBase);
+    if (!base.endsWith(".jsonl") || base.startsWith("agent-")) return false;
+    if (relOrBase.includes("tmp") || relOrBase.includes("cache") || relOrBase.includes("plugins")) return false;
+    return true;
+  }, ingestOne = function(fp) {
+    try {
+      if (!fs2.existsSync(fp)) return;
+      const mtime = fs2.statSync(fp).mtimeMs;
+      const prev = watchedFiles.get(fp);
+      if (prev && prev >= mtime) return;
+      watchedFiles.set(fp, mtime);
+      const n = store.ingestTranscriptFile(fp);
+      if (n > 0) {
+        process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path2.basename(fp)}
+`);
+      }
+    } catch (e) {
+      process.stderr.write(`[transcript-watch] ingest error: ${e.message}
+`);
+    }
+  }, scheduleIngest = function(fp) {
+    const existing = pendingByFile.get(fp);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      pendingByFile.delete(fp);
+      ingestOne(fp);
+    }, DEBOUNCE_MS);
+    pendingByFile.set(fp, timer);
+  }, discoverActiveTranscripts = function() {
     try {
       if (!fs2.existsSync(projectsRoot)) return [];
       const files = [];
@@ -5247,29 +5503,58 @@ var serverStartedAt = localNow();
     } catch {
       return [];
     }
-  }, watchTick = function() {
+  }, safetySweep = function() {
     try {
       const active2 = discoverActiveTranscripts();
-      for (const { path: fp, mtime } of active2) {
-        const prev = watchedFiles.get(fp);
-        if (prev && prev >= mtime) continue;
-        watchedFiles.set(fp, mtime);
-        const n = store.ingestTranscriptFile(fp);
-        if (n > 0) {
-          process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path2.basename(fp)}
-`);
-        }
-      }
+      for (const { path: fp } of active2) ingestOne(fp);
     } catch (e) {
-      process.stderr.write(`[transcript-watch] error: ${e.message}
+      process.stderr.write(`[transcript-watch] safety sweep error: ${e.message}
 `);
     }
   };
   const projectsRoot = path2.join(os.homedir(), ".claude", "projects");
-  const WATCH_INTERVAL_MS = 5e3;
-  let watchedFiles = /* @__PURE__ */ new Map();
-  setTimeout(watchTick, 3e3);
-  setInterval(watchTick, WATCH_INTERVAL_MS);
+  const SAFETY_POLL_MS = 5 * 6e4;
+  const DEBOUNCE_MS = 500;
+  const watchedFiles = /* @__PURE__ */ new Map();
+  const pendingByFile = /* @__PURE__ */ new Map();
+  setTimeout(safetySweep, 3e3);
+  setInterval(safetySweep, SAFETY_POLL_MS);
+  try {
+    const watcher = fs2.watch(projectsRoot, { recursive: true, persistent: true }, (_event, filename) => {
+      if (!filename) return;
+      if (!isWatchable(filename)) return;
+      const fp = path2.join(projectsRoot, filename);
+      scheduleIngest(fp);
+    });
+    watcher.on("error", (err) => {
+      process.stderr.write(`[transcript-watch] fs.watch error: ${err.message}
+`);
+    });
+    process.stderr.write(`[transcript-watch] fs.watch active on ${projectsRoot} (safety sweep every ${SAFETY_POLL_MS / 6e4}min)
+`);
+  } catch (e) {
+    process.stderr.write(`[transcript-watch] fs.watch setup failed: ${e.message} \u2014 relying on safety sweep only
+`);
+  }
+}
+try {
+  const legacyResult = store.db.prepare("DELETE FROM memory_candidates WHERE status='consolidated'").run();
+  const deleted = Number(legacyResult.changes ?? 0);
+  if (deleted > 0) {
+    process.stderr.write(`[migration] purged ${deleted} legacy consolidated candidates
+`);
+    try {
+      store.db.exec("VACUUM");
+      process.stderr.write(`[migration] VACUUM complete
+`);
+    } catch (ve) {
+      process.stderr.write(`[migration] VACUUM skipped: ${ve.message}
+`);
+    }
+  }
+} catch (e) {
+  process.stderr.write(`[migration] error: ${e.message}
+`);
 }
 try {
   const synced = store.syncChunksFromClassifications();
@@ -5563,7 +5848,6 @@ function handleStats() {
   const episodes = store.db.prepare("SELECT COUNT(*) as c FROM episodes").get().c;
   const classifications = store.db.prepare("SELECT COUNT(*) as c FROM classifications").get().c;
   const pending = store.db.prepare("SELECT COUNT(*) as c FROM memory_candidates WHERE status='pending'").get().c;
-  const consolidated = store.db.prepare("SELECT COUNT(*) as c FROM memory_candidates WHERE status='consolidated'").get().c;
   const tags = store.db.prepare(`
     SELECT importance, COUNT(*) as c FROM classifications
     WHERE importance IS NOT NULL AND importance != ''
@@ -5582,7 +5866,7 @@ function handleStats() {
   const lines = [
     `episodes: ${episodes}`,
     `classifications: ${classifications} (${tags.map((t) => `${t.importance}:${t.c}`).join(", ")})`,
-    `candidates: pending=${pending}, consolidated=${consolidated}`,
+    `candidates: pending=${pending}`,
     `pending_embeds: ${embeds}`,
     `last_cycle1: ${lastCycle}`
   ];
@@ -5690,47 +5974,45 @@ async function handleCycle(args) {
 }
 var MEMORY_INSTRUCTIONS = "Recall naturally, like remembering \u2014 use search_memories() to recall.";
 var mcp = new Server(
-  { name: "trib-memory", version: "0.0.15" },
+  { name: "trib-memory", version: "0.0.18" },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS }
 );
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "memory_cycle",
-      title: "Memory Cycle",
-      annotations: { title: "Memory Cycle", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      description: "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          action: { type: "string", enum: ["sleep", "flush", "rebuild", "rebuild_classifications", "prune", "cycle1", "backfill", "status"], description: "Memory operation to run" },
-          maxDays: { type: "number", description: "Max days to process (default varies by action)" },
-          window: { type: "string", description: "Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all" },
-          limit: { type: "number", description: "Max episodes to backfill (default 100)" }
-        },
-        required: ["action"]
-      }
-    },
-    {
-      name: "search_memories",
-      title: "Search Memories",
-      annotations: { title: "Search Memories", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search text. Triggers semantic hybrid search." },
-          period: { type: "string", description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
-          sort: { type: "string", enum: ["date", "importance"], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
-          limit: { type: "number", default: 20, description: "Max results to return." },
-          offset: { type: "number", default: 0, description: "Skip N results for pagination." }
-        },
-        required: []
-      }
+var TOOL_DEFS = [
+  {
+    name: "memory_cycle",
+    title: "Memory Cycle",
+    annotations: { title: "Memory Cycle", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["sleep", "flush", "rebuild", "rebuild_classifications", "prune", "cycle1", "backfill", "status"], description: "Memory operation to run" },
+        maxDays: { type: "number", description: "Max days to process (default varies by action)" },
+        window: { type: "string", description: "Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all" },
+        limit: { type: "number", description: "Max episodes to backfill (default 100)" }
+      },
+      required: ["action"]
     }
-  ]
-}));
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  },
+  {
+    name: "search_memories",
+    title: "Search Memories",
+    annotations: { title: "Search Memories", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search text. Triggers semantic hybrid search." },
+        period: { type: "string", description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
+        sort: { type: "string", enum: ["date", "importance"], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
+        limit: { type: "number", default: 20, description: "Max results to return." },
+        offset: { type: "number", default: 0, description: "Skip N results for pagination." }
+      },
+      required: []
+    }
+  }
+];
+async function handleToolCall(req) {
   const toolName = req.params.name;
   const args = req.params.arguments ?? {};
   try {
@@ -5759,7 +6041,18 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       isError: true
     };
   }
-});
+}
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
+mcp.setRequestHandler(CallToolRequestSchema, handleToolCall);
+function createHttpMcpServer() {
+  const s = new Server(
+    { name: "trib-memory", version: "0.0.18" },
+    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS }
+  );
+  s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
+  s.setRequestHandler(CallToolRequestSchema, handleToolCall);
+  return s;
+}
 function readBody(req) {
   return new Promise((resolve2, reject) => {
     const chunks = [];
@@ -5793,6 +6086,35 @@ var httpServer = http.createServer(async (req, res) => {
       sendJson(res, { status: "ok", episodeCount, classificationCount });
     } catch (e) {
       sendError(res, e.message);
+    }
+    return;
+  }
+  if (req.url === "/mcp") {
+    try {
+      if (req.method === "POST") {
+        const httpMcp = createHttpMcpServer();
+        const httpTransport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: void 0,
+          enableJsonResponse: true
+        });
+        res.on("close", () => {
+          httpTransport.close();
+          void httpMcp.close();
+        });
+        await httpMcp.connect(httpTransport);
+        const body2 = await readBody(req);
+        await httpTransport.handleRequest(req, res, body2);
+      } else if (req.method === "GET") {
+        sendJson(res, { error: "SSE not supported in stateless mode" }, 405);
+      } else if (req.method === "DELETE") {
+        sendJson(res, { error: "No session management in stateless mode" }, 405);
+      } else {
+        sendJson(res, { error: "Method not allowed" }, 405);
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-service] /mcp error: ${e.stack || e.message}
+`);
+      if (!res.headersSent) sendError(res, e.message);
     }
     return;
   }

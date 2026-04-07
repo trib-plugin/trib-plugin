@@ -282,7 +282,7 @@ const idleCheck = setInterval(() => {
 }, 10000);
 
 server.listen(PORT, () => {
-  console.log(`\n  trib-search setup`);
+  console.log(`\n  TRIB-SEARCH CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
 
   const appUrl = `http://localhost:${PORT}`;

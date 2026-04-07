@@ -1,7 +1,7 @@
 {
   "name": "trib-search",
   "description": "Search plugin for Claude Code with raw search, AI search, scrape, map, crawl, and usage commands.",
-  "version": "0.0.5",
+  "version": "0.0.7",
   "author": {
     "name": "TRIBGAMES",
     "email": "dev@tribgames.com"

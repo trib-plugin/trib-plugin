@@ -197,10 +197,18 @@ try {
 }
 
 log(`exec node ${serverFile}`)
+// Cap ONNX Runtime thread usage so embedding/reranker don't pin all CPU cores.
+// onnxruntime-node respects these env vars before any session is created.
 const child = spawn('node', ['--no-warnings', serverFile], {
   cwd: pluginRoot,
   stdio: 'inherit',
-  env: process.env,
+  env: {
+    ...process.env,
+    OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || '2',
+    OMP_THREAD_LIMIT: process.env.OMP_THREAD_LIMIT || '2',
+    ORT_INTRA_OP_PARALLELISM_THREADS: process.env.ORT_INTRA_OP_PARALLELISM_THREADS || '2',
+    ORT_INTER_OP_PARALLELISM_THREADS: process.env.ORT_INTER_OP_PARALLELISM_THREADS || '1',
+  },
 })
 
 let shuttingDown = false

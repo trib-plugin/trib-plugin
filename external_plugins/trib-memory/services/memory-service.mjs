@@ -7,6 +7,7 @@ process.on('warning', () => {})
  *
  * Single Node.js process providing:
  *   MCP (stdio)  — search_memories, memory_cycle tools for Claude Code
+ *   MCP (http)   — /mcp endpoint (Streamable HTTP transport, stateless)
  *   HTTP (tcp)   — /hints, /episode, /health for hooks + internal use
  *
  * Owns the MemoryStore singleton exclusively.
@@ -26,6 +27,7 @@ try {
 } catch {}
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -42,8 +44,6 @@ import {
   pruneToRecent,
   getCycleStatus,
   runCycle1,
-  runCycle3,
-  autoFlush,
   readMainConfig,
   parseInterval,
 } from '../lib/memory-cycle.mjs'
@@ -147,18 +147,16 @@ const cycle1IntervalStr = cycle1Config.interval || '5m'
 const cycle1Ms = parseInterval(cycle1IntervalStr)
 const cycle2IntervalStr = mainConfig?.cycle2?.interval || '1h'
 const cycle2Ms = parseInterval(cycle2IntervalStr)
-const cycle3IntervalStr = mainConfig?.cycle3?.interval || '24h'
-const cycle3Ms = parseInterval(cycle3IntervalStr)
 
 function getCycleLastRun() {
   try {
     const state = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'memory-cycle.json'), 'utf8'))
+    // Flat keys — memory-cycle.mjs writes `state.lastCycle1At` / `state.lastSleepAt` directly.
     return {
-      cycle1: state?.cycle1?.lastRunAt ? new Date(state.cycle1.lastRunAt).getTime() : 0,
-      cycle2: state?.lastSleepAt ? new Date(state.lastSleepAt).getTime() : 0,
-      cycle3: state?.lastCycle3At ? new Date(state.lastCycle3At).getTime() : 0,
+      cycle1: Number(state?.lastCycle1At) || 0,
+      cycle2: Number(state?.lastSleepAt) || 0,
     }
-  } catch { return { cycle1: 0, cycle2: 0, cycle3: 0 } }
+  } catch { return { cycle1: 0, cycle2: 0 } }
 }
 
 async function checkCycles(options = {}) {
@@ -171,7 +169,6 @@ async function checkCycles(options = {}) {
   const pendingEmbeds = getPendingEmbedCount()
   const cycle1Due = now - last.cycle1 >= cycle1Ms
   const cycle2Due = now - last.cycle2 >= cycle2Ms
-  const cycle3Due = now - last.cycle3 >= cycle3Ms
 
   // cycle1: lastRunAt + interval elapsed
   if (
@@ -212,26 +209,9 @@ async function checkCycles(options = {}) {
     }
   }
 
-  // cycle3: interval-based (default 24h)
-  if (cycle3Due) {
-    try {
-      await runCycle3(WORKSPACE_PATH)
-      process.stderr.write(`[cycle3] completed at ${localNow()}\n`)
-    } catch (e) {
-      process.stderr.write(`[cycle3] error: ${e.message}\n`)
-    }
-  }
-
-  try {
-    const flushResult = await autoFlush(WORKSPACE_PATH)
-    if (flushResult?.flushed) {
-      process.stderr.write(
-        `[cycle1-auto] flushed pending=${Number(flushResult?.candidates ?? 0)} at ${localNow()}\n`,
-      )
-    }
-  } catch (e) {
-    process.stderr.write(`[cycle1-auto] error: ${e.message}\n`)
-  }
+  // autoFlush removed — pending candidates are now handled solely by the
+  // scheduled cycle1 interval. This prevents pending>=15 / 2h-elapsed triggers
+  // from spawning inline embedding runs during active conversations.
 }
 
 // Check every minute, run if due
@@ -246,11 +226,49 @@ setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
 // ── Server started timestamp (after startup backfill) ────────────────
 const serverStartedAt = localNow()
 
-// ── Live transcript watcher: ingest new episodes in real-time ────────
+// ── Live transcript watcher: hybrid fs.watch + safety polling ────────
+// Primary mechanism: fs.watch (OS-level events, ~0 CPU idle cost).
+// Safety net: 5-minute sweep catches any events missed by fs.watch
+// (Windows ReadDirectoryChangesW can miss large-append events occasionally).
 {
   const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
-  const WATCH_INTERVAL_MS = 5_000  // check every 5s
-  let watchedFiles = new Map()     // path → mtime
+  const SAFETY_POLL_MS = 5 * 60_000  // 5 min full sweep
+  const DEBOUNCE_MS = 500            // coalesce rapid events per file
+  const watchedFiles = new Map()     // path → mtime
+  const pendingByFile = new Map()    // path → debounce timer
+
+  function isWatchable(relOrBase) {
+    const base = path.basename(relOrBase)
+    if (!base.endsWith('.jsonl') || base.startsWith('agent-')) return false
+    if (relOrBase.includes('tmp') || relOrBase.includes('cache') || relOrBase.includes('plugins')) return false
+    return true
+  }
+
+  function ingestOne(fp) {
+    try {
+      if (!fs.existsSync(fp)) return
+      const mtime = fs.statSync(fp).mtimeMs
+      const prev = watchedFiles.get(fp)
+      if (prev && prev >= mtime) return
+      watchedFiles.set(fp, mtime)
+      const n = store.ingestTranscriptFile(fp)
+      if (n > 0) {
+        process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path.basename(fp)}\n`)
+      }
+    } catch (e) {
+      process.stderr.write(`[transcript-watch] ingest error: ${e.message}\n`)
+    }
+  }
+
+  function scheduleIngest(fp) {
+    const existing = pendingByFile.get(fp)
+    if (existing) clearTimeout(existing)
+    const timer = setTimeout(() => {
+      pendingByFile.delete(fp)
+      ingestOne(fp)
+    }, DEBOUNCE_MS)
+    pendingByFile.set(fp, timer)
+  }
 
   function discoverActiveTranscripts() {
     try {
@@ -274,26 +292,54 @@ const serverStartedAt = localNow()
     } catch { return [] }
   }
 
-  function watchTick() {
+  function safetySweep() {
     try {
       const active = discoverActiveTranscripts()
-      for (const { path: fp, mtime } of active) {
-        const prev = watchedFiles.get(fp)
-        if (prev && prev >= mtime) continue
-        watchedFiles.set(fp, mtime)
-        const n = store.ingestTranscriptFile(fp)
-        if (n > 0) {
-          process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path.basename(fp)}\n`)
-        }
-      }
+      for (const { path: fp } of active) ingestOne(fp)
     } catch (e) {
-      process.stderr.write(`[transcript-watch] error: ${e.message}\n`)
+      process.stderr.write(`[transcript-watch] safety sweep error: ${e.message}\n`)
     }
   }
 
-  // Initial scan after short delay
-  setTimeout(watchTick, 3_000)
-  setInterval(watchTick, WATCH_INTERVAL_MS)
+  // Initial scan after short delay (warm up + ingest anything pre-existing)
+  setTimeout(safetySweep, 3_000)
+  // Safety net: 5-min periodic full sweep
+  setInterval(safetySweep, SAFETY_POLL_MS)
+
+  // Primary: fs.watch with recursive OS events (Node 18+, Windows OK)
+  try {
+    const watcher = fs.watch(projectsRoot, { recursive: true, persistent: true }, (_event, filename) => {
+      if (!filename) return
+      if (!isWatchable(filename)) return
+      const fp = path.join(projectsRoot, filename)
+      scheduleIngest(fp)
+    })
+    watcher.on('error', (err) => {
+      process.stderr.write(`[transcript-watch] fs.watch error: ${err.message}\n`)
+    })
+    process.stderr.write(`[transcript-watch] fs.watch active on ${projectsRoot} (safety sweep every ${SAFETY_POLL_MS / 60_000}min)\n`)
+  } catch (e) {
+    process.stderr.write(`[transcript-watch] fs.watch setup failed: ${e.message} — relying on safety sweep only\n`)
+  }
+}
+
+// ── Startup migration: purge consolidated candidates + VACUUM (one-shot) ──
+// Legacy rows from when processed candidates were marked 'consolidated' instead
+// of deleted. Safe no-op after first run.
+try {
+  const legacyResult = store.db.prepare("DELETE FROM memory_candidates WHERE status='consolidated'").run()
+  const deleted = Number(legacyResult.changes ?? 0)
+  if (deleted > 0) {
+    process.stderr.write(`[migration] purged ${deleted} legacy consolidated candidates\n`)
+    try {
+      store.db.exec('VACUUM')
+      process.stderr.write(`[migration] VACUUM complete\n`)
+    } catch (ve) {
+      process.stderr.write(`[migration] VACUUM skipped: ${ve.message}\n`)
+    }
+  }
+} catch (e) {
+  process.stderr.write(`[migration] error: ${e.message}\n`)
 }
 
 // ── Startup chunk sync: materialize classifications.chunks → memory_chunks ──
@@ -626,8 +672,9 @@ function handleTagQuery(tag, limit = 20) {
 function handleStats() {
   const episodes = store.db.prepare('SELECT COUNT(*) as c FROM episodes').get().c
   const classifications = store.db.prepare('SELECT COUNT(*) as c FROM classifications').get().c
+  // Only pending candidates exist now — processed candidates are DELETEd,
+  // not marked consolidated.
   const pending = store.db.prepare("SELECT COUNT(*) as c FROM memory_candidates WHERE status='pending'").get().c
-  const consolidated = store.db.prepare("SELECT COUNT(*) as c FROM memory_candidates WHERE status='consolidated'").get().c
   const tags = store.db.prepare(`
     SELECT importance, COUNT(*) as c FROM classifications
     WHERE importance IS NOT NULL AND importance != ''
@@ -645,7 +692,7 @@ function handleStats() {
   const lines = [
     `episodes: ${episodes}`,
     `classifications: ${classifications} (${tags.map(t => `${t.importance}:${t.c}`).join(', ')})`,
-    `candidates: pending=${pending}, consolidated=${consolidated}`,
+    `candidates: pending=${pending}`,
     `pending_embeds: ${embeds}`,
     `last_cycle1: ${lastCycle}`,
   ]
@@ -778,53 +825,49 @@ async function handleCycle(args) {
 const MEMORY_INSTRUCTIONS = 'Recall naturally, like remembering — use search_memories() to recall.'
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.15' },
+  { name: 'trib-memory', version: '0.0.18' },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 
-// ── Tool definitions ─────────────────────────────────────────────────
+// ── Shared tool definitions & handler ────────────────────────────────
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: 'memory_cycle',
-      title: 'Memory Cycle',
-      annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status'], description: 'Memory operation to run' },
-          maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
-          window: { type: 'string', description: 'Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all' },
-          limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
-        },
-        required: ['action'],
+const TOOL_DEFS = [
+  {
+    name: 'memory_cycle',
+    title: 'Memory Cycle',
+    annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status'], description: 'Memory operation to run' },
+        maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
+        window: { type: 'string', description: 'Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all' },
+        limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
       },
+      required: ['action'],
     },
-    {
-      name: 'search_memories',
-      title: 'Search Memories',
-      annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search text. Triggers semantic hybrid search.' },
-          period: { type: 'string', description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
-          sort: { type: 'string', enum: ['date', 'importance'], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
-          limit: { type: 'number', default: 20, description: 'Max results to return.' },
-          offset: { type: 'number', default: 0, description: 'Skip N results for pagination.' },
-        },
-        required: [],
+  },
+  {
+    name: 'search_memories',
+    title: 'Search Memories',
+    annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search text. Triggers semantic hybrid search.' },
+        period: { type: 'string', description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
+        sort: { type: 'string', enum: ['date', 'importance'], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
+        limit: { type: 'number', default: 20, description: 'Max results to return.' },
+        offset: { type: 'number', default: 0, description: 'Skip N results for pagination.' },
       },
+      required: [],
     },
-  ],
-}))
+  },
+]
 
-// ── Tool call handler ────────────────────────────────────────────────
-
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+async function handleToolCall(req) {
   const toolName = req.params.name
   const args = req.params.arguments ?? {}
 
@@ -856,7 +899,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       isError: true,
     }
   }
-})
+}
+
+// ── Register handlers on primary (stdio) MCP server ─────────────────
+
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
+mcp.setRequestHandler(CallToolRequestSchema, handleToolCall)
+
+// ── Factory: create a short-lived MCP server for HTTP requests ──────
+
+function createHttpMcpServer() {
+  const s = new Server(
+    { name: 'trib-memory', version: '0.0.18' },
+    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
+  )
+  s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
+  s.setRequestHandler(CallToolRequestSchema, handleToolCall)
+  return s
+}
 
 // ══════════════════════════════════════════════════════════════════════
 //  HTTP SERVER (tcp — hooks + internal use)
@@ -899,6 +959,38 @@ const httpServer = http.createServer(async (req, res) => {
       sendJson(res, { status: 'ok', episodeCount, classificationCount })
     } catch (e) {
       sendError(res, e.message)
+    }
+    return
+  }
+
+  // ── Streamable HTTP MCP endpoint ──
+  if (req.url === '/mcp') {
+    try {
+      if (req.method === 'POST') {
+        const httpMcp = createHttpMcpServer()
+        const httpTransport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        })
+        res.on('close', () => {
+          httpTransport.close()
+          void httpMcp.close()
+        })
+        await httpMcp.connect(httpTransport)
+        const body = await readBody(req)
+        await httpTransport.handleRequest(req, res, body)
+      } else if (req.method === 'GET') {
+        // SSE stream — not needed for stateless mode
+        sendJson(res, { error: 'SSE not supported in stateless mode' }, 405)
+      } else if (req.method === 'DELETE') {
+        // Session termination — not applicable in stateless mode
+        sendJson(res, { error: 'No session management in stateless mode' }, 405)
+      } else {
+        sendJson(res, { error: 'Method not allowed' }, 405)
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-service] /mcp error: ${e.stack || e.message}\n`)
+      if (!res.headersSent) sendError(res, e.message)
     }
     return
   }

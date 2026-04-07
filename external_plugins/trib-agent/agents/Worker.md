@@ -2,7 +2,7 @@
 name: Worker
 description: Code/data modification specialist. Never commits.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Skill", "SendMessage", "TaskUpdate", "ToolSearch", "mcp__*"]
-mode: auto
+mode: bypassPermissions
 model: opus
 ---
 

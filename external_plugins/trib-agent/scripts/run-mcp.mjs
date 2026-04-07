@@ -75,16 +75,30 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-// Prefer pre-built bundle, fallback to runtime build
+// Prefer pre-built bundle, fallback to runtime build.
+// IMPORTANT: ESM resolves bare imports relative to the bundle file's location,
+// not via NODE_PATH. We must run the bundle from `pluginData` so it can find
+// packages installed in `pluginData/node_modules`.
 const serverSrc = join(pluginRoot, 'server.mjs')
 const prebuiltBundle = join(pluginRoot, 'dist', 'server.bundle.mjs')
-let serverFile
 
 try {
-  statSync(prebuiltBundle)
-  serverFile = prebuiltBundle
-  log('using pre-built bundle')
+  const prebuiltStat = statSync(prebuiltBundle)
+  let needCopy = true
+  try {
+    const dataStat = statSync(bundlePath)
+    if (dataStat.mtimeMs >= prebuiltStat.mtimeMs && dataStat.size === prebuiltStat.size) {
+      needCopy = false
+    }
+  } catch {}
+  if (needCopy) {
+    await copyFile(prebuiltBundle, bundlePath)
+    log('copied pre-built bundle to pluginData')
+  } else {
+    log('using cached bundle in pluginData')
+  }
 } catch {
+  // No pre-built bundle — build from source into pluginData
   if (!existsSync(bundlePath) || statSync(serverSrc).mtimeMs > statSync(bundlePath).mtimeMs) {
     if (await isExecutable(esbuildBin)) {
       log('building server bundle...')
@@ -93,15 +107,15 @@ try {
       else log('bundle built')
     }
   }
-  serverFile = existsSync(bundlePath) ? bundlePath : serverSrc
 }
 
+const serverFile = existsSync(bundlePath) ? bundlePath : serverSrc
 log(`exec node ${serverFile}`)
 
 const child = spawn(process.execPath, [serverFile], {
   cwd: pluginRoot,
   stdio: 'inherit',
-  env: { ...process.env, NODE_PATH: join(dataNodeModules) },
+  env: process.env,
 })
 
 child.on('exit', (code, signal) => {

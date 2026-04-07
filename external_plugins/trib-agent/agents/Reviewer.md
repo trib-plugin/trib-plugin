@@ -2,7 +2,7 @@
 name: Reviewer
 description: Review, verification, bug detection
 model: opus
-mode: auto
+mode: bypassPermissions
 tools: ["Read", "Grep", "Glob", "SendMessage", "TaskUpdate", "ToolSearch"]
 ---
 

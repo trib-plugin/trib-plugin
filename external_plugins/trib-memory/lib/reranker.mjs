@@ -1,4 +1,34 @@
+import { createRequire } from 'module'
+import { join } from 'path'
+import { mkdirSync } from 'fs'
 import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from '@huggingface/transformers'
+
+const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
+const INTRA_OP_THREADS = 0
+const INTER_OP_THREADS = 0
+let _ortPatched = false
+
+function patchOrtThreads() {
+  if (_ortPatched) return
+  try {
+    const require = createRequire(import.meta.url)
+    const ort = require('onnxruntime-node')
+    if (!ort?.InferenceSession?.create) {
+      process.stderr.write('[reranker] ORT patch skipped: InferenceSession.create not found\n')
+      return
+    }
+    const origCreate = ort.InferenceSession.create.bind(ort.InferenceSession)
+    ort.InferenceSession.create = async function (pathOrBuffer, options = {}) {
+      if (!options.intraOpNumThreads) options.intraOpNumThreads = INTRA_OP_THREADS
+      if (!options.interOpNumThreads) options.interOpNumThreads = INTER_OP_THREADS
+      return origCreate(pathOrBuffer, options)
+    }
+    _ortPatched = true
+    process.stderr.write(`[reranker] ORT patched OK: intra=${INTRA_OP_THREADS} inter=${INTER_OP_THREADS}\n`)
+  } catch (err) {
+    process.stderr.write(`[reranker] ORT patch failed: ${err?.message || err}\n`)
+  }
+}
 
 let _tokenizer = null
 let _model = null
@@ -52,6 +82,9 @@ async function ensureModel() {
   if (_model && _tokenizer) return
   if (_loading) return _loading
   _loading = (async () => {
+    patchOrtThreads()
+    try { mkdirSync(MODEL_CACHE_DIR, { recursive: true }) } catch {}
+    hfEnv.cacheDir = MODEL_CACHE_DIR
     _tokenizer = await AutoTokenizer.from_pretrained(modelId)
 
     // Try GPU (DirectML on Windows, CUDA if available), fall back to CPU

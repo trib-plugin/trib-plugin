@@ -210,13 +210,14 @@ export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
   }
 }
 
+// Processed candidates are DELETEd, not marked consolidated. The distilled
+// value lives in classifications/core_memory; the raw candidate row is dead.
 export function markCandidateIdsConsolidated(store, candidateIds = []) {
   const ids = [...new Set(candidateIds.map(id => Number(id)).filter(Number.isFinite))]
   if (ids.length === 0) return 0
   const placeholders = ids.map(() => '?').join(', ')
   const stmt = store.db.prepare(`
-    UPDATE memory_candidates
-    SET status = 'consolidated'
+    DELETE FROM memory_candidates
     WHERE status = 'pending'
       AND id IN (${placeholders})
   `)
@@ -226,8 +227,7 @@ export function markCandidateIdsConsolidated(store, candidateIds = []) {
 
 export function markCandidatesConsolidated(store, dayKey) {
   return Number(store.db.prepare(`
-    UPDATE memory_candidates
-    SET status = 'consolidated'
+    DELETE FROM memory_candidates
     WHERE day_key = ? AND status = 'pending'
   `).run(dayKey).changes ?? 0)
 }

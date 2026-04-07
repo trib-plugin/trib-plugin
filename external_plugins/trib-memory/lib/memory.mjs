@@ -432,6 +432,30 @@ export class MemoryStore {
 
       CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts
         USING fts5(content, topic, tokenize='trigram');
+
+      CREATE TABLE IF NOT EXISTS core_memory (
+        id INTEGER PRIMARY KEY,
+        classification_id INTEGER NOT NULL UNIQUE,
+        topic TEXT NOT NULL,
+        element TEXT NOT NULL,
+        importance TEXT,
+        final_score REAL NOT NULL DEFAULT 0,
+        promoted_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'demoted')),
+        FOREIGN KEY(classification_id) REFERENCES classifications(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_core_memory_status ON core_memory(status, final_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_core_memory_cls ON core_memory(classification_id);
+
+      CREATE TABLE IF NOT EXISTS classification_stats (
+        classification_id INTEGER NOT NULL UNIQUE,
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        retrieval_count INTEGER NOT NULL DEFAULT 0,
+        last_seen TEXT,
+        FOREIGN KEY(classification_id) REFERENCES classifications(id) ON DELETE CASCADE
+      );
     `)
 
     try {
@@ -1230,6 +1254,26 @@ export class MemoryStore {
         })
       }
     } catch { /* memory_chunks table may not exist yet */ }
+
+    // Core memory: embed active core_memory items
+    try {
+      const coreLimit = Math.max(8, Math.floor(perTypeLimit / 4))
+      const coreRows = this.db.prepare(`
+        SELECT id, topic, element, importance FROM core_memory
+        WHERE status = 'active'
+        ORDER BY final_score DESC, id DESC
+        LIMIT ?
+      `).all(coreLimit)
+      for (const row of coreRows) {
+        items.push({
+          key: embeddingItemKey('core_memory', row.id),
+          entityType: 'core_memory',
+          entityId: row.id,
+          subtype: row.importance || 'fact',
+          content: [row.element, row.topic, row.importance].filter(Boolean).join(' | '),
+        })
+      }
+    } catch { /* core_memory table may not exist yet */ }
 
     return items
   }

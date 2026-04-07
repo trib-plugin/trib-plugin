@@ -10,14 +10,17 @@ const DEFAULT_OPS_POLICY = {
       scope: 'all',
       limit: 80,
     },
+    // Startup catch-up disabled by default: was running inline embeddings
+    // ~5s after server start, causing perceptible lag right after user typed.
+    // Pending work is still handled by the regular 5-min cycle1 interval.
     cycle1CatchUp: {
-      mode: 'light',
+      mode: 'off',
       delayMs: 5000,
       minPendingCandidates: 8,
       requireDue: false,
     },
     cycle2CatchUp: {
-      mode: 'light',
+      mode: 'off',
       delayMs: 5000,
       requireDue: true,
     },
@@ -82,7 +85,10 @@ export function readMemoryOpsPolicy(mainConfig = {}) {
 
   return {
     features: {
-      reranker: featuresConfig.reranker !== false,
+      // Opt-in: reranker must be explicitly `true` in config.
+      // Previous `!== false` treated undefined as true, contradicting
+      // DEFAULT_OPS_POLICY.features.reranker=false.
+      reranker: featuresConfig.reranker === true,
       temporalParser: featuresConfig.temporalParser === true,
     },
     startup: {

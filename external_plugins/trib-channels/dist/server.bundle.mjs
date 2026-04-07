@@ -3,6 +3,7 @@
 // server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema
@@ -3651,6 +3652,25 @@ async function startOwnerHttpServer() {
           res.end(JSON.stringify({ ok: true, active: channelBridgeActive }));
           return;
         }
+        case "/mcp": {
+          if (req.method === "POST") {
+            const httpMcp = createHttpMcpServer();
+            const httpTransport = new StreamableHTTPServerTransport({
+              sessionIdGenerator: void 0,
+              enableJsonResponse: true
+            });
+            res.on("close", () => {
+              httpTransport.close();
+              void httpMcp.close();
+            });
+            await httpMcp.connect(httpTransport);
+            await httpTransport.handleRequest(req, res, body);
+          } else {
+            res.writeHead(405);
+            res.end(JSON.stringify({ error: "Method not allowed" }));
+          }
+          return;
+        }
         default: {
           res.writeHead(404);
           res.end(JSON.stringify({ error: "not found" }));
@@ -4255,166 +4275,236 @@ async function transcribeVoice(audioPath) {
     return null;
   }
 }
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "reply",
-      title: "Discord Reply",
-      annotations: { title: "Discord Reply", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-      description: "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: { type: "string" },
-          text: { type: "string" },
-          reply_to: {
-            type: "string",
-            description: "Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch."
-          },
-          files: {
-            type: "array",
-            items: { type: "string" },
-            description: "Absolute file paths to attach (images, logs, etc). Max 10 files, 25MB each."
-          },
-          embeds: {
-            type: "array",
-            items: { type: "object" },
-            description: "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
-          },
-          components: {
-            type: "array",
-            items: { type: "object" },
-            description: "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
-          }
+var TOOL_DEFS = [
+  {
+    name: "reply",
+    title: "Discord Reply",
+    annotations: { title: "Discord Reply", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    description: "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "string" },
+        text: { type: "string" },
+        reply_to: {
+          type: "string",
+          description: "Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch."
         },
-        required: ["chat_id", "text"]
-      }
-    },
-    {
-      name: "react",
-      title: "Reaction",
-      annotations: { title: "Reaction", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: { type: "string" },
-          message_id: { type: "string" },
-          emoji: { type: "string" }
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Absolute file paths to attach (images, logs, etc). Max 10 files, 25MB each."
         },
-        required: ["chat_id", "message_id", "emoji"]
-      }
-    },
-    {
-      name: "edit_message",
-      title: "Edit Message",
-      annotations: { title: "Edit Message", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "Edit a message the bot previously sent. Supports text, embeds, and components.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: { type: "string" },
-          message_id: { type: "string" },
-          text: { type: "string" },
-          embeds: {
-            type: "array",
-            items: { type: "object" },
-            description: "Discord embed objects."
-          },
-          components: {
-            type: "array",
-            items: { type: "object" },
-            description: "Discord message components."
-          }
+        embeds: {
+          type: "array",
+          items: { type: "object" },
+          description: "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
         },
-        required: ["chat_id", "message_id", "text"]
-      }
-    },
-    {
-      name: "download_attachment",
-      title: "Download Attachment",
-      annotations: { title: "Download Attachment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: { type: "string" },
-          message_id: { type: "string" }
-        },
-        required: ["chat_id", "message_id"]
-      }
-    },
-    {
-      name: "fetch",
-      title: "Fetch",
-      annotations: { title: "Fetch", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-      description: "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          channel: { type: "string" },
-          limit: {
-            type: "number",
-            description: "Max messages (default 20, capped at 100)."
-          }
-        },
-        required: ["channel"]
-      }
-    },
-    {
-      name: "schedule_status",
-      title: "Schedule Status",
-      annotations: { title: "Schedule Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: "Show all configured schedules, their next fire time, and whether they are currently running.",
-      inputSchema: {
-        type: "object",
-        properties: {}
-      }
-    },
-    {
-      name: "trigger_schedule",
-      title: "Trigger Schedule",
-      annotations: { title: "Trigger Schedule", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      description: "Manually trigger a named schedule immediately, ignoring time/day constraints.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Schedule name to trigger" }
-        },
-        required: ["name"]
-      }
-    },
-    {
-      name: "schedule_control",
-      title: "Schedule Control",
-      annotations: { title: "Schedule Control", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: 'Defer or skip a schedule. Use "defer" to suppress for N minutes (default 30), or "skip_today" to suppress for the rest of the day.',
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: 'Schedule name (e.g. "mail-briefing" or "proactive:chat")' },
-          action: { type: "string", enum: ["defer", "skip_today"], description: "Action to take" },
-          minutes: { type: "number", description: "Defer duration in minutes (default 30, only for defer action)" }
-        },
-        required: ["name", "action"]
-      }
-    },
-    {
-      name: "activate_channel_bridge",
-      title: "Activate Channel Bridge",
-      annotations: { title: "Activate Channel Bridge", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      description: "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          active: { type: "boolean", description: "true to activate, false to deactivate" }
-        },
-        required: ["active"]
-      }
+        components: {
+          type: "array",
+          items: { type: "object" },
+          description: "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
+        }
+      },
+      required: ["chat_id", "text"]
     }
-    // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
-  ]
-}));
+  },
+  {
+    name: "react",
+    title: "Reaction",
+    annotations: { title: "Reaction", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    description: "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "string" },
+        message_id: { type: "string" },
+        emoji: { type: "string" }
+      },
+      required: ["chat_id", "message_id", "emoji"]
+    }
+  },
+  {
+    name: "edit_message",
+    title: "Edit Message",
+    annotations: { title: "Edit Message", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    description: "Edit a message the bot previously sent. Supports text, embeds, and components.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "string" },
+        message_id: { type: "string" },
+        text: { type: "string" },
+        embeds: {
+          type: "array",
+          items: { type: "object" },
+          description: "Discord embed objects."
+        },
+        components: {
+          type: "array",
+          items: { type: "object" },
+          description: "Discord message components."
+        }
+      },
+      required: ["chat_id", "message_id", "text"]
+    }
+  },
+  {
+    name: "download_attachment",
+    title: "Download Attachment",
+    annotations: { title: "Download Attachment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    description: "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "string" },
+        message_id: { type: "string" }
+      },
+      required: ["chat_id", "message_id"]
+    }
+  },
+  {
+    name: "fetch",
+    title: "Fetch",
+    annotations: { title: "Fetch", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    description: "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string" },
+        limit: {
+          type: "number",
+          description: "Max messages (default 20, capped at 100)."
+        }
+      },
+      required: ["channel"]
+    }
+  },
+  {
+    name: "schedule_status",
+    title: "Schedule Status",
+    annotations: { title: "Schedule Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: "Show all configured schedules, their next fire time, and whether they are currently running.",
+    inputSchema: {
+      type: "object",
+      properties: {}
+    }
+  },
+  {
+    name: "trigger_schedule",
+    title: "Trigger Schedule",
+    annotations: { title: "Trigger Schedule", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: "Manually trigger a named schedule immediately, ignoring time/day constraints.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Schedule name to trigger" }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    name: "schedule_control",
+    title: "Schedule Control",
+    annotations: { title: "Schedule Control", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Defer or skip a schedule. Use "defer" to suppress for N minutes (default 30), or "skip_today" to suppress for the rest of the day.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: 'Schedule name (e.g. "mail-briefing" or "proactive:chat")' },
+        action: { type: "string", enum: ["defer", "skip_today"], description: "Action to take" },
+        minutes: { type: "number", description: "Defer duration in minutes (default 30, only for defer action)" }
+      },
+      required: ["name", "action"]
+    }
+  },
+  {
+    name: "activate_channel_bridge",
+    title: "Activate Channel Bridge",
+    annotations: { title: "Activate Channel Bridge", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        active: { type: "boolean", description: "true to activate, false to deactivate" }
+      },
+      required: ["active"]
+    }
+  }
+  // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
+];
+function createHttpMcpServer() {
+  const s = new Server(
+    { name: "trib-channels", version: PLUGIN_VERSION },
+    { capabilities: { tools: {} }, instructions: INSTRUCTIONS }
+  );
+  s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
+  s.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const toolName = req.params.name;
+    const args = req.params.arguments ?? {};
+    try {
+      switch (toolName) {
+        case "reply": {
+          const sendResult = await backend.sendMessage(
+            args.chat_id,
+            args.text,
+            { replyTo: args.reply_to, files: args.files ?? [], embeds: args.embeds ?? [], components: args.components ?? [] }
+          );
+          return { content: [{ type: "text", text: JSON.stringify({ sentIds: sendResult.sentIds }) }] };
+        }
+        case "react": {
+          await backend.react(args.chat_id, args.message_id, args.emoji);
+          return { content: [{ type: "text", text: "ok" }] };
+        }
+        case "edit_message": {
+          const editId = await backend.editMessage(args.chat_id, args.message_id, args.text, { embeds: args.embeds ?? [], components: args.components ?? [] });
+          return { content: [{ type: "text", text: JSON.stringify({ id: editId }) }] };
+        }
+        case "fetch": {
+          const msgs = await backend.fetchMessages(args.channel, args.limit ?? 20);
+          return { content: [{ type: "text", text: JSON.stringify({ messages: msgs }) }] };
+        }
+        case "download_attachment": {
+          const files = await backend.downloadAttachment(args.chat_id, args.message_id);
+          return { content: [{ type: "text", text: JSON.stringify({ files }) }] };
+        }
+        case "schedule_status": {
+          const statuses = scheduler.getStatus();
+          return { content: [{ type: "text", text: statuses.length ? statuses.map((st) => `${st.name} ${st.time} ${st.days} (${st.type})${st.running ? " [RUNNING]" : ""}`).join("\n") : "no schedules configured" }] };
+        }
+        case "trigger_schedule": {
+          const triggerResult = await scheduler.triggerManual(args.name);
+          return { content: [{ type: "text", text: triggerResult }] };
+        }
+        case "schedule_control": {
+          const action = args.action;
+          if (action === "defer") {
+            scheduler.defer(args.name, args.minutes ?? 30);
+            return { content: [{ type: "text", text: `deferred "${args.name}" for ${args.minutes ?? 30} minutes` }] };
+          } else if (action === "skip_today") {
+            scheduler.skipToday(args.name);
+            return { content: [{ type: "text", text: `skipped "${args.name}" for today` }] };
+          }
+          return { content: [{ type: "text", text: `unknown action: ${action}` }], isError: true };
+        }
+        case "activate_channel_bridge": {
+          const active = args.active === true;
+          channelBridgeActive = active;
+          writeBridgeState(active);
+          if (active) void refreshBridgeOwnership({ restoreBinding: true });
+          return { content: [{ type: "text", text: `channel bridge ${active ? "activated" : "deactivated"}` }] };
+        }
+        default:
+          return { content: [{ type: "text", text: `unknown tool: ${toolName}` }], isError: true };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text", text: `${toolName} failed: ${msg}` }], isError: true };
+    }
+  });
+  return s;
+}
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   await forwarder.forwardNewText();
   const toolName = req.params.name;
@@ -4423,12 +4513,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const BACKEND_TOOLS = /* @__PURE__ */ new Set(["reply", "fetch", "react", "edit_message", "download_attachment"]);
   if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected && !proxyMode) {
     if (!currentOwnerState().owned) claimBridgeOwnership("tool call");
-    for (let i = 0; i < 3 && !bridgeRuntimeConnected && !proxyMode; i++) {
+    for (let i = 0; i < 2 && !bridgeRuntimeConnected && !proxyMode; i++) {
       try {
         await refreshBridgeOwnership();
       } catch {
       }
-      if (!bridgeRuntimeConnected && !proxyMode) await new Promise((r) => setTimeout(r, 1e3));
+      if (!bridgeRuntimeConnected && !proxyMode) await new Promise((r) => setTimeout(r, 300));
     }
     if (!bridgeRuntimeConnected && !proxyMode) {
       return {

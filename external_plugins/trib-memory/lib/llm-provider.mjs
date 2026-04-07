@@ -78,21 +78,37 @@ async function execWithInput(command, args, stdin, options = {}) {
 /**
  * @param {string} prompt — Prompt to send to LLM
  * @param {object} provider — { connection, model, effort?, fast?, baseUrl? }
- * @param {object} options — { timeout?, cwd? }
+ * @param {object} options — { timeout?, cwd?, retries? }
  * @returns {Promise<string>} — LLM response text
  */
 export async function callLLM(prompt, provider, options = {}) {
-  switch (provider.connection) {
-    case 'codex':
-      return callCodex(prompt, provider, options)
-    case 'cli':
-      return callClaude(prompt, provider, options)
-    case 'ollama':
-      return callOllama(prompt, provider, options)
-    case 'api':
-      return callAPI(prompt, provider, options)
-    default:
-      throw new Error(`Unknown provider connection: ${provider.connection}`)
+  const maxRetries = Math.max(0, Number(options.retries ?? 1))
+  const baseTimeout = options.timeout || 180000
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Extend timeout on retry to handle MCP connection slowness
+    const attemptTimeout = baseTimeout + (attempt * 60000)
+    const attemptOptions = { ...options, timeout: attemptTimeout }
+
+    try {
+      switch (provider.connection) {
+        case 'codex':
+          return await callCodex(prompt, provider, attemptOptions)
+        case 'cli':
+          return await callClaude(prompt, provider, attemptOptions)
+        case 'ollama':
+          return await callOllama(prompt, provider, attemptOptions)
+        case 'api':
+          return await callAPI(prompt, provider, attemptOptions)
+        default:
+          throw new Error(`Unknown provider connection: ${provider.connection}`)
+      }
+    } catch (e) {
+      const isTimeout = /timed?\s*out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up/i.test(e.message)
+      if (!isTimeout || attempt >= maxRetries) throw e
+      process.stderr.write(`[llm-provider] timeout on attempt ${attempt + 1}, retrying (${attemptTimeout}ms -> ${attemptTimeout + 60000}ms)...\n`)
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
+    }
   }
 }
 

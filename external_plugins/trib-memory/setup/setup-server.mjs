@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { exec } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -24,7 +24,9 @@ function readJsonFile(path) {
 
 function writeJsonFile(path, data) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  renameSync(tmp, path);
 }
 
 function readConfig() { return readJsonFile(CONFIG_PATH); }
@@ -179,7 +181,7 @@ const idleCheck = setInterval(() => {
 }, 10000);
 
 server.listen(PORT, () => {
-  console.log(`\n  trib-memory config`);
+  console.log(`\n  TRIB-MEMORY CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
 
   const appUrl = `http://localhost:${PORT}`;

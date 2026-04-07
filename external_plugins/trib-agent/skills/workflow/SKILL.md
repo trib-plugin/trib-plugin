@@ -31,13 +31,19 @@ All work MUST follow this exact sequence. Never skip steps.
 Only after approval, follow this exact tool sequence:
 
 ```
-TeamCreate(team_name=이름)  → create team FIRST
+TeamCreate(team_name=name)  → create team FIRST
 TaskCreate  → define tasks (now they land in the team's task list)
-Agent(subagent_type="trib-agent:Worker", team_name=팀이름, name=워커이름)  → spawn Workers
+Agent(subagent_type="trib-agent:Worker", team_name=team_name, name=worker_name)  → spawn Workers
 ```
 
-### Step 5: Complete
-When all Workers report done, summarize results to user.
+### Step 5: Verify
+Lead MUST verify final deliverables directly (run tests, check outputs, confirm behavior) before reporting to user. Never rely solely on Worker self-reports.
+
+### Step 6: Complete
+When verification passes, summarize results to user.
+
+### Step 7: Wrap-up
+Ask the user whether to clean up the team (shutdown Workers). After cleanup, ask if there is another task to proceed with.
 
 ## Lead Rules
 
@@ -46,6 +52,8 @@ When all Workers report done, summarize results to user.
 - Always pass `team_name` when spawning Workers/Reviewers
 - Handle git (commit, push) directly
 - Communicate with user for all decisions
+- Finish all discussion and agreement with the user before delegating, then dispatch Workers in a single batch — never fire off delegations one at a time as ideas surface
+- For simple tasks the Lead could handle alone, ask the user for permission to do it directly. Proceed without delegation only after explicit approval
 
 ### Lead MUST NOT
 - Use Read, Write, Edit, Bash, Glob, Grep directly — ALL investigation and execution goes through Workers

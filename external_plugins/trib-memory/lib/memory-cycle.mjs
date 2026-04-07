@@ -31,13 +31,11 @@ const CYCLE_STATE_PATH = join(PLUGIN_DATA_DIR, 'cycle-state.json')
 const DEFAULT_CYCLE_STATE = {
   cycle1: { lastRunAt: null, interval: '5m' },
   cycle2: { lastRunAt: null, schedule: '03:00' },
-  cycle3: { lastRunAt: null, schedule: 'sunday 03:00' },
 }
 
 const CYCLE_WRITE_PRIORITY = {
   cycle1: 1,
   cycle2: 1,
-  cycle3: 2,
 }
 
 let _cycleWriteActive = false
@@ -436,32 +434,81 @@ async function sleepCycleImpl(ws) {
   const config = readCycleConfig()
   const mainConfig = readMainConfig()
   const cycle2Config = mainConfig?.cycle2 ?? {}
-  const isFirstRun = !config.lastSleepAt && !existsSync(join(HISTORY_DIR, 'context.md'))
+  const isFirstRun = !config.lastSleepAt
   const backfillLimit = resolveCycleBackfillLimit(mainConfig, 120)
 
-  process.stderr.write(`[memory-cycle] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
+  process.stderr.write(`[memory-cycle2] Starting.${isFirstRun ? ' (FIRST RUN)' : ''}\n`)
   store.backfillProject(ws, { limit: backfillLimit })
 
-  // 1. Consolidation (pass cycle2 provider if configured)
+  // 1. Consolidation — pending candidates -> classifications
   const MAX_DAYS = Math.max(1, Number(cycle2Config.maxDays ?? 7))
   const pendingDays = store.getPendingCandidateDays(MAX_DAYS, 1).map(d => d.day_key).sort().reverse()
   const consolidateOpts = { provider: cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER }
   await consolidateRecent(pendingDays, ws, consolidateOpts)
 
-  // 2. Sync
+  // 2. Sync history files
   store.syncHistoryFromFiles()
 
-  // 3. Dedup/merge
+  // 3. Dedup/merge (cosine similarity 0.85)
   const dedupResult = await deduplicateClassifications(store, { dryRun: false })
   if (dedupResult.merged > 0) {
     process.stderr.write(`[memory-cycle2] dedup: merged=${dedupResult.merged}\n`)
   }
 
-  // 4. Context + recent
-  store.writeContextFile()
+  // 4. Core memory promotion — LLM 4-stage (cycle2 exclusive)
+  try {
+    await coreMemoryPromote(store, ws, mainConfig)
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] core-promote error: ${e.message}\n`)
+  }
 
-  // 5. Re-embed (after dedup changed content)
-  await refreshEmbeddings(ws, { kind: 'cycle2' })
+  // 5. Daily journal generation
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const dailyDir = join(HISTORY_DIR, 'daily')
+    mkdirSync(dailyDir, { recursive: true })
+    const journalPath = join(dailyDir, `${today}.md`)
+    if (!existsSync(journalPath)) {
+      const dayEpisodes = store.getEpisodesForDate(today)
+      const dayClassifications = store.db.prepare(`
+        SELECT topic, element, importance FROM classifications
+        WHERE status = 'active' AND updated_at >= ? AND updated_at < ?
+        ORDER BY updated_at
+      `).all(`${today}T00:00:00`, `${today}T23:59:59`)
+
+      if (dayEpisodes.length > 0 || dayClassifications.length > 0) {
+        const episodeSummary = dayEpisodes.slice(0, 60).map(ep => {
+          const role = ep.role === 'user' ? 'User' : 'Assistant'
+          return `- ${role}: ${String(ep.content ?? '').slice(0, 200)}`
+        }).join('\n')
+        const classificationSummary = dayClassifications.map(c =>
+          `- [${c.importance}] ${c.topic}: ${c.element}`
+        ).join('\n')
+
+        const journalPrompt = [
+          `Today's date: ${today}`,
+          '', 'Episodes:', episodeSummary || '(none)',
+          '', 'Classifications:', classificationSummary || '(none)',
+          '', 'Write a daily journal entry in a natural, readable style. Include key tasks, discussions, decisions, and issues. Write it as a personal daily log, not a formal report. Write in Korean.',
+        ].join('\n')
+
+        try {
+          const provider = cycle2Config.provider ?? DEFAULT_CYCLE_PROVIDER
+          const journalContent = await resolveCycleLlmOutput(journalPrompt, ws, {
+            mode: 'journal', provider, timeout: 120000,
+          })
+          if (journalContent && journalContent.trim().length > 20) {
+            writeFileSync(journalPath, `# ${today} Daily Journal\n\n${journalContent.trim()}\n`, 'utf8')
+            process.stderr.write(`[memory-cycle2] daily journal written: ${journalPath}\n`)
+          }
+        } catch (e) {
+          process.stderr.write(`[memory-cycle2] journal generation failed: ${e.message}\n`)
+        }
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] journal error: ${e.message}\n`)
+  }
 
   // 6. Save timestamp
   writeCycleConfig({ ...config, lastSleepAt: now })
@@ -469,7 +516,7 @@ async function sleepCycleImpl(ws) {
   cycleState.cycle2.lastRunAt = new Date().toISOString()
   saveCycleState(cycleState)
 
-  process.stderr.write('[memory-cycle] Cycle complete.\n')
+  process.stderr.write('[memory-cycle2] Cycle complete.\n')
 }
 
 export async function sleepCycle(ws) {
@@ -478,7 +525,7 @@ export async function sleepCycle(ws) {
 
 // ── Cycle2: Dedup/merge similar classifications ──
 
-const DEDUP_SIMILARITY_THRESHOLD = 0.92
+const DEDUP_SIMILARITY_THRESHOLD = 0.85
 
 async function deduplicateClassifications(store, options = {}) {
   const dryRun = Boolean(options.dryRun ?? false)
@@ -555,7 +602,6 @@ export async function summarizeOnly(ws) {
     const provider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
     await consolidateRecent(pendingDays, ws, { provider })
     await refreshEmbeddings(ws, { kind: 'cycle2' })
-    store.writeContextFile()
   }
   store.syncHistoryFromFiles()
 }
@@ -573,7 +619,6 @@ async function memoryFlushImpl(ws, options = {}) {
   consolidateOpts.provider = options.provider ?? readMainConfig()?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws)
-  store.writeContextFile()
 }
 
 export async function memoryFlush(ws, options = {}) {
@@ -592,7 +637,6 @@ async function rebuildAllImpl(ws) {
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2' })
-  store.writeContextFile()
   process.stderr.write(`[memory-cycle] rebuilt ${dayKeys.length} day(s).\n`)
 }
 
@@ -674,10 +718,9 @@ async function rebuildClassificationsImpl(ws, options = {}) {
 
   // Final embedding pass with high limit to cover all new chunks
   if (totalExtracted > 0) {
-    await refreshEmbeddings(ws, { store, kind: 'cycle1', perTypeLimit: Math.max(256, totalClassifications * 2) })
+    await refreshEmbeddings(ws, { store, kind: 'cycle1', perTypeLimit: Math.min(128, Math.max(64, totalClassifications)) })
   }
 
-  store.writeContextFile()
   store.writeRecentFile()
 
   process.stderr.write(`[rebuild] complete: ${totalExtracted} extracted, ${totalClassifications} classifications, ${batchesCompleted} batches\n`)
@@ -701,7 +744,6 @@ async function rebuildRecentImpl(ws, options = {}) {
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2' })
-  store.writeContextFile()
   process.stderr.write(`[memory-cycle] rebuilt recent ${dayKeys.length} day(s).\n`)
 }
 
@@ -719,7 +761,6 @@ async function pruneToRecentImpl(ws, options = {}) {
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.pruneConsolidatedMemoryOutsideDays(dayKeys)
   await refreshEmbeddings(ws, { kind: 'cycle2' })
-  store.writeContextFile()
   process.stderr.write(`[memory-cycle] pruned to ${dayKeys.join(', ')}.\n`)
 }
 
@@ -823,15 +864,24 @@ function buildCycle1ClassificationRows(candidates = []) {
   }).join('\n')
 }
 
-const DEFAULT_CYCLE_PROVIDER = { connection: 'codex', model: 'gpt-5.4-mini', effort: 'medium', fast: true }
+const FALLBACK_CYCLE_PROVIDER = { connection: 'codex', model: 'gpt-5.4-mini', effort: 'medium', fast: true }
+
+function resolveDefaultProvider() {
+  const config = readMainConfig()
+  return config?.defaultProvider ?? FALLBACK_CYCLE_PROVIDER
+}
+
+// Used as fallback when no config-level provider is set
+const DEFAULT_CYCLE_PROVIDER = FALLBACK_CYCLE_PROVIDER
 
 async function runCycle1Impl(ws, config, options = {}) {
   const store = options.store ?? getStore()
   const cycleConfig = readCycleConfig()
   const force = Boolean(options.force)
 
-  // Backfill recent transcripts (50 episodes per cycle)
-  try { store.backfillProject(ws, { limit: 50 }) } catch {}
+  // Backfill recent transcripts (config-driven limit)
+  const backfillLimit = resolveCycleBackfillLimit(config, 50)
+  try { store.backfillProject(ws, { limit: backfillLimit }) } catch {}
 
   const cycle1Config = config?.cycle1 ?? {}
   const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config.batchSize ?? BATCH_SIZE))
@@ -867,6 +917,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   }
 
   let totalExtracted = 0, totalClassifications = 0
+  const changedClassificationIds = new Set()
 
   // force: 전체 pending을 batchSize씩 연속 처리 / 주기: batchSize 1회
   const batches = []
@@ -956,10 +1007,22 @@ async function runCycle1Impl(ws, config, options = {}) {
     const chunk = batches.slice(i, i + concurrency)
     const results = await Promise.all(chunk.map((batch, idx) => processSingleBatch(batch, i + idx)))
 
+    // NOTE: cycle1 must NEVER write to core_memory table — that is cycle2's responsibility
     const ts = new Date().toISOString()
     for (const result of results) {
       if (!result) continue
       const { candidates, classificationRows, batchIndex } = result
+
+      // Snapshot existing elements before upsert to detect changes for embedding refresh
+      const elementChangedIds = new Set()
+      for (const row of classificationRows) {
+        const epId = Number(row.episode_id)
+        if (!epId) continue
+        const existing = store.db.prepare('SELECT id, element FROM classifications WHERE episode_id = ?').get(epId)
+        if (existing && existing.element !== row.element) {
+          elementChangedIds.add(existing.id)
+        }
+      }
 
       store.upsertClassifications(classificationRows, ts, null)
 
@@ -988,9 +1051,12 @@ async function runCycle1Impl(ws, config, options = {}) {
 
       const processedIds = candidates.map(c => c.id).filter(id => id != null)
       if (processedIds.length > 0) {
+        // Processed candidates are now DELETEd instead of marked consolidated.
+        // classifications (if any) + core_memory retain the distilled value;
+        // the raw candidate row is dead data after processing.
         const placeholders = processedIds.map(() => '?').join(',')
         store.db.prepare(`
-          UPDATE memory_candidates SET status = 'consolidated'
+          DELETE FROM memory_candidates
           WHERE id IN (${placeholders}) AND status = 'pending'
         `).run(...processedIds)
       }
@@ -998,20 +1064,30 @@ async function runCycle1Impl(ws, config, options = {}) {
       totalExtracted += candidates.length
       totalClassifications += classificationRows.length
       process.stderr.write(`[cycle1] batch ${batchIndex}: ${candidates.length} candidates → ${classificationRows.length} classifications\n`)
+
+      // Collect classification IDs whose element changed (need embedding refresh)
+      for (const id of elementChangedIds) {
+        changedClassificationIds.add(id)
+      }
     }
   }
 
-  // Inline embedding: embed newly created classifications with 500ms rate limit
+  // Inline embedding: embed newly created + element-changed classifications
+  // Capped at 64 items to prevent CPU spikes
   if (totalExtracted > 0) {
-    const embeddableItems = store.getEmbeddableItems({ perTypeLimit: Math.max(batchSize, totalClassifications * 2) })
+    const EMBED_LIMIT = 64
+    const embeddableItems = store.getEmbeddableItems({ perTypeLimit: EMBED_LIMIT })
+      .filter(item => item.entityType === 'classification' || item.entityType === 'chunk')
     const lookupModel = getEmbeddingModelId()
     let embeddedCount = 0
     for (const item of embeddableItems) {
+      if (embeddedCount >= EMBED_LIMIT) break
       const embedInput = cleanMemoryText(item.content ?? '')
       if (!embedInput) continue
       const contentHash = hashEmbeddingInput(embedInput)
       const existing = store.getVectorStmt.get(item.entityType, item.entityId, lookupModel)
-      if (existing?.content_hash === contentHash) continue
+      const forceRefresh = item.entityType === 'classification' && changedClassificationIds.has(item.entityId)
+      if (!forceRefresh && existing?.content_hash === contentHash) continue
       const vector = await embedText(embedInput)
       if (!Array.isArray(vector) || vector.length === 0) continue
       const activeModel = getEmbeddingModelId()
@@ -1028,8 +1104,13 @@ async function runCycle1Impl(ws, config, options = {}) {
       embeddedCount += 1
       await new Promise(r => setTimeout(r, 500))
     }
+    if (changedClassificationIds.size > 0) {
+      process.stderr.write(`[cycle1] element-changed classifications refreshed: ${changedClassificationIds.size}\n`)
+    }
     process.stderr.write(`[cycle1] inline embeddings: ${embeddedCount} items\n`)
   }
+
+  // NOTE: cycle1 must NEVER access core_memory — that is cycle2's exclusive domain
 
   // Update recent.md (last 20 turns)
   store.writeRecentFile()
@@ -1051,6 +1132,173 @@ async function runCycle1Impl(ws, config, options = {}) {
   return result
 }
 
+/**
+ * Core memory 4-stage LLM promotion (cycle2 exclusive).
+ * Stage 1: Fact-check + correct
+ * Stage 2: Extract long-term value
+ * Stage 3: Compare with existing core_memory
+ * Stage 4: Cleanup (dedup, demote, merge)
+ *
+ * Only top-K (20~30) classifications by final_score are sent to LLM.
+ * LLM decides all add/update/demote/merge — no code-level filtering.
+ */
+async function coreMemoryPromote(store, ws, config) {
+  const cycle2Config = config?.cycle2 ?? {}
+  const provider = cycle2Config.provider || resolveDefaultProvider()
+  const topK = Math.max(1, Math.min(Number(cycle2Config.coreMemoryTopK ?? 30), 50))
+
+  // Collect today's pending episodes + recent classifications, apply 1st-pass noise filter
+  const activeRows = store.db.prepare(`
+    SELECT c.id, c.episode_id, c.topic, c.element, c.importance, c.confidence, c.updated_at,
+           COALESCE(c.retrieval_count, 0) AS retrieval_count
+    FROM classifications c
+    WHERE c.status = 'active'
+    ORDER BY c.updated_at DESC
+  `).all()
+
+  if (activeRows.length === 0) {
+    process.stderr.write(`[memory-cycle2] core-promote: no active classifications\n`)
+    return
+  }
+
+  // Compute final_score and take Top-K
+  for (const row of activeRows) {
+    try {
+      const stats = store.db.prepare(
+        `SELECT mention_count, last_seen FROM classification_stats WHERE classification_id = ?`
+      ).get(row.id)
+      if (stats) { row.mention_count = stats.mention_count; row.last_seen = stats.last_seen }
+    } catch {}
+    // Simple heat score: recency + retrieval + mention
+    const retrievalCount = Number(row.retrieval_count ?? 0)
+    const mentionCount = Number(row.mention_count ?? 0)
+    const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : (row.updated_at ? new Date(row.updated_at).getTime() : 0)
+    const daysSince = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 86400000) : 999
+    row.final_score = Number((
+      Math.log1p(mentionCount) * 0.7 +
+      Math.log1p(retrievalCount) * 0.95 +
+      Math.exp(-daysSince / 21) * 0.55
+    ).toFixed(4))
+  }
+  activeRows.sort((a, b) => b.final_score - a.final_score)
+
+  // Top-K: LLM input limited to manageable size
+  const topRows = activeRows.slice(0, topK)
+
+  // Load existing core_memory (both active and staged)
+  // staged items are not injected at session start, but LLM should see them to decide
+  // whether to promote them (staged → active) or demote them.
+  const existingCoreRows = store.db.prepare(
+    `SELECT id, classification_id, topic, element, importance, final_score, status FROM core_memory WHERE status IN ('active', 'staged') ORDER BY status DESC, final_score DESC`
+  ).all()
+
+  const corePromptPath = join(resourceDir(), 'defaults', 'memory-core-promote-prompt.md')
+  if (!existsSync(corePromptPath)) {
+    process.stderr.write(`[memory-cycle2] core-promote prompt not found, skipping\n`)
+    return
+  }
+  const coreTemplate = readFileSync(corePromptPath, 'utf8')
+
+  const coreMemoryText = existingCoreRows.length > 0
+    ? existingCoreRows.map(cm =>
+      `- id:${cm.id} status:${cm.status} topic:${cm.topic} importance:${cm.importance} element:${cm.element}`
+    ).join('\n')
+    : '(empty)'
+
+  const classificationsText = topRows.map(r =>
+    `- id:${r.id} topic:${r.topic} importance:${r.importance} score:${r.final_score} element:${r.element}`
+  ).join('\n')
+
+  const prompt = coreTemplate
+    .replace('{{CORE_MEMORY}}', coreMemoryText)
+    .replace('{{CLASSIFICATIONS}}', classificationsText)
+
+  // Single LLM call with Top-K sized input (20~30 items) to avoid MCP timeout
+  let allActions = []
+  try {
+    const raw = await resolveCycleLlmOutput(prompt, ws, {
+      mode: 'core-promote',
+      provider,
+      timeout: 180000,
+    })
+    const parsed = extractJsonObject(raw)
+    if (parsed?.actions && Array.isArray(parsed.actions)) {
+      allActions = parsed.actions
+    }
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] core-promote LLM failed: ${e.message}\n`)
+    return
+  }
+
+  if (allActions.length === 0) {
+    process.stderr.write(`[memory-cycle2] core-promote: no actions (LLM judged no changes needed)\n`)
+    return
+  }
+
+  // Apply LLM actions to core_memory
+  let addCount = 0, stageCount = 0, promoteCount = 0, updateCount = 0, demoteCount = 0, mergeCount = 0
+  const ts = new Date().toISOString()
+
+  for (const act of allActions) {
+    try {
+      if (act.action === 'add' && act.element) {
+        const matchingCls = topRows.find(r => r.topic === act.topic || r.element === act.element)
+        const clsId = matchingCls?.id ?? 0
+        if (clsId <= 0) continue
+        store.db.prepare(`
+          INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+          ON CONFLICT(classification_id) DO UPDATE SET
+            topic = excluded.topic, element = excluded.element, importance = excluded.importance,
+            final_score = excluded.final_score, last_seen_at = excluded.last_seen_at, status = 'active'
+        `).run(clsId, act.topic ?? '', act.element, act.importance ?? 'fact',
+          matchingCls?.final_score ?? 0, ts, ts)
+        addCount++
+      } else if (act.action === 'stage' && act.element) {
+        // Stage: not injected at session start, but kept for future review
+        const matchingCls = topRows.find(r => r.topic === act.topic || r.element === act.element)
+        const clsId = matchingCls?.id ?? 0
+        if (clsId <= 0) continue
+        store.db.prepare(`
+          INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'staged')
+          ON CONFLICT(classification_id) DO UPDATE SET
+            topic = excluded.topic, element = excluded.element, importance = excluded.importance,
+            final_score = excluded.final_score, last_seen_at = excluded.last_seen_at, status = 'staged'
+        `).run(clsId, act.topic ?? '', act.element, act.importance ?? 'fact',
+          matchingCls?.final_score ?? 0, ts, ts)
+        stageCount++
+      } else if (act.action === 'promote' && act.id) {
+        // Promote: staged → active
+        store.db.prepare(`UPDATE core_memory SET status = 'active', last_seen_at = ? WHERE id = ? AND status = 'staged'`).run(ts, act.id)
+        promoteCount++
+      } else if (act.action === 'update' && act.id && act.element) {
+        store.db.prepare(`
+          UPDATE core_memory SET element = ?, importance = ?, last_seen_at = ? WHERE id = ?
+        `).run(act.element, act.importance ?? 'fact', ts, act.id)
+        updateCount++
+      } else if (act.action === 'demote' && act.id) {
+        store.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(act.id)
+        demoteCount++
+      } else if (act.action === 'merge' && Array.isArray(act.ids) && act.ids.length >= 2 && act.element) {
+        const [keepId, ...removeIds] = act.ids
+        store.db.prepare(`
+          UPDATE core_memory SET element = ?, topic = ?, importance = ?, last_seen_at = ? WHERE id = ?
+        `).run(act.element, act.topic ?? '', act.importance ?? 'fact', ts, keepId)
+        for (const rid of removeIds) {
+          store.db.prepare(`UPDATE core_memory SET status = 'demoted' WHERE id = ?`).run(rid)
+        }
+        mergeCount++
+        demoteCount += removeIds.length
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-cycle2] core-promote action error: ${e.message}\n`)
+    }
+  }
+
+  process.stderr.write(`[memory-cycle2] core_memory: add=${addCount} stage=${stageCount} promote=${promoteCount} update=${updateCount} demote=${demoteCount} merge=${mergeCount}\n`)
+}
+
 export async function runCycle1(ws, config, options = {}) {
   return enqueueCycleWrite('cycle1', () => runCycle1Impl(ws, config, options))
 }
@@ -1064,140 +1312,3 @@ export function parseInterval(s) {
   return Number(num) * multiplier[unit]
 }
 
-const WEEKDAY_MAP = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 }
-
-export function parseCycle3Day(day) {
-  if (!day) return 0 // default sunday
-  return WEEKDAY_MAP[String(day).toLowerCase()] ?? 0
-}
-
-// ── Cycle3: Weekly gradual decay ──
-
-const CYCLE3_HEAT_THRESHOLD = 0.6
-const CYCLE3_DEPRECATED_GRACE_DAYS = 30
-
-function computeHeatScore(row) {
-  const mentionCount = Number(row.mention_count ?? 0)
-  const retrievalCount = Number(row.retrieval_count ?? 0)
-  const lastSeen = row.last_seen ? new Date(row.last_seen).getTime() : 0
-  const daysSinceLastSeen = lastSeen ? Math.max(0, (Date.now() - lastSeen) / 86400000) : 999
-  const mentionTerm = Math.log1p(Math.max(0, mentionCount)) * 0.7
-  const retrievalTerm = Math.log1p(Math.max(0, retrievalCount)) * 0.95
-  const recencyTerm = Math.exp(-daysSinceLastSeen / 21) * 0.55
-  return Number((mentionTerm + retrievalTerm + recencyTerm).toFixed(3))
-}
-
-async function runCycle3Impl(_ws, options = {}) {
-  const store = getStore()
-  const mainConfig = readMainConfig()
-  const cycle3Config = mainConfig?.cycle3 ?? {}
-  const threshold = Number(cycle3Config.threshold ?? options.threshold ?? CYCLE3_HEAT_THRESHOLD)
-  const graceDays = Number(cycle3Config.graceDays ?? options.graceDays ?? CYCLE3_DEPRECATED_GRACE_DAYS)
-  const hardDelete = Boolean(cycle3Config.hardDelete ?? options.hardDelete ?? false)
-  const now = new Date()
-  const nowISO = now.toISOString()
-
-  process.stderr.write(`[memory-cycle3] Starting decay cycle (threshold=${threshold}, graceDays=${graceDays})\n`)
-
-  let deprecatedClassifications = 0
-  let deletedClassifications = 0
-
-  const MIN_SURVIVAL_DAYS = 30
-  const rows = store.db.prepare(`
-    SELECT id, ts, retrieval_count, updated_at
-    FROM classifications
-    WHERE status = 'active'
-  `).all()
-
-  const coldIds = rows.filter(row => {
-    const firstSeen = row.ts ? new Date(row.ts).getTime() : 0
-    const ageDays = firstSeen ? (Date.now() - firstSeen) / 86400000 : 999
-    if (ageDays < MIN_SURVIVAL_DAYS) return false
-    return computeHeatScore({
-      mention_count: 1,
-      retrieval_count: row.retrieval_count,
-      last_seen: row.ts,
-    }) < threshold
-  }).map(row => row.id)
-
-  if (coldIds.length > 0) {
-    const placeholders = coldIds.map(() => '?').join(',')
-    deprecatedClassifications = Number(store.db.prepare(`
-      UPDATE classifications
-      SET status = 'deprecated'
-      WHERE id IN (${placeholders})
-    `).run(...coldIds).changes ?? 0)
-  }
-
-  if (hardDelete) {
-    const graceThreshold = new Date(Date.now() - graceDays * 86400000).getTime()
-    const deletable = store.db.prepare(`
-      SELECT id
-      FROM classifications
-      WHERE status = 'deprecated'
-        AND updated_at < ?
-    `).all(graceThreshold).map(row => row.id)
-    if (deletable.length > 0) {
-      const placeholders = deletable.map(() => '?').join(',')
-      deletedClassifications = Number(store.db.prepare(`
-        DELETE FROM classifications
-        WHERE id IN (${placeholders})
-      `).run(...deletable).changes ?? 0)
-    }
-  }
-
-  // Phase 3: Refresh context
-  store.writeContextFile()
-
-  // Phase 4: Update cycle state
-  const cycleState = loadCycleState()
-  cycleState.cycle3.lastRunAt = nowISO
-  saveCycleState(cycleState)
-
-  const result = {
-    deprecated: { classifications: deprecatedClassifications },
-    deleted: { classifications: deletedClassifications },
-  }
-
-  process.stderr.write(
-    `[memory-cycle3] deprecated classifications=${deprecatedClassifications} | ` +
-    `deleted classifications=${deletedClassifications}\n`
-  )
-
-  return result
-}
-
-export async function runCycle3(ws, options = {}) {
-  return enqueueCycleWrite('cycle3', () => runCycle3Impl(ws, options))
-}
-
-export function shouldRunCycle3(config) {
-  const cycle3Config = config?.cycle3 ?? {}
-  const today = new Date()
-  const cycleState = loadCycleState()
-  const targetDayRaw = String(cycle3Config.day ?? 'sunday').toLowerCase()
-  const schedule = String(cycle3Config.schedule ?? '03:00')
-  const [targetHour, targetMinute] = schedule.split(':').map(value => Number(value) || 0)
-  const schedulePassed =
-    today.getHours() > targetHour ||
-    (today.getHours() === targetHour && today.getMinutes() >= targetMinute)
-
-  if (targetDayRaw === 'daily' || targetDayRaw === 'everyday') {
-    if (!schedulePassed) return false
-    if (!cycleState.cycle3.lastRunAt) return true
-    const lastRun = new Date(cycleState.cycle3.lastRunAt)
-    const sameDay =
-      lastRun.getFullYear() === today.getFullYear() &&
-      lastRun.getMonth() === today.getMonth() &&
-      lastRun.getDate() === today.getDate()
-    return !sameDay
-  }
-
-  const targetDay = parseCycle3Day(cycle3Config.day)
-  const todayDay = today.getDay()
-  if (todayDay !== targetDay || !schedulePassed) return false
-  if (!cycleState.cycle3.lastRunAt) return true
-  const lastRun = new Date(cycleState.cycle3.lastRunAt)
-  const daysSinceLastRun = (today.getTime() - lastRun.getTime()) / 86400000
-  return daysSinceLastRun >= 6
-}

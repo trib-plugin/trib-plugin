@@ -40,7 +40,7 @@ export const DEFAULT_CONFIG = {
   },
   aiSearch: {
     priority: ['codex', 'claude', 'grok', 'gemini'],
-    timeoutMs: 120000,
+    timeoutMs: 60000,
     profiles: {
       grok: {
         connection: 'api',
@@ -66,7 +66,7 @@ export const DEFAULT_CONFIG = {
       },
     },
   },
-  requestTimeoutMs: 30000,
+  requestTimeoutMs: 15000,
   crawl: {
     maxPages: 10,
     maxDepth: 2,

@@ -1,5 +1,5 @@
 {
-  "description": "trib-memory hooks — deps sync, session context, auto-memory blocking",
+  "description": "trib-memory hooks — session context inject",
   "hooks": {
     "SessionStart": [
       {
@@ -7,18 +7,7 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs",
-            "timeout": 60
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Read|Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/block-auto-memory.cjs"
+            "timeout": 5
           }
         ]
       }
