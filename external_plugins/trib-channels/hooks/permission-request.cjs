@@ -42,25 +42,26 @@ try {
 function detectChannelFlagHook() {
   const { execSync } = require('child_process');
   const flagRe = /--channels\b|--dangerously-load-development-channels\b/;
-  if (process.platform === 'win32') {
-    try {
-      const out = execSync('wmic process where "Name=\'claude.exe\'" get CommandLine /format:list', { encoding: 'utf8', timeout: 5000 });
-      if (flagRe.test(out)) return true;
-    } catch {
-      // WMIC is deprecated on Windows 11 — fall back to PowerShell
-      try {
-        const out = execSync('powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'claude.exe\'\\" | Select-Object -ExpandProperty CommandLine"', { encoding: 'utf8', timeout: 5000 });
-        if (flagRe.test(out)) return true;
-      } catch {}
-    }
-    return false;
-  }
+  // Walk parent PID chain — never scan all processes (false positives in multi-session).
   let pid = process.ppid;
   for (let depth = 0; pid && pid > 1 && depth < 6; depth++) {
     try {
-      const cmdLine = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 });
-      if (flagRe.test(cmdLine)) return true;
-      pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10);
+      if (process.platform === 'win32') {
+        const out = execSync(
+          `powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").CommandLine"`,
+          { encoding: 'utf8', timeout: 5000 }
+        ).trim();
+        if (flagRe.test(out)) return true;
+        const ppidOut = execSync(
+          `powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").ParentProcessId"`,
+          { encoding: 'utf8', timeout: 5000 }
+        ).trim();
+        pid = parseInt(ppidOut, 10);
+      } else {
+        const cmdLine = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 });
+        if (flagRe.test(cmdLine)) return true;
+        pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10);
+      }
     } catch { break; }
   }
   return false;

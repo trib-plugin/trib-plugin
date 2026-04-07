@@ -3,18 +3,24 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initProviders, getAllProviders } from './orchestrator/providers/registry.js';
 import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.js';
-import { loadConfig } from './orchestrator/config.js';
-import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.js';
+import { loadConfig, getPluginData } from './orchestrator/config.js';
+import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
+import { writeFileSync, mkdirSync } from 'fs';
+import { join } from 'path';
+
+function injectViaChannels(content) {
+  executeMcpTool('mcp__trib-channels__inject', { content, source: 'trib-agent' })
+    .catch(() => { /* trib-channels not connected — fall back to notify */ notify(content); });
+}
 
 const INSTRUCTIONS = [
   'Tools: `TeamCreate`, `TaskCreate`, `Agent`(subagent_type=Worker/Reviewer, team_name required).',
   'Lead can use any tool directly if it does not delay user response. Delegate long-running or parallel work to agents.',
   'Workflow skill must be invoked before any work begins.',
   '',
-  'Orchestrator MCP tools: `create_session`, `list_sessions`, `close_session`, `list_models`.',
-  'Use create_session to spawn external AI sessions with tool access (preset: full/readonly/mcp).',
+  'Orchestrator MCP tools: `delegate`, `create_session`, `list_sessions`, `close_session`, `list_models`.',
+  '`delegate`(task, provider, model) — send a task to an external AI model (GPT, Gemini, etc). Sync by default, returns result directly. Reuse sessionId for follow-up turns. Set background=true for async.',
   'Sessions auto-inject CLAUDE.md, agent rules, skills, and register builtin+MCP tools.',
-  'ask runs via CLI: `node "${CLAUDE_PLUGIN_ROOT}/orchestrator/cli.js" ask <sessionId> "prompt"` (supports --background, --context).',
 ].join('\n');
 
 const server = new Server(
@@ -105,6 +111,25 @@ const TOOLS = [
     description: 'List available models from all enabled providers.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'delegate',
+    description: 'Delegate a task to an external AI model. Sync: blocks and returns result as tool output. Async (background=true): returns jobId, result via notification. Reuse sessionId for follow-up turns.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Task prompt to send to the external model' },
+        sessionId: { type: 'string', description: 'Existing session ID for follow-up. Omit to create new session.' },
+        provider: { type: 'string', description: 'Required if no sessionId. openai, openai-oauth, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
+        model: { type: 'string', description: 'Required if no sessionId. e.g., gpt-5.4-mini, gemini-2.5-pro' },
+        role: { type: 'string', enum: ['Worker', 'Reviewer'], description: 'Agent template to inject' },
+        preset: { type: 'string', enum: ['full', 'readonly', 'mcp'], description: 'Tool preset (default: full)' },
+        context: { type: 'string', description: 'Additional context to inject' },
+        background: { type: 'boolean', description: 'If true, returns immediately with jobId. Result arrives via notification.' },
+        cwd: { type: 'string', description: 'Working directory for tool execution' },
+      },
+      required: ['task'],
+    },
+  },
 ];
 
 // --- Handlers ---
@@ -147,7 +172,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             const outTok = fmtTokens(result.usage?.outputTokens);
             const trimNote = result.trimmed ? ` · trimmed (-${result.messagesDropped} msgs)` : '';
             const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-            notify(
+            injectViaChannels(
               `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
               `_job: ${jobId} · ${inTok} in · ${outTok} out${trimNote}${loopNote}_`,
             );
@@ -155,7 +180,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           .catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
             const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-            notify(`**[${session.provider}/${session.model}]** FAILED (${elapsed}s)\n\n${msg}\n\n---\n_job: ${jobId}_`);
+            injectViaChannels(`**[${session.provider}/${session.model}]** FAILED (${elapsed}s)\n\n${msg}\n\n---\n_job: ${jobId}_`);
           });
 
         return ok({ jobId, status: 'working', toolsAvailable: session.tools.length });
@@ -186,6 +211,85 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           }
         }
         return ok(results);
+      }
+
+      case 'delegate': {
+        // Resolve or create session
+        let session;
+        if (args.sessionId) {
+          session = resumeSession(args.sessionId);
+          if (!session) return fail(`Session "${args.sessionId}" not found`);
+        } else {
+          if (!args.provider || !args.model) return fail('provider and model are required when no sessionId is given');
+          session = createSession({
+            provider: args.provider, model: args.model,
+            agent: args.role, preset: args.preset || 'full',
+            cwd: args.cwd || process.cwd(),
+          });
+        }
+
+        const startedAt = Date.now();
+
+        // Background mode — fire, save result to file
+        if (args.background) {
+          const jobId = `job_${jobSeq++}_${Date.now()}`;
+          const resultsDir = join(getPluginData(), 'results');
+          mkdirSync(resultsDir, { recursive: true });
+          const resultPath = join(resultsDir, `${jobId}.json`);
+
+          askSession(session.id, args.task, args.context,
+            (iteration, calls) => {
+              const names = calls.map(c => c.name).join(', ');
+              notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}\n_job: ${jobId}_`);
+            },
+            args.cwd,
+          )
+            .then((result) => {
+              const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+              const inTok = fmtTokens(result.usage?.inputTokens);
+              const outTok = fmtTokens(result.usage?.outputTokens);
+              const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
+              const resultData = {
+                jobId, sessionId: session.id, status: 'completed',
+                provider: session.provider, model: session.model,
+                content: result.content,
+                usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
+              };
+              writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
+              injectViaChannels(
+                `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
+                `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
+              );
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              writeFileSync(resultPath, JSON.stringify({
+                jobId, sessionId: session.id, status: 'failed',
+                provider: session.provider, model: session.model,
+                error: msg,
+              }, null, 2));
+              injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`);
+            });
+          return ok({ sessionId: session.id, jobId, status: 'working', resultPath });
+        }
+
+        // Sync mode — block and return result
+        const result = await askSession(session.id, args.task, args.context,
+          (iteration, calls) => {
+            const names = calls.map(c => c.name).join(', ');
+            notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}`);
+          },
+          args.cwd,
+        );
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+        const inTok = fmtTokens(result.usage?.inputTokens);
+        const outTok = fmtTokens(result.usage?.outputTokens);
+        const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
+        return ok({
+          sessionId: session.id,
+          content: result.content,
+          usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
+        });
       }
 
       default:

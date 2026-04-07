@@ -28,6 +28,7 @@ import { startCliWorker, stopCliWorker } from './lib/cli-worker-host.js'
 import {
   OutputForwarder,
   discoverSessionBoundTranscript,
+  findLatestTranscriptByMtime,
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
@@ -1472,6 +1473,20 @@ const TOOL_DEFS = [
     },
   },
   // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
+  {
+    name: 'inject',
+    title: 'Inject Notification',
+    annotations: { title: 'Inject Notification', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: 'Inject a notification into the conversation via the channel notification path. Used by trib-agent to deliver async delegate results without requiring separate channel registration.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        content: { type: 'string', description: 'Text content to inject into the conversation' },
+        source: { type: 'string', description: 'Source identifier (e.g. "trib-agent")' },
+      },
+      required: ['content'],
+    },
+  },
 ]
 
 // ── Factory: create a short-lived MCP server for HTTP requests ──────
@@ -1536,6 +1551,18 @@ function createHttpMcpServer(): InstanceType<typeof Server> {
           writeBridgeState(active)
           if (active) void refreshBridgeOwnership({ restoreBinding: true })
           return { content: [{ type: 'text', text: `channel bridge ${active ? 'activated' : 'deactivated'}` }] }
+        }
+        case 'inject': {
+          const content = args.content as string
+          const source = (args.source as string) || 'trib-agent'
+          void mcp.notification({
+            method: 'notifications/claude/channel',
+            params: {
+              content,
+              meta: { user: source, user_id: 'system', ts: new Date().toISOString() },
+            },
+          }).catch(() => {})
+          return { content: [{ type: 'text', text: 'injected' }] }
         }
         default:
           return { content: [{ type: 'text', text: `unknown tool: ${toolName}` }], isError: true }
@@ -1820,6 +1847,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
         break
       }
+      case 'inject': {
+        const content = args.content as string
+        const source = (args.source as string) || 'trib-agent'
+        void mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content,
+            meta: { user: source, user_id: 'system', ts: new Date().toISOString() },
+          },
+        }).catch(() => {})
+        result = { content: [{ type: 'text', text: 'injected' }] }
+        break
+      }
       // memory_cycle — handled by memory-service.mjs MCP
       default:
         result = {
@@ -1952,9 +1992,19 @@ backend.onMessage = (msg) => {
 
   // Prefer the current parent Claude session. If the exact transcript is not
   // available yet, keep a same-session binding only and retry in the background.
+  // Also check mtime-based latest transcript to handle /clear creating new sessions
+  // while the session file remains stale.
   const previousPath = getPersistedTranscriptPath()
   const boundTranscript = discoverSessionBoundTranscript()
-  const transcriptPath = pickUsableTranscriptPath(boundTranscript, previousPath)
+  let transcriptPath = pickUsableTranscriptPath(boundTranscript, previousPath)
+
+  // Mtime-based correction: if /clear created a new transcript, the session file
+  // may still point to the old one. Use the newest .jsonl in the project dir.
+  const latestByMtime = findLatestTranscriptByMtime(boundTranscript?.sessionCwd)
+  if (latestByMtime && latestByMtime !== transcriptPath) {
+    transcriptPath = latestByMtime
+  }
+
   if (transcriptPath) {
     applyTranscriptBinding(route.targetChatId, transcriptPath)
   } else {
@@ -2064,23 +2114,7 @@ async function handleInbound(
     ...(msg.imagePath ? { image_path: msg.imagePath } : {}),
   }
 
-  // Build memory context first, then send message + context together
-  let memoryContextBlock = ''
-  try {
-    const memoryContext = await memoryGetHints(messageBody, {
-      channelId: route.targetChatId,
-      userId: msg.userId,
-    })
-    if (memoryContext) {
-      memoryContextBlock = memoryContext
-    }
-  } catch (e) {
-    process.stderr.write(`trib-channels: buildInboundMemoryContext failed: ${e}\n`)
-  }
-
-  const notificationContent = memoryContextBlock
-    ? `${memoryContextBlock}\n\n[${now}]\n${messageBody}`
-    : `[${now}]\n${messageBody}`
+  const notificationContent = `[${now}]\n${messageBody}`
 
   void mcp.notification({
     method: 'notifications/claude/channel',

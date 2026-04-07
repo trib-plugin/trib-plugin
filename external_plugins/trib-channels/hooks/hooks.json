@@ -1,5 +1,5 @@
 {
-  "description": "trib-channels hooks — deps sync, channel: session-start, permission / memory: hints, auto-memory block",
+  "description": "trib-channels hooks — session-start, permission request/resolve, post-tool-use sync",
   "hooks": {
     "SessionStart": [
       {
@@ -18,6 +18,16 @@
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/permission-request.cjs",
             "timeout": 900000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.cjs"
           }
         ]
       }

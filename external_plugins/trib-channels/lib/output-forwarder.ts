@@ -166,6 +166,30 @@ export function discoverSessionBoundTranscript(): SessionBoundTranscript | null 
   return resolveTranscriptForSession(session)
 }
 
+/**
+ * Find the most recently modified .jsonl transcript in the project directory.
+ * Handles cases where /clear creates a new session but the session file is stale.
+ */
+export function findLatestTranscriptByMtime(cwd?: string): string | null {
+  const projectsDir = join(homedir(), '.claude', 'projects')
+  const slug = cwdToProjectSlug(cwd ?? process.cwd())
+  const projectDir = join(projectsDir, slug)
+  try {
+    const files = readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => {
+        const full = join(projectDir, f)
+        try { return { path: full, mtime: statSync(full).mtimeMs } }
+        catch { return null }
+      })
+      .filter((f): f is { path: string; mtime: number } => f !== null)
+      .sort((a, b) => b.mtime - a.mtime)
+    return files[0]?.path ?? null
+  } catch {
+    return null
+  }
+}
+
 export class OutputForwarder {
   private lastHash = ''
   private sentCount = 0
