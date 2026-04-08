@@ -138,9 +138,13 @@
     font-weight: 600; font-family: 'Inter', sans-serif;
   }
   .r-link:hover { color: #fff; background: rgba(139,145,240,0.2); border-color: var(--accent); }
+  .r-tag-wrap {
+    margin-left: auto; flex-shrink: 0;
+    display: flex; align-items: center;
+  }
   .r-tag {
     font-size: 11px; padding: 3px 8px; border-radius: 4px;
-    font-weight: 500; margin-left: auto; flex-shrink: 0;
+    font-weight: 500; flex-shrink: 0;
     min-width: 64px; text-align: center; display: inline-flex;
     align-items: center; gap: 4px; white-space: nowrap;
   }
@@ -670,16 +674,13 @@ function renderAll() {
   for (const p of API_PROVIDERS) {
     const key = c[p.id]?.apiKey || '';
     const hasEnv = auth.envKeys?.[p.id];
-    let tag, link;
+    let tag;
     if (key) {
       tag = '<span class="r-tag ok">Set</span>';
-      link = '';
     } else if (hasEnv) {
       tag = '<span class="r-tag env">Env</span>';
-      link = '';
     } else {
-      tag = '<span class="r-tag no">Not Set</span>';
-      link = `<a class="r-link" href="${p.url}" target="_blank">Get Key &#8599;</a>`;
+      tag = `<a class="r-link" href="${p.url}" target="_blank">Get Key &#8599;</a>`;
     }
     apiSec.innerHTML += `<div class="r" data-provider="${p.id}">
       <span class="r-name">${p.name}</span>
@@ -689,7 +690,6 @@ function renderAll() {
       </div>
       <span class="r-tag-wrap" id="tag-${p.id}">${tag}</span>
       <span class="r-validation" id="val-${p.id}"></span>
-      ${link}
     </div>`;
   }
 

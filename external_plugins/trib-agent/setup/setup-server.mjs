@@ -261,15 +261,21 @@ async function listProviderModels(providerId, cfg) {
       'claude-haiku-4-5-20251001',
     ],
     gemini: [
+      'gemini-3.1-pro-preview',
+      'gemini-3-flash-preview',
+      'gemini-3.1-flash-lite-preview',
       'gemini-2.5-pro',
       'gemini-2.5-flash',
-      'gemini-2.0-flash',
+    ],
+    openai: [
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.4-nano',
     ],
     'openai-oauth': [
       'gpt-5.4',
       'gpt-5.4-mini',
-      'gpt-5.4-nano',
-      'gpt-5.2-codex',
+      'gpt-5.3-codex',
     ],
   };
   if (STATIC[providerId]) return STATIC[providerId];
