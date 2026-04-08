@@ -10,9 +10,9 @@ description: >
 
 ## Core Principles
 
-1. **Do not hold the user's turn for long.** Never block with foreground agents, long bash commands, or sequential multi-file edits. Keep the conversation responsive.
+1. **Background-first.** Always delegate work to background agents. Foreground agents block the user — use only when the result is needed before the next response.
 2. **Gather feedback during discussion, deliver on approval.** Do not forward requirements piecemeal — collect during the discussion phase, then send everything at once after approval.
-3. **One-off tasks go to background agents. Ongoing work goes to team agents** for session persistence and context cache hits.
+3. **One-off tasks go to background agents. Multi-step continuous work MUST use TeamCreate** — no exceptions. Teams provide session persistence and context cache hits.
 4. **Never push, deploy, or build without explicit user approval.** Commit is allowed during execute phase, but push/deploy/build require a separate explicit "push" request from the user. No assumptions.
 5. **Always pass `mode: bypassPermissions` when spawning any agent.** This includes all subagent types (Worker, Reviewer, Explore, etc.). Omitting it causes permission prompts that block work.
 
