@@ -6,7 +6,7 @@ import http from 'http';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const server = join(__dirname, 'setup-server.mjs');
-const PORT = 3459;
+const PORT = 3456;
 
 function ping() {
   return new Promise(resolve => {
@@ -37,7 +37,7 @@ if (!alive) {
     detached: true,
     stdio: 'ignore',
     cwd: dirname(__dirname),
-    env: { ...process.env, TRIB_AGENT_OPEN_ON_START: '1' },
+    env: { ...process.env, TRIB_SETUP_OPEN_ON_START: '1' },
   });
   child.unref();
 } else if (!await requestOpen()) {

@@ -422,8 +422,11 @@ let isDirty = false;
 document.addEventListener('input', () => { isDirty = true; });
 document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', (e) => {
-  if (isDirty) e.preventDefault();
-  else navigator.sendBeacon('/close', '');
+  if (isDirty) {
+    tryAutoSaveOnClose();
+    return;
+  }
+  navigator.sendBeacon('/close', '');
 });
 
 // -- Globals --
@@ -431,10 +434,6 @@ let config = null;
 
 // -- Init --
 window.addEventListener('load', async () => {
-  try {
-    window.resizeTo(700, 800);
-    window.moveTo((screen.availWidth - 700) / 2, (screen.availHeight - 800) / 2);
-  } catch {}
   await loadConfig();
   await loadFiles();
   isDirty = false;
@@ -580,6 +579,28 @@ function buildConfigData() {
   };
 }
 
+function buildFilesData() {
+  return {
+    'bot.md': document.getElementById('file-bot').value,
+    'user.md': document.getElementById('file-user-profile').value,
+    'context.md': document.getElementById('file-context').value,
+  };
+}
+
+function sendJsonBeacon(path, data) {
+  try {
+    const body = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    return navigator.sendBeacon(path, body);
+  } catch {
+    return false;
+  }
+}
+
+function tryAutoSaveOnClose() {
+  sendJsonBeacon('/config', buildConfigData());
+  sendJsonBeacon('/files', buildFilesData());
+}
+
 // -- Save config --
 async function saveConfig() {
   const activePanel = document.querySelector('.panel.active');
@@ -623,11 +644,7 @@ async function saveFiles() {
   const btn = panel.querySelector('.save');
   if (warnEl) warnEl.textContent = '';
 
-  const data = {
-    'bot.md': document.getElementById('file-bot').value,
-    'user.md': document.getElementById('file-user-profile').value,
-    'context.md': document.getElementById('file-context').value,
-  };
+  const data = buildFilesData();
 
   if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
   try {

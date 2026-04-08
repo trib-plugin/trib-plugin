@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { exec } from 'child_process';
+import { exec, spawn, spawnSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
@@ -15,6 +15,8 @@ const DATA_DIR = join(pluginsData, 'trib-channels-trib-plugin');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const BOT_PATH = join(DATA_DIR, 'bot.json');
 const PORT = 3458;
+const APP_WIDTH = 850;
+const APP_HEIGHT = 900;
 const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');
 
 // -- Helpers --
@@ -33,6 +35,76 @@ function writeJsonFile(path, data) {
 
 function readConfig() { return readJsonFile(CONFIG_PATH); }
 function writeConfig(data) { writeJsonFile(CONFIG_PATH, data); }
+
+function getBrowserPath() {
+  const paths = [
+    process.env['LOCALAPPDATA'] + '\\Google\\Chrome\\Application\\chrome.exe',
+    process.env['PROGRAMFILES'] + '\\Google\\Chrome\\Application\\chrome.exe',
+    process.env['PROGRAMFILES(X86)'] + '\\Google\\Chrome\\Application\\chrome.exe',
+    process.env['PROGRAMFILES'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
+    process.env['PROGRAMFILES(X86)'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
+  ].filter(Boolean);
+  return paths.find(p => existsSync(p)) || null;
+}
+
+function getCenteredWindowPosition() {
+  if (!isWin) return null;
+  const script = [
+    "[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')",
+    "$a=[System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea",
+    'Write-Output "$($a.X),$($a.Y),$($a.Width),$($a.Height)"',
+  ].join(';');
+  try {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (result.status !== 0) return null;
+    const [x, y, width, height] = (result.stdout || '').trim().split(',').map(Number);
+    if ([x, y, width, height].some(Number.isNaN)) return null;
+    return {
+      x: Math.max(0, Math.round(x + ((width - APP_WIDTH) / 2))),
+      y: Math.max(0, Math.round(y + ((height - APP_HEIGHT) / 2))),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function openAppWindow() {
+  const appUrl = `http://localhost:${PORT}`;
+
+  if (isWin) {
+    const browser = getBrowserPath();
+    if (browser) {
+      const args = [
+        `--app=${appUrl}`,
+        `--window-size=${APP_WIDTH},${APP_HEIGHT}`,
+      ];
+      const position = getCenteredWindowPosition();
+      if (position) args.push(`--window-position=${position.x},${position.y}`);
+      try {
+        const child = spawn(browser, args, {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        child.unref();
+        return true;
+      } catch {}
+    }
+    exec(`cmd.exe /c start "" "${appUrl}"`, { windowsHide: true });
+    return true;
+  }
+
+  if (process.platform === 'darwin') {
+    exec(`open "${appUrl}"`);
+    return true;
+  }
+
+  exec(`xdg-open "${appUrl}"`);
+  return true;
+}
 
 // -- Merge logic --
 
@@ -151,6 +223,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (path === '/open') {
+    openAppWindow();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
@@ -167,23 +246,7 @@ const idleCheck = setInterval(() => {
 server.listen(PORT, () => {
   console.log(`\n  TRIB-CHANNELS CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
-
-  const appUrl = `http://localhost:${PORT}`;
-
-  if (isWin) {
-    const paths = [
-      process.env['LOCALAPPDATA'] + '\\Google\\Chrome\\Application\\chrome.exe',
-      process.env['PROGRAMFILES'] + '\\Google\\Chrome\\Application\\chrome.exe',
-      process.env['PROGRAMFILES(X86)'] + '\\Google\\Chrome\\Application\\chrome.exe',
-      process.env['PROGRAMFILES'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
-      process.env['PROGRAMFILES(X86)'] + '\\Microsoft\\Edge\\Application\\msedge.exe',
-    ];
-    const browser = paths.find(p => existsSync(p));
-    if (browser) exec(`"${browser}" --app=${appUrl} --window-size=850,900 --new-window`);
-    else exec(`start ${appUrl}`);
-  } else if (process.platform === 'darwin') {
-    exec(`open ${appUrl}`);
-  } else {
-    exec(`xdg-open ${appUrl}`);
+  if (process.env.TRIB_SETUP_OPEN_ON_START === '1') {
+    setTimeout(() => { openAppWindow(); }, 0);
   }
 });

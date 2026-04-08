@@ -119,34 +119,49 @@ export function loadMcpConfig(configPath) {
     }
 }
 // --- Internal ---
+function resolvePluginCacheScript(pluginName, script) {
+    const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'trib-plugin', pluginName);
+    if (existsSync(cacheBase)) {
+        const versions = readdirSync(cacheBase).filter(d => /^\d+\.\d+\.\d+/.test(d)).sort((a, b) => {
+            const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+            return (pa[0] - pb[0]) || (pa[1] - pb[1]) || (pa[2] - pb[2]);
+        });
+        for (let i = versions.length - 1; i >= 0; i--) {
+            const version = versions[i];
+            const dir = join(cacheBase, version);
+            const scriptPath = join(dir, script);
+            if (existsSync(scriptPath)) {
+                return { dir, scriptPath, source: `pluginCache:${pluginName}@${version}` };
+            }
+        }
+    }
+    const marketplaceDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', pluginName);
+    const marketplaceScript = join(marketplaceDir, script);
+    if (existsSync(marketplaceScript)) {
+        return { dir: marketplaceDir, scriptPath: marketplaceScript, source: `marketplace:${pluginName}` };
+    }
+    return null;
+}
+
 async function connectServer(name, cfg) {
     const client = new Client({ name: `trib-agent/${name}`, version: '1.0.0' });
     let transport;
     // pluginCache: resolve latest cached plugin version as stdio transport
     if (cfg.pluginCache) {
-        const cacheBase = join(homedir(), '.claude', 'plugins', 'cache', 'trib-plugin', cfg.pluginCache);
-        if (!existsSync(cacheBase)) throw new Error(`Plugin cache not found: ${cacheBase}`);
-        const versions = readdirSync(cacheBase).filter(d => /^\d+\.\d+\.\d+/.test(d)).sort((a, b) => {
-            const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
-            return (pa[0] - pb[0]) || (pa[1] - pb[1]) || (pa[2] - pb[2]);
-        });
-        if (!versions.length) throw new Error(`No versions in ${cacheBase}`);
-        const latest = versions[versions.length - 1];
-        const dir = join(cacheBase, latest);
         const script = cfg.script || 'scripts/run-mcp.mjs';
-        const scriptPath = join(dir, script);
-        if (!existsSync(scriptPath)) throw new Error(`Script not found: ${scriptPath}`);
+        const resolved = resolvePluginCacheScript(cfg.pluginCache, script);
+        if (!resolved) throw new Error(`Script not found for pluginCache "${cfg.pluginCache}" (${script})`);
         transport = new StdioClientTransport({
             command: 'node',
-            args: [scriptPath],
-            cwd: dir,
+            args: [resolved.scriptPath],
+            cwd: resolved.dir,
             env: {
                 ...process.env,
-                CLAUDE_PLUGIN_ROOT: dir,
+                CLAUDE_PLUGIN_ROOT: resolved.dir,
                 CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', `${cfg.pluginCache}-trib-plugin`),
             },
         });
-        process.stderr.write(`[mcp-client] Connecting "${name}" via pluginCache: ${cfg.pluginCache}@${latest}\n`);
+        process.stderr.write(`[mcp-client] Connecting "${name}" via ${resolved.source}\n`);
     }
     // Auto-detect: read port from a running service's port file
     else if (cfg.autoDetect) {

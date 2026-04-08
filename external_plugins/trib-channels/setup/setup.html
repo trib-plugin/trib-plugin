@@ -568,8 +568,11 @@ let isDirty = false;
 document.addEventListener('input', () => { isDirty = true; });
 document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', (e) => {
-  if (isDirty) e.preventDefault();
-  else navigator.sendBeacon('/close', '');
+  if (isDirty) {
+    tryAutoSaveOnClose();
+    return;
+  }
+  navigator.sendBeacon('/close', '');
 });
 
 // -- Globals --
@@ -579,14 +582,16 @@ let cliStatus = { whisper: { installed: false }, ngrok: { installed: false } };
 
 // -- Init --
 window.addEventListener('load', async () => {
-  try {
-    window.resizeTo(850, 900);
-    window.moveTo((screen.availWidth - 850) / 2, (screen.availHeight - 900) / 2);
-  } catch {}
   initTagInputs();
   initSliders();
   await Promise.all([loadConfig(), loadCliCheck()]);
   renderAdvanced();
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.r-toggle, .r-radio, .dyn-add, .dyn-remove, .card-remove, .tag-x')) {
+    isDirty = true;
+  }
 });
 
 // -- Category switching --
@@ -1079,6 +1084,19 @@ function buildData() {
       },
     },
   };
+}
+
+function sendJsonBeacon(path, data) {
+  try {
+    const body = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    return navigator.sendBeacon(path, body);
+  } catch {
+    return false;
+  }
+}
+
+function tryAutoSaveOnClose() {
+  sendJsonBeacon('/config', buildData());
 }
 
 // -- Save --

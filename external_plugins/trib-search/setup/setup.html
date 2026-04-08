@@ -393,8 +393,11 @@ let isDirty = false;
 document.addEventListener('input', () => { isDirty = true; });
 document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', (e) => {
-  if (isDirty) e.preventDefault();
-  else navigator.sendBeacon('/close', '');
+  if (isDirty) {
+    tryAutoSaveOnClose();
+    return;
+  }
+  navigator.sendBeacon('/close', '');
 });
 
 // -- Globals --
@@ -415,11 +418,11 @@ function toggleVis(btn) {
 
 // -- Init --
 window.addEventListener('load', async () => {
-  try {
-    window.resizeTo(750, 850);
-    window.moveTo((screen.availWidth - 750) / 2, (screen.availHeight - 850) / 2);
-  } catch {}
   await loadConfig();
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.r-toggle, .mode')) isDirty = true;
 });
 
 // -- Category switching --
@@ -475,7 +478,7 @@ function makeSearchRow(p) {
   group.appendChild(eyeBtn);
   d.appendChild(group);
 
-  chk.onclick = () => { chk.classList.toggle('on'); };
+  chk.onclick = () => { chk.classList.toggle('on'); isDirty = true; };
   if (p.url) {
     const a = document.createElement('a');
     a.className = 'r-link'; a.href = p.url;
@@ -539,6 +542,7 @@ document.addEventListener('drop', e => {
   const rect = row.getBoundingClientRect();
   if (e.clientY < rect.top + rect.height / 2) row.before(dragEl);
   else row.after(dragEl);
+  isDirty = true;
   clearDrag();
 });
 document.addEventListener('dragend', clearDrag);
@@ -555,6 +559,7 @@ function clearDrag() {
 function setMode(el) {
   el.parentElement.querySelectorAll('.mode').forEach(e => e.classList.remove('on'));
   el.classList.add('on');
+  isDirty = true;
 }
 
 // -- Load config --
@@ -700,6 +705,19 @@ function buildData() {
   data.github = document.getElementById('gh-token').value;
 
   return data;
+}
+
+function sendJsonBeacon(path, data) {
+  try {
+    const body = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    return navigator.sendBeacon(path, body);
+  } catch {
+    return false;
+  }
+}
+
+function tryAutoSaveOnClose() {
+  sendJsonBeacon('/config', buildData());
 }
 
 // -- Save --

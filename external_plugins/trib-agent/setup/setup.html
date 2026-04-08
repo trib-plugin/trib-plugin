@@ -399,6 +399,56 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .wf-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  /* Close confirmation modal */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000; backdrop-filter: blur(4px);
+  }
+  .modal-box {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 24px 20px;
+    max-width: 380px; width: 90%;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .modal-title {
+    font-size: 15px; font-weight: 600; color: var(--text-1);
+    margin-bottom: 6px;
+  }
+  .modal-msg {
+    font-size: 12px; color: var(--text-3);
+    margin-bottom: 20px; line-height: 1.5;
+  }
+  .modal-actions {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .modal-actions .btn {
+    height: 36px; width: 100%;
+    border: none; border-radius: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .modal-actions .btn.danger-outline {
+    background: transparent; color: var(--red);
+    border: 1px solid rgba(229,83,75,0.3);
+  }
+  .modal-actions .btn.danger-outline:hover {
+    background: var(--red-dim); border-color: var(--red);
+  }
+
+  /* Cat-bar close button */
+  .cat-close {
+    margin-top: auto; padding: 10px 14px;
+    font-size: 12px; color: var(--text-4);
+    cursor: pointer; transition: color 0.15s;
+    border-top: 1px solid var(--border);
+  }
+  .cat-close:hover { color: var(--red); }
 </style>
 </head>
 <body>
@@ -408,6 +458,7 @@
     <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Models</div>
     <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
     <div class="cat-item" data-panel="workflows" onclick="switchCat(this)">Workflows</div>
+    <div class="cat-close" onclick="requestClose()">Close</div>
   </div>
 
   <div class="main">
@@ -472,7 +523,7 @@
           </div>
           <div class="form-row" id="pf-fast-row" style="display:none">
             <span class="r-name">Fast Mode</span>
-            <div class="r-toggle" id="pf-fast" onclick="this.classList.toggle('on')"></div>
+            <div class="r-toggle" id="pf-fast" onclick="toggleFastMode(this)"></div>
             <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Speed optimized output (premium)</span>
           </div>
           <div class="advanced-toggle" onclick="toggleAdvanced(this)">
@@ -557,6 +608,19 @@
   </div>
 </div>
 
+<!-- Close confirmation modal -->
+<div class="modal-overlay" id="close-modal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">Unsaved Changes</div>
+    <div class="modal-msg">You have unsaved changes that will be lost if you close now.</div>
+    <div class="modal-actions">
+      <button class="btn primary" onclick="saveAndClose()">Save &amp; Close</button>
+      <button class="btn danger-outline" onclick="discardAndClose()">Close without saving</button>
+      <button class="btn secondary" onclick="cancelClose()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API_PROVIDERS = [
   {id:'openai',name:'OpenAI',env:'OPENAI_API_KEY',url:'https://platform.openai.com/api-keys'},
@@ -611,11 +675,86 @@ document.addEventListener('input', () => { isDirty = true; });
 document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', (e) => {
   if (isDirty) e.preventDefault();
-  else navigator.sendBeacon('/close', '');
+});
+
+// -- Close flow --
+function requestClose() {
+  if (isDirty) {
+    document.getElementById('close-modal').style.display = 'flex';
+  } else {
+    window.close();
+  }
+}
+
+async function saveAndClose() {
+  const ok = await savePendingChanges();
+  if (!ok) return;
+  isDirty = false;
+  window.close();
+}
+
+function discardAndClose() {
+  isDirty = false;
+  window.close();
+}
+
+function cancelClose() {
+  document.getElementById('close-modal').style.display = 'none';
+}
+
+function isVisible(id) {
+  const el = document.getElementById(id);
+  return !!el && el.style.display !== 'none';
+}
+
+function hasProviderChanges() {
+  const providers = config.providers || {};
+  for (const p of API_PROVIDERS) {
+    const input = document.getElementById('key-' + p.id);
+    const current = input?.value.trim() || '';
+    const saved = providers[p.id]?.apiKey || '';
+    if (current !== saved) return true;
+  }
+  for (const p of LOCAL_PROVIDERS) {
+    const input = document.getElementById('url-' + p.id);
+    const current = input?.value.trim() || p.url;
+    const saved = providers[p.id]?.baseURL || p.url;
+    if (current !== saved) return true;
+  }
+  return false;
+}
+
+async function savePendingChanges() {
+  if (isVisible('preset-form-sec')) {
+    const presetSaved = await savePreset();
+    if (!presetSaved) return false;
+  }
+
+  if (isVisible('workflow-form-sec')) {
+    const workflowSaved = await saveWorkflowFromForm();
+    if (!workflowSaved) return false;
+  }
+
+  if (hasProviderChanges()) {
+    const providersSaved = await saveProviders();
+    if (!providersSaved) return false;
+  }
+
+  return true;
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('close-modal');
+    if (modal.style.display !== 'none') {
+      cancelClose();
+      e.preventDefault();
+    }
+  }
 });
 
 window.addEventListener('load', async () => {
-  try { window.resizeTo(720, 820); window.moveTo((screen.availWidth-720)/2,(screen.availHeight-820)/2); } catch{}
   await loadData();
   await Promise.all([loadPresets(), loadWorkflows(), loadModelsList()]);
 });
@@ -831,7 +970,7 @@ async function saveProviders() {
     const detected = auth[p.id];
     providers[p.id] = { enabled: detected, baseURL: url || p.url };
   }
-  await doSave({ providers }, 'providers');
+  return await doSave({ providers }, 'providers');
 }
 
 async function doSave(data, panelId) {
@@ -846,9 +985,11 @@ async function doSave(data, panelId) {
     if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500); }
     await loadData();
     await loadPresets();
+    return true;
   } catch {
     if (warn) warn.textContent = 'Save failed';
     if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+    return false;
   }
 }
 
@@ -1015,6 +1156,12 @@ function replaceModelWithInput(value) {
 function selectTools(el) {
   el.parentElement.querySelectorAll('.radio-btn').forEach(b => b.classList.remove('on'));
   el.classList.add('on');
+  isDirty = true;
+}
+
+function toggleFastMode(el) {
+  el.classList.toggle('on');
+  isDirty = true;
 }
 
 async function savePreset() {
@@ -1028,13 +1175,13 @@ async function savePreset() {
   const fast = document.getElementById('pf-fast').classList.contains('on');
   const tools = document.querySelector('#pf-tools .radio-btn.on')?.dataset.v || 'full';
 
-  if (!name) { warn.textContent = 'Name is required'; return; }
-  if (!provider) { warn.textContent = 'Provider is required'; return; }
-  if (!model) { warn.textContent = 'Model is required'; return; }
+  if (!name) { warn.textContent = 'Name is required'; return false; }
+  if (!provider) { warn.textContent = 'Provider is required'; return false; }
+  if (!model) { warn.textContent = 'Model is required'; return false; }
 
   // Use name as id (sanitized)
   const id = editingPresetId || name.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
+  if (!id) { warn.textContent = 'Name must contain valid characters'; return false; }
 
   const body = { id, name, provider, model, tools };
   if (effort) body.effort = effort;
@@ -1046,12 +1193,14 @@ async function savePreset() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(r => r.json());
-    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; }
+    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return false; }
     isDirty = false;
     closePresetForm();
     await loadPresets();
+    return true;
   } catch (err) {
     warn.textContent = 'Save failed: ' + (err?.message || 'network error');
+    return false;
   }
 }
 
@@ -1226,12 +1375,12 @@ async function saveWorkflowFromForm() {
   const description = document.getElementById('wf-description').value.trim();
   const steps = collectStepsFromForm();
 
-  if (!name) { warn.textContent = 'Name is required'; return; }
-  if (!/^[a-zA-Z0-9._-]+$/.test(name)) { warn.textContent = 'Name must be alphanumeric (._- allowed)'; return; }
-  if (steps.length === 0) { warn.textContent = 'At least one step is required'; return; }
+  if (!name) { warn.textContent = 'Name is required'; return false; }
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) { warn.textContent = 'Name must be alphanumeric (._- allowed)'; return false; }
+  if (steps.length === 0) { warn.textContent = 'At least one step is required'; return false; }
 
   const hasEmptyAction = steps.some(s => !s.action);
-  if (hasEmptyAction) { warn.textContent = 'All steps must have an action'; return; }
+  if (hasEmptyAction) { warn.textContent = 'All steps must have an action'; return false; }
 
   const body = { name, description, steps };
 
@@ -1241,12 +1390,14 @@ async function saveWorkflowFromForm() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(r => r.json());
-    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; }
+    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return false; }
     isDirty = false;
     closeWorkflowForm();
     await loadWorkflows();
+    return true;
   } catch (err) {
     warn.textContent = 'Save failed: ' + (err?.message || 'network error');
+    return false;
   }
 }
 

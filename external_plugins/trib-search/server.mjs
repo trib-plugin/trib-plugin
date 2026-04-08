@@ -477,7 +477,6 @@ const server = new Server(
   },
   {
     capabilities: {
-      elicitation: { form: {} },
       tools: {},
     },
     instructions: SEARCH_INSTRUCTIONS,
