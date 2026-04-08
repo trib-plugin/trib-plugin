@@ -2,13 +2,10 @@
 name: workflow
 user-invocable: false
 description: >
-  **BLOCKING REQUIREMENT**: Before starting any work that involves execution —
-  code changes, investigation, diagnosis, fix, refactor, research, exploration,
-  setup, or configuration — you MUST invoke this skill FIRST.
-  This includes casual requests like "check this", "fix it", "try it", "build this".
-  During an active execute phase, follow-up adjustments to the same scope
-  continue without restarting the cycle.
-  Only pure Q&A conversations (explanations, opinions, information-only) are exempt.
+  WHEN: Any execution — edit, fix, refactor, investigate, research, explore,
+  setup, deploy. Includes casual: "check this", "fix it", "try it".
+  MUST invoke BEFORE work starts.
+  WHEN NOT: Pure Q&A, opinions. Active execute phase needs no re-invoke.
 ---
 
 ## Core Principles

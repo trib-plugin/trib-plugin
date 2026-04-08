@@ -2,16 +2,10 @@
 name: recall
 user-invocable: false
 description: >
-  **RECALL FIRST**: Invoke recall whenever prior context could improve the response.
-  This covers any situation where current context alone is insufficient —
-  past work, decisions, preferences, patterns, or any prior session knowledge
-  that may inform a better answer. Always recall at session start.
-  Mid-session, recall whenever the user references something not visible
-  in current context or when context may have been compressed.
-  Skip ONLY when the request is fully self-contained and past context
-  is clearly irrelevant to the response.
-  Use trib-memory MCP tools (search_memories, memory_cycle) exclusively.
-  Do NOT use file-based memory (MEMORY.md, memory/ directory) or any built-in auto-memory system.
+  WHEN: Session start (always). References to past work, decisions,
+  preferences. User mentions prior context not in view. Context compressed.
+  WHEN NOT: Fully self-contained request with no prior context needed.
+  Use search_memories() only — never file-based memory.
 ---
 
 Always prioritize search_memories() when context may be incomplete.

@@ -446,15 +446,6 @@
   .modal-actions .btn.danger-outline:hover {
     background: var(--red-dim); border-color: var(--red);
   }
-
-  /* Cat-bar close button */
-  .cat-close {
-    margin-top: auto; padding: 10px 14px;
-    font-size: 12px; color: var(--text-4);
-    cursor: pointer; transition: color 0.15s;
-    border-top: 1px solid var(--border);
-  }
-  .cat-close:hover { color: var(--red); }
 </style>
 </head>
 <body>
@@ -464,7 +455,6 @@
     <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Models</div>
     <div class="cat-item" data-panel="workflows" onclick="switchCat(this)">Workflows</div>
     <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
-    <div class="cat-close" onclick="requestClose()">Close</div>
   </div>
 
   <div class="main">
