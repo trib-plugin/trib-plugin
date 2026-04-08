@@ -138,18 +138,6 @@ Retrieval tuning configuration. All keys are optional; if omitted, the current b
 | `event` | number | `-0.40` | Event intent threshold |
 | `graph` | number | `-0.46` | Graph intent threshold |
 
-### `retrieval.hintInjection`
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `compositeWeights.relevance` | number | `0.58` | Composite relevance weight |
-| `compositeWeights.confidence` | number | `0.27` | Composite confidence weight |
-| `compositeWeights.overlap` | number | `0.15` | Composite lexical overlap weight |
-| `thresholds.<type>.relevance` | number | varies | Per-type minimum relevance gate |
-| `thresholds.<type>.composite` | number | varies | Per-type minimum composite gate |
-| `thresholds.<type>.confidence` | number | varies | Per-type confidence gate |
-| `thresholds.<type>.overlap` | number | varies | Per-type overlap gate |
-
 ### `retrieval.weights`
 
 Representative tuning groups:
@@ -229,13 +217,6 @@ Representative tuning groups:
       "default": -0.5,
       "task": -0.42,
       "history": -0.4
-    },
-    "hintInjection": {
-      "compositeWeights": {
-        "relevance": 0.58,
-        "confidence": 0.27,
-        "overlap": 0.15
-      }
     },
     "weights": {
       "taskStagePenalty": {

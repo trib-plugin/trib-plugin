@@ -55,7 +55,6 @@ import {
   resetEmbeddingIndex as resetEmbeddingIndexImpl,
   vacuumDatabase as vacuumDatabaseImpl,
 } from './memory-maintenance-store.mjs'
-import { buildInboundMemoryContext as buildInboundMemoryContextImpl } from './memory-context-builder.mjs'
 import { mergeMemoryTuning } from './memory-tuning.mjs'
 import { getTagFactor } from './memory-score-utils.mjs'
 import { readMemoryFeatureFlags } from './memory-ops-policy.mjs'
@@ -1579,7 +1578,7 @@ export class MemoryStore {
       seen.set(key, { ...item, keyword_score: rrfSparse, embedding_score: rrfDense, base_score: baseScore })
     }
 
-    // ── Stage 2: apply scoring per RETRIEVAL-CLASSIFICATION-PLAN ──
+    // ── Stage 2: apply retrieval scoring ──
     const { computeFinalScore, getScoringConfig } = await import('./memory-score-utils.mjs')
     const scoringConfig = getScoringConfig(options.tuning ?? this.getRetrievalTuning())
 
@@ -1975,9 +1974,6 @@ export class MemoryStore {
     }
   }
 
-  async buildInboundMemoryContext(query, options = {}) {
-    return buildInboundMemoryContextImpl(this, query, options)
-  }
 }
 
 export function getMemoryStore(dataDir) {

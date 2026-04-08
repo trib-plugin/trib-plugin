@@ -32,7 +32,7 @@ import {
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
-import { appendEpisode as memoryAppendEpisode, getHints as memoryGetHints, ingestTranscript as memoryIngestTranscript } from './lib/memory-client.mjs'
+import { appendEpisode as memoryAppendEpisode, ingestTranscript as memoryIngestTranscript } from './lib/memory-client.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,

@@ -37,21 +37,6 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
     event: -0.26,
     graph: -0.32,
   },
-  hintInjection: {
-    compositeWeights: {
-      relevance: 0.58,
-      confidence: 0.27,
-      overlap: 0.15,
-    },
-    thresholds: {
-      default: { relevance: 0.65, composite: 0.60, confidence: 1, overlap: 1 },
-      profile: { relevance: 0.74, composite: 0.7, confidence: 0.86, overlap: 0.34 },
-      signal: { relevance: 0.78, composite: 0.74, confidence: 0.88, overlap: 0.34 },
-      task: { relevance: 0.62, composite: 0.58, confidence: 0.88, overlap: 0.34 },
-      fact: { relevance: 0.62, composite: 0.58, confidence: 0.9, overlap: 0.34 },
-      proposition: { relevance: 0.62, composite: 0.58, confidence: 0.9, overlap: 0.34 },
-    },
-  },
   taskSeed: {
     stageBonus: {
       implementing: 0.42,

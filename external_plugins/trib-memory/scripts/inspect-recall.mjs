@@ -55,13 +55,6 @@ function loadQueries(args) {
   return [...directQueries, ...inlineQueries, ...fileQueries]
 }
 
-function countHints(hints = '') {
-  return String(hints)
-    .split(/\r?\n/)
-    .filter(line => line.startsWith('<hint '))
-    .length
-}
-
 function compactItemLabel(item) {
   const type = String(item?.type ?? 'unknown')
   const subtype = String(item?.subtype ?? '').trim()
@@ -84,10 +77,9 @@ function renderCompact(records, options = {}) {
     const finalItems = Array.isArray(stages.final) ? stages.final : []
     const fallbackResults = Array.isArray(record.results) ? record.results : []
     const topItems = (finalItems.length > 0 ? finalItems : fallbackResults).slice(0, topN)
-    const hintCount = countHints(record.hints ?? '')
     const candidateCount = Number(stages.candidates?.sparse_count ?? 0) + Number(stages.candidates?.dense_count ?? 0)
     lines.push(`[#${index + 1}] ${record.query}`)
-    lines.push(`stage=${debug.stopped_at ?? record.until_stage ?? 'final'} intent=${plan.intent ?? stages.intent?.primary ?? '-'} retriever=${plan.retriever ?? '-'} candidates=${candidateCount} hints=${hintCount}`)
+    lines.push(`stage=${debug.stopped_at ?? record.until_stage ?? 'final'} intent=${plan.intent ?? stages.intent?.primary ?? '-'} retriever=${plan.retriever ?? '-'} candidates=${candidateCount}`)
     if (stages.refinement?.attempted) {
       lines.push(`refine=${stages.refinement.selected ? 'selected' : 'rejected'} ${stages.refinement.from_intent ?? '-'}->${stages.refinement.to_intent ?? '-'}`)
     }
@@ -147,15 +139,6 @@ for (const query of queries) {
     temporal: temporalOverride,
     until_stage: args.until_stage ?? 'final',
     filters: metadataFilters,
-  }
-
-  if (args.with_hints) {
-    output.hints = await store.buildInboundMemoryContext(query, {
-      skipLowSignal: true,
-      channelId: args.channel_id,
-      userId: args.user_id,
-      limit,
-    })
   }
 
   const hybrid = await store.searchRelevantHybrid(query, limit * 2, {

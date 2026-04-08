@@ -8,7 +8,7 @@ process.on('warning', () => {})
  * Single Node.js process providing:
  *   MCP (stdio)  — search_memories, memory_cycle tools for Claude Code
  *   MCP (http)   — /mcp endpoint (Streamable HTTP transport, stateless)
- *   HTTP (tcp)   — /hints, /episode, /health for hooks + internal use
+ *   HTTP (tcp)   — /episode, /health, /api/tool for hooks + internal use
  *
  * Owns the MemoryStore singleton exclusively.
  * Port: 3350-3357 (written to $TMPDIR/trib-memory/memory-port)
@@ -90,6 +90,69 @@ process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
 import { execFileSync } from 'child_process'
 const LOCK_FILE = path.join(DATA_DIR, '.memory-service.lock')
 
+const RUNTIME_DIR = path.join(os.tmpdir(), 'trib-memory')
+try { fs.mkdirSync(RUNTIME_DIR, { recursive: true }) } catch {}
+const PORT_FILE = path.join(RUNTIME_DIR, 'memory-port')
+const BASE_PORT = 3350
+const MAX_PORT = 3357
+
+// ── Health check: is a primary server already running? ───────────────
+
+function readPortFile() {
+  try {
+    const port = Number(fs.readFileSync(PORT_FILE, 'utf8').trim())
+    return (port >= BASE_PORT && port <= MAX_PORT) ? port : null
+  } catch { return null }
+}
+
+async function isExistingServerHealthy() {
+  const port = readPortFile()
+  if (!port) return null
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 2000)
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal })
+    clearTimeout(timer)
+    if (res.ok) return port
+  } catch { /* not reachable */ }
+  return null
+}
+
+// ── Proxy mode: forward stdio MCP to existing HTTP server ───────────
+
+async function runProxyMode(port) {
+  process.stderr.write(`[memory-service] Healthy server on port ${port}, entering proxy mode\n`)
+
+  const proxyMcp = new Server(
+    { name: 'trib-memory', version: PLUGIN_VERSION },
+    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
+  )
+
+  proxyMcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: PROXY_TOOL_DEFS }))
+  proxyMcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 120000)
+      const res = await fetch(`http://127.0.0.1:${port}/api/tool`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: req.params.name, arguments: req.params.arguments ?? {} }),
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      return await res.json()
+    } catch (err) {
+      return { content: [{ type: 'text', text: `proxy error: ${err.message}` }], isError: true }
+    }
+  })
+
+  const transport = new StdioServerTransport()
+  await proxyMcp.connect(transport)
+  // Keep alive until stdio closes
+}
+
+// ── Primary mode: full server startup ───────────────────────────────
+
 function killPreviousServer(pid) {
   if (pid <= 0 || pid === process.pid) return
   if (process.platform === 'win32') {
@@ -128,13 +191,24 @@ function releaseLock() {
   } catch {}
 }
 
-acquireLock()
+// Forward-declared constants used by proxy mode (full defs below)
+const MEMORY_INSTRUCTIONS_TEXT = 'CRITICAL: The `recall` skill MUST be invoked at session start and whenever prior context is referenced. Recall naturally, like remembering — use search_memories() to recall.'
+const PROXY_TOOL_DEFS = [
+  { name: 'memory_cycle', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+  { name: 'search_memories', description: 'Search and retrieve memory.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
+]
 
-const RUNTIME_DIR = path.join(os.tmpdir(), 'trib-memory')
-try { fs.mkdirSync(RUNTIME_DIR, { recursive: true }) } catch {}
-const PORT_FILE = path.join(RUNTIME_DIR, 'memory-port')
-const BASE_PORT = 3350
-const MAX_PORT = 3357
+// ── Decide: proxy or primary ────────────────────────────────────────
+
+const existingPort = await isExistingServerHealthy()
+if (existingPort) {
+  await runProxyMode(existingPort)
+  // proxy mode runs forever via stdio — if we reach here, stdio closed
+  process.exit(0)
+}
+
+// No healthy server — start as primary
+acquireLock()
 
 // ── Store initialization ─────────────────────────────────────────────
 
@@ -783,11 +857,9 @@ async function handleCycle(args) {
 //  MCP SERVER (stdio transport — Claude Code tools)
 // ══════════════════════════════════════════════════════════════════════
 
-const MEMORY_INSTRUCTIONS = 'Recall naturally, like remembering — use search_memories() to recall.'
-
 const mcp = new Server(
   { name: 'trib-memory', version: PLUGIN_VERSION },
-  { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
+  { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
 )
 
 // ── Shared tool definitions & handler ────────────────────────────────
@@ -872,7 +944,7 @@ mcp.setRequestHandler(CallToolRequestSchema, handleToolCall)
 function createHttpMcpServer() {
   const s = new Server(
     { name: 'trib-memory', version: PLUGIN_VERSION },
-    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
+    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT},
   )
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
   s.setRequestHandler(CallToolRequestSchema, handleToolCall)
@@ -924,6 +996,18 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
+  // ── Tool proxy endpoint (used by proxy-mode instances) ──
+  if (req.method === 'POST' && req.url === '/api/tool') {
+    try {
+      const body = await readBody(req)
+      const result = await handleToolCall({ params: { name: body.name, arguments: body.arguments ?? {} } })
+      sendJson(res, result)
+    } catch (e) {
+      sendJson(res, { content: [{ type: 'text', text: `api/tool error: ${e.message}` }], isError: true }, 500)
+    }
+    return
+  }
+
   // ── Streamable HTTP MCP endpoint ──
   if (req.url === '/mcp') {
     try {
@@ -956,23 +1040,6 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
-  // GET /hints (query string)
-  if (req.method === 'GET' && req.url?.startsWith('/hints')) {
-    const url = new URL(req.url, 'http://localhost')
-    const q = url.searchParams.get('q') || ''
-    if (!q || q.length < 3) {
-      sendJson(res, { hints: '' })
-      return
-    }
-    try {
-      const ctx = await store.buildInboundMemoryContext(q, { skipLowSignal: true, serverStartedAt })
-      sendJson(res, { hints: ctx || '' })
-    } catch {
-      sendJson(res, { hints: '' })
-    }
-    return
-  }
-
   if (req.method !== 'POST') {
     sendJson(res, { error: 'Method not allowed' }, 405)
     return
@@ -981,17 +1048,6 @@ const httpServer = http.createServer(async (req, res) => {
   const body = await readBody(req)
 
   try {
-    // POST /hints (JSON body)
-    if (req.url === '/hints') {
-      const q = String(body.query ?? '').trim()
-      if (!q || q.length < 3) {
-        sendJson(res, { hints: '' })
-        return
-      }
-      const ctx = await store.buildInboundMemoryContext(q, { ...body.options ?? { skipLowSignal: true }, serverStartedAt })
-      sendJson(res, { hints: ctx || '' })
-      return
-    }
 
     // POST /episode
     if (req.url === '/episode') {

@@ -72,21 +72,6 @@ export async function appendEpisode(data) {
   }
 }
 
-/**
- * Get memory hints for an inbound message.
- * @param {string} query - The message text
- * @param {object} options - Additional options (channelId, userId, skipLowSignal, etc.)
- * @returns {Promise<string>} Memory context block or empty string
- */
-export async function getHints(query, options = {}) {
-  try {
-    const result = await memoryFetch('POST', '/hints', { query, options })
-    return result.hints || ''
-  } catch (e) {
-    process.stderr.write(`[memory-client] getHints failed: ${e.message}\n`)
-    return ''
-  }
-}
 
 /**
  * Ingest a transcript file into the memory store.

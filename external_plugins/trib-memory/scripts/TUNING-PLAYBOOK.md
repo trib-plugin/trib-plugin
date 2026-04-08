@@ -25,8 +25,7 @@ episodes
 
 1. `classifications`가 정상 적재되는지
 2. `searchRelevantHybrid()`가 `classification -> episode` 중심으로 결과를 내는지
-3. `buildInboundMemoryContext()`가 classification hint를 주는지
-4. `context.md`가 classification 중심으로 갱신되는지
+3. `context.md`가 classification 중심으로 갱신되는지
 5. delta embedding이 정상 작동하는지
 
 ## 기본 smoke 체크
@@ -125,5 +124,4 @@ server
 
 ## 관련 문서
 
-- [../RETRIEVAL-CLASSIFICATION-PLAN.md](../RETRIEVAL-CLASSIFICATION-PLAN.md)
 - [../README.md](../README.md)

@@ -62,7 +62,7 @@ import {
 import { crawlSite, getScrapeCapabilities, mapSite, scrapeUrls } from './lib/web-tools.mjs'
 import { formatResponse } from './lib/formatter.mjs'
 import { handleSetup } from './lib/setup-handler.mjs'
-// worker removed — CLI calls use direct spawn now
+
 
 ensureDataDir()
 
@@ -465,8 +465,8 @@ const toolDefinitions = [
 ]
 
 const SEARCH_INSTRUCTIONS = [
+  'CRITICAL: The `search` skill MUST be invoked for any research, lookup, or investigation task. Always use trib-search tools instead of built-in WebSearch/WebFetch.',
   'Tools: `search`(query), `firecrawl_scrape`(url), `firecrawl_map`(url), `crawl`(url), `batch`(items[]), `setup`.',
-  'Prefer `search` over built-in WebSearch/WebFetch when available.',
   'Use `batch` for 2+ operations — no separate calls.',
 ].join('\n');
 

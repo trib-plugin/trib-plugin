@@ -1,156 +1,110 @@
 # trib-memory
 
-`trib-memory`는 `episodes`를 원본으로 저장하고, 그 위에서 `classifications`와 `context.md`를 만드는 장기 메모리 MCP 플러그인입니다.
+Persistent memory MCP plugin for Claude Code. Stores episodes as source of truth, extracts classifications via LLM, and serves hybrid RAG retrieval.
 
-현재 기준 메인 구조는 아래입니다.
+## Architecture
 
 ```text
-episodes
--> cycle1 classification
--> cycle2 correction
--> cycle3 context.md refresh
+episodes (source of truth)
+  -> cycle1: LLM classification extraction (topic, element, importance)
+  -> cycle2 (sleep): dedup + core memory promotion + context.md refresh + embedding refresh
 ```
 
-## 현재 canonical 구조
+> cycle3 (weekly decay rebuild) is planned but not yet implemented.
+> context.md refresh currently runs as part of cycle2.
 
-- 원본 소스 오브 트루스: `episodes`
-- 파생 장기 메모리 저장: `classifications`
-- 최종 장기 기억 출력: `history/context.md`
+## Data Model
 
-즉 예전의 `facts / tasks / signals / profiles / entities / relations / propositions` 중심 구조는 메인 경로에서 퇴역했고,
-현재 검색/힌트/컨텍스트는 `classifications + episodes` 중심으로 동작합니다.
+- **episodes** — raw conversation logs (role, content, timestamp)
+- **classifications** — extracted metadata (classification, topic, element, state)
+- **core_memory** — promoted long-term items (50 active cap, LLM-evaluated)
+- **context.md** — generated output from active core_memory items
 
-## 핵심 파일
-
-- [lib/memory.mjs](./lib/memory.mjs)
-  저장소, classification 저장, 검색, context 생성
-- [lib/memory-cycle.mjs](./lib/memory-cycle.mjs)
-  cycle1/2/3 파이프라인
-- [lib/memory-context-builder.mjs](./lib/memory-context-builder.mjs)
-  inbound hint 생성
-- [services/memory-service.mjs](./services/memory-service.mjs)
-  MCP/HTTP 진입점
-- [lib/llm-provider.mjs](./lib/llm-provider.mjs)
-  provider 추상화
-- [lib/llm-worker-host.mjs](./lib/llm-worker-host.mjs)
-  worker IPC host
-- [services/llm-worker.mjs](./services/llm-worker.mjs)
-  CLI worker child
-
-## 현재 분류 스키마
-
-1차 분류 필드는 아래 4개입니다.
-
-- `classification`
-- `topic`
-- `element`
-- `state`
-
-예:
+### Classification Schema
 
 ```json
 {
-  "classification": "업무",
-  "topic": "자동 바인딩",
-  "element": "디스코드",
-  "state": "확인 필요"
+  "classification": "work",
+  "topic": "auto binding",
+  "element": "discord",
+  "state": "needs review"
 }
 ```
 
-## 검색 원칙
+### Importance Tags (Decay Modulation)
 
-검색 본체는 아래 3개입니다.
+| Tag | Factor | Decay Speed |
+|-----|--------|-------------|
+| `rule` | 0.0 | Never |
+| `directive` | 0.1 | Almost never |
+| `decision` | 0.2 | Very slow |
+| `preference` | 0.075 | Very slow |
+| `incident` | 0.125 | Slow |
+| (default) | 1.0 | Normal |
+| `transient` | 1.5 | Fast |
 
-- `keyword`
-- `embedding`
-- `time`
+Decay formula: `decay = 1 / (1 + ageDays / 30) ^ 0.3`
 
-그리고 후반 보정은:
+## Retrieval (Hybrid RAG)
 
-- `classification`
-- `topic`
-- `element`
-- `state`
-- `language`
-
-순서로 약하게 곱 보정합니다.
-
-즉 개념적으로는:
+Three-signal search with post-ranking adjustments:
 
 ```text
-base_score
-* semantic_factor(classification/topic/element)
-* state_factor
-* time_factor
-* language_factor
--> rerank
+base_score = RRF_merge(keyword_FTS, vector_KNN, k=60)
+final_score = base_score * importance * time_factor * role * type
 ```
 
-## 임베딩 정책
+- **Sparse**: FTS5 full-text search (BM25)
+- **Dense**: bge-m3 embeddings (1024 dims) via Xenova/Transformers.js
+- **Fusion**: Reciprocal Rank Fusion (k=60)
+- **Temporal**: date range filtering with relative date parsing
 
-전체 재생성이 아니라 변경분만 갱신합니다.
+## MCP Tools
 
-- 새 `episode` 추가 후: 해당 episode만 임베딩
-- 새 `classification` 반영 후: 해당 row만 임베딩
-- 교정 후 변경된 row만 재임베딩
+| Tool | Description |
+|------|-------------|
+| `search_memories` | Hybrid search with period/sort/limit. Shortcuts: "stats", "rules", "decisions", "goals" |
+| `memory_cycle` | Actions: `status`, `sleep`, `flush`, `rebuild`, `rebuild_classifications`, `prune`, `cycle1`, `backfill` |
 
-즉:
+## Injection Paths
+
+| Path | Status | Description |
+|------|--------|-------------|
+| SessionStart hook | **Working** | Injects active core_memory items once at session start |
+| On-demand recall | **Working** | `search_memories` MCP tool via recall skill |
+
+## Embedding Policy
+
+Delta updates only — no full rebuilds:
+- New episode → embed that episode
+- New classification → embed that row
+- Correction → spot re-embed changed rows
+
+## Worker Host Pattern
 
 ```text
-delta update + spot update
+server -> fork(worker) -> IPC request -> worker spawn(codex/claude/...) -> IPC response
 ```
 
-## MCP worker 구조
+Isolates CLI instability from the main MCP server process.
 
-비대화형 CLI 불안정을 줄이기 위해, 서버 내부에서 직접 CLI를 실행하지 않고 worker child를 띄웁니다.
+## Key Files
 
-구조:
+| File | Purpose |
+|------|---------|
+| `lib/memory.mjs` | Storage, search, context generation |
+| `lib/memory-cycle.mjs` | cycle1/cycle2 pipeline |
+| `lib/memory-score-utils.mjs` | Decay formula, scoring |
+| `services/memory-service.mjs` | MCP + HTTP entry point |
+| `hooks/session-start.cjs` | Core memory injection at session start |
 
-```text
-server
--> fork(worker)
--> IPC request
--> worker spawn(codex/claude/...)
--> IPC response
-```
+## Future Work
 
-현재 이 패턴은 다음 서버들에 반영되어 있습니다.
+- [ ] cycle3: periodic decay application + context.md rebuild (separate from cycle2)
+- [ ] Memory security scanning (prompt injection, credential leak detection)
 
-- `trib-memory`
-- `trib-search`
-- `trib-channels`
+## Notes
 
-## 운영 사이클
-
-- `cycle1`
-  새 episode를 읽고 `classifications`를 적재
-- `cycle2`
-  candidate 정리 / 교정
-- `cycle3`
-  `classifications` 기준 decay / cleanup + `context.md` 갱신
-
-## 현재 recall 표면
-
-현재 `recall_memory`의 핵심 모드는 두 개입니다.
-
-- `search`
-- `episodes`
-
-주요 shortcut:
-
-- `classifications`
-- `episodes`
-- `hints`
-
-즉 broad long-term memory는 `classifications`, 상세 이벤트/날짜 추적은 `episodes`로 봅니다.
-
-## 관련 문서
-
-- [RETRIEVAL-CLASSIFICATION-PLAN.md](./RETRIEVAL-CLASSIFICATION-PLAN.md)
-- [scripts/TUNING-PLAYBOOK.md](./scripts/TUNING-PLAYBOOK.md)
-
-## 메모
-
-- embedding 기본값은 `ollama/bge-m3`
-- 일반 사용자 디폴트는 `reranker=off`, `temporalParser=off`
-- `node_modules`, `scripts/results`, `services/__pycache__`는 커밋 대상이 아닙니다
+- Default embedding: `Xenova/bge-m3` (local ONNX, auto-downloaded)
+- Core memory active cap: 50 items
+- Decay computed at search time, not stored in DB

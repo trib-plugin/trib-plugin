@@ -6,7 +6,7 @@ export function getScoringConfig(tuning = {}) {
   return tuning?.scoring ?? {}
 }
 
-// ── Importance tag factors (MEMORY-DECAY-PLAN.md) ───────────────────
+// ── Importance tag factors ────────────────────────────────────────────
 
 const TAG_FACTORS = {
   rule: 0.0,

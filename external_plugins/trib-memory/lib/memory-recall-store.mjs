@@ -159,44 +159,6 @@ export async function getEpisodeRecallRows(store, options = {}) {
   }).slice(0, queryLimit)
 }
 
-export async function bulkVerifyHints(store, hints = []) {
-  const details = []
-  let confirmed = 0
-  let outdated = 0
-  let unknown = 0
-
-  for (const rawHint of hints) {
-    const clean = String(rawHint ?? '').trim()
-    if (!clean) {
-      unknown += 1
-      details.push({ hint: clean, status: '?' })
-      continue
-    }
-    const ftsQuery = clean.replace(/['"*\-(){}[\]^~:]/g, ' ').replace(/\b(OR|AND|NOT|NEAR)\b/gi, '').trim()
-    const matches = await verifyMemoryClaim(store, clean, { limit: 1, ftsQuery })
-    const bestMatch = matches[0]
-    if (bestMatch) {
-      const status = bestMatch.status === 'active' && bestMatch.accepted !== false ? '✓' : '✗'
-      if (status === '✓') confirmed += 1
-      else outdated += 1
-      details.push({
-        hint: clean,
-        status,
-        fact: String(bestMatch.text ?? bestMatch.content ?? ''),
-        confidence: Number(bestMatch.confidence ?? bestMatch.similarity ?? 0).toFixed(2),
-        mention_count: Number(bestMatch.mention_count ?? 0),
-      })
-    } else {
-      unknown += 1
-      details.push({ hint: clean, status: '?' })
-    }
-  }
-
-  return {
-    summary: `✓ confirmed(${confirmed}) ✗ outdated(${outdated}) ? unknown(${unknown})`,
-    details,
-  }
-}
 
 export function getRecallShortcutRows(store, kind = 'all', limit = 5, options = {}) {
   const queryLimit = Math.max(1, Number(limit))

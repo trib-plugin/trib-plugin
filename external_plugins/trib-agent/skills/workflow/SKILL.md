@@ -2,10 +2,12 @@
 name: workflow
 user-invocable: false
 description: >
-  WHEN: Any execution — edit, fix, refactor, investigate, research, explore,
-  setup, deploy. Includes casual: "check this", "fix it", "try it".
-  MUST invoke BEFORE work starts.
-  WHEN NOT: Pure Q&A, opinions. Active execute phase needs no re-invoke.
+  WHEN: Any task that requires action — edit, fix, refactor, investigate,
+  research, explore, search, setup, deploy, review, compare, analyze.
+  Includes casual requests: "check this", "fix it", "try it", "look into this".
+  MUST invoke BEFORE any work or delegation begins.
+  WHEN NOT: Pure Q&A, opinions, or conversation with no actionable task.
+  Already in active execute phase — no re-invoke needed.
 ---
 
 ## Core Principles
@@ -15,6 +17,48 @@ description: >
 3. **One-off tasks go to background agents. Multi-step continuous work MUST use TeamCreate** — no exceptions. Teams provide session persistence and context cache hits.
 4. **Never push, deploy, or build without explicit user approval.** Commit is allowed during execute phase, but push/deploy/build require a separate explicit "push" request from the user. No assumptions.
 5. **Always pass `mode: bypassPermissions` when spawning any agent.** This includes all subagent types (Worker, Reviewer, Explore, etc.). Omitting it causes permission prompts that block work.
+
+## Required Tool Call Patterns
+
+### One-off task (no follow-up expected)
+
+```
+Agent({
+  subagent_type: "Explore",
+  mode: "bypassPermissions",
+  run_in_background: true,
+  prompt: "..."
+})
+```
+
+### Worker or Reviewer (follow-up likely)
+
+```
+TeamCreate({ name: "task-name" })
+→ Agent({
+    subagent_type: "trib-agent:Worker",   // or "trib-agent:Reviewer"
+    team_name: "task-name",
+    mode: "bypassPermissions",
+    run_in_background: true,
+    prompt: "..."
+  })
+→ SendMessage({ to: "task-name", ... })   // follow-up instructions
+```
+
+### MANDATORY on EVERY Agent call — no exceptions
+
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| `mode` | `"bypassPermissions"` | Prevents permission prompts that block work |
+| `run_in_background` | `true` | Keeps Lead responsive. Only `false` when result is needed before next response |
+| `team_name` | required for Worker/Reviewer | Enables follow-up via SendMessage |
+
+### Choosing delegation method
+
+| Will this agent get follow-up tasks? | Tool |
+|--------------------------------------|------|
+| **No** — one-off result only | `Agent({ run_in_background: true })` |
+| **Yes or uncertain** | `TeamCreate` → `Agent({ team_name })` |
 
 ## Lead State Cycle
 
@@ -27,8 +71,8 @@ idle → discuss → approve → execute → verify → idle
 | State | Lead action |
 |-------|-------------|
 | **idle** | Waiting for user input |
-| **discuss** | Collecting requirements. No work is started — no agent delegation, no direct edits, no tool execution beyond quick lookups. Only collect and organize |
-| **approve** | User explicitly approves → start work (delegate to agents or execute directly) |
+| **discuss** | Collecting requirements. No work — only collect and organize |
+| **approve** | User explicitly approves → start work |
 | **execute** | Agents running. Lead stays responsive to user |
 | **verify** | Check results directly (Read/Grep). Re-request if issues found |
 
@@ -43,25 +87,16 @@ Lead can use any tool directly, as long as user response is not delayed.
 | Short Bash (git, ls) | Long Bash (build, test suite) |
 | Real-time ping-pong testing | Complex implementation |
 
-## Delegation
-
-Choose by follow-up likelihood:
-
-| Will this agent get follow-up tasks? | Method |
-|--------------------------------------|--------|
-| No — one-off result only | Background |
-| Yes or uncertain | Team (always) |
-
-Context hygiene:
-- If a team agent's accumulated context exceeds useful scope, start a new one.
-- Never force-fit unrelated tasks into an existing team agent to "save tokens."
-
 ## Agent Management
 
 - `TeamCreate` → `TaskCreate` → `Agent` sequence
 - Send all requirements in a single complete message — never split across multiple sends
 - Reuse agents per sector (e.g., worker-memory, worker-channels)
 - Only shut down agents when user explicitly requests it
+
+Context hygiene:
+- If a team agent's accumulated context exceeds useful scope, start a new one.
+- Never force-fit unrelated tasks into an existing team agent to "save tokens."
 
 ## Execution with Workflow Plans
 
