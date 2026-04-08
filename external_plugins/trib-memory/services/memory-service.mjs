@@ -87,10 +87,22 @@ if (!DATA_DIR) {
 process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
 
 // ── Singleton guard: prevent multiple instances ─────────────────────
+import { execFileSync } from 'child_process'
 const LOCK_FILE = path.join(DATA_DIR, '.memory-service.lock')
 
-function isProcessAlive(pid) {
-  try { process.kill(pid, 0); return true } catch { return false }
+function killPreviousServer(pid) {
+  if (pid <= 0 || pid === process.pid) return
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        encoding: 'utf8', timeout: 5000, stdio: 'ignore'
+      })
+      process.stderr.write(`[memory-service] Killed previous server PID ${pid}\n`)
+    } catch {}
+  } else {
+    try { process.kill(pid, 'SIGTERM') } catch {}
+    try { process.kill(pid, 'SIGKILL') } catch {}
+  }
 }
 
 function acquireLock() {
@@ -98,17 +110,14 @@ function acquireLock() {
     if (fs.existsSync(LOCK_FILE)) {
       const content = fs.readFileSync(LOCK_FILE, 'utf8').trim()
       const lockedPid = Number(content)
-      if (lockedPid > 0 && isProcessAlive(lockedPid)) {
-        process.stderr.write(`[memory-service] Another instance running (PID ${lockedPid}). Exiting.\n`)
-        process.exit(0)
+      if (lockedPid > 0 && lockedPid !== process.pid) {
+        killPreviousServer(lockedPid)
+        process.stderr.write(`[memory-service] Removed stale lock (PID ${lockedPid})\n`)
       }
-      // Stale lock — previous process died without cleanup
-      process.stderr.write(`[memory-service] Removing stale lock (PID ${lockedPid})\n`)
     }
     fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8')
   } catch (e) {
     process.stderr.write(`[memory-service] Lock acquisition failed: ${e.message}\n`)
-    // Non-fatal: proceed anyway rather than blocking startup
   }
 }
 

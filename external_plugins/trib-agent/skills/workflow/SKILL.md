@@ -63,3 +63,16 @@ Context hygiene:
 - Send all requirements in a single complete message — never split across multiple sends
 - Reuse agents per sector (e.g., worker-memory, worker-channels)
 - Only shut down agents when user explicitly requests it
+
+## Execution with Workflow Plans
+
+Before starting work, check MCP instructions for available workflow plans.
+
+1. If a plan matches the user's request → call `get_workflow(name)` to load the full steps.
+2. Execute each step in order. Route by model prefix:
+   - `native/*` → spawn Agent (Worker/Reviewer) with the specified model
+   - `external/*` → call `delegate` with the specified provider/model
+3. Pass each step's result as context to the next step.
+4. If no plan matches → proceed with Lead's own judgment (freestyle).
+
+Lead IS the execution engine. Workflow plans are data, not triggers.

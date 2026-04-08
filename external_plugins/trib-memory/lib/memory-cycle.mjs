@@ -446,6 +446,14 @@ async function sleepCycleImpl(ws) {
     process.stderr.write(`[memory-cycle2] core-promote error: ${e.message}\n`)
   }
 
+  // 3. Refresh context.md from core_memory
+  try {
+    store.writeContextFile()
+    process.stderr.write('[memory-cycle2] context.md refreshed.\n')
+  } catch (e) {
+    process.stderr.write(`[memory-cycle2] context.md refresh error: ${e.message}\n`)
+  }
+
   process.stderr.write('[memory-cycle2] Cycle complete.\n')
 }
 

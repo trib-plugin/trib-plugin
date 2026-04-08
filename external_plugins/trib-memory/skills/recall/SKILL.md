@@ -7,8 +7,10 @@ description: >
   or missing context — invoke recall before answering.
   This includes: session start, references to past work, status checks,
   ambiguous requests, and any situation where memory could inform a better response.
-  Default behavior: recall. Skip only when the request is fully self-contained
-  with zero dependency on prior context.
+  Default behavior: recall at session start or when context gaps exist.
+  Skip when: current session context already contains the relevant prior work
+  (e.g., continuation without context loss), or when the request is fully
+  self-contained. Do not recall mid-session unless context compression has occurred.
   Use trib-memory MCP tools (search_memories, memory_cycle) exclusively.
   Do NOT use file-based memory (MEMORY.md, memory/ directory) or any built-in auto-memory system.
 ---

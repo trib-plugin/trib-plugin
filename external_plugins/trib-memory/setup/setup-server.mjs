@@ -67,19 +67,12 @@ function mergeConfig(existing, incoming) {
     if (incoming.user.title !== undefined) config.user.title = incoming.user.title;
   }
 
-  // models, embedding, reranker
-  for (const section of ['models', 'embedding', 'reranker']) {
-    if (incoming[section]) {
-      if (!config[section]) config[section] = {};
-      const src = incoming[section];
-      const dst = config[section];
-      if (src.type !== undefined) dst.type = src.type;
-      if (src.provider !== undefined) dst.provider = src.provider;
-      if (src.apiKey !== undefined) dst.apiKey = src.apiKey;
-      if (src.model !== undefined) dst.model = src.model;
-      if (src.effort !== undefined) dst.effort = src.effort;
-    }
+  // models — replace entirely when incoming (UI sends a complete object)
+  if (incoming.models) {
+    config.models = { ...incoming.models };
   }
+
+  // embedding and reranker are readonly in the UI — never overwrite from incoming
 
   return config;
 }
@@ -136,7 +129,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/files') {
     const result = {};
-    for (const name of ['bot.md', 'user_profile.md', 'context.md']) {
+    for (const name of ['bot.md', 'user.md', 'context.md']) {
       try { result[name] = readFileSync(join(FILES_DIR, name), 'utf8'); }
       catch { result[name] = ''; }
     }
@@ -148,12 +141,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/files') {
     const data = await readBody(req);
     mkdirSync(FILES_DIR, { recursive: true });
-    for (const name of ['bot.md', 'user_profile.md', 'context.md']) {
+    for (const name of ['bot.md', 'user.md', 'context.md']) {
       if (data[name] != null) {
         writeFileSync(join(FILES_DIR, name), data[name], 'utf8');
       }
     }
-    console.log('  Files saved: bot.md, user_profile.md, context.md');
+    console.log('  Files saved: bot.md, user.md, context.md');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

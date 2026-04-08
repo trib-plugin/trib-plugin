@@ -199,6 +199,28 @@
     opacity: 0.35; pointer-events: none;
   }
 
+  .readonly-info {
+    color: var(--text-3);
+    font-size: 13px;
+    padding: 8px 12px;
+    background: var(--bg-raised);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+
+  .field-group {
+    margin-bottom: 12px;
+  }
+  .field-group label {
+    display: block;
+    font-size: 12px; font-weight: 500; color: var(--text-2);
+    margin-bottom: 4px; padding: 0 2px;
+  }
+  .field-group .r-select,
+  .field-group .r-input {
+    width: 100%;
+  }
+
   .main::-webkit-scrollbar, .cat-bar::-webkit-scrollbar { width: 6px; }
   .main::-webkit-scrollbar-track, .cat-bar::-webkit-scrollbar-track { background: transparent; }
   .main::-webkit-scrollbar-thumb, .cat-bar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
@@ -212,8 +234,6 @@
   <div class="cat-bar">
     <div class="cat-item active" data-panel="settings" onclick="switchCat(this)">Settings</div>
     <div class="cat-item" data-panel="models" onclick="switchCat(this)">Models</div>
-    <div class="cat-item" data-panel="embedding" onclick="switchCat(this)">Embedding</div>
-    <div class="cat-item" data-panel="reranker" onclick="switchCat(this)">Reranker</div>
     <div class="cat-item" data-panel="files" onclick="switchCat(this)">Files</div>
   </div>
 
@@ -309,162 +329,61 @@
       </div>
     </div>
 
-    <!-- MODELS (LLM) -->
+    <!-- MODELS -->
     <div class="panel" id="panel-models">
       <div class="hdr"><h1>Models</h1></div>
 
       <div class="sec">
-        <div class="sec-title">LLM</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Type</span>
-            <select class="r-select" id="mdl-type" onchange="toggleFields('mdl')">
-              <option value="default">Default</option>
-              <option value="codex">Codex</option>
-              <option value="api">API</option>
-              <option value="local">Local</option>
+        <div class="sec-title">LLM (cycle1/cycle2 processing)</div>
+        <div class="sec-body" style="padding: 12px 14px;">
+          <div class="field-group">
+            <label>Provider</label>
+            <select class="r-select" id="llm-provider" onchange="onLlmProviderChange()">
+              <option value="default">Default (Codex gpt-5.4-mini)</option>
+              <option value="claude-code">Current Claude Code model</option>
+              <option value="codex">Codex OAuth</option>
+              <option value="api">API Key</option>
+              <option value="local">Local (Ollama)</option>
             </select>
           </div>
-          <div class="r" id="mdl-provider-row" style="display:none">
-            <span class="r-name-wide">Provider</span>
-            <select class="r-select" id="mdl-provider">
-              <option value="ollama">Ollama</option>
-              <option value="lmstudio">LM Studio</option>
-              <option value="vllm">vLLM</option>
-              <option value="llamacpp">llama.cpp</option>
-            </select>
-          </div>
-          <div class="r" id="mdl-apikey-row" style="display:none">
-            <span class="r-name-wide">Key</span>
-            <div class="r-pw-wrap">
-              <input class="r-input" id="mdl-apikey" type="password" placeholder="sk-...">
-              <button class="eye-toggle" onclick="togglePw('mdl-apikey',this)" type="button">&#9673;</button>
+
+          <div id="llm-details" style="display:none">
+            <div class="field-group" id="llm-apikey-group" style="display:none">
+              <label>API Key</label>
+              <div class="r-pw-wrap">
+                <input class="r-input" id="llm-apikey" type="password" placeholder="sk-...">
+                <button class="eye-toggle" onclick="togglePw('llm-apikey',this)" type="button">&#9673;</button>
+              </div>
+            </div>
+            <div class="field-group">
+              <label>Model</label>
+              <input class="r-input" id="llm-model" type="text" placeholder="gpt-5.4-mini">
+            </div>
+            <div class="field-group">
+              <label>Effort</label>
+              <select class="r-select" id="llm-effort">
+                <option value="">Default</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
             </div>
           </div>
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="mdl-model" type="text" placeholder="(default)">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Effort</span>
-            <select class="r-select" id="mdl-effort">
-              <option value="">(default)</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-          </div>
         </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Embedding</div>
+        <div class="readonly-info">Local ONNX &mdash; BGE-M3 (q4)</div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Reranker</div>
+        <div class="readonly-info">Local ONNX &mdash; BGE-reranker-large</div>
       </div>
 
       <div class="save-area">
         <div class="warn-msg" id="warn-models"></div>
-        <button class="save" onclick="saveConfig()">Save</button>
-      </div>
-    </div>
-
-    <!-- EMBEDDING -->
-    <div class="panel" id="panel-embedding">
-      <div class="hdr"><h1>Embedding</h1></div>
-
-      <div class="sec">
-        <div class="sec-title">Embedding Model</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Type</span>
-            <select class="r-select" id="emb-type" onchange="toggleFields('emb')">
-              <option value="default">Default</option>
-              <option value="api">API</option>
-              <option value="local">Local</option>
-            </select>
-          </div>
-          <div class="r" id="emb-provider-row" style="display:none">
-            <span class="r-name-wide">Provider</span>
-            <select class="r-select" id="emb-provider">
-              <option value="ollama">Ollama</option>
-              <option value="lmstudio">LM Studio</option>
-              <option value="vllm">vLLM</option>
-              <option value="llamacpp">llama.cpp</option>
-            </select>
-          </div>
-          <div class="r" id="emb-apikey-row" style="display:none">
-            <span class="r-name-wide">Key</span>
-            <div class="r-pw-wrap">
-              <input class="r-input" id="emb-apikey" type="password" placeholder="sk-...">
-              <button class="eye-toggle" onclick="togglePw('emb-apikey',this)" type="button">&#9673;</button>
-            </div>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="emb-model" type="text" placeholder="bge-m3">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Effort</span>
-            <select class="r-select" id="emb-effort">
-              <option value="">(default)</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <div class="save-area">
-        <div class="warn-msg" id="warn-embedding"></div>
-        <button class="save" onclick="saveConfig()">Save</button>
-      </div>
-    </div>
-
-    <!-- RERANKER -->
-    <div class="panel" id="panel-reranker">
-      <div class="hdr"><h1>Reranker</h1></div>
-
-      <div class="sec">
-        <div class="sec-title">Reranker Model</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name-wide">Type</span>
-            <select class="r-select" id="rnk-type" onchange="toggleFields('rnk')">
-              <option value="default">Default</option>
-              <option value="api">API</option>
-              <option value="local">Local</option>
-            </select>
-          </div>
-          <div class="r" id="rnk-provider-row" style="display:none">
-            <span class="r-name-wide">Provider</span>
-            <select class="r-select" id="rnk-provider">
-              <option value="ollama">Ollama</option>
-              <option value="lmstudio">LM Studio</option>
-              <option value="vllm">vLLM</option>
-              <option value="llamacpp">llama.cpp</option>
-            </select>
-          </div>
-          <div class="r" id="rnk-apikey-row" style="display:none">
-            <span class="r-name-wide">Key</span>
-            <div class="r-pw-wrap">
-              <input class="r-input" id="rnk-apikey" type="password" placeholder="sk-...">
-              <button class="eye-toggle" onclick="togglePw('rnk-apikey',this)" type="button">&#9673;</button>
-            </div>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <input class="r-input" id="rnk-model" type="text" placeholder="Qwen3-Reranker">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Effort</span>
-            <select class="r-select" id="rnk-effort">
-              <option value="">(default)</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <div class="save-area">
-        <div class="warn-msg" id="warn-reranker"></div>
         <button class="save" onclick="saveConfig()">Save</button>
       </div>
     </div>
@@ -479,7 +398,7 @@
       </div>
 
       <div class="file-group">
-        <div class="file-label">user_profile.md<span class="file-hint">User information</span></div>
+        <div class="file-label">user.md<span class="file-hint">User information</span></div>
         <textarea class="file-area" id="file-user-profile"></textarea>
       </div>
 
@@ -529,13 +448,24 @@ function switchCat(el) {
   document.getElementById('panel-' + el.dataset.panel).classList.add('active');
 }
 
-// -- Toggle fields by prefix --
-function toggleFields(prefix) {
-  const type = document.getElementById(prefix + '-type').value;
-  const providerRow = document.getElementById(prefix + '-provider-row');
-  const apikeyRow = document.getElementById(prefix + '-apikey-row');
-  if (providerRow) providerRow.style.display = type === 'local' ? '' : 'none';
-  if (apikeyRow) apikeyRow.style.display = type === 'api' ? '' : 'none';
+// -- LLM provider change handler --
+function onLlmProviderChange() {
+  const provider = document.getElementById('llm-provider').value;
+  const details = document.getElementById('llm-details');
+  const apikeyGroup = document.getElementById('llm-apikey-group');
+  const modelInput = document.getElementById('llm-model');
+
+  if (provider === 'default' || provider === 'claude-code') {
+    details.style.display = 'none';
+  } else {
+    details.style.display = '';
+    apikeyGroup.style.display = provider === 'api' ? '' : 'none';
+    if (provider === 'local') {
+      modelInput.placeholder = 'gemma3:latest';
+    } else {
+      modelInput.placeholder = 'gpt-5.4-mini';
+    }
+  }
 }
 
 function togglePw(inputId, btn) {
@@ -577,40 +507,56 @@ function populateConfig(cfg) {
   const bf = cfg.backfill || {};
   if (bf.window) document.getElementById('set-backfill-window').value = bf.window;
 
-  // Models (LLM)
+  // Models (LLM) — map config.models to the new provider dropdown
   const mdl = cfg.models || {};
-  if (mdl.type) document.getElementById('mdl-type').value = mdl.type;
-  if (mdl.provider) document.getElementById('mdl-provider').value = mdl.provider;
-  if (mdl.apiKey) document.getElementById('mdl-apikey').value = mdl.apiKey;
-  if (mdl.model) document.getElementById('mdl-model').value = mdl.model;
-  if (mdl.effort) document.getElementById('mdl-effort').value = mdl.effort;
-  toggleFields('mdl');
-
-  // Embedding
-  const emb = cfg.embedding || {};
-  if (emb.type) document.getElementById('emb-type').value = emb.type;
-  if (emb.provider) document.getElementById('emb-provider').value = emb.provider;
-  if (emb.apiKey) document.getElementById('emb-apikey').value = emb.apiKey;
-  if (emb.model) document.getElementById('emb-model').value = emb.model;
-  if (emb.effort) document.getElementById('emb-effort').value = emb.effort;
-  toggleFields('emb');
-
-  // Reranker
-  const rnk = cfg.reranker || {};
-  if (rnk.type) document.getElementById('rnk-type').value = rnk.type;
-  if (rnk.provider) document.getElementById('rnk-provider').value = rnk.provider;
-  if (rnk.apiKey) document.getElementById('rnk-apikey').value = rnk.apiKey;
-  if (rnk.model) document.getElementById('rnk-model').value = rnk.model;
-  if (rnk.effort) document.getElementById('rnk-effort').value = rnk.effort;
-  toggleFields('rnk');
+  const type = mdl.type || 'default';
+  document.getElementById('llm-provider').value = type;
+  if (mdl.apiKey) document.getElementById('llm-apikey').value = mdl.apiKey;
+  if (mdl.model) document.getElementById('llm-model').value = mdl.model;
+  if (mdl.effort) document.getElementById('llm-effort').value = mdl.effort;
+  onLlmProviderChange();
 }
 
 // -- Build config data --
 function buildConfigData() {
-  const mdlType = document.getElementById('mdl-type').value;
-  const embType = document.getElementById('emb-type').value;
-  const rnkType = document.getElementById('rnk-type').value;
+  const provider = document.getElementById('llm-provider').value;
   const timeoutSec = parseInt(document.getElementById('set-timeout').value);
+
+  // Build models object based on provider selection
+  let models;
+  switch (provider) {
+    case 'default':
+      models = { type: 'default' };
+      break;
+    case 'claude-code':
+      models = { type: 'claude-code' };
+      break;
+    case 'codex':
+      models = {
+        type: 'codex',
+        model: document.getElementById('llm-model').value || undefined,
+        effort: document.getElementById('llm-effort').value || undefined,
+      };
+      break;
+    case 'api':
+      models = {
+        type: 'api',
+        provider: 'openai',
+        apiKey: document.getElementById('llm-apikey').value || undefined,
+        model: document.getElementById('llm-model').value || undefined,
+        effort: document.getElementById('llm-effort').value || undefined,
+      };
+      break;
+    case 'local':
+      models = {
+        type: 'local',
+        model: document.getElementById('llm-model').value || undefined,
+        baseURL: 'http://localhost:11434/v1',
+      };
+      break;
+    default:
+      models = { type: 'default' };
+  }
 
   return {
     enabled: document.getElementById('set-enabled').checked,
@@ -629,27 +575,8 @@ function buildConfigData() {
     cycle2: {
       schedule: document.getElementById('set-schedule').value || undefined,
     },
-    models: {
-      type: mdlType,
-      provider: mdlType === 'local' ? document.getElementById('mdl-provider').value : '',
-      apiKey: mdlType === 'api' ? document.getElementById('mdl-apikey').value : '',
-      model: document.getElementById('mdl-model').value,
-      effort: document.getElementById('mdl-effort').value,
-    },
-    embedding: {
-      type: embType,
-      provider: embType === 'local' ? document.getElementById('emb-provider').value : '',
-      apiKey: embType === 'api' ? document.getElementById('emb-apikey').value : '',
-      model: document.getElementById('emb-model').value,
-      effort: document.getElementById('emb-effort').value,
-    },
-    reranker: {
-      type: rnkType,
-      provider: rnkType === 'local' ? document.getElementById('rnk-provider').value : '',
-      apiKey: rnkType === 'api' ? document.getElementById('rnk-apikey').value : '',
-      model: document.getElementById('rnk-model').value,
-      effort: document.getElementById('rnk-effort').value,
-    },
+    models,
+    // embedding and reranker are readonly — not sent
   };
 }
 
@@ -685,7 +612,7 @@ async function loadFiles() {
   try {
     const data = await fetch('/files').then(r => r.json());
     document.getElementById('file-bot').value = data['bot.md'] || '';
-    document.getElementById('file-user-profile').value = data['user_profile.md'] || '';
+    document.getElementById('file-user-profile').value = data['user.md'] || '';
     document.getElementById('file-context').value = data['context.md'] || '';
   } catch {}
 }
@@ -698,7 +625,7 @@ async function saveFiles() {
 
   const data = {
     'bot.md': document.getElementById('file-bot').value,
-    'user_profile.md': document.getElementById('file-user-profile').value,
+    'user.md': document.getElementById('file-user-profile').value,
     'context.md': document.getElementById('file-context').value,
   };
 

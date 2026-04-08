@@ -1089,25 +1089,20 @@ export class MemoryStore {
   buildContextText() {
     const parts = []
 
-    // Core Memory: high-importance classifications (tag_factor <= 0.2)
-    const allClassifications = this.db.prepare(`
-      SELECT id, classification, topic, element, state, importance
-      FROM classifications
-      WHERE status = 'active' AND importance IS NOT NULL AND importance != ''
-      ORDER BY updated_at DESC
+    // Core Memory: read from core_memory table (managed by cycle2)
+    const coreItems = this.db.prepare(`
+      SELECT topic, element, importance
+      FROM core_memory
+      WHERE status = 'active'
+      ORDER BY final_score DESC, mention_count DESC
     `).all()
 
-    const promoted = allClassifications.filter(row => getTagFactor(row.importance) <= 0.2)
-
-    if (promoted.length > 0) {
-      const lines = promoted.map(row => {
-        const tag = String(row.importance || '').split(',')[0].trim()
-        return `- [${tag}] ${row.topic} — ${row.element}`
+    if (coreItems.length > 0) {
+      const lines = coreItems.map(row => {
+        return `- ${row.topic} — ${row.element}`
       })
       parts.push(`## Core Memory\n${lines.join('\n')}`)
     }
-
-    // Bot section removed — bot.md is injected separately by session-start hook
 
     return parts.join('\n\n').trim()
   }

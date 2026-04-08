@@ -7,6 +7,8 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
 
+import { listWorkflows, getWorkflow, saveWorkflow, deleteWorkflow } from '../orchestrator/workflow-store.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
@@ -25,6 +27,12 @@ function resolveDataDir() {
 const pluginDataDir = resolveDataDir();
 const CONFIG_PATH = join(pluginDataDir, 'config.json');
 const PORT = 3459;
+
+const NATIVE_MODELS = [
+  { id: 'native/opus', label: 'Claude Opus (Native)' },
+  { id: 'native/sonnet', label: 'Claude Sonnet (Native)' },
+  { id: 'native/haiku', label: 'Claude Haiku (Native)' },
+];
 const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');
 
 // -- Helpers --
@@ -340,7 +348,7 @@ const server = http.createServer(async (req, res) => {
   const path = url.pathname;
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
@@ -408,6 +416,77 @@ const server = http.createServer(async (req, res) => {
     console.log(`  Preset deleted: ${id}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // -- Workflow CRUD --
+  if (req.method === 'GET' && path === '/workflows') {
+    try {
+      const list = listWorkflows();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, workflows: list }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/workflow') {
+    const name = url.searchParams.get('name');
+    if (!name) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'name query parameter required' }));
+      return;
+    }
+    const wf = getWorkflow(name);
+    if (!wf) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'workflow not found' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, workflow: wf }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/workflow') {
+    const data = await readBody(req);
+    try {
+      const wf = saveWorkflow(data);
+      console.log(`  Workflow saved: ${wf.name}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, workflow: wf }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && path === '/workflow') {
+    const name = url.searchParams.get('name');
+    if (!name) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'name query parameter required' }));
+      return;
+    }
+    const deleted = deleteWorkflow(name);
+    if (deleted) console.log(`  Workflow deleted: ${name}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, deleted }));
+    return;
+  }
+
+  // -- Models list (unified: native + external from presets) --
+  if (req.method === 'GET' && path === '/models-list') {
+    const presetList = readPresets();
+    const externalModels = presetList.map(p => ({
+      id: `external/${p.model}`,
+      label: `${p.name || p.model} (${p.provider})`,
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, models: [...NATIVE_MODELS, ...externalModels] }));
     return;
   }
 

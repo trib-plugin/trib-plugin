@@ -286,6 +286,83 @@
   .advanced-toggle .arrow.open { transform: rotate(90deg); }
   .advanced-content { display: none; }
   .advanced-content.open { display: block; }
+
+  /* Workflow UI */
+  .wf-steps-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px 6px;
+  }
+  .step-item {
+    margin: 0 14px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .step-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.2);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; color: var(--text-2);
+  }
+  .step-remove {
+    width: 24px; height: 24px;
+    background: none; border: 1px solid rgba(229,83,75,0.3);
+    border-radius: 4px; color: var(--red);
+    font-size: 14px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .step-remove:hover { background: var(--red-dim); border-color: var(--red); }
+  .step-field {
+    padding: 6px 12px;
+  }
+  .step-field label {
+    display: block; font-size: 11px; font-weight: 500;
+    color: var(--text-3); margin-bottom: 4px;
+  }
+  .step-field select,
+  .step-field input,
+  .step-field textarea {
+    width: 100%; padding: 6px 8px;
+    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
+    border-radius: 5px; color: var(--text-1);
+    font-size: 12px; font-family: 'Inter', sans-serif;
+    transition: border-color 0.15s;
+  }
+  .step-field select {
+    -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+  }
+  .step-field select option { background: var(--bg-raised); color: var(--text-1); }
+  .step-field input:focus,
+  .step-field select:focus,
+  .step-field textarea:focus { outline: none; border-color: var(--border-focus); }
+  .step-field textarea {
+    resize: vertical; min-height: 48px;
+    font-family: 'Inter', sans-serif;
+  }
+  .wf-card {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    min-height: 48px;
+  }
+  .wf-card:last-child { border-bottom: none; }
+  .wf-card:hover { background: rgba(255,255,255,0.015); }
+  .wf-info { flex: 1; min-width: 0; }
+  .wf-name {
+    font-size: 13px; font-weight: 600; color: var(--text-1);
+  }
+  .wf-desc {
+    font-size: 11px; color: var(--text-3); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wf-actions { display: flex; gap: 6px; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -294,6 +371,7 @@
     <div class="cat-item active" data-panel="providers" onclick="switchCat(this)">Providers</div>
     <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Models</div>
     <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
+    <div class="cat-item" data-panel="workflows" onclick="switchCat(this)">Workflows</div>
   </div>
 
   <div class="main">
@@ -394,6 +472,46 @@
       </div>
     </div>
 
+    <!-- WORKFLOWS -->
+    <div class="panel" id="panel-workflows">
+      <div class="hdr">
+        <h1>Workflows</h1>
+        <button class="hdr-btn" onclick="showWorkflowForm()">+ New Workflow</button>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Saved Workflows</div>
+        <div class="sec-body" id="workflow-list">
+          <div class="empty">Loading...</div>
+        </div>
+      </div>
+
+      <div class="sec" id="workflow-form-sec" style="display:none">
+        <div class="sec-title" id="workflow-form-title">New Workflow</div>
+        <div class="sec-body" id="workflow-form-body">
+          <div class="form-row">
+            <span class="r-name">Name</span>
+            <input class="r-input" id="wf-name" placeholder="my-workflow" maxlength="60">
+          </div>
+          <div class="form-row">
+            <span class="r-name">Description</span>
+            <input class="r-input" id="wf-description" placeholder="What this workflow does">
+          </div>
+          <div class="wf-steps-header">
+            <span class="sec-title" style="margin-bottom:0">Steps</span>
+            <button class="icon-btn edit-btn" onclick="addStep()">+ Add Step</button>
+          </div>
+          <div id="wf-steps"></div>
+          <div class="form-actions">
+            <button class="btn secondary" onclick="closeWorkflowForm()">Cancel</button>
+            <button class="btn primary" onclick="saveWorkflowFromForm()">Save Workflow</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="warn-msg" id="warn-workflows"></div>
+    </div>
+
   </div>
 </div>
 
@@ -457,7 +575,7 @@ window.addEventListener('beforeunload', (e) => {
 window.addEventListener('load', async () => {
   try { window.resizeTo(720, 820); window.moveTo((screen.availWidth-720)/2,(screen.availHeight-820)/2); } catch{}
   await loadData();
-  await loadPresets();
+  await Promise.all([loadPresets(), loadWorkflows(), loadModelsList()]);
 });
 
 function switchCat(el) {
@@ -828,6 +946,201 @@ async function deletePreset(id) {
     await loadPresets();
   } catch {
     document.getElementById('warn-presets').textContent = 'Delete failed';
+  }
+}
+
+// ----- Workflows -----
+
+let workflows = [], modelsList = [], editingWorkflow = null;
+
+async function loadWorkflows() {
+  try {
+    const r = await fetch('/workflows').then(r => r.json());
+    workflows = r.workflows || [];
+  } catch {
+    workflows = [];
+  }
+  renderWorkflowList();
+}
+
+async function loadModelsList() {
+  try {
+    const r = await fetch('/models-list').then(r => r.json());
+    modelsList = r.models || [];
+  } catch {
+    modelsList = [];
+  }
+}
+
+function renderWorkflowList() {
+  const list = document.getElementById('workflow-list');
+  if (workflows.length === 0) {
+    list.innerHTML = '<div class="empty">No workflows yet. Click <strong>+ New Workflow</strong> to create one.</div>';
+    return;
+  }
+  list.innerHTML = workflows.map(w => {
+    const steps = w.steps ? `${w.steps.length} step${w.steps.length !== 1 ? 's' : ''}` : '';
+    return `<div class="wf-card">
+      <div class="wf-info">
+        <div class="wf-name">${escapeHtml(w.name)}</div>
+        <div class="wf-desc">${escapeHtml(w.description || 'No description')}${steps ? ' &middot; ' + steps : ''}</div>
+      </div>
+      <div class="wf-actions">
+        <button class="icon-btn edit-btn" onclick="showWorkflowForm('${escapeAttr(w.name)}')">Edit</button>
+        <button class="icon-btn danger" onclick="deleteWorkflowConfirm('${escapeAttr(w.name)}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function showWorkflowForm(name) {
+  const sec = document.getElementById('workflow-form-sec');
+  const title = document.getElementById('workflow-form-title');
+  sec.style.display = 'block';
+
+  if (name) {
+    editingWorkflow = name;
+    title.textContent = 'Edit Workflow';
+    document.getElementById('wf-name').value = name;
+    document.getElementById('wf-name').disabled = true;
+    // Fetch full workflow data
+    fetch(`/workflow?name=${encodeURIComponent(name)}`)
+      .then(r => r.json())
+      .then(r => {
+        if (r.ok && r.workflow) {
+          document.getElementById('wf-description').value = r.workflow.description || '';
+          renderSteps(r.workflow.steps || []);
+        }
+      })
+      .catch(() => {
+        document.getElementById('warn-workflows').textContent = 'Failed to load workflow';
+      });
+  } else {
+    editingWorkflow = null;
+    title.textContent = 'New Workflow';
+    document.getElementById('wf-name').value = '';
+    document.getElementById('wf-name').disabled = false;
+    document.getElementById('wf-description').value = '';
+    renderSteps([]);
+    addStep();
+  }
+}
+
+function closeWorkflowForm() {
+  document.getElementById('workflow-form-sec').style.display = 'none';
+  editingWorkflow = null;
+  document.getElementById('warn-workflows').textContent = '';
+}
+
+function buildModelOptions(selectedId) {
+  return modelsList.map(m =>
+    `<option value="${escapeAttr(m.id)}"${m.id === selectedId ? ' selected' : ''}>${escapeHtml(m.label)}</option>`
+  ).join('');
+}
+
+function renderSteps(steps) {
+  const container = document.getElementById('wf-steps');
+  container.innerHTML = '';
+  steps.forEach((step, i) => {
+    container.appendChild(createStepElement(i, step));
+  });
+}
+
+function createStepElement(index, data) {
+  const div = document.createElement('div');
+  div.className = 'step-item';
+  div.dataset.index = index;
+  div.innerHTML = `
+    <div class="step-header">
+      <span>Step ${index + 1}</span>
+      <button class="step-remove" onclick="removeStep(this)" type="button">&times;</button>
+    </div>
+    <div class="step-field">
+      <label>Model</label>
+      <select class="step-model">${buildModelOptions(data?.model || '')}</select>
+    </div>
+    <div class="step-field">
+      <label>Action</label>
+      <input class="step-action" placeholder="What to do" value="${escapeAttr(data?.action || '')}">
+    </div>
+    <div class="step-field">
+      <label>Notes</label>
+      <textarea class="step-notes" placeholder="How to do it, what to watch for">${escapeHtml(data?.notes || '')}</textarea>
+    </div>
+  `;
+  return div;
+}
+
+function addStep() {
+  const container = document.getElementById('wf-steps');
+  const index = container.children.length;
+  container.appendChild(createStepElement(index, null));
+  isDirty = true;
+}
+
+function removeStep(btn) {
+  const stepItem = btn.closest('.step-item');
+  stepItem.remove();
+  // Re-number remaining steps
+  const container = document.getElementById('wf-steps');
+  Array.from(container.children).forEach((el, i) => {
+    el.dataset.index = i;
+    el.querySelector('.step-header span').textContent = `Step ${i + 1}`;
+  });
+  isDirty = true;
+}
+
+function collectStepsFromForm() {
+  const container = document.getElementById('wf-steps');
+  const steps = [];
+  for (const el of container.children) {
+    const model = el.querySelector('.step-model').value;
+    const action = el.querySelector('.step-action').value.trim();
+    const notes = el.querySelector('.step-notes').value.trim();
+    steps.push({ model, action, notes });
+  }
+  return steps;
+}
+
+async function saveWorkflowFromForm() {
+  const warn = document.getElementById('warn-workflows');
+  warn.textContent = '';
+
+  const name = document.getElementById('wf-name').value.trim();
+  const description = document.getElementById('wf-description').value.trim();
+  const steps = collectStepsFromForm();
+
+  if (!name) { warn.textContent = 'Name is required'; return; }
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) { warn.textContent = 'Name must be alphanumeric (._- allowed)'; return; }
+  if (steps.length === 0) { warn.textContent = 'At least one step is required'; return; }
+
+  const hasEmptyAction = steps.some(s => !s.action);
+  if (hasEmptyAction) { warn.textContent = 'All steps must have an action'; return; }
+
+  const body = { name, description, steps };
+
+  try {
+    const r = await fetch('/workflow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; }
+    isDirty = false;
+    closeWorkflowForm();
+    await loadWorkflows();
+  } catch (err) {
+    warn.textContent = 'Save failed: ' + (err?.message || 'network error');
+  }
+}
+
+async function deleteWorkflowConfirm(name) {
+  if (!confirm(`Delete workflow "${name}"?`)) return;
+  try {
+    await fetch(`/workflow?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+    await loadWorkflows();
+  } catch {
+    document.getElementById('warn-workflows').textContent = 'Delete failed';
   }
 }
 </script>
