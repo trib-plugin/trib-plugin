@@ -1047,7 +1047,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
       return
     }
 
-    if (access.allowFrom && !access.allowFrom.includes(interaction.userId)) {
+    if (access.allowFrom?.length > 0 && !access.allowFrom.includes(interaction.userId)) {
       process.stderr.write(`trib-channels: perm button rejected — user ${interaction.userId} not in allowFrom\n`)
       return
     }

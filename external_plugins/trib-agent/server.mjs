@@ -5,7 +5,7 @@ import { initProviders, getAllProviders } from './orchestrator/providers/registr
 import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.js';
 import { loadConfig, getPluginData } from './orchestrator/config.js';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
-import { listWorkflows, getWorkflow } from './orchestrator/workflow-store.js';
+import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.js';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -55,6 +55,9 @@ function buildInstructions() {
 
   return lines.join('\n');
 }
+
+// Seed default workflows into user data dir if none exist yet
+seedDefaults();
 
 const INSTRUCTIONS = buildInstructions();
 

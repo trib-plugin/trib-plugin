@@ -88,6 +88,12 @@
     padding: 16px 24px;
     font-size: 12px; color: var(--text-4);
   }
+  .r-detail {
+    font-size: 11px; color: var(--text-3);
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    margin-left: 8px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
   .status-summary {
     padding: 12px 16px;
     font-size: 12px; color: var(--text-2);
@@ -144,6 +150,20 @@
   .r-tag.env { background: rgba(139,145,240,0.08); color: var(--accent); }
   .r-tag.running { background: var(--green-dim); color: var(--green); }
   .r-tag.not-running { background: var(--red-dim); color: var(--red); }
+  .r-validation {
+    font-size: 11px; margin-left: 8px; flex-shrink: 0;
+    white-space: nowrap; transition: opacity 0.2s;
+  }
+  .r-validation.checking { color: var(--text-3); }
+  .r-validation.ok { color: var(--green); }
+  .r-validation.fail { color: var(--red); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .r-validation .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--text-4); border-top-color: var(--text-2);
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 4px;
+  }
   .input-group {
     display: flex; width: 280px; flex: 0 0 280px; align-items: center; gap: 0;
   }
@@ -482,15 +502,23 @@
       <div class="hdr"><h1>Status</h1></div>
 
       <div class="sec">
-        <div class="sec-title">Provider Status</div>
+        <div class="sec-title">Native Models</div>
+        <div class="sec-body" id="native-models-sec"></div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">External Providers</div>
         <div class="sec-body" id="status-sec"></div>
       </div>
 
       <div class="sec">
+        <div class="sec-title">Model Presets</div>
+        <div class="sec-body" id="presets-status-sec"></div>
+      </div>
+
+      <div class="sec">
         <div class="sec-title">Active Workflows</div>
-        <div id="workflow-status-list">
-          <div class="status-empty">No active workflows</div>
-        </div>
+        <div class="sec-body" id="workflow-status-list"></div>
       </div>
     </div>
 
@@ -627,8 +655,14 @@ async function loadData() {
   renderAll();
 }
 
+// Track original tag HTML per provider so we can restore on empty
+const _origTags = {};
+
 function renderAll() {
   const c = config.providers || {};
+
+  // Reset original-tag cache so fresh tags are captured after re-render
+  for (const k in _origTags) delete _origTags[k];
 
   // API keys
   const apiSec = document.getElementById('api-sec');
@@ -647,13 +681,14 @@ function renderAll() {
       tag = '<span class="r-tag no">Not Set</span>';
       link = `<a class="r-link" href="${p.url}" target="_blank">Get Key &#8599;</a>`;
     }
-    apiSec.innerHTML += `<div class="r">
+    apiSec.innerHTML += `<div class="r" data-provider="${p.id}">
       <span class="r-name">${p.name}</span>
       <div class="input-group">
-        <input class="r-input" id="key-${p.id}" type="password" value="${escapeAttr(key)}" placeholder="${p.env}">
+        <input class="r-input" id="key-${p.id}" type="password" value="${escapeAttr(key)}" placeholder="${p.env}" onblur="validateKeyOnBlur('${p.id}')">
         <button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button>
       </div>
-      ${tag}
+      <span class="r-tag-wrap" id="tag-${p.id}">${tag}</span>
+      <span class="r-validation" id="val-${p.id}"></span>
       ${link}
     </div>`;
   }
@@ -688,6 +723,63 @@ function renderAll() {
   renderStatus();
 }
 
+async function validateKeyOnBlur(providerId) {
+  const input = document.getElementById('key-' + providerId);
+  const valEl = document.getElementById('val-' + providerId);
+  const tagEl = document.getElementById('tag-' + providerId);
+  if (!input || !valEl || !tagEl) return;
+
+  const key = input.value.trim();
+
+  // Store original tag on first encounter
+  if (!_origTags[providerId]) _origTags[providerId] = tagEl.innerHTML;
+
+  // Empty: clear validation state, restore original tag
+  if (!key) {
+    input.classList.remove('warn', 'valid');
+    valEl.className = 'r-validation';
+    valEl.innerHTML = '';
+    tagEl.innerHTML = _origTags[providerId] || '';
+    return;
+  }
+
+  // Show checking state
+  input.classList.remove('warn', 'valid');
+  valEl.className = 'r-validation checking';
+  valEl.innerHTML = '<span class="spinner"></span>Checking...';
+
+  try {
+    const res = await fetch('/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys: { [providerId]: key } }),
+    });
+    const data = await res.json();
+    const result = data.validation?.[providerId];
+
+    // If value changed while we were validating, discard this result
+    if (input.value.trim() !== key) return;
+
+    if (result === 'valid') {
+      input.classList.remove('warn');
+      input.classList.add('valid');
+      valEl.className = 'r-validation ok';
+      valEl.textContent = '';
+      tagEl.innerHTML = '<span class="r-tag ok">Active</span>';
+    } else {
+      input.classList.remove('valid');
+      input.classList.add('warn');
+      valEl.className = 'r-validation fail';
+      valEl.textContent = 'Invalid key';
+      tagEl.innerHTML = _origTags[providerId] || '';
+    }
+  } catch {
+    // Network error: clear checking state, don't mark invalid
+    valEl.className = 'r-validation';
+    valEl.innerHTML = '';
+  }
+}
+
 function escapeAttr(v) {
   return String(v ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 }
@@ -698,6 +790,19 @@ function escapeHtml(v) {
 
 function renderStatus() {
   const c = config.providers || {};
+
+  // Native Models — always available through Claude Code
+  const nativeSec = document.getElementById('native-models-sec');
+  const nativeModels = [
+    { name: 'Claude Opus' },
+    { name: 'Claude Sonnet' },
+    { name: 'Claude Haiku' },
+  ];
+  nativeSec.innerHTML = nativeModels.map(m =>
+    `<div class="r"><span class="r-name">${m.name}</span><span class="r-tag ok">Available</span></div>`
+  ).join('');
+
+  // External Providers
   const sec = document.getElementById('status-sec');
   let h = '';
   for (const p of API_PROVIDERS) {
@@ -725,24 +830,41 @@ function renderStatus() {
   }
   sec.innerHTML = h;
 
-  // Active Workflows summary
-  const wfList = document.getElementById('workflow-status-list');
-  const wfCount = (workflows || []).length;
-  const presetCount = (presets || []).length;
-  if (wfCount === 0 && presetCount === 0) {
-    wfList.innerHTML = '<div class="status-empty">No active workflows</div>';
+  // Model Presets
+  const presetsSec = document.getElementById('presets-status-sec');
+  if ((presets || []).length === 0) {
+    presetsSec.innerHTML = '<div class="status-empty">No model presets configured</div>';
   } else {
-    let summary = `<div class="status-summary">`;
-    summary += `<div class="summary-line"><span class="summary-label">Configured:</span> ${wfCount} workflow${wfCount !== 1 ? 's' : ''}, ${presetCount} model preset${presetCount !== 1 ? 's' : ''}</div>`;
-    // Show default workflow provider from the first workflow's first step
-    if (wfCount > 0 && workflows[0].steps && workflows[0].steps.length > 0) {
-      const firstStep = workflows[0].steps[0];
-      const providerLabel = firstStep.provider || 'Unknown';
-      const modelLabel = firstStep.model || '';
-      summary += `<div class="summary-line"><span class="summary-label">Default workflow provider:</span> ${escapeHtml(providerLabel)}${modelLabel ? ' (' + escapeHtml(modelLabel) + ')' : ''}</div>`;
-    }
-    summary += `</div>`;
-    wfList.innerHTML = summary;
+    presetsSec.innerHTML = presets.map(p => {
+      const meta = `${escapeHtml(p.provider)}/${escapeHtml(p.model)}`;
+      // Determine provider status tag
+      const pid = p.provider;
+      const provConf = c[pid];
+      const hasKey = !!provConf?.apiKey;
+      const hasEnv = auth.envKeys?.[pid];
+      const isOAuth = (pid === 'openai-oauth' && auth.codexOAuth) || (pid === 'copilot' && auth.copilot);
+      const isLocal = auth[pid];
+      let provTag;
+      if (hasKey || hasEnv || isOAuth || isLocal) {
+        provTag = '<span class="r-tag ok">Active</span>';
+      } else {
+        provTag = '<span class="r-tag no">Off</span>';
+      }
+      return `<div class="r"><span class="r-name">${escapeHtml(p.name || p.id)}</span><span class="r-detail">${meta}</span>${provTag}</div>`;
+    }).join('');
+  }
+
+  // Active Workflows
+  const wfList = document.getElementById('workflow-status-list');
+  const wfArr = workflows || [];
+  if (wfArr.length === 0) {
+    wfList.innerHTML = '<div class="status-empty">No workflows configured</div>';
+  } else {
+    wfList.innerHTML = wfArr.map(w => {
+      const stepCount = w.steps ? w.steps.length : 0;
+      const stepLabel = `${stepCount} step${stepCount !== 1 ? 's' : ''}`;
+      return `<div class="r"><span class="r-name">${escapeHtml(w.name)}</span><span class="r-detail">${stepLabel}</span></div>`;
+    }).join('');
   }
 }
 

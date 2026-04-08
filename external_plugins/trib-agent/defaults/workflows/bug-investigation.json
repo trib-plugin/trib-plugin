@@ -1,0 +1,16 @@
+{
+  "name": "bug-investigation",
+  "description": "Investigate and diagnose a bug with multiple analysis passes",
+  "steps": [
+    {
+      "model": "native/opus",
+      "action": "Analyze the bug and identify root cause",
+      "notes": "Read error messages, stack traces, and relevant code. Form hypothesis about root cause."
+    },
+    {
+      "model": "native/sonnet",
+      "action": "Verify diagnosis and propose fix",
+      "notes": "Validate the root cause hypothesis. Propose a minimal, targeted fix. Identify any regression risks."
+    }
+  ]
+}
