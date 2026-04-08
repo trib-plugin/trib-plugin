@@ -49,9 +49,8 @@ Choose by follow-up likelihood:
 
 | Will this agent get follow-up tasks? | Method |
 |--------------------------------------|--------|
-| No — result-only (research, audit, exploration) | Background |
-| Likely — sequential work in the same sector | Team (reuse via SendMessage) |
-| Uncertain — start light, escalate if needed | Background first, create team on 2nd task |
+| No — one-off result only | Background |
+| Yes or uncertain | Team (always) |
 
 Context hygiene:
 - If a team agent's accumulated context exceeds useful scope, start a new one.

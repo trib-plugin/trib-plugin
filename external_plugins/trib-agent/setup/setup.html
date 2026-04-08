@@ -260,6 +260,7 @@
   .icon-btn.edit-btn:hover { background: rgba(139,145,240,0.1); border-color: var(--accent); color: var(--accent); }
   .icon-btn.danger { border-color: rgba(229,83,75,0.3); color: var(--red); }
   .icon-btn.danger:hover { background: var(--red-dim); border-color: var(--red); }
+  .icon-btn.builtin { color: var(--green); border-color: var(--green); cursor: default; opacity: 0.7; }
   .form-row {
     display: flex; align-items: center;
     padding: 0 14px; min-height: 48px;
@@ -492,7 +493,6 @@
       </div>
 
       <div class="sec">
-        <div class="sec-title">Saved Models</div>
         <div class="sec-body" id="preset-list">
           <div class="empty">Loading...</div>
         </div>
@@ -667,9 +667,9 @@ const EFFORT_OPTIONS = {
   ],
   native: [
     { v: '', label: '(Default)' },
+    { v: 'none', label: 'None' },
     { v: 'low', label: 'Low' },
     { v: 'medium', label: 'Medium' },
-    { v: 'high', label: 'High' },
     { v: 'max', label: 'Max' },
   ],
 };
@@ -1061,7 +1061,7 @@ function renderPresetList() {
       </div>
       <div class="preset-actions">
         <button class="icon-btn edit-btn" onclick="openPresetForm('${escapeAttr(p.id)}')">Edit</button>
-        ${p.isNative ? '' : `<button class="icon-btn danger" onclick="deletePreset('${escapeAttr(p.id)}')">Delete</button>`}
+        ${p.isNative ? '<span class="icon-btn builtin">Built-in</span>' : `<button class="icon-btn danger" onclick="deletePreset('${escapeAttr(p.id)}')">Delete</button>`}
       </div>
     </div>`;
   }).join('');
@@ -1149,8 +1149,10 @@ function openPresetForm(id) {
     if (p) {
       document.getElementById('pf-name').value = p.name || p.id;
       providerSel.value = p.provider;
+      providerSel.disabled = p.provider === 'native';
       onProviderChange().then(() => {
         document.getElementById('pf-model').value = p.model;
+        if (p.provider === 'native') document.getElementById('pf-model').dispatchEvent(new Event('change'));
         document.getElementById('pf-effort').value = p.effort || '';
         const fastEl = document.getElementById('pf-fast');
         fastEl.classList.toggle('on', !!p.fast);
@@ -1195,10 +1197,6 @@ async function onProviderChange() {
   const mediumOpt = opts.find(o => o.v === 'medium');
   if (mediumOpt) effortSel.value = 'medium';
 
-  // Fast toggle
-  fastRow.style.display = FAST_PROVIDERS.has(provider) ? 'flex' : 'none';
-  if (!FAST_PROVIDERS.has(provider)) document.getElementById('pf-fast').classList.remove('on');
-
   // Models
   modelSel.disabled = true;
   modelSel.innerHTML = '<option value="">Loading...</option>';
@@ -1206,7 +1204,18 @@ async function onProviderChange() {
     const nativeModels = ['opus', 'sonnet', 'haiku'];
     modelSel.innerHTML = nativeModels.map(m => `<option value="${m}">${m}</option>`).join('');
     modelSel.disabled = false;
+    // Fast mode — only for opus
+    const updateFast = () => {
+      fastRow.style.display = modelSel.value === 'opus' ? 'flex' : 'none';
+      if (modelSel.value !== 'opus') document.getElementById('pf-fast').classList.remove('on');
+    };
+    modelSel.onchange = updateFast;
+    updateFast();
   } else {
+    // Fast toggle for non-native providers
+    fastRow.style.display = FAST_PROVIDERS.has(provider) ? 'flex' : 'none';
+    if (!FAST_PROVIDERS.has(provider)) document.getElementById('pf-fast').classList.remove('on');
+    modelSel.onchange = null;
     try {
       const r = await fetch(`/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
       const models = r.models || [];
