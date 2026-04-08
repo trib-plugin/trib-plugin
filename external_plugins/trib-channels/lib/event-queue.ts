@@ -58,8 +58,9 @@ export class EventQueue {
     ensureDir(QUEUE_DIR)
     ensureDir(PROCESSED_DIR)
 
-    const tickMs = (this.config.tickInterval ?? 60) * 1000
+    const tickMs = (this.config.tickInterval ?? 10) * 1000
     this.tickTimer = setInterval(() => this.processQueue(), tickMs)
+    setTimeout(() => this.processQueue(), 3000) // initial tick after 3s
 
     const batchMs = (this.config.batchInterval ?? 30) * 60_000
     this.batchTimer = setInterval(() => this.processBatch(), batchMs)
@@ -98,26 +99,19 @@ export class EventQueue {
 
   private processQueue(): void {
     const maxConcurrent = this.config.maxConcurrent ?? 2
-
     const files = this.readQueueFiles()
     if (files.length === 0) return
 
     for (const file of files) {
       const item = this.readItem(file)
       if (!item) continue
-
-      // Skip low priority — handled by batch timer
       if (item.priority === 'low') continue
 
-      // Interactive: only when idle, one at a time
       if (item.exec === 'interactive') {
-        const state = this.sessionStateGetter?.() ?? 'idle'
-        if (state !== 'idle') continue
         this.executeItem(item, file)
-        return // only one interactive at a time
+        return
       }
 
-      // Non-interactive/script: respect concurrency limit
       if (this.runningCount >= maxConcurrent) return
       this.executeItem(item, file)
     }
@@ -162,16 +156,16 @@ export class EventQueue {
   // ── Execute ───────────────────────────────────────────────────────
 
   private executeItem(item: QueueItem, file: string | null): void {
-    const channelId = this.resolveChannel(item.channel)
-
     if (item.exec === 'interactive') {
       if (this.injectFn) {
         const wrapped = `<event source="${item.source}" name="${item.name}">\n${item.prompt}\n</event>`
-        this.injectFn(channelId, `event:${item.name}`, wrapped)
+        this.injectFn('', `event:${item.name}`, wrapped)
       }
       if (file) this.moveToProcessed(file, 'done')
       return
     }
+
+    const channelId = this.resolveChannel(item.channel)
 
     if (item.exec === 'non-interactive') {
       this.runningCount++
@@ -236,7 +230,10 @@ export class EventQueue {
   }
 
   private resolveChannel(label: string): string {
-    return this.channelsConfig?.channels[label]?.id ?? label
+    if (!label || !this.channelsConfig) return ''
+    const entry = (this.channelsConfig as any)[label] ?? (this.channelsConfig as any)?.channels?.[label]
+    if (!entry) return label
+    return typeof entry === 'string' ? entry : entry.id ?? label
   }
 
   /** Get queue status */

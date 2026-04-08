@@ -6,6 +6,7 @@
 import * as http from 'http'
 import * as crypto from 'crypto'
 import { join } from 'path'
+import { spawn, spawnSync } from 'child_process'
 import type { WebhookConfig, ChannelsConfig } from '../backends/types.js'
 import type { EventPipeline } from './event-pipeline.js'
 import { DATA_DIR } from './config.js'
@@ -81,6 +82,8 @@ export class WebhookServer {
   private eventPipeline: EventPipeline | null = null
   private boundPort: number = 0
   private noSecretWarned = false
+  private ngrokProcess: ReturnType<typeof spawn> | null = null
+  private ngrokStarting = false
 
   constructor(config: WebhookConfig, _channelsConfig: ChannelsConfig | null) {
     this.config = config
@@ -173,9 +176,58 @@ export class WebhookServer {
     })
 
     tryListen()
+
+    // Auto-start ngrok tunnel if authtoken + domain configured
+    this.startNgrok()
+  }
+
+  private startNgrok(): void {
+    if (this.ngrokProcess || this.ngrokStarting) return
+    const authtoken = (this.config as any).authtoken
+    const domain = this.config.ngrokDomain || (this.config as any).domain
+    if (!authtoken || !domain) return
+    this.ngrokStarting = true
+
+    // Resolve ngrok binary path (cross-platform)
+    let ngrokBin = 'ngrok'
+    const whichCmd = process.platform === 'win32' ? 'where' : 'which'
+    try {
+      const r = spawnSync(whichCmd, ['ngrok'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+      const resolved = (r.stdout || '').trim().split(/\r?\n/)[0]
+      if (r.status === 0 && resolved) ngrokBin = resolved
+    } catch { /* use default */ }
+
+    // Set authtoken (array args — no injection risk)
+    spawnSync(ngrokBin, ['config', 'add-authtoken', authtoken], { stdio: 'ignore', timeout: 10000, windowsHide: true })
+
+    // Wait for server to bind, then start tunnel (max 15s)
+    let attempts = 0
+    const waitAndStart = () => {
+      if (!this.boundPort) {
+        if (++attempts > 30) { logWebhook('ngrok: gave up waiting for port'); this.ngrokStarting = false; return }
+        setTimeout(waitAndStart, 500)
+        return
+      }
+      try {
+        this.ngrokProcess = spawn(ngrokBin, ['http', String(this.boundPort), '--url=' + domain], {
+          detached: true, stdio: 'ignore', windowsHide: true,
+        })
+        this.ngrokProcess.unref()
+        this.ngrokProcess.on('exit', () => { this.ngrokProcess = null; this.ngrokStarting = false })
+        logWebhook(`ngrok tunnel started: ${domain} → localhost:${this.boundPort}`)
+      } catch (e) {
+        logWebhook(`ngrok start failed: ${e}`)
+      }
+      this.ngrokStarting = false
+    }
+    setTimeout(waitAndStart, 1000)
   }
 
   stop(): void {
+    if (this.ngrokProcess) {
+      try { this.ngrokProcess.kill() } catch { /* already dead */ }
+      this.ngrokProcess = null
+    }
     if (this.server) {
       this.server.close()
       this.server = null

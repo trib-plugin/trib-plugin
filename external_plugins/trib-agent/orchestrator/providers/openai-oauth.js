@@ -264,7 +264,18 @@ export class OpenAIOAuthProvider {
             }
             catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
-                process.stderr.write(`[openai-oauth] Refresh failed: ${msg}\n`);
+                process.stderr.write(`[openai-oauth] Refresh failed: ${msg}, re-reading auth files...\n`);
+                // Re-read auth files in case user ran codex login
+                const reloaded = loadTokens();
+                if (reloaded && reloaded.access_token !== this.tokens?.access_token) {
+                    this.tokens = reloaded;
+                    process.stderr.write(`[openai-oauth] Reloaded tokens from disk\n`);
+                    // Retry refresh with new tokens
+                    try {
+                        const refreshed2 = await refreshTokens(this.tokens.refresh_token);
+                        if (refreshed2) { this.tokens = refreshed2; return this.tokens; }
+                    } catch { /* fall through */ }
+                }
                 throw new Error('OpenAI OAuth token refresh failed. Run codex login to re-authenticate.');
             }
         }

@@ -388,11 +388,13 @@ const scheduler = new Scheduler(
 let webhookServer: WebhookServer | null = null
 if (config.webhook?.enabled) {
   webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null)
+  webhookServer.start()
 }
 
 // ── Event pipeline ───────────────────────────────────────────────────
 
 const eventPipeline = new EventPipeline(config.events, config.channelsConfig)
+if (config.webhook?.enabled || config.events?.rules?.length) eventPipeline.start()
 let bridgeRuntimeConnected = false
 let bridgeOwnershipRefreshRunning = false
 let bridgeOwnershipTimer: ReturnType<typeof setInterval> | null = null
@@ -1487,6 +1489,13 @@ const TOOL_DEFS = [
       required: ['content'],
     },
   },
+  {
+    name: 'reload_config',
+    title: 'Reload Config',
+    annotations: { title: 'Reload Config', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Reload config from disk and re-register all schedules, webhooks, and event rules without restarting.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
 ]
 
 // ── Factory: create a short-lived MCP server for HTTP requests ──────
@@ -1563,6 +1572,10 @@ function createHttpMcpServer(): InstanceType<typeof Server> {
             },
           }).catch(() => {})
           return { content: [{ type: 'text', text: 'injected' }] }
+        }
+        case 'reload_config': {
+          reloadRuntimeConfig()
+          return { content: [{ type: 'text', text: 'config reloaded — schedules, webhooks, and events re-registered' }] }
         }
         default:
           return { content: [{ type: 'text', text: `unknown tool: ${toolName}` }], isError: true }
@@ -1858,6 +1871,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           },
         }).catch(() => {})
         result = { content: [{ type: 'text', text: 'injected' }] }
+        break
+      }
+      case 'reload_config': {
+        reloadRuntimeConfig()
+        result = { content: [{ type: 'text', text: 'config reloaded — schedules, webhooks, and events re-registered' }] }
         break
       }
       // memory_cycle — handled by memory-service.mjs MCP
@@ -2336,3 +2354,15 @@ process.on('SIGTERM', shutdown)
 process.on('SIGINT', () => {
   process.stderr.write('[trib-channels] SIGINT received, ignoring (handled by host)\n')
 })
+
+// ── Auto-reload config on file change ─────────────────────────────────
+const configPath = join(DATA_DIR, 'config.json')
+let reloadDebounce: ReturnType<typeof setTimeout> | null = null
+try {
+  fs.watch(configPath, () => {
+    if (reloadDebounce) clearTimeout(reloadDebounce)
+    reloadDebounce = setTimeout(() => {
+      try { reloadRuntimeConfig() } catch {}
+    }, 500)
+  })
+} catch { /* watch not supported */ }
