@@ -697,6 +697,18 @@ function bindPersistedTranscriptIfAny(): void {
       }
     } catch { /* RUNTIME_ROOT not readable */ }
   }
+  // Fallback: auto-bind to main channel from channelsConfig
+  if (!currentStatus.channelId && channelBridgeActive) {
+    const chCfg = config.channelsConfig as Record<string, any> | undefined
+    const mainLabel = (config as any).mainChannel ?? 'main'
+    const mainEntry = chCfg?.channels?.[mainLabel] ?? chCfg?.[mainLabel]
+    const mainId = mainEntry?.channelId ?? mainEntry?.id
+    if (mainId) {
+      statusState.update((state: Record<string, unknown>) => { state.channelId = mainId })
+      currentStatus = statusState.read()
+      process.stderr.write(`trib-channels: auto-bound to main channel ${mainId}\n`)
+    }
+  }
   if (!currentStatus.channelId) return
   applyTranscriptBinding(currentStatus.channelId, initBound.transcriptPath)
   process.stderr.write(`trib-channels: initial transcript bind: ${initBound.transcriptPath}\n`)
