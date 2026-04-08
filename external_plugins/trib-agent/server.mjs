@@ -302,7 +302,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'get_workflow': {
         if (!args.name) return fail('name is required');
         const workflow = getWorkflow(args.name);
-        if (!workflow) return ok({ error: 'not found' });
+        if (!workflow) return fail('workflow not found');
         return ok(workflow);
       }
 
