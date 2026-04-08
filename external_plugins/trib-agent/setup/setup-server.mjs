@@ -66,36 +66,57 @@ function getBrowserPath() {
   return paths.find(p => existsSync(p)) || null;
 }
 
+let _cachedPosition = null;
+
 function getCenteredWindowPosition() {
   if (!isWin) return null;
-
-  const script = [
-    "[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')",
-    "$a=[System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea",
-    'Write-Output "$($a.X),$($a.Y),$($a.Width),$($a.Height)"',
-  ].join(';');
+  if (_cachedPosition) return _cachedPosition;
 
   try {
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
+    const result = spawnSync('wmic', [
+      'path', 'Win32_VideoController', 'get',
+      'CurrentHorizontalResolution,CurrentVerticalResolution', '/format:csv',
+    ], { encoding: 'utf8', windowsHide: true, timeout: 3000 });
     if (result.status !== 0) return null;
-    const [x, y, width, height] = (result.stdout || '').trim().split(',').map(Number);
-    if ([x, y, width, height].some(Number.isNaN)) return null;
-    return {
-      x: Math.max(0, Math.round(x + ((width - APP_WIDTH) / 2))),
-      y: Math.max(0, Math.round(y + ((height - APP_HEIGHT) / 2))),
+    const line = (result.stdout || '').split('\n').find(l => /\d/.test(l));
+    if (!line) return null;
+    const parts = line.trim().split(',');
+    const width = parseInt(parts[1], 10);
+    const height = parseInt(parts[2], 10);
+    if (!width || !height) return null;
+    _cachedPosition = {
+      x: Math.max(0, Math.round((width - APP_WIDTH) / 2)),
+      y: Math.max(0, Math.round((height - APP_HEIGHT) / 2)),
     };
+    return _cachedPosition;
   } catch {
     return null;
   }
+}
+
+function bringToForeground(title) {
+  if (!isWin) return;
+  const ps = `Add-Type -Name W -Namespace N -Member '[DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);';$p=Get-Process|Where-Object{$_.MainWindowTitle -like '*${title}*'}|Select-Object -First 1;if($p){[N.W]::ShowWindow($p.MainWindowHandle,9);[N.W]::SetForegroundWindow($p.MainWindowHandle)}`;
+  spawn('powershell.exe', ['-NoProfile', '-Command', ps], {
+    detached: true, stdio: 'ignore', windowsHide: true,
+  }).unref();
 }
 
 function openAppWindow() {
   const appUrl = `http://localhost:${PORT}`;
 
   if (isWin) {
+    // Check if window already exists - just bring to foreground
+    try {
+      const check = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+        `$p=Get-Process|Where-Object{$_.MainWindowTitle -like '*localhost:${PORT}*'};if($p){Write-Output 'found'}`
+      ], { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+      if ((check.stdout || '').trim() === 'found') {
+        bringToForeground('localhost:' + PORT);
+        return true;
+      }
+    } catch {}
+
     const browser = getBrowserPath();
     if (browser) {
       const args = [
@@ -108,9 +129,9 @@ function openAppWindow() {
         const child = spawn(browser, args, {
           detached: true,
           stdio: 'ignore',
-          windowsHide: true,
         });
         child.unref();
+        setTimeout(() => bringToForeground('localhost:' + PORT), 1500);
         return true;
       } catch {
         // Fall through to default browser open below.
@@ -432,7 +453,7 @@ const server = http.createServer(async (req, res) => {
   const path = url.pathname;
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
@@ -503,6 +524,21 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'PUT' && path === '/presets') {
+    const data = await readBody(req);
+    if (!Array.isArray(data.presets)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'presets array required' }));
+      return;
+    }
+    const normalized = data.presets.map(p => normalizePreset(p));
+    writePresets(normalized);
+    console.log(`  Presets reordered: ${normalized.length} items`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // -- Workflow CRUD --
   if (req.method === 'GET' && path === '/workflows') {
     try {
@@ -559,6 +595,22 @@ const server = http.createServer(async (req, res) => {
     if (deleted) console.log(`  Workflow deleted: ${name}`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, deleted }));
+    return;
+  }
+
+  if (req.method === 'PUT' && path === '/workflows') {
+    const data = await readBody(req);
+    if (!Array.isArray(data.order)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'order array required' }));
+      return;
+    }
+    const cfg = readConfig();
+    cfg.workflowOrder = data.order;
+    writeConfig(cfg);
+    console.log(`  Workflow order saved: ${data.order.length} items`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 

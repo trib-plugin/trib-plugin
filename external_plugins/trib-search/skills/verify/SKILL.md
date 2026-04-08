@@ -1,15 +1,16 @@
 ---
-name: verify
+name: search
 user-invocable: false
 description: >
-  **VERIFY BEFORE ANSWERING**: Your training data has a cutoff.
-  When the answer involves versions, APIs, syntax, release status,
-  current behavior, compatibility, pricing, or any fact that could
-  have changed or emerged after training — search to verify first.
-  Also when something is unfamiliar or recent and may not exist
-  in training data — search to learn before responding.
-  Default: verify. Skip only when the answer is timeless
-  (pure logic, math, well-established concepts).
+  **SEARCH BEFORE ANSWERING**: Invoke search whenever external information
+  could improve the response. This includes any research, lookup, or investigation
+  request, as well as any fact that may have changed since training —
+  versions, APIs, syntax, release status, compatibility, pricing, URLs,
+  documentation, deprecation status, or library/framework behavior.
+  Also fires when providing code examples for third-party libraries,
+  or when the user explicitly asks to find, search, look up, or investigate something.
+  Skip ONLY for timeless facts (pure logic, math, well-established concepts)
+  where external data adds no value.
 ---
 
 Use trib-search tools to verify. Refer to MCP instructions for tool usage details.

@@ -235,6 +235,9 @@
   }
   .preset-card:last-child { border-bottom: none; }
   .preset-card:hover { background: rgba(255,255,255,0.015); }
+  .preset-card[draggable] { cursor: grab; }
+  .preset-card.dragging { opacity: 0.4; }
+  .preset-card.drag-over { border-top: 2px solid var(--accent); }
   .preset-info { flex: 1; min-width: 0; }
   .preset-id {
     font-size: 13px; font-weight: 600; color: var(--text-1);
@@ -390,6 +393,9 @@
   }
   .wf-card:last-child { border-bottom: none; }
   .wf-card:hover { background: rgba(255,255,255,0.015); }
+  .wf-card[draggable] { cursor: grab; }
+  .wf-card.dragging { opacity: 0.4; }
+  .wf-card.drag-over { border-top: 2px solid var(--accent); }
   .wf-info { flex: 1; min-width: 0; }
   .wf-name {
     font-size: 13px; font-weight: 600; color: var(--text-1);
@@ -456,8 +462,8 @@
   <div class="cat-bar">
     <div class="cat-item active" data-panel="providers" onclick="switchCat(this)">Providers</div>
     <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Models</div>
-    <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
     <div class="cat-item" data-panel="workflows" onclick="switchCat(this)">Workflows</div>
+    <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
     <div class="cat-close" onclick="requestClose()">Close</div>
   </div>
 
@@ -639,6 +645,12 @@ const LOCAL_PROVIDERS = [
   {id:'lmstudio',name:'LM Studio',url:'http://localhost:1234/v1'},
 ];
 
+const NATIVE_PRESETS = [
+  { id: 'native-opus', provider: 'native', model: 'opus', name: 'Claude Opus', tools: 'full', effort: 'medium', isNative: true },
+  { id: 'native-sonnet', provider: 'native', model: 'sonnet', name: 'Claude Sonnet', tools: 'full', effort: 'medium', isNative: true },
+  { id: 'native-haiku', provider: 'native', model: 'haiku', name: 'Claude Haiku', tools: 'full', effort: 'medium', isNative: true },
+];
+
 const EFFORT_OPTIONS = {
   openai: [
     { v: '', label: '(Default)' },
@@ -663,8 +675,15 @@ const EFFORT_OPTIONS = {
     { v: 'high', label: 'High' },
     { v: 'max', label: 'Max' },
   ],
+  native: [
+    { v: '', label: '(Default)' },
+    { v: 'low', label: 'Low' },
+    { v: 'medium', label: 'Medium' },
+    { v: 'high', label: 'High' },
+    { v: 'max', label: 'Max' },
+  ],
 };
-const FAST_PROVIDERS = new Set(['anthropic', 'openai', 'openai-oauth']);
+const FAST_PROVIDERS = new Set(['anthropic', 'native', 'openai', 'openai-oauth']);
 
 const ACCESS_LABELS = { full: 'Read & Write', readonly: 'Read Only', mcp: 'None' };
 
@@ -997,14 +1016,14 @@ async function doSave(data, panelId) {
 
 function getEnabledProviders() {
   const c = config.providers || {};
-  const out = [];
+  const out = ['native'];
   for (const p of API_PROVIDERS) {
     if (c[p.id]?.apiKey || auth.envKeys?.[p.id]) out.push(p.id);
   }
   if (auth.codexOAuth) out.push('openai-oauth');
   if (auth.copilot) out.push('copilot');
   for (const p of LOCAL_PROVIDERS) {
-    if (c[p.id]?.enabled === true) out.push(p.id);
+    if (c[p.id]?.enabled === true || auth[p.id]) out.push(p.id);
   }
   return out;
 }
@@ -1019,13 +1038,24 @@ async function loadPresets() {
   renderPresetList();
 }
 
+let mergedPresets = [];
+
 function renderPresetList() {
   const list = document.getElementById('preset-list');
-  if (presets.length === 0) {
+  // Merge native presets with user presets (preserve stored order)
+  const nativeIds = new Set(NATIVE_PRESETS.map(np => np.id));
+  const storedIds = new Set(presets.map(p => p.id));
+  mergedPresets = [
+    // Native presets not yet in stored list go first
+    ...NATIVE_PRESETS.filter(np => !storedIds.has(np.id)),
+    // Stored presets in their saved order, with isNative flag
+    ...presets.map(p => nativeIds.has(p.id) ? { ...p, isNative: true } : p),
+  ];
+  if (mergedPresets.length === 0) {
     list.innerHTML = '<div class="empty">No models yet. Click <strong>+ New Model</strong> to create one.</div>';
     return;
   }
-  list.innerHTML = presets.map(p => {
+  list.innerHTML = mergedPresets.map((p, i) => {
     const accessLabel = ACCESS_LABELS[p.tools] || 'Read & Write';
     const meta = [
       `${p.provider}/${p.model}`,
@@ -1034,17 +1064,70 @@ function renderPresetList() {
       p.fast ? 'Fast' : null,
     ].filter(Boolean).join(' · ');
     const label = escapeHtml(p.name || p.id);
-    return `<div class="preset-card">
+    return `<div class="preset-card" draggable="true" data-idx="${i}">
       <div class="preset-info">
         <div class="preset-id">${label}</div>
         <div class="preset-meta">${escapeHtml(meta)}</div>
       </div>
       <div class="preset-actions">
         <button class="icon-btn edit-btn" onclick="openPresetForm('${escapeAttr(p.id)}')">Edit</button>
-        <button class="icon-btn danger" onclick="deletePreset('${escapeAttr(p.id)}')">Delete</button>
+        ${p.isNative ? '' : `<button class="icon-btn danger" onclick="deletePreset('${escapeAttr(p.id)}')">Delete</button>`}
       </div>
     </div>`;
   }).join('');
+  initPresetDrag();
+}
+
+let _presetDragInit = false;
+function initPresetDrag() {
+  if (_presetDragInit) return;
+  _presetDragInit = true;
+  const list = document.getElementById('preset-list');
+  let dragIdx = null;
+  list.addEventListener('dragstart', e => {
+    const card = e.target.closest('.preset-card');
+    if (!card) return;
+    dragIdx = parseInt(card.dataset.idx);
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  list.addEventListener('dragover', e => {
+    e.preventDefault();
+    const card = e.target.closest('.preset-card');
+    if (card) card.classList.add('drag-over');
+  });
+  list.addEventListener('dragleave', e => {
+    const card = e.target.closest('.preset-card');
+    if (card) card.classList.remove('drag-over');
+  });
+  list.addEventListener('drop', e => {
+    e.preventDefault();
+    list.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+    const card = e.target.closest('.preset-card');
+    if (!card || dragIdx === null) return;
+    const dropIdx = parseInt(card.dataset.idx);
+    if (dragIdx === dropIdx) return;
+    // Reorder mergedPresets
+    const [moved] = mergedPresets.splice(dragIdx, 1);
+    mergedPresets.splice(dropIdx, 0, moved);
+    // Rebuild presets from merged order
+    presets = mergedPresets.map(p => { const { isNative, ...rest } = p; return rest; });
+    renderPresetList();
+    savePresetOrder();
+  });
+  list.addEventListener('dragend', () => {
+    dragIdx = null;
+    list.querySelectorAll('.dragging').forEach(c => c.classList.remove('dragging'));
+  });
+}
+
+async function savePresetOrder() {
+  const toSave = mergedPresets.map(p => { const { isNative, ...rest } = p; return rest; });
+  await fetch('/presets', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ presets: toSave }),
+  });
 }
 
 function openPresetForm(id) {
@@ -1072,7 +1155,7 @@ function openPresetForm(id) {
 
   if (id) {
     title.textContent = 'Edit Model';
-    const p = presets.find(x => x.id === id);
+    const p = presets.find(x => x.id === id) || NATIVE_PRESETS.find(x => x.id === id);
     if (p) {
       document.getElementById('pf-name').value = p.name || p.id;
       providerSel.value = p.provider;
@@ -1118,6 +1201,9 @@ async function onProviderChange() {
   // Effort options
   const opts = EFFORT_OPTIONS[provider] || [{ v: '', label: '(Provider Default)' }];
   effortSel.innerHTML = opts.map(o => `<option value="${o.v}">${o.label}</option>`).join('');
+  // Default to medium effort
+  const mediumOpt = opts.find(o => o.v === 'medium');
+  if (mediumOpt) effortSel.value = 'medium';
 
   // Fast toggle
   fastRow.style.display = FAST_PROVIDERS.has(provider) ? 'flex' : 'none';
@@ -1126,19 +1212,25 @@ async function onProviderChange() {
   // Models
   modelSel.disabled = true;
   modelSel.innerHTML = '<option value="">Loading...</option>';
-  try {
-    const r = await fetch(`/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
-    const models = r.models || [];
-    if (models.length === 0) {
-      modelSel.innerHTML = '<option value="">No models found</option>';
+  if (provider === 'native') {
+    const nativeModels = ['opus', 'sonnet', 'haiku'];
+    modelSel.innerHTML = nativeModels.map(m => `<option value="${m}">${m}</option>`).join('');
+    modelSel.disabled = false;
+  } else {
+    try {
+      const r = await fetch(`/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
+      const models = r.models || [];
+      if (models.length === 0) {
+        modelSel.innerHTML = '<option value="">No models found</option>';
+        replaceModelWithInput('');
+      } else {
+        modelSel.innerHTML = models.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');
+        modelSel.disabled = false;
+      }
+    } catch {
+      modelSel.innerHTML = '<option value="">Failed to fetch</option>';
       replaceModelWithInput('');
-    } else {
-      modelSel.innerHTML = models.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');
-      modelSel.disabled = false;
     }
-  } catch {
-    modelSel.innerHTML = '<option value="">Failed to fetch</option>';
-    replaceModelWithInput('');
   }
 }
 
@@ -1225,6 +1317,17 @@ async function loadWorkflows() {
   } catch {
     workflows = [];
   }
+  // Apply saved order from config
+  const order = config.workflowOrder;
+  if (Array.isArray(order) && order.length > 0) {
+    const byName = new Map(workflows.map(w => [w.name, w]));
+    const ordered = [];
+    for (const name of order) {
+      if (byName.has(name)) { ordered.push(byName.get(name)); byName.delete(name); }
+    }
+    for (const w of byName.values()) ordered.push(w);
+    workflows = ordered;
+  }
   renderWorkflowList();
 }
 
@@ -1243,9 +1346,9 @@ function renderWorkflowList() {
     list.innerHTML = '<div class="empty">No workflows yet. Click <strong>+ New Workflow</strong> to create one.</div>';
     return;
   }
-  list.innerHTML = workflows.map(w => {
+  list.innerHTML = workflows.map((w, i) => {
     const steps = w.steps ? `${w.steps.length} step${w.steps.length !== 1 ? 's' : ''}` : '';
-    return `<div class="wf-card">
+    return `<div class="wf-card" draggable="true" data-idx="${i}">
       <div class="wf-info">
         <div class="wf-name">${escapeHtml(w.name)}</div>
         <div class="wf-desc">${escapeHtml(w.description || 'No description')}${steps ? ' &middot; ' + steps : ''}</div>
@@ -1256,6 +1359,55 @@ function renderWorkflowList() {
       </div>
     </div>`;
   }).join('');
+  initWorkflowDrag();
+}
+
+let _workflowDragInit = false;
+function initWorkflowDrag() {
+  if (_workflowDragInit) return;
+  _workflowDragInit = true;
+  const list = document.getElementById('workflow-list');
+  let dragIdx = null;
+  list.addEventListener('dragstart', e => {
+    const card = e.target.closest('.wf-card');
+    if (!card) return;
+    dragIdx = parseInt(card.dataset.idx);
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  list.addEventListener('dragover', e => {
+    e.preventDefault();
+    const card = e.target.closest('.wf-card');
+    if (card) card.classList.add('drag-over');
+  });
+  list.addEventListener('dragleave', e => {
+    const card = e.target.closest('.wf-card');
+    if (card) card.classList.remove('drag-over');
+  });
+  list.addEventListener('drop', e => {
+    e.preventDefault();
+    list.querySelectorAll('.drag-over').forEach(c => c.classList.remove('drag-over'));
+    const card = e.target.closest('.wf-card');
+    if (!card || dragIdx === null) return;
+    const dropIdx = parseInt(card.dataset.idx);
+    if (dragIdx === dropIdx) return;
+    const [moved] = workflows.splice(dragIdx, 1);
+    workflows.splice(dropIdx, 0, moved);
+    renderWorkflowList();
+    saveWorkflowOrder();
+  });
+  list.addEventListener('dragend', () => {
+    dragIdx = null;
+    list.querySelectorAll('.dragging').forEach(c => c.classList.remove('dragging'));
+  });
+}
+
+async function saveWorkflowOrder() {
+  await fetch('/workflows', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order: workflows.map(w => w.name) }),
+  });
 }
 
 function showWorkflowForm(name) {

@@ -2,10 +2,13 @@
 name: workflow
 user-invocable: false
 description: >
-  **BLOCKING REQUIREMENT**: Before starting ANY work (code changes, investigation, diagnosis,
-  fix, refactor, research, exploration, setup, configuration), you MUST invoke this skill FIRST.
+  **BLOCKING REQUIREMENT**: Before starting any work that involves execution —
+  code changes, investigation, diagnosis, fix, refactor, research, exploration,
+  setup, or configuration — you MUST invoke this skill FIRST.
   This includes casual requests like "check this", "fix it", "try it", "build this".
-  Only pure Q&A conversations (explanations, opinions) are exempt.
+  During an active execute phase, follow-up adjustments to the same scope
+  continue without restarting the cycle.
+  Only pure Q&A conversations (explanations, opinions, information-only) are exempt.
 ---
 
 ## Core Principles

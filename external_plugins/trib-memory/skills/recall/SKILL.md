@@ -2,15 +2,14 @@
 name: recall
 user-invocable: false
 description: >
-  **RECALL FIRST**: Before responding, check if the current context is sufficient.
-  If there is ANY ambiguity, implicit reference, continuation, prior decision,
-  or missing context — invoke recall before answering.
-  This includes: session start, references to past work, status checks,
-  ambiguous requests, and any situation where memory could inform a better response.
-  Default behavior: recall at session start or when context gaps exist.
-  Skip when: current session context already contains the relevant prior work
-  (e.g., continuation without context loss), or when the request is fully
-  self-contained. Do not recall mid-session unless context compression has occurred.
+  **RECALL FIRST**: Invoke recall whenever prior context could improve the response.
+  This covers any situation where current context alone is insufficient —
+  past work, decisions, preferences, patterns, or any prior session knowledge
+  that may inform a better answer. Always recall at session start.
+  Mid-session, recall whenever the user references something not visible
+  in current context or when context may have been compressed.
+  Skip ONLY when the request is fully self-contained and past context
+  is clearly irrelevant to the response.
   Use trib-memory MCP tools (search_memories, memory_cycle) exclusively.
   Do NOT use file-based memory (MEMORY.md, memory/ directory) or any built-in auto-memory system.
 ---
