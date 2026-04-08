@@ -8,6 +8,7 @@ import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.js';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { request as httpRequest } from 'http';
 import { fileURLToPath } from 'url';
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(import.meta.url));
@@ -21,8 +22,31 @@ function readPluginVersion() {
 const PLUGIN_VERSION = readPluginVersion();
 
 function injectViaChannels(content) {
-  executeMcpTool('mcp__trib-channels__inject', { content, source: 'trib-agent' })
-    .catch(() => { /* trib-channels not connected — fall back to notify */ notify(content); });
+  // Try direct HTTP endpoint first (no MCP session overhead, survives reconnects)
+  injectViaHttp(content).catch(() => {
+    // Fallback to MCP tool call
+    executeMcpTool('mcp__trib-channels__inject', { content, source: 'trib-agent' })
+      .catch(() => { notify(content); });
+  });
+}
+
+function injectViaHttp(content) {
+  return new Promise((resolve, reject) => {
+    try {
+      const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
+      const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
+      const instance = JSON.parse(readFileSync(portFile, 'utf8'));
+      if (!instance.httpPort) { reject(new Error('no httpPort')); return; }
+      const payload = JSON.stringify({ content, source: 'trib-agent' });
+      const req = httpRequest({
+        hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 5000,
+      }, (res) => { res.resume(); res.statusCode === 200 ? resolve() : reject(new Error(`${res.statusCode}`)); });
+      req.on('error', reject);
+      req.end(payload);
+    } catch (e) { reject(e); }
+  });
 }
 
 function buildInstructions() {

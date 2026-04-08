@@ -565,6 +565,18 @@ async function startOwnerHttpServer(): Promise<number> {
           res.end(JSON.stringify({ ok: true }))
           return
         }
+        case '/inject': {
+          const content = body.content as string
+          if (!content) { res.writeHead(400); res.end(JSON.stringify({ error: 'content required' })); return }
+          const source = (body.source as string) || 'trib-agent'
+          void mcp.notification({
+            method: 'notifications/claude/channel',
+            params: { content, meta: { user: source, user_id: 'system', ts: new Date().toISOString() } },
+          }).catch(() => {})
+          res.writeHead(200)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
         case '/bridge/activate': {
           channelBridgeActive = Boolean(body.active)
           writeBridgeState(channelBridgeActive)
