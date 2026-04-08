@@ -1,6 +1,6 @@
 {
   "name": "trib-search",
-  "version": "0.0.4",
+  "version": "0.0.10",
   "description": "Unified search plugin with raw search, AI search, scrape, map, crawl, and usage tracking.",
   "author": {
     "name": "TRIBGAMES",

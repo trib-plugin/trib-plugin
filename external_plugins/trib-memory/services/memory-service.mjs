@@ -18,6 +18,17 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+function readPluginVersion() {
+  try {
+    const manifestPath = path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8')).version || '0.0.1'
+  } catch { return '0.0.1' }
+}
+const PLUGIN_VERSION = readPluginVersion()
 
 // ── CPU throttle: prevent inference from hogging all cores ──
 try { os.setPriority(os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
@@ -766,7 +777,7 @@ async function handleCycle(args) {
 const MEMORY_INSTRUCTIONS = 'Recall naturally, like remembering — use search_memories() to recall.'
 
 const mcp = new Server(
-  { name: 'trib-memory', version: '0.0.19' },
+  { name: 'trib-memory', version: PLUGIN_VERSION },
   { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
 )
 
@@ -851,7 +862,7 @@ mcp.setRequestHandler(CallToolRequestSchema, handleToolCall)
 
 function createHttpMcpServer() {
   const s = new Server(
-    { name: 'trib-memory', version: '0.0.19' },
+    { name: 'trib-memory', version: PLUGIN_VERSION },
     { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS },
   )
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))

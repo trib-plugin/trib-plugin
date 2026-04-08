@@ -1,5 +1,11 @@
 {
   "name": "trib-agent",
-  "version": "0.0.23",
-  "description": "Agent workflow + multi-AI orchestration — team management, external model sessions with tool loop and context injection."
+  "version": "0.0.24",
+  "description": "Agent workflow + multi-AI orchestration — team management, external model sessions with tool loop and context injection.",
+  "author": { "name": "TRIBGAMES", "email": "dev@tribgames.com" },
+  "homepage": "https://github.com/tribgames/trib-agent",
+  "repository": "https://github.com/tribgames/trib-agent",
+  "license": "Apache-2.0",
+  "keywords": ["agent", "orchestrator", "mcp", "multi-model", "claude-code"],
+  "mcpServers": "./.mcp.json"
 }

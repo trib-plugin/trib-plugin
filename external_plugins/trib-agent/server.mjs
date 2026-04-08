@@ -5,8 +5,19 @@ import { initProviders, getAllProviders } from './orchestrator/providers/registr
 import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.js';
 import { loadConfig, getPluginData } from './orchestrator/config.js';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
-import { writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, mkdirSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(import.meta.url));
+
+function readPluginVersion() {
+  try {
+    const manifestPath = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json');
+    return JSON.parse(readFileSync(manifestPath, 'utf8')).version || '0.0.1';
+  } catch { return '0.0.1'; }
+}
+const PLUGIN_VERSION = readPluginVersion();
 
 function injectViaChannels(content) {
   executeMcpTool('mcp__trib-channels__inject', { content, source: 'trib-agent' })
@@ -24,7 +35,7 @@ const INSTRUCTIONS = [
 ].join('\n');
 
 const server = new Server(
-  { name: 'trib-agent', version: '0.0.5' },
+  { name: 'trib-agent', version: PLUGIN_VERSION },
   { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: INSTRUCTIONS },
 );
 
@@ -76,20 +87,6 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Working directory for builtin tool execution and CLAUDE.md/agents/skills lookup. Pass the project root (e.g. C:/Project). Defaults to MCP server cwd.' },
       },
       required: ['provider', 'model'],
-    },
-  },
-  {
-    name: 'ask',
-    description: 'Send message to session. Async — returns jobId, result via notification. Model can use tools (bash, read, write, edit, grep, glob, MCP, skills) via auto tool loop. Optional cwd overrides session cwd.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionId: { type: 'string' },
-        prompt: { type: 'string' },
-        context: { type: 'string', description: 'Additional context to inject' },
-        cwd: { type: 'string', description: 'Override working directory for this turn (default: session cwd or MCP server cwd)' },
-      },
-      required: ['sessionId', 'prompt'],
     },
   },
   {
@@ -149,41 +146,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           contextWindow: session.contextWindow, toolsAvailable: session.tools.length,
           toolNames: session.tools.map(t => t.name),
         });
-      }
-
-      case 'ask': {
-        // resumeSession refreshes tools (MCP connections may have changed since createSession)
-        const session = resumeSession(args.sessionId);
-        if (!session) return fail(`Session "${args.sessionId}" not found`);
-
-        const jobId = `job_${jobSeq++}_${Date.now()}`;
-        const startedAt = Date.now();
-
-        askSession(args.sessionId, args.prompt, args.context,
-          (iteration, calls) => {
-            const names = calls.map(c => c.name).join(', ');
-            notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}\n_job: ${jobId}_`);
-          },
-          args.cwd,
-        )
-          .then((result) => {
-            const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-            const inTok = fmtTokens(result.usage?.inputTokens);
-            const outTok = fmtTokens(result.usage?.outputTokens);
-            const trimNote = result.trimmed ? ` · trimmed (-${result.messagesDropped} msgs)` : '';
-            const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-            injectViaChannels(
-              `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
-              `_job: ${jobId} · ${inTok} in · ${outTok} out${trimNote}${loopNote}_`,
-            );
-          })
-          .catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-            injectViaChannels(`**[${session.provider}/${session.model}]** FAILED (${elapsed}s)\n\n${msg}\n\n---\n_job: ${jobId}_`);
-          });
-
-        return ok({ jobId, status: 'working', toolsAvailable: session.tools.length });
       }
 
       case 'list_sessions': {

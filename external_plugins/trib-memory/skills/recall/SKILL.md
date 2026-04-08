@@ -2,13 +2,18 @@
 name: recall
 user-invocable: false
 description: >
-  **BLOCKING REQUIREMENT**: When you need to recall, search, or store memories,
-  you MUST use the trib-memory MCP tools (search_memories, memory_cycle) exclusively.
+  **RECALL FIRST**: Before responding, check if the current context is sufficient.
+  If there is ANY ambiguity, implicit reference, continuation, prior decision,
+  or missing context — invoke recall before answering.
+  This includes: session start, references to past work, status checks,
+  ambiguous requests, and any situation where memory could inform a better response.
+  Default behavior: recall. Skip only when the request is fully self-contained
+  with zero dependency on prior context.
+  Use trib-memory MCP tools (search_memories, memory_cycle) exclusively.
   Do NOT use file-based memory (MEMORY.md, memory/ directory) or any built-in auto-memory system.
-
-  TRIGGER when: The conversation involves past context, prior decisions, established rules, previous sessions, or any situation where historical knowledge would inform the response. Use search_memories() proactively — don't wait for explicit memory requests.
 ---
 
-Always prioritize search_memories() when referencing prior work or past context.
+Always prioritize search_memories() when context may be incomplete.
 To resume previous work, use search_memories(period: "last", sort: "date") with no query to review the most recent session context.
+For topic-specific recall, use search_memories(query: "topic keywords") to find relevant past decisions and context.
 Storage is automatic. Never write to MEMORY.md or memory/ folder. Never use sqlite/SQL directly.

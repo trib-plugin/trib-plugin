@@ -5,6 +5,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
+import fs from 'fs'
+import path from 'path'
 import {
   ensureDataDir,
   getAiSearchPriority,
@@ -18,7 +20,16 @@ import {
   getRawSearchPriority,
   getSiteRule,
   loadConfig,
+  PLUGIN_ROOT,
 } from './lib/config.mjs'
+
+function readPluginVersion() {
+  try {
+    const manifestPath = path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8')).version || '0.0.1'
+  } catch { return '0.0.1' }
+}
+const PLUGIN_VERSION = readPluginVersion()
 import {
   buildCacheKey,
   buildCacheMeta,
@@ -67,6 +78,7 @@ const searchArgsSchema = z.object({
   ref: z.string().optional().describe('Git ref (branch, tag, SHA). Optional for github_type: file.'),
   state: z.enum(['open', 'closed', 'all']).optional().describe('Filter state for github_type: pulls. Default: open.'),
   maxResults: z.number().int().min(1).max(20).optional(),
+  mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional(),
 }).refine(
   data => {
     const isGithubRead = ['file', 'repo', 'issue', 'pulls'].includes(data.github_type)
@@ -114,6 +126,7 @@ const batchItemSchema = z.discriminatedUnion('action', [
     ref: z.string().optional(),
     state: z.enum(['open', 'closed', 'all']).optional(),
     maxResults: z.number().int().min(1).max(20).optional(),
+    mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional(),
   }),
   z.object({
     action: z.literal('firecrawl_scrape'),
@@ -462,7 +475,7 @@ const SEARCH_INSTRUCTIONS = [
 const server = new Server(
   {
     name: 'trib-search',
-    version: '0.0.4',
+    version: PLUGIN_VERSION,
   },
   {
     capabilities: {
