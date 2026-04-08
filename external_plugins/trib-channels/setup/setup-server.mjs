@@ -157,10 +157,9 @@ function readBody(req) {
 }
 
 // -- Server --
-let lastActivity = Date.now();
+let openGeneration = 0;
 
 const server = http.createServer(async (req, res) => {
-  lastActivity = Date.now();
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
@@ -215,18 +214,56 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && path === '/install') {
+    const data = await readBody(req);
+    const tool = data.tool;
+    if (!tool || !['ngrok', 'whisper'].includes(tool)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Invalid tool' }));
+      return;
+    }
+
+    const commands = {
+      ngrok: 'npm install -g ngrok',
+      whisper: 'pip install openai-whisper',
+    };
+
+    try {
+      const { stdout } = await new Promise((resolve, reject) => {
+        exec(commands[tool], { timeout: 120000 }, (err, stdout, stderr) => {
+          if (err) reject(err);
+          else resolve({ stdout, stderr });
+        });
+      });
+      console.log(`  Installed ${tool}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, tool, output: stdout.trim() }));
+    } catch (e) {
+      console.log(`  Install ${tool} failed: ${e.message}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, tool, error: e.message }));
+    }
+    return;
+  }
+
   if (path === '/close') {
     res.writeHead(200);
     res.end();
-    console.log('  Setup closed');
-    setTimeout(() => { server.close(); process.exit(0); }, 500);
+    console.log('  Window closed');
     return;
   }
 
   if (path === '/open') {
+    openGeneration++;
     openAppWindow();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({ ok: true, generation: openGeneration }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/generation') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ generation: openGeneration }));
     return;
   }
 
@@ -234,19 +271,11 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-const idleCheck = setInterval(() => {
-  if (Date.now() - lastActivity > 5 * 60 * 1000) {
-    console.log('  Setup timed out (no activity)');
-    clearInterval(idleCheck);
-    server.close();
-    process.exit(0);
-  }
-}, 10000);
-
 server.listen(PORT, () => {
   console.log(`\n  TRIB-CHANNELS CONFIG`);
   console.log(`  http://localhost:${PORT}\n`);
   if (process.env.TRIB_SETUP_OPEN_ON_START === '1') {
+    openGeneration++;
     setTimeout(() => { openAppWindow(); }, 0);
   }
 });

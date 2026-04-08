@@ -93,6 +93,7 @@ Lead can use any tool directly, as long as user response is not delayed.
 - Send all requirements in a single complete message — never split across multiple sends
 - Reuse agents per sector (e.g., worker-memory, worker-channels)
 - Only shut down agents when user explicitly requests it
+- **Teams are persistent — never delete or shut down a team without explicit user request.** Teams are reusable across tasks in the same session.
 
 Context hygiene:
 - If a team agent's accumulated context exceeds useful scope, start a new one.

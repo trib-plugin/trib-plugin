@@ -38,6 +38,7 @@ if (!alive) {
     stdio: 'ignore',
     cwd: dirname(__dirname),
     env: { ...process.env, TRIB_SETUP_OPEN_ON_START: '1' },
+    windowsHide: true,
   });
   child.unref();
 } else if (!await requestOpen()) {

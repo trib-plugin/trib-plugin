@@ -5,8 +5,8 @@ const DEFAULT_OPS_POLICY = {
   },
   startup: {
     backfill: {
-      mode: 'if-empty',
-      window: '7d',
+      mode: 'off',
+      window: '1d',
       scope: 'all',
       limit: 80,
     },

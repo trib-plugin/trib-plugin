@@ -14,12 +14,15 @@
     --border-focus: rgba(255,255,255,0.4);
     --text-1: #fff;
     --text-2: #ccc;
-    --text-3: #999;
-    --text-4: #555;
+    --text-3: #aaa;
+    --text-4: #777;
     --accent: #8b91f0;
     --green: #3fb950;
-    --red: #e05050;
-    --yellow: #d4a017;
+    --green-dim: rgba(63,185,80,0.12);
+    --red: #e5534b;
+    --red-dim: rgba(229,83,75,0.12);
+    --orange: #d29922;
+    --orange-dim: rgba(210,153,34,0.12);
     --radius: 8px;
     --cat-w: 150px;
   }
@@ -63,7 +66,7 @@
   .panel { display: none; }
   .panel.active { display: block; }
 
-  .hdr { margin-bottom: 24px; display: flex; align-items: baseline; gap: 10px; }
+  .hdr { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
   .hdr h1 { font-size: 20px; font-weight: 600; color: var(--text-1); letter-spacing: -0.3px; }
 
   /* Sections */
@@ -270,21 +273,47 @@
   .tip:hover .tip-text { display: block; }
 
   /* Cards */
-  .card-list { padding: 8px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .card-list { padding: 0; display: flex; flex-direction: column; gap: 0; }
   .card {
-    background: rgba(0,0,0,0.25); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 14px; position: relative;
-    transition: border-color 0.15s;
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius); position: relative;
+    transition: border-color 0.15s; margin: 8px 14px;
+    overflow: hidden;
   }
   .card:hover { border-color: rgba(255,255,255,0.25); }
+  .card .r { padding: 0 14px; min-height: 44px; border-bottom: 1px solid var(--border); display: flex; align-items: center; }
+  .card .r:last-child { border-bottom: none; }
+  .card-hdr {
+    display: flex; align-items: center; padding: 12px 14px;
+    cursor: pointer; user-select: none;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .card-hdr:hover { background: rgba(255,255,255,0.02); }
+  .card-hdr::before {
+    content: '\25BE'; color: var(--text-4); margin-right: 8px;
+    font-size: 10px; transition: transform 0.15s;
+  }
+  .card.collapsed .card-hdr::before { transform: rotate(-90deg); }
+  .card-title { font-size: 13px; font-weight: 600; color: var(--text-1); flex: 1; }
+  .card-hdr-right { display: flex; align-items: center; gap: 10px; }
+  .card-hdr-right .card-remove {
+    position: static; font-size: 14px; color: var(--text-4);
+    cursor: pointer; transition: color 0.15s; line-height: 1;
+  }
+  .card-hdr-right .card-remove:hover { color: var(--red); }
+  .card-content { transition: none; }
+  .card.collapsed .card-content { display: none; }
+  .card.collapsed .card-hdr { border-bottom: none; }
   .card-head {
     display: flex; align-items: center; gap: 8px;
     margin-bottom: 8px; padding-right: 24px;
   }
   .card-head .r-input { height: 34px; font-size: 13px; font-weight: 500; }
   .card-body {
-    display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
-    font-size: 12px; color: var(--text-3);
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start;
+    font-size: 12px; color: var(--text-2);
+    padding-top: 4px;
   }
   .card-body .r-input { height: 32px; font-size: 12px; }
   .card-body .r-select { height: 32px; font-size: 12px; }
@@ -292,8 +321,8 @@
   .card-body .r-toggle::after { width: 13px; height: 13px; }
   .card-body .r-toggle.on::after { transform: translateX(15px); }
   .card-remove {
-    position: absolute; top: 12px; right: 12px;
-    font-size: 16px; color: var(--text-4); cursor: pointer;
+    position: absolute; top: 10px; right: 10px;
+    font-size: 14px; color: var(--text-4); cursor: pointer;
     transition: color 0.15s; z-index: 1; line-height: 1;
     width: 20px; height: 20px; display: flex;
     align-items: center; justify-content: center;
@@ -302,7 +331,8 @@
   .card-field { display: flex; flex-direction: column; gap: 4px; }
   .card-label {
     font-size: 11px; color: var(--text-3);
-    text-transform: uppercase; letter-spacing: 1px;
+    font-weight: 500; letter-spacing: 0;
+    text-transform: none;
   }
   .card-check {
     display: flex; align-items: center; gap: 8px;
@@ -312,14 +342,41 @@
   .card-check input[type="checkbox"] {
     accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer;
   }
+  .card .r-input, .card .r-select {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+  }
+  .card textarea.r-input {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+  }
+
+  /* Header button */
+  .hdr-btn {
+    height: 30px; padding: 0 14px;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 5px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: filter 0.15s;
+  }
+  .hdr-btn:hover { filter: brightness(1.1); }
+
+  /* Empty state */
+  .empty {
+    padding: 24px; text-align: center;
+    font-size: 12px; color: var(--text-4);
+  }
 
   /* CLI status */
   .cli-status {
-    padding: 14px; display: flex; align-items: flex-start; gap: 8px;
+    padding: 14px; display: flex; align-items: center; gap: 10px;
     font-size: 13px; line-height: 1.6;
   }
   .cli-status.ok { color: var(--green); }
-  .cli-status.warn { color: var(--yellow); }
+  .cli-status.warn { color: var(--orange); }
   .cli-status a {
     color: var(--accent); text-decoration: none;
     transition: color 0.15s;
@@ -355,6 +412,50 @@
   .collapsible-body.open { display: block; }
 
   .hidden { display: none !important; }
+
+  /* Close confirmation modal */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    z-index: 1000; backdrop-filter: blur(4px);
+  }
+  .modal-box {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 24px 20px;
+    max-width: 380px; width: 90%;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  }
+  .modal-title {
+    font-size: 15px; font-weight: 600; color: var(--text-1);
+    margin-bottom: 6px;
+  }
+  .modal-msg {
+    font-size: 12px; color: var(--text-3);
+    margin-bottom: 20px; line-height: 1.5;
+  }
+  .modal-actions {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .modal-actions .mbtn {
+    height: 36px; width: 100%;
+    border: none; border-radius: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .modal-actions .mbtn.primary { background: var(--accent); color: #fff; }
+  .modal-actions .mbtn.primary:hover { filter: brightness(1.1); }
+  .modal-actions .mbtn.secondary { background: rgba(255,255,255,0.05); color: var(--text-2); border: 1px solid var(--border); }
+  .modal-actions .mbtn.danger-outline {
+    background: transparent; color: var(--red, #e5534b);
+    border: 1px solid rgba(229,83,75,0.3);
+  }
+  .modal-actions .mbtn.danger-outline:hover {
+    background: rgba(229,83,75,0.12); border-color: var(--red, #e5534b);
+  }
 </style>
 </head>
 <body>
@@ -368,6 +469,7 @@
     <div class="cat-item" data-panel="bot" onclick="switchCat(this)">Bot</div>
     <div class="cat-item" data-panel="autotalk" onclick="switchCat(this)">Autotalk</div>
     <div class="cat-item" data-panel="schedules" onclick="switchCat(this)">Schedules</div>
+    <div class="cat-item" data-panel="webhooks" onclick="switchCat(this)">Webhooks</div>
     <div class="cat-item" data-panel="advanced" onclick="switchCat(this)">Advanced</div>
   </div>
 
@@ -517,27 +619,38 @@
 
     <!-- SCHEDULES -->
     <div class="panel" id="panel-schedules">
-      <div class="hdr"><h1>Schedules</h1></div>
+      <div class="hdr">
+        <h1>Schedules</h1>
+        <button class="hdr-btn" onclick="addScheduleCard()">+ New Schedule</button>
+      </div>
       <div class="sec">
         <div class="sec-title">Scheduled Tasks</div>
         <div class="sec-body">
           <div id="sched-tasks" class="card-list"></div>
-          <div style="padding: 0 16px 10px;">
-            <span class="dyn-add" onclick="addScheduleCard()">+ Add Schedule</span>
-          </div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Event Rules</div>
-        <div class="sec-body">
-          <div id="event-rules" class="card-list"></div>
-          <div style="padding: 0 16px 10px;">
-            <span class="dyn-add" onclick="addEventCard()">+ Add Rule</span>
-          </div>
+          <div class="empty" id="sched-empty">No schedules yet. Click <strong>+ New Schedule</strong> to create one.</div>
         </div>
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-schedules"></div>
+        <button class="save" onclick="savePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- WEBHOOKS -->
+    <div class="panel" id="panel-webhooks">
+      <div class="hdr">
+        <h1>Webhooks</h1>
+        <button class="hdr-btn" onclick="addEventCard()">+ New Webhook</button>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Webhook Endpoints</div>
+        <div class="sec-body">
+          <div id="event-rules" class="card-list"></div>
+          <div class="empty" id="webhook-empty">No webhooks yet. Click <strong>+ New Webhook</strong> to create one.</div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-webhooks"></div>
         <button class="save" onclick="savePanel()">Save</button>
       </div>
     </div>
@@ -565,15 +678,40 @@
 <script>
 // -- Dirty tracking --
 let isDirty = false;
+let myGeneration = 0;
+
 document.addEventListener('input', () => { isDirty = true; });
 document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', (e) => {
-  if (isDirty) {
-    tryAutoSaveOnClose();
-    return;
-  }
-  navigator.sendBeacon('/close', '');
+  if (isDirty) { e.preventDefault(); }
+  else { navigator.sendBeacon('/close', ''); }
 });
+
+function requestClose() {
+  if (isDirty) {
+    document.getElementById('close-modal').style.display = 'flex';
+  } else {
+    navigator.sendBeacon('/close', '');
+    window.close();
+  }
+}
+
+async function saveAndClose() {
+  await saveConfig();
+  isDirty = false;
+  navigator.sendBeacon('/close', '');
+  window.close();
+}
+
+function discardAndClose() {
+  isDirty = false;
+  navigator.sendBeacon('/close', '');
+  window.close();
+}
+
+function cancelClose() {
+  document.getElementById('close-modal').style.display = 'none';
+}
 
 // -- Globals --
 let config = null;
@@ -582,10 +720,22 @@ let cliStatus = { whisper: { installed: false }, ngrok: { installed: false } };
 
 // -- Init --
 window.addEventListener('load', async () => {
+  try {
+    const g = await fetch('/generation').then(r => r.json());
+    myGeneration = g.generation || 0;
+  } catch {}
   initTagInputs();
   initSliders();
   await Promise.all([loadConfig(), loadCliCheck()]);
   renderAdvanced();
+  isDirty = false;
+  // Poll for newer window — close self if a new one opened
+  setInterval(async () => {
+    try {
+      const g = await fetch('/generation').then(r => r.json());
+      if (g.generation > myGeneration) { isDirty = false; window.close(); }
+    } catch {}
+  }, 2000);
 });
 
 document.addEventListener('click', (e) => {
@@ -718,41 +868,86 @@ function setMainChannel(radio) {
 // -- Schedule cards --
 function addScheduleCard(data) {
   const list = document.getElementById('sched-tasks');
+  const emptyEl = document.getElementById('sched-empty');
+  if (emptyEl) emptyEl.style.display = 'none';
   const card = document.createElement('div');
   card.className = 'card';
   const d = data || {};
   const daysVal = d.days || 'daily';
 
+  const nameVal = d.name || 'Untitled';
   card.innerHTML =
-    '<span class="card-remove" onclick="this.parentElement.remove()">&times;</span>' +
-    '<div class="card-head">' +
-      '<input class="r-input" type="text" placeholder="Schedule name" value="' + (d.name || '') + '" data-f="sc-name" style="flex:1;">' +
-      '<span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Toggle to enable or disable this schedule</span></span>' +
-      '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" data-f="sc-enabled"></div>' +
+    '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
+      '<span class="card-title" data-f="sc-title">' + nameVal + '</span>' +
+      '<div class="card-hdr-right">' +
+        '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="event.stopPropagation();this.classList.toggle(\'on\')" data-f="sc-enabled"></div>' +
+        '<span class="card-remove" onclick="event.stopPropagation();this.closest(\'.card\').remove()">&times;</span>' +
+      '</div>' +
     '</div>' +
-    '<div class="card-body">' +
-      '<div class="card-field"><div class="card-label">Time <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">When to run: HH:MM for a fixed time, or hourly / every5m for intervals</span></span></div><input class="r-input" type="text" placeholder="HH:MM / hourly / every5m" value="' + (d.time || '') + '" style="width:120px;" data-f="sc-time"></div>' +
-      '<div class="card-field"><div class="card-label">Days <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Which days to run: daily, weekdays only, weekends only, or custom</span></span></div>' +
-        '<select class="r-select" data-f="sc-days" style="width:120px;" onchange="onSchedDaysChange(this)">' +
-        '<option value="daily"' + (daysVal === 'daily' ? ' selected' : '') + '>daily</option>' +
-        '<option value="weekday"' + (daysVal === 'weekday' ? ' selected' : '') + '>weekday</option>' +
-        '<option value="weekend"' + (daysVal === 'weekend' ? ' selected' : '') + '>weekend</option>' +
-        '<option value="custom"' + (!['daily','weekday','weekend'].includes(daysVal) && daysVal !== 'daily' ? ' selected' : '') + '>custom</option>' +
+    '<div class="card-content">' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Schedule name" value="' + (d.name || '') + '" data-f="sc-name" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Frequency</span>' +
+        '<select class="r-select" data-f="sc-freq" onchange="onSchedFreqChange(this)">' +
+        '<option value="interval"' + (['every5m','every10m','every30m','hourly'].includes(d.time) || !d.time ? ' selected' : '') + '>Interval</option>' +
+        '<option value="daily"' + (daysVal === 'daily' && d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? ' selected' : '') + '>Daily</option>' +
+        '<option value="weekday"' + (daysVal === 'weekday' ? ' selected' : '') + '>Weekdays</option>' +
+        '<option value="weekly"' + (daysVal === 'weekend' || (!['daily','weekday'].includes(daysVal) && daysVal !== 'daily') ? ' selected' : '') + '>Weekly</option>' +
         '</select></div>' +
-      '<div class="card-field hidden" data-custom-days><div class="card-label">Custom days <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Comma-separated day names, e.g. mon,wed,fri</span></span></div><input class="r-input" type="text" placeholder="mon,wed,fri" value="' + (!['daily','weekday','weekend'].includes(daysVal) ? daysVal : '') + '" style="width:100px;" data-f="sc-days-custom"></div>' +
-      '<div class="card-field"><div class="card-label">Channel <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Which channel to post the schedule output to</span></span></div>' + makeChannelSelect(d.channel) + '</div>' +
-      '<div class="card-field"><div class="card-label">Type <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">interactive: opens a conversation / non-interactive: runs silently and posts result</span></span></div>' +
-        '<select class="r-select" data-f="sc-type" style="width:140px;">' +
-        '<option value="interactive"' + (d.type === 'interactive' ? ' selected' : '') + '>interactive</option>' +
-        '<option value="non-interactive"' + (d.type === 'non-interactive' || (!d.type && d.exec !== 'interactive') ? ' selected' : '') + '>non-interactive</option>' +
-        '</select></div>' +
-      '<label class="card-check"><input type="checkbox"' + (d.dnd ? ' checked' : '') + ' data-f="sc-dnd"> DND <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Respect Do Not Disturb hours for this schedule</span></span></label>' +
+      '<div class="r" data-interval-row><span class="r-name-wide">Every</span>' +
+        '<input class="r-input" type="text" placeholder="01:30" value="' + ({'every5m':'00:05','every10m':'00:10','every30m':'00:30','hourly':'01:00'}[d.time] || d.time || '01:00') + '" data-f="sc-interval" style="width:80px">' +
+        '<span style="font-size:11px;color:var(--text-4);margin-left:8px">HH:MM</span></div>' +
+      '<div class="r" data-at-row style="display:none"><span class="r-name-wide">At</span>' +
+        '<input class="r-input" type="text" placeholder="09:00" value="' + (d.time && !['every5m','every10m','every30m','hourly'].includes(d.time) ? d.time : '09:00') + '" data-f="sc-at" style="width:80px"></div>' +
+      '<div class="r"><span class="r-name-wide">Type</span>' +
+        '<select class="r-select" data-f="sc-type" onchange="onSchedTypeChange(this)">' +
+        '<option value="interactive"' + (d.type === 'interactive' || !d.type ? ' selected' : '') + '>Interactive</option>' +
+        '<option value="non-interactive"' + (d.type === 'non-interactive' ? ' selected' : '') + '>Non-interactive</option>' +
+        '</select>' +
+        '<span style="flex:1;font-size:11px;color:var(--text-4);margin-left:8px" data-f="sc-type-hint">' + (d.type === 'non-interactive' ? 'Sends result to channel' : 'Injects into current session') + '</span></div>' +
+      '<div class="r" data-channel-row style="' + (d.type === 'non-interactive' ? '' : 'display:none') + '"><span class="r-name-wide">Channel</span>' + makeChannelSelect(d.channel) + '</div>' +
+      '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
+        '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Prompt</div>' +
+        '<textarea class="r-input" data-f="sc-prompt" placeholder="What should the bot do at this time?" style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
+      '</div>' +
     '</div>';
   list.appendChild(card);
 
-  // Show custom days if needed
-  if (!['daily','weekday','weekend'].includes(daysVal)) {
-    card.querySelector('[data-custom-days]').classList.remove('hidden');
+  // Sync header title with name input
+  const nameInput = card.querySelector('[data-f="sc-name"]');
+  const titleEl = card.querySelector('[data-f="sc-title"]');
+  nameInput?.addEventListener('input', () => { titleEl.textContent = nameInput.value || 'Untitled'; });
+
+  // Collapse existing cards (new cards stay open)
+  if (d.name) card.classList.add('collapsed');
+
+  // Init frequency display
+  const freqSel = card.querySelector('[data-f="sc-freq"]');
+  if (freqSel) onSchedFreqChange(freqSel);
+}
+
+function onSchedFreqChange(sel) {
+  const card = sel.closest('.card');
+  const intervalRow = card.querySelector('[data-interval-row]');
+  const atRow = card.querySelector('[data-at-row]');
+  if (sel.value === 'interval') {
+    intervalRow.style.display = '';
+    atRow.style.display = 'none';
+  } else {
+    intervalRow.style.display = 'none';
+    atRow.style.display = '';
+  }
+}
+
+function onSchedTypeChange(sel) {
+  const card = sel.closest('.card');
+  const channelRow = card.querySelector('[data-channel-row]');
+  const hint = card.querySelector('[data-f="sc-type-hint"]');
+  if (sel.value === 'interactive') {
+    if (channelRow) channelRow.style.display = 'none';
+    if (hint) hint.textContent = 'Injects into current session';
+  } else {
+    if (channelRow) channelRow.style.display = '';
+    if (hint) hint.textContent = 'Sends result to channel';
   }
 }
 
@@ -766,46 +961,38 @@ function onSchedDaysChange(sel) {
 // -- Event cards --
 function addEventCard(data) {
   const list = document.getElementById('event-rules');
+  const emptyEl = document.getElementById('webhook-empty');
+  if (emptyEl) emptyEl.style.display = 'none';
   const card = document.createElement('div');
   card.className = 'card';
   const d = data || {};
 
+  const nameVal = d.name || 'Untitled';
   card.innerHTML =
-    '<span class="card-remove" onclick="this.parentElement.remove()">&times;</span>' +
-    '<div class="card-head">' +
-      '<input class="r-input" type="text" placeholder="Rule name" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;">' +
-      '<span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Toggle to enable or disable this event rule</span></span>' +
-      '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" data-f="ev-enabled"></div>' +
+    '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
+      '<span class="card-title" data-f="ev-title">' + nameVal + '</span>' +
+      '<div class="card-hdr-right">' +
+        '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="event.stopPropagation();this.classList.toggle(\'on\')" data-f="ev-enabled"></div>' +
+        '<span class="card-remove" onclick="event.stopPropagation();this.closest(\'.card\').remove()">&times;</span>' +
+      '</div>' +
     '</div>' +
-    '<div class="card-body">' +
-      '<div class="card-field"><div class="card-label">Source <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Where events come from: webhook (HTTP), watcher (process), or file</span></span></div>' +
-        '<select class="r-select" data-f="ev-source" style="width:110px;">' +
-        '<option value="webhook"' + (d.source === 'webhook' ? ' selected' : '') + '>webhook</option>' +
-        '<option value="watcher"' + (d.source === 'watcher' ? ' selected' : '') + '>watcher</option>' +
-        '<option value="file"' + (d.source === 'file' ? ' selected' : '') + '>file</option>' +
-        '</select></div>' +
-      '<div class="card-field"><div class="card-label">Parser <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">How to parse incoming payloads: github, sentry, or generic JSON</span></span></div>' +
-        '<select class="r-select" data-f="ev-parser" style="width:100px;">' +
-        '<option value="github"' + (d.parser === 'github' ? ' selected' : '') + '>github</option>' +
-        '<option value="sentry"' + (d.parser === 'sentry' ? ' selected' : '') + '>sentry</option>' +
-        '<option value="generic"' + (d.parser === 'generic' || !d.parser ? ' selected' : '') + '>generic</option>' +
-        '</select></div>' +
-      '<div class="card-field"><div class="card-label">Filter <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Only process events matching this filter string</span></span></div><input class="r-input" type="text" value="' + (d.filter || '') + '" style="width:100px;" data-f="ev-filter"></div>' +
-      '<div class="card-field"><div class="card-label">Priority <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Event urgency level: high events are processed immediately</span></span></div>' +
-        '<select class="r-select" data-f="ev-priority" style="width:100px;">' +
-        '<option value="high"' + (d.priority === 'high' ? ' selected' : '') + '>high</option>' +
-        '<option value="normal"' + (d.priority === 'normal' || !d.priority ? ' selected' : '') + '>normal</option>' +
-        '<option value="low"' + (d.priority === 'low' ? ' selected' : '') + '>low</option>' +
-        '</select></div>' +
-      '<div class="card-field"><div class="card-label">Exec <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">How to handle: interactive opens a conversation, non-interactive runs silently, script runs a command</span></span></div>' +
-        '<select class="r-select" data-f="ev-exec" style="width:130px;">' +
-        '<option value="interactive"' + (d.exec === 'interactive' ? ' selected' : '') + '>interactive</option>' +
-        '<option value="non-interactive"' + (d.exec === 'non-interactive' || !d.exec ? ' selected' : '') + '>non-interactive</option>' +
-        '<option value="script"' + (d.exec === 'script' ? ' selected' : '') + '>script</option>' +
-        '</select></div>' +
-      '<div class="card-field"><div class="card-label">Channel <span class="tip" style="font-size:10px;width:13px;height:13px;">?<span class="tip-text">Which channel to post event output to</span></span></div>' + makeChannelSelect(d.channel) + '</div>' +
+    '<div class="card-content">' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
+      '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
+        '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Prompt</div>' +
+        '<textarea class="r-input" data-f="ev-execute" placeholder="Review the webhook payload and take appropriate action." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.execute || '') + '</textarea>' +
+      '</div>' +
     '</div>';
   list.appendChild(card);
+
+  // Sync header title with name input
+  const evNameInput = card.querySelector('[data-f="ev-name"]');
+  const evTitleEl = card.querySelector('[data-f="ev-title"]');
+  evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
+
+  // Collapse existing cards
+  if (d.name) card.classList.add('collapsed');
 }
 
 // -- Advanced: CLI status rendering --
@@ -827,10 +1014,8 @@ function renderVoiceSection() {
       '<div class="cli-status warn">' +
         '<span style="font-size:16px;">&#9888;</span>' +
         '<div>whisper not found<br>' +
-        'Converts voice messages to text.<br>' +
-        '<a href="https://github.com/ggerganov/whisper.cpp" target="_blank">Windows guide &#8599;</a> &nbsp; ' +
-        '<a href="https://github.com/ggerganov/whisper.cpp" target="_blank">macOS &#8599;</a> &nbsp; ' +
-        '<a href="https://github.com/ggerganov/whisper.cpp" target="_blank">Linux &#8599;</a></div>' +
+        '<span style="font-size:11px;color:var(--text-4)">Converts voice messages to text (openai-whisper)</span></div>' +
+        '<button class="save" id="btn-install-whisper" onclick="installTool(\'whisper\')" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px">Install</button>' +
       '</div>';
   } else {
     const v = config?.voice || {};
@@ -876,20 +1061,49 @@ function renderWebhookSection() {
       '<div class="cli-status warn">' +
         '<span style="font-size:16px;">&#9888;</span>' +
         '<div>ngrok not found<br>' +
-        'Receives external events (GitHub, Sentry, etc.).<br>' +
-        '<a href="https://ngrok.com/download" target="_blank">Install ngrok &#8599;</a></div>' +
+        '<span style="font-size:11px;color:var(--text-4)">Receives external events (GitHub, Sentry, etc.)</span></div>' +
+        '<button class="save" id="btn-install-ngrok" onclick="installTool(\'ngrok\')" style="width:auto;height:30px;padding:0 14px;margin-left:auto;font-size:11px">Install</button>' +
       '</div>';
   } else {
     const w = config?.webhook || {};
+    const tokenLink = w.authtoken ? '' : ' <a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px">Get Token &#8599;</a>';
+    const domainLink = w.domain ? '' : ' <a href="https://dashboard.ngrok.com/domains" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px">Get Domain &#8599;</a>';
     el.innerHTML =
       '<div class="r">' +
-        '<span class="r-name-wide">Server host <span class="tip">?<span class="tip-text">Webhook receiver server host</span></span></span>' +
-        '<input class="r-input" id="ch-webhook-host" type="text" placeholder="0.0.0.0" value="' + (w.host || '') + '">' +
+        '<span class="r-name-wide">Auth Token' + tokenLink + '</span>' +
+        '<input class="r-input" id="ch-webhook-authtoken" type="text" placeholder="2x..." value="' + (w.authtoken || '') + '">' +
       '</div>' +
       '<div class="r">' +
-        '<span class="r-name-wide">Server port <span class="tip">?<span class="tip-text">Webhook receiver server port</span></span></span>' +
-        '<input class="r-input" id="ch-webhook-port" type="number" placeholder="3000" value="' + (w.port || '') + '">' +
+        '<span class="r-name-wide">Domain' + domainLink + '</span>' +
+        '<input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev" value="' + (w.domain || '') + '">' +
       '</div>';
+  }
+}
+
+async function installTool(tool) {
+  const btn = document.getElementById('btn-install-' + tool);
+  if (!btn) return;
+  btn.textContent = 'Installing...';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool }),
+    }).then(r => r.json());
+    if (r.ok) {
+      btn.textContent = '\u2713 Done';
+      btn.classList.add('done');
+      // Refresh CLI status and re-render
+      await loadCliCheck();
+      renderAdvanced();
+    } else {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = 'Install'; btn.disabled = false; }, 3000);
+    }
+  } catch {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.textContent = 'Install'; btn.disabled = false; }, 3000);
   }
 }
 
@@ -1004,19 +1218,29 @@ function buildData() {
   // Schedules
   const scheduleItems = [];
   document.querySelectorAll('#sched-tasks .card').forEach(card => {
-    const daysSelect = card.querySelector('[data-f="sc-days"]')?.value;
-    let days = daysSelect;
-    if (daysSelect === 'custom') {
-      days = card.querySelector('[data-f="sc-days-custom"]')?.value.trim() || 'daily';
+    const freq = card.querySelector('[data-f="sc-freq"]')?.value || 'interval';
+    let time, days;
+    if (freq === 'interval') {
+      const iv = card.querySelector('[data-f="sc-interval"]')?.value.trim() || '01:00';
+      const m = iv.match(/^(\d+):(\d+)$/);
+      const mins = m ? parseInt(m[1]) * 60 + parseInt(m[2]) : 60;
+      if (mins <= 5) time = 'every5m';
+      else if (mins <= 10) time = 'every10m';
+      else if (mins <= 30) time = 'every30m';
+      else time = 'hourly';
+      days = 'daily';
+    } else {
+      time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00';
+      days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily';
     }
     scheduleItems.push({
       name: card.querySelector('[data-f="sc-name"]')?.value.trim() || '',
-      time: card.querySelector('[data-f="sc-time"]')?.value.trim() || '',
-      days: days,
+      time,
+      days,
       channel: card.querySelector('[data-f="channel"]')?.value || '',
       type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive',
       enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true,
-      dnd: card.querySelector('[data-f="sc-dnd"]')?.checked || false,
+      prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '',
     });
   });
 
@@ -1025,13 +1249,13 @@ function buildData() {
   document.querySelectorAll('#event-rules .card').forEach(card => {
     eventRules.push({
       name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '',
-      source: card.querySelector('[data-f="ev-source"]')?.value || 'webhook',
-      parser: card.querySelector('[data-f="ev-parser"]')?.value || 'generic',
-      filter: card.querySelector('[data-f="ev-filter"]')?.value.trim() || '',
-      priority: card.querySelector('[data-f="ev-priority"]')?.value || 'normal',
-      exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive',
-      channel: card.querySelector('[data-f="channel"]')?.value || '',
+      source: 'webhook',
+      priority: 'normal',
+      exec: 'non-interactive',
+      channel: 'main',
       enabled: card.querySelector('[data-f="ev-enabled"]')?.classList.contains('on') ?? true,
+      execute: card.querySelector('[data-f="ev-execute"]')?.value || '',
+      secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined,
     });
   });
 
@@ -1046,10 +1270,10 @@ function buildData() {
 
   // Webhook (only if installed)
   const webhook = {};
-  const webhookHost = document.getElementById('ch-webhook-host');
-  if (webhookHost) {
-    webhook.host = webhookHost.value;
-    webhook.port = parseInt(document.getElementById('ch-webhook-port')?.value) || undefined;
+  const webhookAuthtoken = document.getElementById('ch-webhook-authtoken');
+  if (webhookAuthtoken) {
+    webhook.authtoken = webhookAuthtoken.value;
+    webhook.domain = document.getElementById('ch-webhook-domain')?.value || undefined;
   }
 
   return {
@@ -1126,5 +1350,18 @@ async function savePanel() {
   }
 }
 </script>
+
+<div class="modal-overlay" id="close-modal">
+  <div class="modal-box">
+    <div class="modal-title">Unsaved Changes</div>
+    <div class="modal-msg">You have unsaved changes. What would you like to do?</div>
+    <div class="modal-actions">
+      <button class="mbtn primary" onclick="saveAndClose()">Save & Close</button>
+      <button class="mbtn danger-outline" onclick="discardAndClose()">Close Without Saving</button>
+      <button class="mbtn secondary" onclick="cancelClose()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

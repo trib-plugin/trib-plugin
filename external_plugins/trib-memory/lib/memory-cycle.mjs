@@ -277,7 +277,7 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
       candidates: options.candidates ?? [],
     })
   }
-  const provider = options.provider || readMainConfig()?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
+  const provider = options.provider || resolveCycleProvider(readMainConfig(), 'cycle1')
   return await callLLM(prompt, provider, { timeout: options.timeout ?? 180000, cwd: ws })
 }
 
@@ -301,7 +301,7 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
         return lines.join('\n')
       }).join('\n\n')
       const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidatesText)
-      const provider = options.provider || readMainConfig()?.cycle2?.provider || DEFAULT_CYCLE_PROVIDER
+      const provider = options.provider || resolveCycleProvider(readMainConfig(), 'cycle2')
       const raw = await resolveCycleLlmOutput(prompt, _ws, {
         ...options,
         mode: 'consolidate',
@@ -386,7 +386,7 @@ async function refreshEmbeddings(ws, options = {}) {
   const store = options.store ?? getStore()
   const mainConfig = readMainConfig()
   const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
-  const contextualizeProvider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  const contextualizeProvider = resolveCycleProvider(mainConfig, 'cycle2')
   const kind = options.kind ?? 'cycle2'
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit
@@ -537,7 +537,7 @@ export async function summarizeOnly(ws) {
   store.backfillProject(ws, { limit: resolveCycleBackfillLimit(mainConfig, 120) })
   const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort().reverse()
   if (pendingDays.length > 0) {
-    const provider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+    const provider = resolveCycleProvider(mainConfig, 'cycle2')
     await consolidateRecent(pendingDays, ws, { provider })
     await refreshEmbeddings(ws, { kind: 'cycle2' })
   }
@@ -554,7 +554,7 @@ async function memoryFlushImpl(ws, options = {}) {
   if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
   const targets = pendingDays.map(d => d.day_key).sort().reverse().slice(0, maxDays)
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
-  consolidateOpts.provider = options.provider ?? readMainConfig()?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  consolidateOpts.provider = options.provider ?? resolveCycleProvider(readMainConfig(), 'cycle2')
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws)
 }
@@ -571,7 +571,7 @@ async function rebuildAllImpl(ws) {
   store.resetConsolidatedMemory()
   const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  const provider = mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER
+  const provider = resolveCycleProvider(mainConfig, 'cycle2')
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2' })
@@ -678,7 +678,7 @@ async function rebuildRecentImpl(ws, options = {}) {
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.resetConsolidatedMemoryForDays(dayKeys)
-  const mergedOptions = options.provider ? options : { ...options, provider: mainConfig?.cycle2?.provider ?? DEFAULT_CYCLE_PROVIDER }
+  const mergedOptions = options.provider ? options : { ...options, provider: resolveCycleProvider(mainConfig, 'cycle2') }
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2' })
@@ -756,9 +756,9 @@ export function getCycleStatus() {
       cycle1: {
         interval: memoryConfig.cycle1?.interval ?? '5m',
         maxPending: memoryConfig.cycle1?.maxPending ?? null,
-        provider: memoryConfig.cycle1?.provider?.connection ?? 'codex',
+        provider: resolveCycleProvider(memoryConfig, 'cycle1'),
       },
-      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, provider: memoryConfig.cycle2?.provider?.connection ?? 'cli' },
+      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, provider: resolveCycleProvider(memoryConfig, 'cycle2') },
     },
   }
 }
@@ -802,15 +802,65 @@ function buildCycle1ClassificationRows(candidates = []) {
   }).join('\n')
 }
 
-const FALLBACK_CYCLE_PROVIDER = { connection: 'codex', model: 'gpt-5.4-mini', effort: 'medium', fast: true }
+const FALLBACK_CYCLE_PROVIDER = { connection: 'cli', model: 'sonnet', effort: 'medium' }
 
-function resolveDefaultProvider() {
-  const config = readMainConfig()
-  return config?.defaultProvider ?? FALLBACK_CYCLE_PROVIDER
+// Map preset format { provider, model, effort, fast } to llm-provider format { connection, model, effort, fast }
+function presetToProvider(preset) {
+  if (!preset || typeof preset !== 'object') return null
+  // Already in provider format (has connection field)
+  if (preset.connection) return preset
+  const map = { native: 'cli', codex: 'codex', 'openai-oauth': 'codex', ollama: 'ollama', lmstudio: 'ollama', openai: 'api', anthropic: 'api' }
+  const connection = map[preset.provider] ?? preset.provider
+  if (!connection) return null
+  const out = { connection, model: preset.model }
+  if (preset.effort) out.effort = preset.effort
+  if (preset.fast) out.fast = true
+  if (preset.baseUrl) out.baseUrl = preset.baseUrl
+  if (preset.apiKey) out.apiKey = preset.apiKey
+  if (preset.provider === 'anthropic') out.apiProvider = 'anthropic'
+  return out
 }
 
-// Used as fallback when no config-level provider is set
-const DEFAULT_CYCLE_PROVIDER = FALLBACK_CYCLE_PROVIDER
+// Resolve API key for api-based providers from trib-agent config or env vars
+function resolveApiKey(provider) {
+  const ENV_MAP = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }
+  const envKey = ENV_MAP[provider]
+  if (envKey && process.env[envKey]) return process.env[envKey]
+  // Try reading from trib-agent config file (no HTTP dependency)
+  try {
+    const agentConfigPath = join(homedir(), '.claude', 'plugins', 'data', 'trib-agent-trib-plugin', 'config.json')
+    const agentConfig = JSON.parse(readFileSync(agentConfigPath, 'utf8'))
+    return agentConfig?.providers?.[provider]?.apiKey || null
+  } catch { return null }
+}
+
+function injectApiKey(mapped, preset) {
+  if (mapped.connection === 'api' && !mapped.apiKey) {
+    const key = resolveApiKey(preset?.provider)
+    if (key) mapped.apiKey = key
+  }
+  return mapped
+}
+
+function resolveCycleProvider(config, cycleKey) {
+  // 1. Explicit cycle-level provider (already in connection format)
+  const cycleProvider = config?.[cycleKey]?.provider
+  if (cycleProvider?.connection) return cycleProvider
+  // 2. Cycle-level preset reference → resolve from presets list
+  const presetId = config?.[cycleKey]?.preset
+  if (presetId && Array.isArray(config?.presets)) {
+    const preset = config.presets.find(p => p.id === presetId)
+    const mapped = presetToProvider(preset)
+    if (mapped) return injectApiKey(mapped, preset)
+  }
+  // 3. Default preset (first in list)
+  if (Array.isArray(config?.presets) && config.presets.length > 0) {
+    const mapped = presetToProvider(config.presets[0])
+    if (mapped) return mapped
+  }
+  return FALLBACK_CYCLE_PROVIDER
+}
+
 
 async function runCycle1Impl(ws, config, options = {}) {
   const store = options.store ?? getStore()
@@ -824,7 +874,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   const cycle1Config = config?.cycle1 ?? {}
   const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config.batchSize ?? BATCH_SIZE))
   const maxDays = force ? 9999 : Math.max(1, Number(options.maxAgeDays ?? cycle1Config.maxDays ?? 7))
-  const provider = config?.cycle1?.provider || DEFAULT_CYCLE_PROVIDER
+  const provider = resolveCycleProvider(config, 'cycle1')
   const timeout = config?.cycle1?.timeout || 300000
 
   // Support pre-split candidates from rebuildClassifications
@@ -1082,7 +1132,7 @@ async function runCycle1Impl(ws, config, options = {}) {
  */
 async function coreMemoryPromote(store, ws, config) {
   const cycle2Config = config?.cycle2 ?? {}
-  const provider = cycle2Config.provider || resolveDefaultProvider()
+  const provider = resolveCycleProvider(config, 'cycle2')
   const ACTIVE_CAP = 50
   const CHUNK_BATCH_SIZE = 50
 

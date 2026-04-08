@@ -192,6 +192,49 @@ async function callOllama(prompt, provider, options) {
 }
 
 async function callAPI(prompt, provider, options) {
-  // Anthropic/OpenAI API direct call — to be implemented
-  throw new Error('API provider not yet implemented. Use codex, cli, or ollama.')
+  const apiKey = provider.apiKey || ''
+  if (!apiKey) throw new Error('API key required for api provider')
+  const model = provider.model || 'gpt-5.4-mini'
+  const isAnthropic = /claude|anthropic/i.test(model) || provider.apiProvider === 'anthropic'
+
+  if (isAnthropic) {
+    const payload = JSON.stringify({
+      model,
+      max_tokens: 8192,
+      system: 'You are a memory extraction system.',
+      messages: [{ role: 'user', content: prompt }],
+    })
+    const { stdout } = await execFileAsync('curl', [
+      '-s', '-X', 'POST',
+      '-H', 'Content-Type: application/json',
+      '-H', `x-api-key: ${apiKey}`,
+      '-H', 'anthropic-version: 2023-06-01',
+      '-d', payload,
+      'https://api.anthropic.com/v1/messages',
+    ], { timeout: options.timeout || 180000, maxBuffer: 10 * 1024 * 1024 })
+    const data = JSON.parse(stdout || '{}')
+    if (data.error) throw new Error(data.error.message || JSON.stringify(data.error))
+    return (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('') || ''
+  }
+
+  // OpenAI-compatible API
+  const baseUrl = provider.baseUrl || 'https://api.openai.com/v1'
+  const payload = JSON.stringify({
+    model,
+    messages: [
+      { role: 'system', content: 'You are a memory extraction system.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0,
+  })
+  const { stdout } = await execFileAsync('curl', [
+    '-s', '-X', 'POST',
+    '-H', 'Content-Type: application/json',
+    '-H', `Authorization: Bearer ${apiKey}`,
+    '-d', payload,
+    `${baseUrl}/chat/completions`,
+  ], { timeout: options.timeout || 180000, maxBuffer: 10 * 1024 * 1024 })
+  const data = JSON.parse(stdout || '{}')
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error))
+  return data.choices?.[0]?.message?.content || ''
 }
