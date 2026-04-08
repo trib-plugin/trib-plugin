@@ -5,6 +5,7 @@ import { initProviders, getAllProviders } from './orchestrator/providers/registr
 import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.js';
 import { loadConfig, getPluginData } from './orchestrator/config.js';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
+import { listWorkflows, getWorkflow } from './orchestrator/workflow-store.js';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -24,15 +25,38 @@ function injectViaChannels(content) {
     .catch(() => { /* trib-channels not connected — fall back to notify */ notify(content); });
 }
 
-const INSTRUCTIONS = [
-  'Tools: `TeamCreate`, `TaskCreate`, `Agent`(subagent_type=Worker/Reviewer, team_name required).',
-  'Lead can use any tool directly if it does not delay user response. Delegate long-running or parallel work to agents.',
-  'Workflow skill must be invoked before any work begins.',
-  '',
-  'Orchestrator MCP tools: `delegate`, `create_session`, `list_sessions`, `close_session`, `list_models`.',
-  '`delegate`(task, provider, model) — send a task to an external AI model (GPT, Gemini, etc). Sync by default, returns result directly. Reuse sessionId for follow-up turns. Set background=true for async.',
-  'Sessions auto-inject CLAUDE.md, agent rules, skills, and register builtin+MCP tools.',
-].join('\n');
+function buildInstructions() {
+  const lines = [
+    'Tools: `TeamCreate`, `TaskCreate`, `Agent`(subagent_type=Worker/Reviewer, team_name required).',
+    'Lead can use any tool directly if it does not delay user response. Delegate long-running or parallel work to agents.',
+    'Workflow skill must be invoked before any work begins.',
+    '',
+    'Orchestrator MCP tools: `delegate`, `create_session`, `list_sessions`, `close_session`, `list_models`, `get_workflows`, `get_workflow`.',
+    '`delegate`(task, provider, model) — send a task to an external AI model (GPT, Gemini, etc). Sync by default, returns result directly. Reuse sessionId for follow-up turns. Set background=true for async.',
+    'Sessions auto-inject CLAUDE.md, agent rules, skills, and register builtin+MCP tools.',
+  ];
+
+  // Dynamic workflow list injection
+  try {
+    const workflows = listWorkflows();
+    lines.push('');
+    if (workflows.length > 0) {
+      lines.push('Available workflows:');
+      for (const w of workflows) {
+        lines.push(`- ${w.name}: ${w.description}`);
+      }
+    } else {
+      lines.push('No custom workflows configured.');
+    }
+  } catch {
+    lines.push('');
+    lines.push('No custom workflows configured.');
+  }
+
+  return lines.join('\n');
+}
+
+const INSTRUCTIONS = buildInstructions();
 
 const server = new Server(
   { name: 'trib-agent', version: PLUGIN_VERSION },
@@ -125,6 +149,22 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Working directory for tool execution' },
       },
       required: ['task'],
+    },
+  },
+  {
+    name: 'get_workflows',
+    description: 'List all available workflow plans (name + description).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_workflow',
+    description: 'Get a specific workflow plan by name. Returns full JSON with steps.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Workflow name (e.g., "code-review")' },
+      },
+      required: ['name'],
     },
   },
 ];
@@ -252,6 +292,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: result.content,
           usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
         });
+      }
+
+      case 'get_workflows': {
+        const workflows = listWorkflows();
+        return ok({ workflows });
+      }
+
+      case 'get_workflow': {
+        if (!args.name) return fail('name is required');
+        const workflow = getWorkflow(args.name);
+        if (!workflow) return ok({ error: 'not found' });
+        return ok(workflow);
       }
 
       default:

@@ -108,15 +108,20 @@
   .r-input.warn { border-color: var(--red); }
   .r-input.valid { border-color: var(--green); }
   .r-link {
-    margin-left: 8px; font-size: 12px; color: #bbb;
+    margin-left: 8px; font-size: 11px; color: var(--accent);
     text-decoration: none; white-space: nowrap; flex-shrink: 0;
-    transition: color 0.15s;
+    transition: all 0.15s;
+    padding: 4px 10px; border-radius: 4px;
+    border: 1px solid rgba(139,145,240,0.35);
+    background: rgba(139,145,240,0.08);
+    font-weight: 600; font-family: 'Inter', sans-serif;
   }
-  .r-link:hover { color: #fff; }
+  .r-link:hover { color: #fff; background: rgba(139,145,240,0.2); border-color: var(--accent); }
   .r-tag {
     font-size: 11px; padding: 3px 8px; border-radius: 4px;
     font-weight: 500; margin-left: auto; flex-shrink: 0;
-    min-width: 64px; text-align: center; display: inline-block;
+    min-width: 64px; text-align: center; display: inline-flex;
+    align-items: center; gap: 4px; white-space: nowrap;
   }
   .r-tag.ok { background: var(--green-dim); color: var(--green); }
   .r-tag.no { background: var(--red-dim); color: var(--red); }
@@ -287,7 +292,7 @@
 <div class="layout">
   <div class="cat-bar">
     <div class="cat-item active" data-panel="providers" onclick="switchCat(this)">Providers</div>
-    <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Presets</div>
+    <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Models</div>
     <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
   </div>
 
@@ -321,23 +326,23 @@
     <!-- PRESETS -->
     <div class="panel" id="panel-presets">
       <div class="hdr">
-        <h1>Presets</h1>
-        <button class="hdr-btn" onclick="openPresetForm(null)">+ New Preset</button>
+        <h1>Models</h1>
+        <button class="hdr-btn" onclick="openPresetForm(null)">+ New Model</button>
       </div>
 
       <div class="sec">
-        <div class="sec-title">Saved Presets</div>
+        <div class="sec-title">Saved Models</div>
         <div class="sec-body" id="preset-list">
           <div class="empty">Loading...</div>
         </div>
       </div>
 
       <div class="sec" id="preset-form-sec" style="display:none">
-        <div class="sec-title" id="preset-form-title">New Preset</div>
+        <div class="sec-title" id="preset-form-title">New Model</div>
         <div class="sec-body">
           <div class="form-row">
             <span class="r-name">Name</span>
-            <input class="r-input" id="pf-name" placeholder="my-preset" maxlength="40">
+            <input class="r-input" id="pf-name" placeholder="my-model" maxlength="40">
           </div>
           <div class="form-row">
             <span class="r-name">Provider</span>
@@ -371,7 +376,7 @@
           </div>
           <div class="form-actions">
             <button class="btn secondary" onclick="closePresetForm()">Cancel</button>
-            <button class="btn primary" onclick="savePreset()">Save Preset</button>
+            <button class="btn primary" onclick="savePreset()">Save Model</button>
           </div>
         </div>
       </div>
@@ -398,7 +403,7 @@ const API_PROVIDERS = [
   {id:'anthropic',name:'Anthropic',env:'ANTHROPIC_API_KEY',url:'https://console.anthropic.com/settings/keys'},
   {id:'gemini',name:'Gemini',env:'GEMINI_API_KEY',url:'https://aistudio.google.com/apikey'},
   {id:'groq',name:'Groq',env:'GROQ_API_KEY',url:'https://console.groq.com/keys'},
-  {id:'openrouter',name:'OpenRouter',env:'OPENROUTER_API_KEY',url:'https://openrouter.ai/keys'},
+  {id:'openrouter',name:'OpenRouter',env:'OPENROUTER_API_KEY',url:'https://openrouter.ai/settings/keys'},
   {id:'xai',name:'xAI',env:'XAI_API_KEY',url:'https://console.x.ai'},
 ];
 const OAUTH_PROVIDERS = [
@@ -443,6 +448,7 @@ let config = {}, auth = {}, presets = [], isDirty = false;
 let editingPresetId = null;
 
 document.addEventListener('input', () => { isDirty = true; });
+document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', (e) => {
   if (isDirty) e.preventDefault();
   else navigator.sendBeacon('/close', '');
@@ -499,7 +505,7 @@ function renderAll() {
       link = '';
     } else {
       tag = '<span class="r-tag no">Not Set</span>';
-      link = `<a class="r-link" href="${p.url}" target="_blank">Get &#8599;</a>`;
+      link = `<a class="r-link" href="${p.url}" target="_blank">Get Key &#8599;</a>`;
     }
     apiSec.innerHTML += `<div class="r">
       <span class="r-name">${p.name}</span>
@@ -557,21 +563,23 @@ function renderStatus() {
   for (const p of API_PROVIDERS) {
     const hasKey = !!c[p.id]?.apiKey;
     const hasEnv = auth.envKeys?.[p.id];
-    const tag = hasKey ? '<span class="r-tag ok">API Key</span>' : hasEnv ? '<span class="r-tag env">Env Var</span>' : '<span class="r-tag no">Off</span>';
+    let tag;
+    if (hasKey) tag = '<span class="r-tag ok">Active <span style="opacity:0.7;font-size:10px">(API Key)</span></span>';
+    else if (hasEnv) tag = '<span class="r-tag ok">Active <span style="opacity:0.7;font-size:10px">(Env Var)</span></span>';
+    else tag = '<span class="r-tag no">Off</span>';
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
   for (const p of OAUTH_PROVIDERS) {
     const detected = p.id === 'openai-oauth' ? auth.codexOAuth : auth.copilot;
-    const tag = detected ? '<span class="r-tag oauth">OAuth</span>' : '<span class="r-tag no">Off</span>';
+    let tag;
+    if (detected) tag = '<span class="r-tag ok">Active <span style="opacity:0.7;font-size:10px">(OAuth)</span></span>';
+    else tag = '<span class="r-tag no">Off</span>';
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
   for (const p of LOCAL_PROVIDERS) {
-    const enabled = c[p.id]?.enabled === true;
     const detected = auth[p.id];
     let tag;
-    if (enabled && detected) tag = '<span class="r-tag ok">Enabled</span>';
-    else if (enabled) tag = '<span class="r-tag oauth">Enabled</span>';
-    else if (detected) tag = '<span class="r-tag not-running">Disabled</span>';
+    if (detected) tag = '<span class="r-tag ok">Active <span style="opacity:0.7;font-size:10px">(Local)</span></span>';
     else tag = '<span class="r-tag no">Off</span>';
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
@@ -639,7 +647,7 @@ async function loadPresets() {
 function renderPresetList() {
   const list = document.getElementById('preset-list');
   if (presets.length === 0) {
-    list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New Preset</strong> to create one.</div>';
+    list.innerHTML = '<div class="empty">No models yet. Click <strong>+ New Model</strong> to create one.</div>';
     return;
   }
   list.innerHTML = presets.map(p => {
@@ -688,7 +696,7 @@ function openPresetForm(id) {
   }
 
   if (id) {
-    title.textContent = 'Edit Preset';
+    title.textContent = 'Edit Model';
     const p = presets.find(x => x.id === id);
     if (p) {
       document.getElementById('pf-name').value = p.name || p.id;
@@ -710,7 +718,7 @@ function openPresetForm(id) {
   }
 
   // New preset defaults
-  title.textContent = 'New Preset';
+  title.textContent = 'New Model';
   document.getElementById('pf-name').value = '';
   document.getElementById('pf-fast').classList.remove('on');
   document.querySelectorAll('#pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === 'full'));
@@ -814,7 +822,7 @@ async function savePreset() {
 }
 
 async function deletePreset(id) {
-  if (!confirm(`Delete preset "${id}"?`)) return;
+  if (!confirm(`Delete model "${id}"?`)) return;
   try {
     await fetch(`/presets?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
     await loadPresets();
