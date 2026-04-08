@@ -78,7 +78,6 @@ const searchArgsSchema = z.object({
   ref: z.string().optional().describe('Git ref (branch, tag, SHA). Optional for github_type: file.'),
   state: z.enum(['open', 'closed', 'all']).optional().describe('Filter state for github_type: pulls. Default: open.'),
   maxResults: z.number().int().min(1).max(20).optional(),
-  mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional(),
 }).refine(
   data => {
     const isGithubRead = ['file', 'repo', 'issue', 'pulls'].includes(data.github_type)
@@ -126,7 +125,6 @@ const batchItemSchema = z.discriminatedUnion('action', [
     ref: z.string().optional(),
     state: z.enum(['open', 'closed', 'all']).optional(),
     maxResults: z.number().int().min(1).max(20).optional(),
-    mode: z.enum(['search_first', 'ai_first', 'ai_only']).optional(),
   }),
   z.object({
     action: z.literal('firecrawl_scrape'),

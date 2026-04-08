@@ -84,6 +84,21 @@
     padding: 24px; text-align: center;
     font-size: 12px; color: var(--text-4);
   }
+  .status-empty {
+    padding: 16px 24px;
+    font-size: 12px; color: var(--text-4);
+  }
+  .status-summary {
+    padding: 12px 16px;
+    font-size: 12px; color: var(--text-2);
+    line-height: 1.6;
+  }
+  .status-summary .summary-line {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .status-summary .summary-label {
+    color: var(--text-4);
+  }
   .r {
     display: flex; align-items: center;
     padding: 0 14px; min-height: 48px;
@@ -470,6 +485,13 @@
         <div class="sec-title">Provider Status</div>
         <div class="sec-body" id="status-sec"></div>
       </div>
+
+      <div class="sec">
+        <div class="sec-title">Active Workflows</div>
+        <div id="workflow-status-list">
+          <div class="status-empty">No active workflows</div>
+        </div>
+      </div>
     </div>
 
     <!-- WORKFLOWS -->
@@ -702,6 +724,26 @@ function renderStatus() {
     h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`;
   }
   sec.innerHTML = h;
+
+  // Active Workflows summary
+  const wfList = document.getElementById('workflow-status-list');
+  const wfCount = (workflows || []).length;
+  const presetCount = (presets || []).length;
+  if (wfCount === 0 && presetCount === 0) {
+    wfList.innerHTML = '<div class="status-empty">No active workflows</div>';
+  } else {
+    let summary = `<div class="status-summary">`;
+    summary += `<div class="summary-line"><span class="summary-label">Configured:</span> ${wfCount} workflow${wfCount !== 1 ? 's' : ''}, ${presetCount} model preset${presetCount !== 1 ? 's' : ''}</div>`;
+    // Show default workflow provider from the first workflow's first step
+    if (wfCount > 0 && workflows[0].steps && workflows[0].steps.length > 0) {
+      const firstStep = workflows[0].steps[0];
+      const providerLabel = firstStep.provider || 'Unknown';
+      const modelLabel = firstStep.model || '';
+      summary += `<div class="summary-line"><span class="summary-label">Default workflow provider:</span> ${escapeHtml(providerLabel)}${modelLabel ? ' (' + escapeHtml(modelLabel) + ')' : ''}</div>`;
+    }
+    summary += `</div>`;
+    wfList.innerHTML = summary;
+  }
 }
 
 async function saveProviders() {

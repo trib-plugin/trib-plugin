@@ -102,8 +102,8 @@ If any check fails → pending at most, never active.
 - Default action: do nothing. Promotion is the exception.
 - Maximum 3 `add` actions per phase1 call.
 - Pending is cheap — use it when uncertain instead of add.
-- Preserve the source language of each value. Do not translate.
-- Each element must be a self-contained sentence with clear WHY when applicable.
+- Write all topic and element values in English, regardless of the source language.
+- Each element must be a self-contained sentence that is understandable WITHOUT the original conversation context. Include the specific subject, action, and WHY. Bad: 'User prefers the modified format.' Good: 'User prefers MCP instructions to explicitly list tool names with parameter signatures rather than vague descriptions.'
 - Maximum 30 total actions per response.
 - When in doubt: skip/pending. The cost of skipping is near-zero (re-extractable). The cost of promoting noise is permanent context bloat.
 
