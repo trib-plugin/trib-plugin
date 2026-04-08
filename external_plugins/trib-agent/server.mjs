@@ -334,6 +334,9 @@ async function main() {
   await server.connect(transport);
 
   process.on('SIGINT', async () => { await disconnectAll(); process.exit(0); });
+
+  // Block until the MCP connection closes (stdin EOF).
+  await new Promise((resolve) => { server.onclose = resolve });
 }
 
 main().catch((err) => {

@@ -1177,5 +1177,8 @@ async function shutdown() {
   process.exit(0)
 }
 
+// Block until the MCP connection closes (stdin EOF).
+await new Promise((resolve) => { server.onclose = resolve })
+
 process.on('SIGTERM', () => { void shutdown() })
 process.on('SIGINT', () => { void shutdown() })

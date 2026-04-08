@@ -148,7 +148,9 @@ async function runProxyMode(port) {
 
   const transport = new StdioServerTransport()
   await proxyMcp.connect(transport)
-  // Keep alive until stdio closes
+  // connect() resolves after transport.start(), not after close.
+  // Block until the MCP connection closes (stdin EOF).
+  await new Promise((resolve) => { proxyMcp.onclose = resolve })
 }
 
 // ── Primary mode: full server startup ───────────────────────────────
