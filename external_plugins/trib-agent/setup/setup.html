@@ -128,25 +128,27 @@
   .r-input::placeholder { color: #777; }
   .r-input.warn { border-color: var(--red); }
   .r-input.valid { border-color: var(--green); }
+  .r-link, .r-tag {
+    font-size: 11px; padding: 0 10px; border-radius: 4px;
+    font-weight: 500; flex-shrink: 0;
+    min-width: 76px; text-align: center;
+    white-space: nowrap; height: 24px; line-height: 24px;
+    box-sizing: border-box; display: inline-block;
+  }
+  .r > .r-tag, .r > .r-link { margin-left: auto; }
+  .r-tag-wrap .r-tag, .r-tag-wrap .r-link { margin-left: 0; }
   .r-link {
-    margin-left: 8px; font-size: 11px; color: var(--accent);
-    text-decoration: none; white-space: nowrap; flex-shrink: 0;
-    transition: all 0.15s;
-    padding: 4px 10px; border-radius: 4px;
+    color: var(--accent); text-decoration: none;
     border: 1px solid rgba(139,145,240,0.35);
     background: rgba(139,145,240,0.08);
     font-weight: 600; font-family: 'Inter', sans-serif;
+    transition: all 0.15s;
   }
   .r-link:hover { color: #fff; background: rgba(139,145,240,0.2); border-color: var(--accent); }
   .r-tag-wrap {
     margin-left: auto; flex-shrink: 0;
     display: flex; align-items: center;
-  }
-  .r-tag {
-    font-size: 11px; padding: 3px 8px; border-radius: 4px;
-    font-weight: 500; flex-shrink: 0;
-    min-width: 64px; text-align: center; display: inline-flex;
-    align-items: center; gap: 4px; white-space: nowrap;
+    justify-content: flex-end;
   }
   .r-tag.ok { background: var(--green-dim); color: var(--green); }
   .r-tag.no { background: var(--red-dim); color: var(--red); }
@@ -515,15 +517,6 @@
         <div class="sec-body" id="status-sec"></div>
       </div>
 
-      <div class="sec">
-        <div class="sec-title">Model Presets</div>
-        <div class="sec-body" id="presets-status-sec"></div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Active Workflows</div>
-        <div class="sec-body" id="workflow-status-list"></div>
-      </div>
     </div>
 
     <!-- WORKFLOWS -->
@@ -830,42 +823,6 @@ function renderStatus() {
   }
   sec.innerHTML = h;
 
-  // Model Presets
-  const presetsSec = document.getElementById('presets-status-sec');
-  if ((presets || []).length === 0) {
-    presetsSec.innerHTML = '<div class="status-empty">No model presets configured</div>';
-  } else {
-    presetsSec.innerHTML = presets.map(p => {
-      const meta = `${escapeHtml(p.provider)}/${escapeHtml(p.model)}`;
-      // Determine provider status tag
-      const pid = p.provider;
-      const provConf = c[pid];
-      const hasKey = !!provConf?.apiKey;
-      const hasEnv = auth.envKeys?.[pid];
-      const isOAuth = (pid === 'openai-oauth' && auth.codexOAuth) || (pid === 'copilot' && auth.copilot);
-      const isLocal = auth[pid];
-      let provTag;
-      if (hasKey || hasEnv || isOAuth || isLocal) {
-        provTag = '<span class="r-tag ok">Active</span>';
-      } else {
-        provTag = '<span class="r-tag no">Off</span>';
-      }
-      return `<div class="r"><span class="r-name">${escapeHtml(p.name || p.id)}</span><span class="r-detail">${meta}</span>${provTag}</div>`;
-    }).join('');
-  }
-
-  // Active Workflows
-  const wfList = document.getElementById('workflow-status-list');
-  const wfArr = workflows || [];
-  if (wfArr.length === 0) {
-    wfList.innerHTML = '<div class="status-empty">No workflows configured</div>';
-  } else {
-    wfList.innerHTML = wfArr.map(w => {
-      const stepCount = w.steps ? w.steps.length : 0;
-      const stepLabel = `${stepCount} step${stepCount !== 1 ? 's' : ''}`;
-      return `<div class="r"><span class="r-name">${escapeHtml(w.name)}</span><span class="r-detail">${stepLabel}</span></div>`;
-    }).join('');
-  }
 }
 
 async function saveProviders() {
