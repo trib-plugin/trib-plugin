@@ -5,4 +5,4 @@ allowed-tools:
   - Bash(node:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/setup/setup-server.mjs" &`
+!`echo "Config UI: http://localhost:3458" && nohup node "${CLAUDE_PLUGIN_ROOT}/setup/setup-server.mjs" > /dev/null 2>&1 &`
