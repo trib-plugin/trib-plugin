@@ -129,27 +129,20 @@
   .r-input.warn { border-color: var(--red); }
   .r-input.valid { border-color: var(--green); }
   .r-link, .r-tag {
-    font-size: 11px; padding: 0 10px; border-radius: 4px;
-    font-weight: 500; flex-shrink: 0;
+    font-size: 11px; padding: 4px 10px; border-radius: 4px;
+    font-weight: 500; flex-shrink: 0; margin-left: auto;
     min-width: 76px; text-align: center;
-    white-space: nowrap; height: 24px; line-height: 24px;
-    box-sizing: border-box; display: inline-block;
+    white-space: nowrap; box-sizing: border-box;
+    display: inline-block; border: 1px solid transparent;
   }
-  .r > .r-tag, .r > .r-link { margin-left: auto; }
-  .r-tag-wrap .r-tag, .r-tag-wrap .r-link { margin-left: 0; }
   .r-link {
     color: var(--accent); text-decoration: none;
-    border: 1px solid rgba(139,145,240,0.35);
+    border-color: rgba(139,145,240,0.35);
     background: rgba(139,145,240,0.08);
     font-weight: 600; font-family: 'Inter', sans-serif;
     transition: all 0.15s;
   }
   .r-link:hover { color: #fff; background: rgba(139,145,240,0.2); border-color: var(--accent); }
-  .r-tag-wrap {
-    margin-left: auto; flex-shrink: 0;
-    display: flex; align-items: center;
-    justify-content: flex-end;
-  }
   .r-tag.ok { background: var(--green-dim); color: var(--green); }
   .r-tag.no { background: var(--red-dim); color: var(--red); }
   .r-tag.oauth { background: var(--orange-dim); color: var(--orange); }
@@ -157,9 +150,11 @@
   .r-tag.running { background: var(--green-dim); color: var(--green); }
   .r-tag.not-running { background: var(--red-dim); color: var(--red); }
   .r-validation {
-    font-size: 11px; margin-left: 8px; flex-shrink: 0;
+    font-size: 11px; flex-shrink: 0;
     white-space: nowrap; transition: opacity 0.2s;
   }
+  .r-validation:empty { display: none; }
+  .r-validation:not(:empty) { margin-left: 8px; }
   .r-validation.checking { color: var(--text-3); }
   .r-validation.ok { color: var(--green); }
   .r-validation.fail { color: var(--red); }
@@ -681,7 +676,7 @@ function renderAll() {
         <input class="r-input" id="key-${p.id}" type="password" value="${escapeAttr(key)}" placeholder="${p.env}" onblur="validateKeyOnBlur('${p.id}')">
         <button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button>
       </div>
-      <span class="r-tag-wrap" id="tag-${p.id}">${tag}</span>
+      <span id="tag-${p.id}" style="margin-left:auto">${tag}</span>
       <span class="r-validation" id="val-${p.id}"></span>
     </div>`;
   }
