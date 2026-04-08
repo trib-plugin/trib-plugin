@@ -2356,7 +2356,7 @@ process.on('SIGINT', () => {
 })
 
 // ── Auto-reload config on file change ─────────────────────────────────
-const configPath = join(DATA_DIR, 'config.json')
+const configPath = path.join(DATA_DIR, 'config.json')
 let reloadDebounce: ReturnType<typeof setTimeout> | null = null
 try {
   fs.watch(configPath, () => {

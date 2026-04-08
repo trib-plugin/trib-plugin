@@ -44,13 +44,48 @@ const DEFAULT_CONFIG = {
 export function loadConfig(): PluginConfig {
   try {
     const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) as PluginConfig
+
+    // Transform schedules.items → nonInteractive / interactive arrays
+    const items = (raw as any).schedules?.items as Array<any> | undefined
+    if (items && Array.isArray(items)) {
+      if (!raw.nonInteractive) {
+        raw.nonInteractive = items.filter(
+          (i: any) => i.type === 'nonInteractive' || i.type === 'non-interactive',
+        )
+      }
+      if (!raw.interactive) {
+        raw.interactive = items.filter((i: any) => i.type === 'interactive')
+      }
+    }
+
+    // Auto-populate access.channels from channelsConfig entries
+    const accessChannels: Record<string, any> = { ...(raw.access?.channels ?? {}) }
+    const chCfg = raw.channelsConfig as Record<string, any> | undefined
+    if (chCfg) {
+      for (const entry of Object.values(chCfg)) {
+        const id = entry?.channelId ?? entry?.id
+        if (typeof id === 'string' && id && !(id in accessChannels)) {
+          accessChannels[id] = {}
+        }
+      }
+      // Also handle nested format: channelsConfig.channels
+      if (chCfg.channels) {
+        for (const entry of Object.values(chCfg.channels as Record<string, any>)) {
+          const id = entry?.id
+          if (typeof id === 'string' && id && !(id in accessChannels)) {
+            accessChannels[id] = {}
+          }
+        }
+      }
+    }
+
     return {
       ...raw,
       access: {
         ...DEFAULT_ACCESS,
         ...(raw.access ?? {}),
         allowFrom: raw.access?.allowFrom ?? [],
-        channels: raw.access?.channels ?? {},
+        channels: accessChannels,
         pending: raw.access?.pending ?? {},
       },
     }

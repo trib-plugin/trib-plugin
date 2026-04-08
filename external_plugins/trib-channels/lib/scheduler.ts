@@ -514,7 +514,7 @@ export class Scheduler {
     }
 
     // Default: prompt mode
-    const prompt = this.loadPrompt(schedule.prompt ?? `${schedule.name}.md`)
+    const prompt = this.resolvePrompt(schedule)
     if (!prompt) {
       process.stderr.write(`trib-channels scheduler: prompt not found for "${schedule.name}"\n`)
       return
@@ -603,7 +603,24 @@ export class Scheduler {
 
   /** Resolve a channel label to its platform ID via channelsConfig, fallback to raw value */
   private resolveChannel(label: string): string {
-    return this.channelsConfig?.channels[label]?.id ?? label
+    // Standard nested format: channelsConfig.channels[label].id
+    const nested = this.channelsConfig?.channels?.[label]?.id
+    if (nested) return nested
+    // Flat format from config UI: channelsConfig[label].channelId or .id
+    const flat = (this.channelsConfig as any)?.[label]
+    if (flat?.channelId) return flat.channelId
+    if (flat?.id) return flat.id
+    return label
+  }
+
+  /** Resolve prompt: try file first, fall back to inline text */
+  private resolvePrompt(schedule: TimedSchedule): string | null {
+    const ref = schedule.prompt ?? `${schedule.name}.md`
+    const fromFile = this.loadPrompt(ref)
+    if (fromFile) return fromFile
+    // File not found — if prompt was explicitly set, use it as inline content
+    if (schedule.prompt) return schedule.prompt
+    return null
   }
 
   private loadPrompt(nameOrPath: string): string | null {

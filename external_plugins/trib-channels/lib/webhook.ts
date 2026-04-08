@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'child_process'
 import type { WebhookConfig, ChannelsConfig } from '../backends/types.js'
 import type { EventPipeline } from './event-pipeline.js'
 import { DATA_DIR } from './config.js'
-import { appendFileSync } from 'fs'
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 
 const WEBHOOK_LOG = join(DATA_DIR, 'webhook.log')
 function logWebhook(msg: string): void {
@@ -75,6 +75,8 @@ function verifySignature(secret: string, rawBody: string, signatureValue: string
 }
 
 // ── WebhookServer ─────────────────────────────────────────────────────
+
+const NGROK_PID_FILE = join(DATA_DIR, 'ngrok.pid')
 
 export class WebhookServer {
   private config: WebhookConfig
@@ -181,12 +183,27 @@ export class WebhookServer {
     this.startNgrok()
   }
 
+  /** Kill any previous ngrok process left behind from a crashed session */
+  private killPreviousNgrok(): void {
+    try {
+      const pid = parseInt(readFileSync(NGROK_PID_FILE, 'utf8').trim())
+      if (pid > 0) {
+        try { process.kill(pid) } catch { /* already dead */ }
+        logWebhook(`killed previous ngrok (PID ${pid})`)
+      }
+    } catch { /* no PID file or unreadable */ }
+    try { unlinkSync(NGROK_PID_FILE) } catch {}
+  }
+
   private startNgrok(): void {
     if (this.ngrokProcess || this.ngrokStarting) return
     const authtoken = (this.config as any).authtoken
     const domain = this.config.ngrokDomain || (this.config as any).domain
     if (!authtoken || !domain) return
     this.ngrokStarting = true
+
+    // Kill any orphaned ngrok from a previous session
+    this.killPreviousNgrok()
 
     // Resolve ngrok binary path (cross-platform)
     let ngrokBin = 'ngrok'
@@ -210,11 +227,24 @@ export class WebhookServer {
       }
       try {
         this.ngrokProcess = spawn(ngrokBin, ['http', String(this.boundPort), '--url=' + domain], {
-          detached: true, stdio: 'ignore', windowsHide: true,
+          stdio: 'ignore', windowsHide: true,
         })
         this.ngrokProcess.unref()
-        this.ngrokProcess.on('exit', () => { this.ngrokProcess = null; this.ngrokStarting = false })
-        logWebhook(`ngrok tunnel started: ${domain} → localhost:${this.boundPort}`)
+        // Save PID for orphan cleanup on next startup
+        if (this.ngrokProcess.pid) {
+          try { writeFileSync(NGROK_PID_FILE, String(this.ngrokProcess.pid)) } catch {}
+        }
+        this.ngrokProcess.on('exit', () => {
+          this.ngrokProcess = null
+          this.ngrokStarting = false
+          try { unlinkSync(NGROK_PID_FILE) } catch {}
+        })
+        this.ngrokProcess.on('error', () => {
+          this.ngrokProcess = null
+          this.ngrokStarting = false
+          try { unlinkSync(NGROK_PID_FILE) } catch {}
+        })
+        logWebhook(`ngrok tunnel started: ${domain} → localhost:${this.boundPort} (PID ${this.ngrokProcess.pid})`)
       } catch (e) {
         logWebhook(`ngrok start failed: ${e}`)
       }
@@ -227,6 +257,7 @@ export class WebhookServer {
     if (this.ngrokProcess) {
       try { this.ngrokProcess.kill() } catch { /* already dead */ }
       this.ngrokProcess = null
+      try { unlinkSync(NGROK_PID_FILE) } catch {}
     }
     if (this.server) {
       this.server.close()
