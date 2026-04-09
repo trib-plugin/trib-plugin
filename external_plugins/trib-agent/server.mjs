@@ -6,7 +6,7 @@ import { createSession, askSession, listSessions, closeSession, resumeSession } 
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset } from './orchestrator/config.js';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.js';
-import { writeFileSync, mkdirSync, readFileSync } from 'fs';
+import { writeFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { request as httpRequest } from 'http';
 import { fileURLToPath } from 'url';
@@ -245,11 +245,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
           if (result.action === 'accept') {
             const idx = parseInt(result.content.session, 10);
-            const selected = sessions[idx];
-            if (selected) {
-              const resumed = resumeSession(selected.id);
-              if (resumed) {
-                return ok({ resumed: selected.id, provider: selected.provider, model: selected.model, messages: selected.messages.length });
+            if (!isNaN(idx) && idx >= 0 && idx < sessions.length) {
+              const selected = sessions[idx];
+              if (selected) {
+                const resumed = resumeSession(selected.id);
+                if (resumed) {
+                  return ok({ resumed: selected.id, provider: selected.provider, model: selected.model, messages: selected.messages.length });
+                }
               }
             }
           }
@@ -315,10 +317,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
           if (result.action === 'accept') {
             const idx = parseInt(result.content.preset, 10);
-            const selected = presets[idx];
-            if (selected) {
-              setDefaultPreset(cfg, selected.name);
-              return ok(`Default preset changed to: ${selected.model}${selected.effort ? ' · ' + selected.effort : ''}${selected.fast ? ' · fast' : ''}`);
+            if (!isNaN(idx) && idx >= 0 && idx < presets.length) {
+              const selected = presets[idx];
+              if (selected) {
+                setDefaultPreset(cfg, selected.name);
+                return ok(`Default preset changed to: ${selected.model}${selected.effort ? ' · ' + selected.effort : ''}${selected.fast ? ' · fast' : ''}`);
+              }
             }
           }
           return ok(`Current preset: ${currentLabel}`);
@@ -352,6 +356,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
         const startedAt = Date.now();
 
+        // Cleanup old result files (>24h)
+        function cleanupOldResults(dir) {
+          try {
+            for (const f of readdirSync(dir)) {
+              try { if (Date.now() - statSync(join(dir, f)).mtimeMs > 86400000) unlinkSync(join(dir, f)); } catch {}
+            }
+          } catch {}
+        }
+
         // Background mode — fire, save result to file
         if (args.background) {
           const jobId = `job_${jobSeq++}_${Date.now()}`;
@@ -379,6 +392,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               };
               try {
                 writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
+                cleanupOldResults(resultsDir);
               } catch (writeErr) {
                 process.stderr.write(`[trib-agent] Failed to write result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
               }

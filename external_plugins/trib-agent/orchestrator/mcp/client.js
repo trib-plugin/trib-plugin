@@ -58,6 +58,7 @@ export async function executeMcpTool(name, args) {
     } catch (firstErr) {
         const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
         process.stderr.write(`[mcp-client] Tool call failed, attempting reconnect...\n`);
+        await new Promise(r => setTimeout(r, 500));
         try {
             await server.client.close();
         } catch { /* ignore close error */ }

@@ -98,10 +98,32 @@ export async function appendEpisode(data) {
 }
 
 
+function cleanupStaleBufferFiles(maxAgeDays = 7) {
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000
+  const now = Date.now()
+  let cleaned = 0
+  try {
+    const files = fs.readdirSync(BUFFER_DIR).filter(f => f.endsWith('.json'))
+    for (const file of files) {
+      const filePath = path.join(BUFFER_DIR, file)
+      try {
+        const stats = fs.statSync(filePath)
+        if (now - stats.mtimeMs > maxAgeMs) {
+          fs.unlinkSync(filePath)
+          cleaned++
+        }
+      } catch (e) {
+        process.stderr.write(`[memory-client] cleanupStaleBufferFiles error for ${file}: ${e.message}\n`)
+      }
+    }
+  } catch { /* buffer dir does not exist */ }
+  return cleaned
+}
+
 /**
  * Flush all buffered episodes that failed to send previously.
  * Reads each JSON file from the buffer directory, POSTs it via memoryFetch,
- * and deletes successfully flushed files.
+ * and deletes successfully flushed files. Cleans up stale files (>7 days).
  * @returns {Promise<{flushed: number, failed: number}>}
  */
 export async function flushBufferedEpisodes() {
@@ -127,6 +149,7 @@ export async function flushBufferedEpisodes() {
       failed++
     }
   }
+  cleanupStaleBufferFiles()
   return { flushed, failed }
 }
 

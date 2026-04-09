@@ -243,6 +243,7 @@ function buildRequestBody(messages, model, tools, sendOpts) {
 export class OpenAIOAuthProvider {
     name = 'openai-oauth';
     tokens = null;
+    _refreshPromise = null;
     constructor(_config) {
         this.tokens = loadTokens();
     }
@@ -253,7 +254,11 @@ export class OpenAIOAuthProvider {
         if (this.tokens.expires_at < Date.now() + 300_000) {
             process.stderr.write(`[openai-oauth] Token expired/expiring, refreshing...\n`);
             try {
-                const refreshed = await refreshTokens(this.tokens.refresh_token);
+                if (!this._refreshPromise) {
+                    this._refreshPromise = refreshTokens(this.tokens.refresh_token)
+                        .finally(() => { this._refreshPromise = null; });
+                }
+                const refreshed = await this._refreshPromise;
                 if (refreshed) {
                     this.tokens = refreshed;
                     process.stderr.write(`[openai-oauth] Token refreshed, expires in ${Math.round((refreshed.expires_at - Date.now()) / 1000)}s\n`);
@@ -280,6 +285,11 @@ export class OpenAIOAuthProvider {
             }
         }
         return this.tokens;
+    }
+    scrubTokens(text) {
+        return text
+            .replace(/Bearer [A-Za-z0-9._\-]+/g, 'Bearer [REDACTED]')
+            .replace(/"access_token"\s*:\s*"[^"]+"/g, '"access_token":"[REDACTED]"');
     }
     async send(messages, model, tools, sendOpts) {
         let auth = await this.ensureAuth();
@@ -308,8 +318,9 @@ export class OpenAIOAuthProvider {
         }
         if (!response.ok) {
             const text = await response.text().catch(() => '');
-            process.stderr.write(`[openai-oauth] API error ${response.status}: ${text.slice(0, 200)}\n`);
-            throw new Error(`Codex API ${response.status}: ${text.slice(0, 200)}`);
+            const safeText = this.scrubTokens(text).slice(0, 200);
+            process.stderr.write(`[openai-oauth] API error ${response.status}: ${safeText}\n`);
+            throw new Error(`Codex API ${response.status}: ${safeText}`);
         }
         process.stderr.write(`[openai-oauth] Response ${response.status}, parsing SSE...\n`);
         const result = await parseSSEStream(response);
