@@ -6,13 +6,13 @@ allowed-tools: Agent
 
 Route this request to the `trib-plugin:ask-forwarder` subagent using the Agent tool.
 
-Spawn the subagent with the CLI command baked into the prompt:
+Spawn the subagent with the short wrapper command:
 
 ```
 Agent({
   subagent_type: "trib-plugin:ask-forwarder",
   description: "trib-agent ask",
-  prompt: "Run this exact Bash command and return stdout verbatim:\n\nCLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" node \"${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js\" ask \"<USER_PROMPT>\" 2>/dev/null"
+  prompt: "Run this Bash command and return stdout verbatim:\n\nCLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" node \"${CLAUDE_PLUGIN_ROOT}/ask.mjs\" \"<USER_PROMPT>\" 2>/dev/null"
 })
 ```
 
