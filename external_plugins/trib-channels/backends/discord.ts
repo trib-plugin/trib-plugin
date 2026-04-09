@@ -169,6 +169,20 @@ export class DiscordBackend implements ChannelBackend {
 
     this.client.on('interactionCreate', async (interaction) => {
       try {
+        // Slash command handling
+        if (interaction.isChatInputCommand() && interaction.commandName === 'stop') {
+          await interaction.reply({ content: '⏹ Stopping...', ephemeral: true })
+          if (this.onInteraction) {
+            this.onInteraction({
+              type: 'button',
+              customId: 'stop_task',
+              userId: interaction.user.id,
+              channelId: interaction.channelId ?? '',
+            })
+          }
+          return
+        }
+
         // Modal submit handling
         if (interaction.isModalSubmit()) {
           if (this.onInteraction) {
@@ -227,8 +241,20 @@ export class DiscordBackend implements ChannelBackend {
       }
     })
 
-    this.client.on('ready', c => {
+    this.client.on('ready', async c => {
       process.stderr.write(`trib-channels discord: gateway connected as ${c.user.tag}\n`)
+      // Register /stop slash command on all guilds
+      try {
+        for (const [guildId] of c.guilds.cache) {
+          await c.application?.commands.create({
+            name: 'stop',
+            description: 'Stop the current Claude Code response',
+          }, guildId)
+        }
+        process.stderr.write(`trib-channels discord: /stop command registered\n`)
+      } catch (err) {
+        process.stderr.write(`trib-channels discord: slash command registration failed: ${err}\n`)
+      }
     })
 
     this.client.on('shardDisconnect', (ev, id) => {
