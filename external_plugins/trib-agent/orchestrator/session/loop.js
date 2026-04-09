@@ -1,7 +1,7 @@
 import { executeMcpTool, isMcpTool } from '../mcp/client.js';
 import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.js';
 import { loadSkillContent } from '../context/collect.js';
-const MAX_ITERATIONS = 20;
+const MAX_ITERATIONS = 100;
 /**
  * Execute a single tool call — routes to MCP or builtin.
  */
