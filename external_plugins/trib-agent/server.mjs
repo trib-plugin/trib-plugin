@@ -51,9 +51,9 @@ function injectViaHttp(content) {
 
 function buildInstructions() {
   const lines = [
-    'CRITICAL: The `workflow` skill MUST be invoked before ANY task execution — no exceptions. This includes research, edits, fixes, exploration, and delegation. Skipping this skill is a violation of the execution protocol.',
-    'Tools: `TeamCreate`, `TaskCreate`, `Agent`(subagent_type=Worker/Reviewer, team_name required).',
-    'Lead can use any tool directly if it does not delay user response. Delegate long-running or parallel work to agents.',
+    'CRITICAL: invoke `workflow` skill before ANY task execution — no exceptions.',
+    'Enforcement: TeamCreate before Worker/Reviewer. Independent agents in parallel (one message, multiple Agent calls). bypassPermissions and run_in_background on every Agent call.',
+    'Lead uses tools directly for fast ops. Delegate slow/parallel work to background agents.',
     '',
     'Orchestrator MCP tools: `delegate`, `create_session`, `list_sessions`, `close_session`, `list_models`, `get_workflows`, `get_workflow`.',
     '`delegate`(task, provider, model) — send a task to an external AI model (GPT, Gemini, etc). Sync by default, returns result directly. Reuse sessionId for follow-up turns. Set background=true for async.',

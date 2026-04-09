@@ -103,6 +103,26 @@ export class EventPipeline {
     }
   }
 
+  // ── Direct enqueue (folder-based webhooks) ─────────────────────────
+
+  enqueueDirect(
+    name: string,
+    prompt: string,
+    channel: string,
+    exec: 'interactive' | 'non-interactive' = 'interactive',
+  ): void {
+    const item: QueueItem = {
+      name,
+      source: 'webhook',
+      priority: 'normal',
+      prompt,
+      exec,
+      channel,
+      timestamp: Date.now(),
+    }
+    this.queue.enqueue(item)
+  }
+
   // ── Common enqueue ────────────────────────────────────────────────
 
   private enqueue(rule: EventRule, prompt: string): void {

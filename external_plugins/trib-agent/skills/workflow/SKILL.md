@@ -8,15 +8,16 @@ description: >
   MUST invoke BEFORE any work or delegation begins.
   WHEN NOT: Pure Q&A, opinions, or conversation with no actionable task.
   Already in active execute phase — no re-invoke needed.
+  Enforcement: TeamCreate before Worker/Reviewer. Parallel for independent agents. bypassPermissions on every Agent call.
 ---
 
-## Core Principles
+## Non-negotiable (top priority — violating any of these is a failure)
 
-1. **Background-first.** Always delegate work to background agents. Foreground agents block the user — use only when the result is needed before the next response.
-2. **Gather feedback during discussion, deliver on approval.** Do not forward requirements piecemeal — collect during the discussion phase, then send everything at once after approval.
-3. **One-off tasks go to background agents. Multi-step continuous work MUST use TeamCreate** — no exceptions. Teams provide session persistence and context cache hits.
-4. **Never push, deploy, or build without explicit user approval.** Commit is allowed during execute phase, but push/deploy/build require a separate explicit "push" request from the user. Each commit/push requires its own approval — prior approval does not carry over to subsequent commits. No assumptions.
-5. **Always pass `mode: bypassPermissions` when spawning any agent.** This includes all subagent types (Worker, Reviewer, Explore, etc.). Omitting it causes permission prompts that block work.
+1. **TeamCreate before Worker/Reviewer** — always. No Agent(subagent_type=Worker/Reviewer) without a prior TeamCreate.
+2. **Parallel for independent work** — one message, multiple Agent calls. Never sequential for independent tasks.
+3. **bypassPermissions + run_in_background on every Agent call** — no exceptions.
+4. **No code changes before user approval** — discuss → approve → execute. No skipping.
+5. **No push/deploy/build without explicit user request** — each needs its own approval.
 
 ## Required Tool Call Patterns
 
@@ -36,16 +37,16 @@ Agent({
 ```
 TeamCreate({ name: "task-name" })
 → Agent({
-    subagent_type: "trib-agent:Worker",   // or "trib-agent:Reviewer"
+    subagent_type: "trib-agent:Worker",
     team_name: "task-name",
     mode: "bypassPermissions",
     run_in_background: true,
     prompt: "..."
   })
-→ SendMessage({ to: "task-name", ... })   // follow-up instructions
+→ SendMessage({ to: "task-name", ... })
 ```
 
-### MANDATORY on EVERY Agent call — no exceptions
+### MANDATORY on EVERY Agent call
 
 | Parameter | Value | Why |
 |-----------|-------|-----|
@@ -55,62 +56,49 @@ TeamCreate({ name: "task-name" })
 
 ### Choosing delegation method
 
-| Will this agent get follow-up tasks? | Tool |
-|--------------------------------------|------|
-| **No** — one-off result only | `Agent({ run_in_background: true })` |
+| Follow-up expected? | Tool |
+|----------------------|------|
+| **No** — one-off | `Agent({ run_in_background: true })` |
 | **Yes or uncertain** | `TeamCreate` → `Agent({ team_name })` |
 
 ## Lead State Cycle
 
 ```
-idle → discuss → approve → execute → verify → [Deploy Approval] → commit/push → idle
- ↑                                                                                |
- └──────── new agenda ───────────────────────────────────────────────────────────┘
+idle → discuss → approve → execute → verify → deploy approval → commit/push → idle
 ```
 
-| State | Lead action |
-|-------|-------------|
-| **idle** | Waiting for user input |
-| **discuss** | Collecting requirements. No work — only collect and organize |
-| **approve** | User explicitly approves → start work (Work Approval). No code changes before this. |
-| **execute** | Agents running. Lead stays responsive to user |
-| **verify** | Check results directly (Read/Grep). Re-request if issues found |
-| **deploy** | User explicitly approves commit/push (Deploy Approval). Each commit/push needs its own approval. |
-
-Work Approval and Deploy Approval are independent — each new task requires both, no carry-over between tasks.
+- **discuss**: Collect requirements. No work yet.
+- **approve**: User explicitly approves → start work. No code changes before this.
+- **execute**: Agents running. Lead stays responsive.
+- **verify**: Check results directly (Read/Grep). Re-request if issues found.
+- **deploy**: User explicitly approves commit/push. Each commit/push needs its own approval.
 
 ## Tool Usage
 
-Lead can use any tool directly, as long as user response is not delayed.
+Lead can use any tool directly if it does not delay user response.
 
 | Direct (fast) | Delegate (slow) |
 |---------------|-----------------|
-| Read, Grep, Glob (instant) | Foreground Agent calls |
+| Read, Grep, Glob | Foreground Agent calls |
 | Simple Edit, Write | Multi-file sequential edits |
 | Short Bash (git, ls) | Long Bash (build, test suite) |
 | Real-time ping-pong testing | Complex implementation |
 
 ## Agent Management
 
-- `TeamCreate` → `TaskCreate` → `Agent` sequence
-- Send all requirements in a single complete message — never split across multiple sends
-- Reuse agents per sector (e.g., worker-memory, worker-channels)
-- Only shut down agents when user explicitly requests it
-- **Teams are persistent — never delete or shut down a team without explicit user request.** Teams are reusable across tasks in the same session.
-
-Context hygiene:
-- If a team agent's accumulated context exceeds useful scope, start a new one.
-- Never force-fit unrelated tasks into an existing team agent to "save tokens."
+- Send all requirements in a single complete message — never split across multiple sends.
+- Reuse agents per sector (e.g., worker-memory, worker-channels).
+- Only shut down agents when user explicitly requests it.
+- Teams are persistent — never delete without explicit user request.
+- If a team agent's context exceeds useful scope, start a new one.
 
 ## Execution with Workflow Plans
 
 Before starting work, check MCP instructions for available workflow plans.
 
-1. If a plan matches the user's request → call `get_workflow(name)` to load the full steps.
-2. Execute each step in order. Route by model prefix:
-   - `native/*` → spawn Agent (Worker/Reviewer) with the specified model
+1. If a plan matches → call `get_workflow(name)` to load steps.
+2. Execute each step. Route by model prefix:
+   - `native/*` → spawn Agent with the specified model
    - `external/*` → call `delegate` with the specified provider/model
 3. Pass each step's result as context to the next step.
-4. If no plan matches → proceed with Lead's own judgment (freestyle).
-
-Lead IS the execution engine. Workflow plans are data, not triggers.
+4. If no plan matches → proceed with Lead's own judgment.

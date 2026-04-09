@@ -569,9 +569,12 @@ async function startOwnerHttpServer(): Promise<number> {
           const content = body.content as string
           if (!content) { res.writeHead(400); res.end(JSON.stringify({ error: 'content required' })); return }
           const source = (body.source as string) || 'trib-agent'
+          const injMeta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
+          if (body.instruction) injMeta.instruction = body.instruction as string
+          if (body.type) injMeta.type = body.type as string
           void mcp.notification({
             method: 'notifications/claude/channel',
-            params: { content, meta: { user: source, user_id: 'system', ts: new Date().toISOString() } },
+            params: { content, meta: injMeta },
           }).catch(() => {})
           res.writeHead(200)
           res.end(JSON.stringify({ ok: true }))
@@ -1622,12 +1625,12 @@ function createHttpMcpServer(): InstanceType<typeof Server> {
         case 'inject': {
           const content = args.content as string
           const source = (args.source as string) || 'trib-agent'
+          const meta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
+          if (args.instruction) meta.instruction = args.instruction as string
+          if (args.type) meta.type = args.type as string
           void mcp.notification({
             method: 'notifications/claude/channel',
-            params: {
-              content,
-              meta: { user: source, user_id: 'system', ts: new Date().toISOString() },
-            },
+            params: { content, meta },
           }).catch(() => {})
           return { content: [{ type: 'text', text: 'injected' }] }
         }
@@ -1921,12 +1924,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'inject': {
         const content = args.content as string
         const source = (args.source as string) || 'trib-agent'
+        const meta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
+        if (args.instruction) meta.instruction = args.instruction as string
+        if (args.type) meta.type = args.type as string
         void mcp.notification({
           method: 'notifications/claude/channel',
-          params: {
-            content,
-            meta: { user: source, user_id: 'system', ts: new Date().toISOString() },
-          },
+          params: { content, meta },
         }).catch(() => {})
         result = { content: [{ type: 'text', text: 'injected' }] }
         break

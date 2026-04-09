@@ -10,7 +10,9 @@ import { spawn, spawnSync } from 'child_process'
 import type { WebhookConfig, ChannelsConfig } from '../backends/types.js'
 import type { EventPipeline } from './event-pipeline.js'
 import { DATA_DIR } from './config.js'
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs'
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from 'fs'
+
+const WEBHOOKS_DIR = join(DATA_DIR, 'webhooks')
 
 const WEBHOOK_LOG = join(DATA_DIR, 'webhook.log')
 function logWebhook(msg: string): void {
@@ -299,6 +301,47 @@ export class WebhookServer {
     headers: Record<string, string>,
     res: http.ServerResponse,
   ): void {
+    // Folder-based webhook: webhooks/{name}/instructions.md
+    const folderPath = join(WEBHOOKS_DIR, name)
+    const instructionsPath = join(folderPath, 'instructions.md')
+    if (existsSync(instructionsPath)) {
+      try {
+        const instructions = readFileSync(instructionsPath, 'utf8').trim()
+
+        // Optional config: channel, exec
+        let channel = 'main'
+        let exec: 'interactive' | 'non-interactive' = 'interactive'
+        const configPath = join(folderPath, 'config.json')
+        if (existsSync(configPath)) {
+          try {
+            const cfg = JSON.parse(readFileSync(configPath, 'utf8'))
+            if (cfg.channel) channel = cfg.channel
+            if (cfg.exec) exec = cfg.exec
+          } catch { /* use defaults */ }
+        }
+
+        const payload = JSON.stringify(body, null, 2)
+        const headersSummary = Object.entries(headers)
+          .filter(([k]) => k.startsWith('x-') || k === 'content-type')
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('\n')
+
+        const prompt = `${instructions}\n\n--- Webhook Headers ---\n${headersSummary}\n\n--- Webhook Payload ---\n${payload}`
+
+        if (this.eventPipeline) {
+          this.eventPipeline.enqueueDirect(name, prompt, channel, exec)
+          logWebhook(`${name}: folder-based → enqueued (${exec})`)
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', handler: 'folder' }))
+        return
+      } catch (err) {
+        logWebhook(`${name}: folder handler error: ${err}`)
+      }
+    }
+
+    // Fallback: event pipeline rule-based routing
     if (this.eventPipeline?.handleWebhook(name, body, headers)) {
       logWebhook(`${name}: routed to event pipeline`)
       res.writeHead(200, { 'Content-Type': 'application/json' })

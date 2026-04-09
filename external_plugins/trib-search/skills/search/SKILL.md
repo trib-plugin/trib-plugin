@@ -2,16 +2,25 @@
 name: search
 user-invocable: false
 description: >
-  WHEN: User asks to research, look up, investigate, or search anything.
+  WHEN: User asks to research, look up, or investigate external information.
   Trending topics, new tools, libraries, products, news, comparisons.
   Facts that change — versions, APIs, pricing, docs, compatibility.
-  Code for third-party libs. User says "search", "find", "look up",
-  "check out", "what is X".
-  When something is unfamiliar or not in training data — search first,
-  never guess. Default: search. Skip only for timeless facts.
+  Code for third-party libs. User says "search", "find", "look up".
+  When something is unfamiliar or outside training data — search first, never guess.
   WHEN NOT: Timeless facts — math, logic, well-established concepts.
-  Pure opinion or Q&A with no factual lookup needed.
+  Codebase-internal exploration (use Grep/Glob/Read).
+  Past work/context recall (use trib-memory recall).
+  Scope: external web information only.
+  Order: recall → search → codebase.
 ---
+
+## Non-negotiable
+
+- ALWAYS use trib-search tools instead of built-in WebSearch/WebFetch.
+- Scope: external/web information only. Not for codebase exploration or past context recall.
+- Order: recall (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip recall when past context may apply.
+- Use `batch` for 2+ operations — never make separate calls.
+- When something is unfamiliar or outside training data, search first. Never guess.
 
 ## Tool Call Patterns
 
@@ -44,9 +53,3 @@ mcp__trib-search__firecrawl_map({ url: "https://..." })
 ```
 mcp__trib-search__crawl({ url: "https://...", maxPages: 10 })
 ```
-
-## Rules
-
-- ALWAYS use trib-search tools instead of built-in WebSearch/WebFetch.
-- Use `batch` for 2+ operations — never make separate calls.
-- When something is unfamiliar or outside training data, search first. Never guess.

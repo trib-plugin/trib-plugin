@@ -194,7 +194,11 @@ function releaseLock() {
 }
 
 // Forward-declared constants used by proxy mode (full defs below)
-const MEMORY_INSTRUCTIONS_TEXT = 'CRITICAL: The `recall` skill MUST be invoked at session start and whenever prior context is referenced. Recall naturally, like remembering — use search_memories() to recall.'
+const MEMORY_INSTRUCTIONS_TEXT = [
+  'CRITICAL: invoke `recall` skill at session start and before any reference to prior context.',
+  'Order: recall (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip recall when past context may apply.',
+  'When in doubt, recall first — cost is near zero, missing context is expensive.',
+].join('\n')
 const PROXY_TOOL_DEFS = [
   { name: 'memory_cycle', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
   { name: 'search_memories', description: 'Search and retrieve memory.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
@@ -894,7 +898,7 @@ const TOOL_DEFS = [
         query: { type: 'string', description: 'Search text. Triggers semantic hybrid search.' },
         period: { type: 'string', description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
         sort: { type: 'string', enum: ['date', 'importance'], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
-        limit: { type: 'number', default: 20, description: 'Max results to return.' },
+        limit: { type: 'number', default: 30, description: 'Max results to return.' },
         offset: { type: 'number', default: 0, description: 'Skip N results for pagination.' },
       },
       required: [],

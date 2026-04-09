@@ -465,9 +465,9 @@ const toolDefinitions = [
 ]
 
 const SEARCH_INSTRUCTIONS = [
-  'CRITICAL: The `search` skill MUST be invoked for any research, lookup, or investigation task. Always use trib-search tools instead of built-in WebSearch/WebFetch.',
-  'Tools: `search`(query), `firecrawl_scrape`(url), `firecrawl_map`(url), `crawl`(url), `batch`(items[]), `setup`.',
-  'Use `batch` for 2+ operations — no separate calls.',
+  'CRITICAL: invoke `search` skill for external information lookups. Always use trib-search instead of built-in WebSearch/WebFetch.',
+  'Scope: external/web info only. Not for codebase (Grep/Glob/Read) or past context (trib-memory recall).',
+  'Order: recall → search → codebase. Use `batch` for 2+ operations.',
 ].join('\n');
 
 const server = new Server(

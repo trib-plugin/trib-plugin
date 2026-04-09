@@ -2,14 +2,20 @@
 name: recall
 user-invocable: false
 description: >
-  WHEN: Session start — ALWAYS invoke, no exceptions.
-  References to past work, decisions, preferences, or prior context.
-  User mentions something not visible in current conversation.
+  WHEN: Session start — ALWAYS, no exceptions.
+  User references past work, decisions, preferences, or prior context.
+  User implies prior knowledge not visible in current conversation.
+  Before exploring code that was previously worked on — recall first.
   Context has been compressed or truncated.
-  Resuming work from a previous session.
   WHEN NOT: Fully self-contained request with no prior context needed.
-  Use search_memories() only — never file-based memory.
+  Order: recall → search → codebase. Never skip recall when past context may be relevant.
 ---
+
+## Non-negotiable
+
+- ALWAYS invoke at session start: `period: "last"`, `sort: "date"`.
+- When past context may be relevant, recall BEFORE exploring code or searching the web.
+- Order: recall (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip a prior step.
 
 ## Tool Call Patterns
 
@@ -18,9 +24,9 @@ description: >
 mcp__trib-memory__search_memories({ period: "last", sort: "date" })
 ```
 
-### Topic-specific recall
+### Past context referenced (user mentions prior work, features, decisions)
 ```
-mcp__trib-memory__search_memories({ query: "topic keywords" })
+mcp__trib-memory__search_memories({ query: "relevant keywords" })
 ```
 
 ### Date-specific recall
@@ -37,7 +43,6 @@ mcp__trib-memory__search_memories({ query: "preferences" })
 
 ## Rules
 
-- ALWAYS invoke at session start with `period: "last"` to load previous session context.
 - Use `search_memories()` only — never write to MEMORY.md or memory/ folder.
 - Never use sqlite/SQL directly.
 - Storage is automatic. Only retrieval is manual.
