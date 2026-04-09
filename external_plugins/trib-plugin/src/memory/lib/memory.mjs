@@ -32,7 +32,7 @@ import {
 import {
   parseTemporalHint,
 } from './ko-date-parser.mjs'
-import { rerank as jsRerank } from './reranker.mjs'
+import { rerank as jsRerank, getRerankerModelId, getRerankerDevice } from './reranker.mjs'
 import {
   applyMetadataFilters as applyMetadataFiltersImpl,
   getEpisodeRecallRows as getEpisodeRecallRowsImpl,
@@ -68,7 +68,7 @@ import {
   vecToHex,
 } from './memory-vector-utils.mjs'
 let sqliteVec = null
-try { sqliteVec = await import('sqlite-vec') } catch { /* sqlite-vec not available */ }
+try { sqliteVec = await import('sqlite-vec') } catch (e) { process.stderr.write(`[memory] sqlite-vec not available — dense search will use slow JS cosine fallback: ${e.message}\n`) }
 
 const stores = new Map()
 
@@ -653,6 +653,17 @@ export class MemoryStore {
         AND mv.model = ?
         AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
     `)
+    this.listDenseChunkRowsStmt = this.db.prepare(`
+      SELECT 'chunk' AS type, 'chunk' AS subtype, mc.id AS entity_id, mc.content AS content,
+             mc.created_at AS updated_at, 0 AS retrieval_count,
+             NULL AS quality_score, NULL AS importance,
+             NULL AS source_ref, mc.created_at AS source_ts, NULL AS source_kind, NULL AS source_backend, mv.vector_json AS vector_json
+      FROM memory_vectors mv
+      JOIN memory_chunks mc ON mc.id = mv.entity_id
+      WHERE mv.entity_type = 'chunk'
+        AND mv.model = ?
+        AND mc.status = 'active'
+    `)
   }
 
   getMetaValue(key, fallback = null) {
@@ -789,11 +800,6 @@ export class MemoryStore {
     const contentHash = hashEmbeddingInput(content)
     const existing = this.getVectorStmt.get('episode', episodeId, lookupModel)
     if (existing?.content_hash === contentHash) return
-    // Persist to DB queue for crash recovery
-    try {
-      this.db.prepare('INSERT OR IGNORE INTO pending_embeds (entity_type, entity_id, content) VALUES (?, ?, ?)').run('episode', episodeId, content.slice(0, 768))
-    } catch {}
-    // Process asynchronously
     const task = async () => {
       const vector = await embedText(content.slice(0, 768))
       if (!Array.isArray(vector) || vector.length === 0) return
@@ -801,30 +807,46 @@ export class MemoryStore {
       this.upsertVectorStmt.run('episode', episodeId, activeModel, vector.length, JSON.stringify(vector), contentHash)
       this._syncToVecTable('episode', episodeId, vector)
       this.noteVectorWrite(activeModel, vector.length)
-      try { this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run('episode', episodeId) } catch {}
     }
     if (!this._embedQueue) this._embedQueue = Promise.resolve()
     this._embedQueue = this._embedQueue.then(task).catch(() => {})
   }
 
   async processPendingEmbeds() {
-    const batchSize = Number(this.getMetaValue('embedding.batchSize')) || 20
-    const pending = this.db.prepare('SELECT entity_type, entity_id, content FROM pending_embeds ORDER BY id LIMIT ?').all(batchSize)
-    if (pending.length === 0) return 0
-    let processed = 0
-    for (const item of pending) {
-      const vector = await embedText(item.content.slice(0, 768))
-      if (!Array.isArray(vector) || vector.length === 0) continue
-      const activeModel = getEmbeddingModelId()
-      const contentHash = hashEmbeddingInput(item.content)
-      this.upsertVectorStmt.run(item.entity_type, item.entity_id, activeModel, vector.length, JSON.stringify(vector), contentHash)
-      this._syncToVecTable(item.entity_type, item.entity_id, vector)
-      this.noteVectorWrite(activeModel, vector.length)
-      this.db.prepare('DELETE FROM pending_embeds WHERE entity_type = ? AND entity_id = ?').run(item.entity_type, item.entity_id)
-      processed += 1
+    // Legacy: pending_embeds table is no longer used.
+    // Episodes without vectors are picked up by getEmbeddableItems() in the normal cycle.
+    return 0
+  }
+
+  getHealthStatus() {
+    const h = {
+      status: 'ok',
+      vec_enabled: Boolean(this.vecEnabled),
+      vec_ready: false,
+      embedding: { model_id: null, dims: null },
+      reranker: { model_id: null, device: null },
+      reindex_required: false,
+      counts: { episodes: 0, classifications_active: 0, chunks_active: 0, vectors_total: 0, vectors_by_type: {} },
+      pending_candidates: 0,
     }
-    if (processed > 0) process.stderr.write(`[memory] recovered ${processed} pending embeds\n`)
-    return processed
+    try { h.embedding.model_id = getEmbeddingModelId() } catch {}
+    try { h.embedding.dims = getEmbeddingDims() } catch {}
+    try { h.reranker.model_id = getRerankerModelId() } catch {}
+    try { h.reranker.device = getRerankerDevice() } catch {}
+    try { h.vec_ready = Boolean(this.vecEnabled && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='vec_memory'").get()) } catch {}
+    try { h.reindex_required = this.getMetaValue('embedding.reindex_required', '0') === '1' } catch {}
+    try { h.counts.episodes = Number(this.db.prepare('SELECT COUNT(*) AS n FROM episodes').get()?.n ?? 0) } catch {}
+    try { h.counts.classifications_active = Number(this.db.prepare("SELECT COUNT(*) AS n FROM classifications WHERE status='active'").get()?.n ?? 0) } catch {}
+    try { h.counts.chunks_active = Number(this.db.prepare("SELECT COUNT(*) AS n FROM memory_chunks WHERE status='active'").get()?.n ?? 0) } catch {}
+    try { h.counts.vectors_total = Number(this.db.prepare('SELECT COUNT(*) AS n FROM memory_vectors').get()?.n ?? 0) } catch {}
+    try {
+      for (const row of this.db.prepare('SELECT entity_type, COUNT(*) AS n FROM memory_vectors GROUP BY entity_type').all())
+        h.counts.vectors_by_type[row.entity_type] = Number(row.n)
+    } catch {}
+    try { h.pending_candidates = Number(this.db.prepare("SELECT COUNT(*) AS n FROM memory_candidates WHERE status='pending'").get()?.n ?? 0) } catch {}
+    if (h.reindex_required) h.status = 'degraded'
+    if (h.vec_enabled && !h.vec_ready) h.status = 'degraded'
+    return h
   }
 
   ingestTranscriptFile(transcriptPath) {
@@ -1463,12 +1485,12 @@ export class MemoryStore {
 
   _vecRowId(entityType, entityId) {
     // Pack entity type + id into a single integer rowid (100M ceiling per type)
-    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5, entity: 6, relation: 7, classification: 8, chunk: 9 }
-    return (typePrefix[entityType] ?? 9) * 100000000 + Number(entityId)
+    const typePrefix = { fact: 1, task: 2, signal: 3, episode: 4, proposition: 5, entity: 6, relation: 7, classification: 8, chunk: 9, core_memory: 10 }
+    return (typePrefix[entityType] ?? 0) * 100000000 + Number(entityId)
   }
 
   _vecRowToEntity(rowid) {
-    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition', 6: 'entity', 7: 'relation', 8: 'classification', 9: 'chunk' }
+    const typeMap = { 1: 'fact', 2: 'task', 3: 'signal', 4: 'episode', 5: 'proposition', 6: 'entity', 7: 'relation', 8: 'classification', 9: 'chunk', 10: 'core_memory' }
     const typeNum = Math.floor(rowid / 100000000)
     return { entityType: typeMap[typeNum] ?? 'unknown', entityId: rowid % 100000000 }
   }
@@ -1943,9 +1965,12 @@ export class MemoryStore {
     }
 
     // Fallback: JS cosine scan
+    let chunkRows = []
+    try { chunkRows = this.listDenseChunkRowsStmt.all(model) } catch { /* memory_chunks table may not exist */ }
     const rows = [
       ...this.listDenseClassificationRowsStmt.all(model),
       ...this.listDenseEpisodeRowsStmt.all(model),
+      ...chunkRows,
     ]
 
     return rows

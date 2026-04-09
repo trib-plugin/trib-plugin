@@ -36,10 +36,10 @@ let _loading = null
 let _device = 'cpu'
 const _scoreCache = new Map()
 const SCORE_CACHE_LIMIT = 2000
-const MAX_QUERY_CHARS = 192
-const MAX_TEXT_CHARS = 240
+const MAX_QUERY_CHARS = 512
+const MAX_TEXT_CHARS = 1024
 
-const DEFAULT_MODEL_ID = 'Xenova/bge-reranker-large'
+const DEFAULT_MODEL_ID = 'Xenova/bge-reranker-base'
 
 export function getRerankerModelId() {
   return process.env.TRIB_MEMORY_RERANKER_MODEL_ID || DEFAULT_MODEL_ID

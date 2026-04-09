@@ -111,6 +111,47 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
+// Ensure native modules (sharp etc.) have correct platform binaries.
+// The marketplace node_modules may have been installed on a different OS
+// (e.g. Linux CI), so binaries for the current platform could be missing.
+function ensureNativeDeps() {
+  const nativeModules = ['sharp']
+  const rootNodeModules = join(pluginRoot, 'node_modules')
+  try { statSync(rootNodeModules) } catch { return }
+
+  for (const mod of nativeModules) {
+    try {
+      const modPath = join(rootNodeModules, mod)
+      statSync(modPath)
+      // Try loading — if it throws, the platform binary is missing
+      const result = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(modPath)})`], {
+        cwd: pluginRoot, stdio: 'pipe', timeout: 10000,
+      })
+      if (result.status !== 0) {
+        log(`${mod}: platform binary missing, rebuilding...`)
+        const rebuildResult = spawnSync(
+          process.platform === 'win32' ? 'npm.cmd' : 'npm',
+          ['rebuild', mod],
+          { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 30000 },
+        )
+        if (rebuildResult.status === 0) {
+          log(`${mod}: rebuild OK`)
+        } else {
+          log(`${mod}: rebuild failed, installing with platform flags...`)
+          spawnSync(
+            process.platform === 'win32' ? 'npm.cmd' : 'npm',
+            ['install', `--os=${process.platform}`, `--cpu=${process.arch}`, mod],
+            { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 60000 },
+          )
+          log(`${mod}: platform install done`)
+        }
+      }
+    } catch { /* module not present, skip */ }
+  }
+}
+
+ensureNativeDeps()
+
 const serverTs = join(pluginRoot, 'server.ts')
 const serverJs = join(pluginRoot, 'server.bundle.mjs')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')

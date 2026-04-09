@@ -461,12 +461,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return ok({ sessionId: session.id, jobId, status: 'working', resultPath });
         }
 
-        // Sync mode — block and return result
+        // Sync mode — block and return result (no progress notifications)
         const result = await askSession(session.id, args.task, args.context,
-          (iteration, calls) => {
-            const names = calls.map(c => c.name).join(', ');
-            notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}`);
-          },
+          null,
           args.cwd,
         );
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);

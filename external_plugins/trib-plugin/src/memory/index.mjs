@@ -247,11 +247,7 @@ function getPendingCandidateCount() {
 }
 
 function getPendingEmbedCount() {
-  try {
-    return Number(store.db.prepare('SELECT COUNT(*) AS n FROM pending_embeds').get()?.n ?? 0)
-  } catch {
-    return 0
-  }
+  return 0
 }
 
 function _runStartupBackfill() {
@@ -776,6 +772,14 @@ async function handleCycle(args) {
   const ws = WORKSPACE_PATH
   const config = readMainConfig()
 
+  if (action === 'health') {
+    try {
+      const h = store.getHealthStatus()
+      return { text: JSON.stringify(h, null, 2) }
+    } catch (e) {
+      return { text: JSON.stringify({ status: 'error', error: e?.message }), isError: true }
+    }
+  }
   if (action === 'status') {
     return { text: JSON.stringify(getCycleStatus(), null, 2) }
   }
@@ -1176,6 +1180,10 @@ export async function init() {
   // Start HTTP server for episode append, proactive endpoints (channels depends on it)
   await _startHttpServer()
   process.stderr.write('[memory-service] init() complete (unified mode)\n')
+  try {
+    const h = store.getHealthStatus()
+    process.stderr.write(`[memory] health=${h.status} vec=${h.vec_enabled ? (h.vec_ready ? 'ready' : 'not-ready') : 'off'} embed=${h.embedding.model_id || 'n/a'}:${h.embedding.dims || '?'}d reranker=${h.reranker.model_id || 'n/a'}@${h.reranker.device || '?'} reindex=${h.reindex_required ? 'yes' : 'no'} episodes=${h.counts.episodes} vectors=${h.counts.vectors_total} pending=${h.pending_candidates}\n`)
+  } catch {}
 }
 
 export { handleToolCall }
