@@ -470,9 +470,6 @@
     <div class="cat-item" data-panel="autotalk" onclick="switchCat(this)">Autotalk</div>
     <div class="cat-item" data-panel="schedules" onclick="switchCat(this)">Schedules</div>
     <div class="cat-item" data-panel="webhooks" onclick="switchCat(this)">Webhooks</div>
-    <div class="cat-item" data-panel="agent" onclick="switchCat(this)">Agent</div>
-    <div class="cat-item" data-panel="memory" onclick="switchCat(this)">Memory</div>
-    <div class="cat-item" data-panel="search" onclick="switchCat(this)">Search</div>
     <div class="cat-item" data-panel="advanced" onclick="switchCat(this)">Advanced</div>
   </div>
 
@@ -654,109 +651,6 @@
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-webhooks"></div>
-        <button class="save" onclick="savePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- AGENT (Providers + Presets) -->
-    <div class="panel" id="panel-agent">
-      <div class="hdr"><h1>Agent</h1></div>
-      <div class="sec">
-        <div class="sec-title">Providers</div>
-        <div class="sec-body" id="agent-providers-section">
-          <div class="r"><span class="r-name-wide">OpenAI API Key</span><div class="pw-wrap"><input class="r-input" id="ag-openai-key" type="password" placeholder="sk-..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">OpenAI OAuth (Codex)</span><span class="r-toggle" id="ag-openai-oauth" onclick="this.classList.toggle('on');isDirty=true"></span></div>
-          <div class="r"><span class="r-name-wide">Anthropic API Key</span><div class="pw-wrap"><input class="r-input" id="ag-anthropic-key" type="password" placeholder="sk-ant-..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Gemini API Key</span><div class="pw-wrap"><input class="r-input" id="ag-gemini-key" type="password" placeholder="AIza..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Groq API Key</span><div class="pw-wrap"><input class="r-input" id="ag-groq-key" type="password" placeholder="gsk_..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">OpenRouter API Key</span><div class="pw-wrap"><input class="r-input" id="ag-openrouter-key" type="password" placeholder="sk-or-..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">xAI API Key</span><div class="pw-wrap"><input class="r-input" id="ag-xai-key" type="password" placeholder="xai-..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Ollama</span><span class="r-toggle" id="ag-ollama" onclick="this.classList.toggle('on');isDirty=true"></span></div>
-          <div class="r"><span class="r-name-wide">Ollama URL</span><input class="r-input" id="ag-ollama-url" type="text" placeholder="http://localhost:11434/v1"></div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Presets</div>
-        <div class="sec-body" id="agent-presets-section"></div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Default Preset</div>
-        <div class="sec-body"><select class="r-input" id="ag-default-preset" style="width:200px"></select></div>
-      </div>
-      <div class="save-area">
-        <div class="warn-msg" id="warn-agent"></div>
-        <button class="save" onclick="savePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- MEMORY -->
-    <div class="panel" id="panel-memory">
-      <div class="hdr"><h1>Memory</h1></div>
-      <div class="sec">
-        <div class="sec-title">General</div>
-        <div class="sec-body">
-          <div class="r"><span class="r-name-wide">Enabled</span><span class="r-toggle" id="mem-enabled" onclick="this.classList.toggle('on');isDirty=true"></span></div>
-          <div class="r"><span class="r-name-wide">User name</span><input class="r-input" id="mem-user-name" type="text" placeholder="Name"></div>
-          <div class="r"><span class="r-name-wide">User title</span><input class="r-input" id="mem-user-title" type="text" placeholder="Title"></div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Cycle 1 (Short-term)</div>
-        <div class="sec-body">
-          <div class="r"><span class="r-name-wide">Interval</span><input class="r-input" id="mem-c1-interval" type="text" placeholder="10m" style="width:80px"></div>
-          <div class="r"><span class="r-name-wide">Batch size</span><input class="r-input" id="mem-c1-batch" type="number" value="50" style="width:80px"></div>
-          <div class="r"><span class="r-name-wide">Max days</span><input class="r-input" id="mem-c1-maxdays" type="number" value="7" style="width:80px"></div>
-          <div class="r"><span class="r-name-wide">Timeout (s)</span><input class="r-input" id="mem-c1-timeout" type="number" value="30" style="width:80px"></div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Cycle 2 (Long-term)</div>
-        <div class="sec-body">
-          <div class="r"><span class="r-name-wide">Schedule</span><input class="r-input" id="mem-c2-schedule" type="text" placeholder="03:00" style="width:80px"></div>
-        </div>
-      </div>
-      <div class="save-area">
-        <div class="warn-msg" id="warn-memory"></div>
-        <button class="save" onclick="savePanel()">Save</button>
-      </div>
-    </div>
-
-    <!-- SEARCH -->
-    <div class="panel" id="panel-search">
-      <div class="hdr"><h1>Search</h1></div>
-      <div class="sec">
-        <div class="sec-title">Raw Search Credentials</div>
-        <div class="sec-body">
-          <div class="r"><span class="r-name-wide">Serper API Key</span><div class="pw-wrap"><input class="r-input" id="sr-serper-key" type="password" placeholder="API key"><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Brave API Key</span><div class="pw-wrap"><input class="r-input" id="sr-brave-key" type="password" placeholder="API key"><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Perplexity API Key</span><div class="pw-wrap"><input class="r-input" id="sr-perplexity-key" type="password" placeholder="API key"><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Firecrawl API Key</span><div class="pw-wrap"><input class="r-input" id="sr-firecrawl-key" type="password" placeholder="API key"><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">Tavily API Key</span><div class="pw-wrap"><input class="r-input" id="sr-tavily-key" type="password" placeholder="API key"><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">xAI API Key</span><div class="pw-wrap"><input class="r-input" id="sr-xai-key" type="password" placeholder="API key"><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-          <div class="r"><span class="r-name-wide">GitHub Token</span><div class="pw-wrap"><input class="r-input" id="sr-github-key" type="password" placeholder="github_pat_..."><span class="pw-toggle" onclick="togglePw(this)">&#128065;</span></div></div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Raw Search Settings</div>
-        <div class="sec-body">
-          <div class="r"><span class="r-name-wide">Max results</span><input class="r-input" id="sr-maxresults" type="number" value="10" style="width:80px"></div>
-          <div class="r"><span class="r-name-wide">Timeout (ms)</span><input class="r-input" id="sr-timeout" type="number" value="30000" style="width:100px"></div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">AI Search Profiles</div>
-        <div class="sec-body" id="sr-ai-profiles"></div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Crawl Settings</div>
-        <div class="sec-body">
-          <div class="r"><span class="r-name-wide">Max pages</span><input class="r-input" id="sr-crawl-maxpages" type="number" value="10" style="width:80px"></div>
-          <div class="r"><span class="r-name-wide">Max depth</span><input class="r-input" id="sr-crawl-maxdepth" type="number" value="2" style="width:80px"></div>
-          <div class="r"><span class="r-name-wide">Same domain only</span><span class="r-toggle on" id="sr-crawl-samedomain" onclick="this.classList.toggle('on');isDirty=true"></span></div>
-        </div>
-      </div>
-      <div class="save-area">
-        <div class="warn-msg" id="warn-search"></div>
         <button class="save" onclick="savePanel()">Save</button>
       </div>
     </div>
@@ -1229,8 +1123,6 @@ async function loadConfig() {
   config = cfgRes;
 
   if (cfgRes._bot) { extraData.bot = cfgRes._bot; delete cfgRes._bot; }
-  if (cfgRes._memory) { extraData.memory = cfgRes._memory; delete cfgRes._memory; }
-  if (cfgRes._search) { extraData.search = cfgRes._search; delete cfgRes._search; }
 
   populateAll(cfgRes);
 }
@@ -1287,61 +1179,6 @@ function populateAll(cfg) {
   // Events
   const events = cfg?.events || {};
   (events.rules || []).forEach(r => addEventCard(r));
-
-  // Agent — Providers
-  const providers = cfg?.providers || {};
-  if (providers.openai?.apiKey) document.getElementById('ag-openai-key').value = providers.openai.apiKey;
-  if (providers['openai-oauth']?.enabled) document.getElementById('ag-openai-oauth').classList.add('on');
-  if (providers.anthropic?.apiKey) document.getElementById('ag-anthropic-key').value = providers.anthropic.apiKey;
-  if (providers.gemini?.apiKey) document.getElementById('ag-gemini-key').value = providers.gemini.apiKey;
-  if (providers.groq?.apiKey) document.getElementById('ag-groq-key').value = providers.groq.apiKey;
-  if (providers.openrouter?.apiKey) document.getElementById('ag-openrouter-key').value = providers.openrouter.apiKey;
-  if (providers.xai?.apiKey) document.getElementById('ag-xai-key').value = providers.xai.apiKey;
-  if (providers.ollama?.enabled) document.getElementById('ag-ollama').classList.add('on');
-  if (providers.ollama?.baseURL) document.getElementById('ag-ollama-url').value = providers.ollama.baseURL;
-
-  // Agent — Presets
-  const presets = cfg?.presets || [];
-  const presetSel = document.getElementById('ag-default-preset');
-  presetSel.innerHTML = '';
-  const presetsHtml = presets.map((p, i) =>
-    `<div class="r" style="gap:6px"><input class="r-input" style="width:100px" value="${p.name||''}" data-pi="${i}" data-f="p-name"><input class="r-input" style="width:140px" value="${p.model||''}" data-pi="${i}" data-f="p-model"><select class="r-input" style="width:80px" data-pi="${i}" data-f="p-tools"><option ${p.tools==='full'?'selected':''}>full</option><option ${p.tools==='readonly'?'selected':''}>readonly</option><option ${p.tools==='mcp'?'selected':''}>mcp</option></select></div>`
-  ).join('');
-  document.getElementById('agent-presets-section').innerHTML = presetsHtml || '<div style="color:var(--text-4)">No presets configured</div>';
-  presets.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p.id || p.name;
-    opt.textContent = `${p.name} (${p.model})`;
-    if (cfg?.default === (p.id || p.name)) opt.selected = true;
-    presetSel.appendChild(opt);
-  });
-
-  // Memory
-  const mem = extraData.memory || {};
-  if (mem.enabled) document.getElementById('mem-enabled').classList.add('on');
-  if (mem.user?.name) document.getElementById('mem-user-name').value = mem.user.name;
-  if (mem.user?.title) document.getElementById('mem-user-title').value = mem.user.title;
-  const c1 = mem.cycle1 || {};
-  if (c1.interval) document.getElementById('mem-c1-interval').value = c1.interval;
-  if (c1.batchSize) document.getElementById('mem-c1-batch').value = c1.batchSize;
-  if (c1.maxDays) document.getElementById('mem-c1-maxdays').value = c1.maxDays;
-  if (c1.timeout) document.getElementById('mem-c1-timeout').value = c1.timeout;
-  const c2 = mem.cycle2 || {};
-  if (c2.schedule) document.getElementById('mem-c2-schedule').value = c2.schedule;
-
-  // Search
-  const search = extraData.search || {};
-  const creds = search.rawSearch?.credentials || {};
-  if (creds.serper?.apiKey) document.getElementById('sr-serper-key').value = creds.serper.apiKey;
-  if (creds.brave?.apiKey) document.getElementById('sr-brave-key').value = creds.brave.apiKey;
-  if (creds.perplexity?.apiKey) document.getElementById('sr-perplexity-key').value = creds.perplexity.apiKey;
-  if (creds.firecrawl?.apiKey) document.getElementById('sr-firecrawl-key').value = creds.firecrawl.apiKey;
-  if (creds.tavily?.apiKey) document.getElementById('sr-tavily-key').value = creds.tavily.apiKey;
-  if (creds.github?.token) document.getElementById('sr-github-key').value = creds.github.token;
-  const crawl = search.crawl || {};
-  if (crawl.maxPages) document.getElementById('sr-crawl-maxpages').value = crawl.maxPages;
-  if (crawl.maxDepth) document.getElementById('sr-crawl-maxdepth').value = crawl.maxDepth;
-  if (crawl.sameDomainOnly === false) document.getElementById('sr-crawl-samedomain').classList.remove('on');
 }
 
 function populateQuietHours(schedule) {
@@ -1473,29 +1310,6 @@ function buildData() {
     },
     events: { rules: eventRules },
     webhook,
-    // Agent — Providers
-    providers: {
-      openai: { enabled: !!document.getElementById('ag-openai-key').value, apiKey: document.getElementById('ag-openai-key').value || undefined },
-      'openai-oauth': { enabled: document.getElementById('ag-openai-oauth').classList.contains('on') },
-      anthropic: { enabled: !!document.getElementById('ag-anthropic-key').value, apiKey: document.getElementById('ag-anthropic-key').value || undefined },
-      gemini: { enabled: !!document.getElementById('ag-gemini-key').value, apiKey: document.getElementById('ag-gemini-key').value || undefined },
-      groq: { enabled: !!document.getElementById('ag-groq-key').value, apiKey: document.getElementById('ag-groq-key').value || undefined },
-      openrouter: { enabled: !!document.getElementById('ag-openrouter-key').value, apiKey: document.getElementById('ag-openrouter-key').value || undefined },
-      xai: { enabled: !!document.getElementById('ag-xai-key').value, apiKey: document.getElementById('ag-xai-key').value || undefined },
-      ollama: { enabled: document.getElementById('ag-ollama').classList.contains('on'), baseURL: document.getElementById('ag-ollama-url').value || 'http://localhost:11434/v1' },
-    },
-    presets: (() => {
-      const existing = config?.presets || [];
-      document.querySelectorAll('#agent-presets-section [data-pi]').forEach(el => {
-        const i = parseInt(el.dataset.pi);
-        if (!existing[i]) return;
-        if (el.dataset.f === 'p-name') existing[i].name = el.value;
-        if (el.dataset.f === 'p-model') existing[i].model = el.value;
-        if (el.dataset.f === 'p-tools') existing[i].tools = el.value;
-      });
-      return existing;
-    })(),
-    default: document.getElementById('ag-default-preset').value || undefined,
     _bot: {
       quiet: {
         schedule: quietSchedule,
@@ -1504,39 +1318,6 @@ function buildData() {
       autotalk: {
         freq: parseInt(document.getElementById('bot-autotalk-freq').value) || 3,
         enabled: document.getElementById('bot-autotalk-enabled').classList.contains('on'),
-      },
-    },
-    _memory: {
-      enabled: document.getElementById('mem-enabled').classList.contains('on'),
-      user: {
-        name: document.getElementById('mem-user-name').value || undefined,
-        title: document.getElementById('mem-user-title').value || undefined,
-      },
-      cycle1: {
-        interval: document.getElementById('mem-c1-interval').value || '10m',
-        batchSize: parseInt(document.getElementById('mem-c1-batch').value) || 50,
-        maxDays: parseInt(document.getElementById('mem-c1-maxdays').value) || 7,
-        timeout: parseInt(document.getElementById('mem-c1-timeout').value) || 30,
-      },
-      cycle2: {
-        schedule: document.getElementById('mem-c2-schedule').value || '03:00',
-      },
-    },
-    _search: {
-      rawSearch: {
-        credentials: {
-          serper: { apiKey: document.getElementById('sr-serper-key').value || '' },
-          brave: { apiKey: document.getElementById('sr-brave-key').value || '' },
-          perplexity: { apiKey: document.getElementById('sr-perplexity-key').value || '' },
-          firecrawl: { apiKey: document.getElementById('sr-firecrawl-key').value || '' },
-          tavily: { apiKey: document.getElementById('sr-tavily-key').value || '' },
-          github: { token: document.getElementById('sr-github-key').value || '' },
-        },
-      },
-      crawl: {
-        maxPages: parseInt(document.getElementById('sr-crawl-maxpages').value) || 10,
-        maxDepth: parseInt(document.getElementById('sr-crawl-maxdepth').value) || 2,
-        sameDomainOnly: document.getElementById('sr-crawl-samedomain').classList.contains('on'),
       },
     },
   };

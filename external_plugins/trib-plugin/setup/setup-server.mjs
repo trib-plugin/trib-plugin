@@ -14,8 +14,6 @@ const pluginsData = join(home, '.claude', 'plugins', 'data');
 const DATA_DIR = join(pluginsData, 'trib-plugin-trib-plugin');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const BOT_PATH = join(DATA_DIR, 'bot.json');
-const MEMORY_PATH = join(DATA_DIR, 'memory-config.json');
-const SEARCH_PATH = join(DATA_DIR, 'search-config.json');
 const PORT = 3458;
 const APP_WIDTH = 850;
 const APP_HEIGHT = 900;
@@ -57,10 +55,9 @@ function getCenteredWindowPosition() {
     'Write-Output "$($a.X),$($a.Y),$($a.Width),$($a.Height)"',
   ].join(';');
   try {
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
       encoding: 'utf8',
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
     });
     if (result.status !== 0) return null;
     const [x, y, width, height] = (result.stdout || '').trim().split(',').map(Number);
@@ -71,22 +68,6 @@ function getCenteredWindowPosition() {
     };
   } catch {
     return null;
-  }
-}
-
-function setAlwaysOnTop(title) {
-  if (isWin) {
-    const ps = `Add-Type -Name W -Namespace N -Member '[DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int h2,uint f);[DllImport("user32.dll")]public static extern IntPtr FindWindow(string c,string t);';$h=[N.W]::FindWindow([NullString]::Value,'${title}');if($h-ne[IntPtr]::Zero){[N.W]::SetWindowPos($h,[IntPtr]::new(-1),0,0,0,0,3)}`;
-    try {
-      spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps], {
-        detached: true, stdio: 'ignore', windowsHide: true,
-      }).unref();
-    } catch {}
-  } else if (process.platform === 'darwin') {
-    const osa = `tell application "System Events" to set frontmost of every process whose name contains "Chrome" to true`;
-    try {
-      spawn('osascript', ['-e', osa], { detached: true, stdio: 'ignore' }).unref();
-    } catch {}
   }
 }
 
@@ -109,34 +90,14 @@ function openAppWindow() {
           windowsHide: true,
         });
         child.unref();
-        // Set always-on-top after window opens
-        setTimeout(() => setAlwaysOnTop('TRIB-CHANNELS CONFIG'), 1500);
         return true;
       } catch {}
     }
-    // Fallback: use PowerShell Start-Process to avoid cmd.exe console flash
-    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', `Start-Process "${appUrl}"`], {
-      detached: true, stdio: 'ignore', windowsHide: true,
-    }).unref();
+    exec(`cmd.exe /c start "" "${appUrl}"`, { windowsHide: true });
     return true;
   }
 
   if (process.platform === 'darwin') {
-    const macBrowsers = [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-    ];
-    const macBrowser = macBrowsers.find(p => existsSync(p));
-    if (macBrowser) {
-      try {
-        const child = spawn(macBrowser, [`--app=${appUrl}`, `--window-size=${APP_WIDTH},${APP_HEIGHT}`], {
-          detached: true, stdio: 'ignore',
-        });
-        child.unref();
-        setTimeout(() => setAlwaysOnTop('TRIB-CHANNELS CONFIG'), 1500);
-        return true;
-      } catch {}
-    }
     exec(`open "${appUrl}"`);
     return true;
   }
@@ -175,7 +136,7 @@ function mergeConfig(existing, data) {
 function checkCli(name) {
   return new Promise(resolve => {
     const cmd = isWin ? `where ${name}` : `which ${name}`;
-    exec(cmd, { windowsHide: true }, (err, stdout) => {
+    exec(cmd, (err, stdout) => {
       if (err || !stdout.trim()) resolve({ installed: false });
       else resolve({ installed: true, path: stdout.trim().split(/\r?\n/)[0] });
     });
@@ -215,9 +176,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/config') {
     const config = readConfig();
-    config._bot = readJsonFile(BOT_PATH);
-    config._memory = readJsonFile(MEMORY_PATH);
-    config._search = readJsonFile(SEARCH_PATH);
+    const bot = readJsonFile(BOT_PATH);
+    config._bot = bot;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(config));
     return;
@@ -227,31 +187,17 @@ const server = http.createServer(async (req, res) => {
     const data = await readBody(req);
 
     const botData = data._bot;
-    const memoryData = data._memory;
-    const searchData = data._search;
     delete data._bot;
-    delete data._memory;
-    delete data._search;
 
     const existing = readConfig();
     const merged = mergeConfig(existing, data);
     writeConfig(merged);
-    console.log('  Config saved: main');
+    console.log('  Config saved: channels');
 
     if (botData) {
       const existingBot = readJsonFile(BOT_PATH);
       writeJsonFile(BOT_PATH, { ...existingBot, ...botData });
       console.log('  Config saved: bot.json');
-    }
-    if (memoryData) {
-      const existingMem = readJsonFile(MEMORY_PATH);
-      writeJsonFile(MEMORY_PATH, { ...existingMem, ...memoryData });
-      console.log('  Config saved: memory-config.json');
-    }
-    if (searchData) {
-      const existingSearch = readJsonFile(SEARCH_PATH);
-      writeJsonFile(SEARCH_PATH, { ...existingSearch, ...searchData });
-      console.log('  Config saved: search-config.json');
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -284,7 +230,7 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const { stdout } = await new Promise((resolve, reject) => {
-        exec(commands[tool], { timeout: 120000, windowsHide: true }, (err, stdout, stderr) => {
+        exec(commands[tool], { timeout: 120000 }, (err, stdout, stderr) => {
           if (err) reject(err);
           else resolve({ stdout, stderr });
         });
