@@ -164,7 +164,7 @@ export function classifyMemorySentence(factType, text) {
   if (internalMaintenanceTopic && (hasImperative || hasTaskVerb || proposalLike)) return { category: 'maintenance_task', keepFact: false, admit: true }
   if (internalMaintenanceTopic) return { category: 'internal_commentary', keepFact: false, admit: false }
   if (factType === 'preference') return { category: 'preference', keepFact: true, admit: true }
-  return { category: 'generic', keepFact: true, admit: false }
+  return { category: 'generic', keepFact: true, admit: true }
 }
 
 export function classifyCandidateConcept(text, role = 'user') {
@@ -203,8 +203,8 @@ export function classifyCandidateConcept(text, role = 'user') {
   if (preferenceLike) return { category: 'preference', admit: true }
   if (taskLike) return { category: 'active_task', admit: true }
   if (storageDecisionLike) return { category: 'storage_decision', admit: true }
-  if (isQuestionOnly) return { category: 'question', admit: false }
-  return { category: 'generic', admit: false }
+  if (isQuestionOnly) return { category: 'question', admit: true }
+  return { category: 'generic', admit: true }
 }
 
 export function shouldKeepFact(factType, text, confidence) {
