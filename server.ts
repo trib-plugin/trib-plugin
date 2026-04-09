@@ -38,7 +38,7 @@ import {
   handleToolCall as searchHandleToolCall,
   start as searchStart,
   stop as searchStop,
-} from './external_plugins/trib-search/server.mjs'
+} from './src/search/index.mjs'
 
 import {
   TOOL_DEFS as AGENT_TOOLS,
@@ -47,7 +47,7 @@ import {
   handleToolCall as agentHandleToolCall,
   start as agentStart,
   stop as agentStop,
-} from './external_plugins/trib-agent/server.mjs'
+} from './src/agent/index.mjs'
 
 import {
   TOOL_DEFS as MEMORY_TOOLS,
@@ -56,7 +56,7 @@ import {
   handleToolCall as memoryHandleToolCall,
   start as memoryStart,
   stop as memoryStop,
-} from './external_plugins/trib-memory/services/memory-service.mjs'
+} from './src/memory/index.mjs'
 
 import {
   TOOL_DEFS as CHANNELS_TOOLS,
@@ -65,7 +65,7 @@ import {
   handleToolCall as channelsHandleToolCall,
   start as channelsStart,
   stop as channelsStop,
-} from './external_plugins/trib-channels/server.ts'
+} from './src/channels/index.ts'
 
 // ── Tool routing ───────────────────────────────────────────────────────
 
