@@ -10,7 +10,7 @@
       "name": "trib-plugin",
       "description": "Unified trib ecosystem — Discord channels, persistent memory, web search, AI agent orchestration",
       "category": "productivity",
-      "source": "./external_plugins/trib-channels"
+      "source": "./external_plugins/trib-plugin"
     }
   ]
 }
