@@ -211,8 +211,10 @@ export interface AccessConfig {
 export interface VoiceConfig {
   /** Whisper binary name or absolute path (default: auto-detect whisper-cli) */
   command?: string
-  /** GGML model file path (omit to use whisper's built-in default) */
+  /** GGML model file path for whisper.cpp (omit to auto-detect) */
   model?: string
+  /** Python openai-whisper model name, e.g. "turbo", "large-v3" (default: "turbo") */
+  pythonModel?: string
   /** BCP-47 language code or "auto" for auto-detect (default: "auto") */
   language?: string
 }

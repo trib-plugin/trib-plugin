@@ -1152,6 +1152,7 @@ function runCmd(cmd: string, args: string[], capture = false): Promise<string> {
 let resolvedWhisperCmd: string | null = null
 let resolvedWhisperModel: string | null = null
 let resolvedWhisperLanguage: string | null = null
+let resolvedWhisperType: 'python' | 'cpp' | null = null
 const whichCmd = process.platform === 'win32' ? 'where' : 'which'
 
 function firstNonEmptyLine(text: string): string {
@@ -1218,6 +1219,21 @@ async function resolveCommandPath(command: string): Promise<string> {
   return resolved
 }
 
+async function detectWhisperType(cmd: string): Promise<'python' | 'cpp'> {
+  if (resolvedWhisperType) return resolvedWhisperType
+  try {
+    const out = await runCmd(cmd, ['--help'], true)
+    resolvedWhisperType = out.includes('openai') || out.includes('output_format') || out.includes('output_dir')
+      ? 'python'
+      : 'cpp'
+  } catch {
+    // If --help fails, check path heuristics (Python installs under Scripts/ or site-packages/)
+    const lower = cmd.toLowerCase()
+    resolvedWhisperType = lower.includes('python') || lower.includes('scripts') ? 'python' : 'cpp'
+  }
+  return resolvedWhisperType
+}
+
 async function findWhisper(override?: string): Promise<string> {
   if (override) {
     if (override.includes(path.sep) || override.includes('/')) {
@@ -1235,7 +1251,7 @@ async function findWhisper(override?: string): Promise<string> {
       return resolvedWhisperCmd
     } catch { /* not found, try next */ }
   }
-  throw new Error('whisper not found in PATH — install whisper.cpp or set voice.command in config')
+  throw new Error('whisper not found in PATH — install whisper.cpp or openai-whisper, or set voice.command in config')
 }
 
 function candidateModelDirs(whisperCmd: string): string[] {
@@ -1322,14 +1338,32 @@ async function findWhisperModel(override: string | undefined, whisperCmd: string
 }
 
 async function transcribeVoice(audioPath: string): Promise<string | null> {
-  const wavPath = audioPath.replace(/\.[^.]+$/, '.wav')
   try {
-    await runCmd('ffmpeg', ['-i', audioPath, '-ar', '16000', '-ac', '1', '-y', wavPath])
     const whisperCmd = await findWhisper(config.voice?.command)
+    const type = await detectWhisperType(whisperCmd)
+    const lang = normalizeWhisperLanguage(config.voice?.language) ?? detectDeviceLanguage()
+
+    if (type === 'python') {
+      // Python openai-whisper: handles audio conversion internally, auto-downloads models
+      const tmpDir = path.join(os.tmpdir(), 'trib-whisper')
+      await fs.promises.mkdir(tmpDir, { recursive: true })
+      const args = [audioPath, '--output_format', 'txt', '--output_dir', tmpDir]
+      if (lang && lang !== 'auto') args.push('--language', lang)
+      const model = config.voice?.pythonModel ?? config.voice?.model ?? 'turbo'
+      if (model && !model.endsWith('.bin')) args.push('--model', model)
+      await runCmd(whisperCmd, args)
+      const baseName = path.basename(audioPath).replace(/\.[^.]+$/, '')
+      const txtPath = path.join(tmpDir, `${baseName}.txt`)
+      const text = await fs.promises.readFile(txtPath, 'utf-8')
+      return text.trim() || null
+    }
+
+    // whisper.cpp: needs WAV conversion and GGML model file
+    const wavPath = audioPath.replace(/\.[^.]+$/, '.wav')
+    await runCmd('ffmpeg', ['-i', audioPath, '-ar', '16000', '-ac', '1', '-y', wavPath])
     const modelPath = await findWhisperModel(config.voice?.model, whisperCmd)
     const args = ['-f', wavPath, '--no-timestamps']
-    const lang = normalizeWhisperLanguage(config.voice?.language) ?? detectDeviceLanguage()
-    if (lang) args.push('-l', lang)
+    if (lang && lang !== 'auto') args.push('-l', lang)
     args.push('-m', modelPath)
     const text = await runCmd(whisperCmd, args, true)
     return text.trim() || null
