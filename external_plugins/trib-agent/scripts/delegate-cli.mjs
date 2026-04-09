@@ -93,25 +93,27 @@ try {
 
   // Background mode: also inject via trib-channels HTTP
   if (background) {
-    injectResult(`**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`);
+    injectResult(`**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`, { type: 'delegate' });
   }
 } catch (err) {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(JSON.stringify({ error: msg }));
   if (background) {
-    injectResult(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`);
+    injectResult(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
   }
   process.exit(1);
 }
 
 // --- HTTP inject helper ---
-function injectResult(content) {
+function injectResult(content, { type } = {}) {
   try {
     const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
     const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
     const instance = JSON.parse(readFileSync(portFile, 'utf8'));
     if (!instance.httpPort) return;
-    const payload = JSON.stringify({ content, source: 'trib-agent' });
+    const body = { content, source: 'trib-agent' };
+    if (type) body.type = type;
+    const payload = JSON.stringify(body);
     const req = httpRequest({
       hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },

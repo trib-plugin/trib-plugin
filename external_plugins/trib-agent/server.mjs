@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initProviders, getAllProviders } from './orchestrator/providers/registry.js';
 import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.js';
-import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset } from './orchestrator/config.js';
+import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset } from './orchestrator/config.js';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.js';
 import { writeFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs';
@@ -21,23 +21,26 @@ function readPluginVersion() {
 }
 const PLUGIN_VERSION = readPluginVersion();
 
-function injectViaChannels(content) {
+function injectViaChannels(content, { type, instruction } = {}) {
   // Try direct HTTP endpoint first (no MCP session overhead, survives reconnects)
-  injectViaHttp(content).catch(() => {
+  injectViaHttp(content, { type, instruction }).catch(() => {
     // Fallback to MCP tool call
     executeMcpTool('mcp__trib-channels__inject', { content, source: 'trib-agent' })
       .catch(() => { notify(content); });
   });
 }
 
-function injectViaHttp(content) {
+function injectViaHttp(content, { type, instruction } = {}) {
   return new Promise((resolve, reject) => {
     try {
       const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
       const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
       const instance = JSON.parse(readFileSync(portFile, 'utf8'));
       if (!instance.httpPort) { reject(new Error('no httpPort')); return; }
-      const payload = JSON.stringify({ content, source: 'trib-agent' });
+      const body = { content, source: 'trib-agent' };
+      if (type) body.type = type;
+      if (instruction) body.instruction = instruction;
+      const payload = JSON.stringify(body);
       const req = httpRequest({
         hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
@@ -352,9 +355,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           session = resumeSession(args.sessionId);
           if (!session) return fail(`Session "${args.sessionId}" not found`);
         } else {
-          if (!args.provider || !args.model) return fail('provider and model are required when no sessionId is given');
+          let provider = args.provider;
+          let model = args.model;
+
+          // Resolve preset → provider/model if not explicitly given
+          if (!provider || !model) {
+            const cfg = loadConfig();
+            const preset = args.preset
+              ? getPreset(cfg, args.preset)
+              : getDefaultPreset(cfg);
+            if (preset) {
+              provider = provider || preset.provider;
+              model = model || preset.model;
+            }
+          }
+
+          if (!provider || !model) return fail('provider and model are required (or set a default preset)');
           session = createSession({
-            provider: args.provider, model: args.model,
+            provider, model,
             agent: args.role, preset: args.preset || 'full',
             cwd: args.cwd || process.cwd(),
           });
@@ -407,6 +425,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                   injectViaChannels(
                     `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
                     `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
+                    { type: 'delegate' },
                   );
                 } catch (injectErr) {
                   process.stderr.write(`[trib-agent] Failed to inject result via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
@@ -426,7 +445,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               }
               (async () => {
                 try {
-                  injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`);
+                  injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
                 } catch (injectErr) {
                   process.stderr.write(`[trib-agent] Failed to inject error via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
                 }
