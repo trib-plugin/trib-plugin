@@ -186,8 +186,8 @@ function normalizeLegacyConfig(config) {
 export function loadConfig() {
   ensureDataDir()
   let config = readJson(CONFIG_PATH, null)
-  // Unified mode: read from 'search' section of unified config
-  if (process.env.TRIB_UNIFIED === '1' && config && config.search) {
+  // If config has a 'search' section, use it (unified config format)
+  if (config && config.search && config.search.rawSearch) {
     config = config.search
   }
   if (!config) {

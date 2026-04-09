@@ -107,8 +107,8 @@ export function loadConfig() {
         migrateMcpToolsFile(configPath);
         try {
             let raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-            // Unified mode: read from 'agent' section
-            if (process.env.TRIB_UNIFIED === '1' && raw.agent) {
+            // If config has an 'agent' section, use it (unified config format)
+            if (raw.agent && raw.agent.providers) {
                 raw = raw.agent;
             }
             const defaults = buildDefaultConfig();

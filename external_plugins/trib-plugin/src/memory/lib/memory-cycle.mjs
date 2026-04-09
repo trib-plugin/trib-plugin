@@ -426,8 +426,8 @@ export function readMainConfig() {
   const mainConfigPath = join(PLUGIN_DATA_DIR, 'config.json')
   try {
     const raw = JSON.parse(readFileSync(mainConfigPath, 'utf8'))
-    // Unified mode: read from 'memory' section
-    if (process.env.TRIB_UNIFIED === '1' && raw.memory) return raw.memory
+    // If config has a 'memory' section, use it (unified config format)
+    if (raw.memory && (raw.memory.cycle1 || raw.memory.enabled !== undefined)) return raw.memory
     return raw
   } catch { return {} }
 }
