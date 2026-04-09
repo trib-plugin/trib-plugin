@@ -4,23 +4,21 @@ argument-hint: "<prompt>"
 allowed-tools: Agent
 ---
 
-Route this request to the `trib-plugin:ask-forwarder` subagent using the Agent tool.
-
-Spawn the subagent with the short wrapper command:
+Spawn the ask-forwarder subagent in the background:
 
 ```
 Agent({
   subagent_type: "trib-plugin:ask-forwarder",
   description: "trib-agent ask",
-  prompt: "Run this Bash command and return stdout verbatim:\n\nCLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" node \"${CLAUDE_PLUGIN_ROOT}/ask.mjs\" \"<USER_PROMPT>\" 2>/dev/null"
+  run_in_background: true,
+  prompt: "Run this Bash command and return stdout verbatim:\n\nCLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" node \"${CLAUDE_PLUGIN_ROOT}/ask.mjs\" \"<USER_PROMPT>\" 2>/dev/null\n\nCRITICAL: Set description to \"trib-agent ask\" on the Bash call. Return ONLY stdout, no commentary."
 })
 ```
 
-Replace `<USER_PROMPT>` with the user's actual request below. Escape any double quotes in the prompt.
+Replace `<USER_PROMPT>` with the user's actual request below. Escape any double quotes.
 
 User request: $ARGUMENTS
 
-Rules:
-- Return the subagent's output verbatim to the user.
-- Do not paraphrase, summarize, rewrite, or add commentary.
-- If the user did not supply a prompt, tell them to provide one.
+After spawning, tell the user the request was sent. When the background agent completes, relay its output verbatim — no paraphrasing, no commentary.
+
+If the user did not supply a prompt, tell them to provide one.
