@@ -204,41 +204,39 @@ const PROXY_TOOL_DEFS = [
   { name: 'search_memories', description: 'Search and retrieve memory.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
 ]
 
-// ── Decide: proxy or primary ────────────────────────────────────────
+// ── Module-level state (initialized by init() or standalone startup) ──
+let store = null
+let mainConfig = null
+let opsPolicy = null
+let featureFlags = null
+let WORKSPACE_PATH = null
+let serverStartedAt = null
+let _rebuildLock = false
+let _cycleInterval = null
+let _startupTimeout = null
+let _initialized = false
 
-const existingPort = await isExistingServerHealthy()
-if (existingPort) {
-  await runProxyMode(existingPort)
-  // proxy mode runs forever via stdio — if we reach here, stdio closed
-  process.exit(0)
+// ── Shared init logic (used by both standalone and unified modes) ─────
+
+async function _initStore() {
+  mainConfig = readMainConfig()
+  opsPolicy = readMemoryOpsPolicy(mainConfig)
+  featureFlags = readMemoryFeatureFlags(mainConfig)
+  const embeddingConfig = mainConfig?.embedding
+  if (embeddingConfig?.provider || embeddingConfig?.ollamaModel || embeddingConfig?.dtype) {
+    configureEmbedding({
+      provider: embeddingConfig.provider,
+      ollamaModel: embeddingConfig.ollamaModel,
+      dtype: embeddingConfig.dtype,
+    })
+  }
+
+  store = getMemoryStore(DATA_DIR)
+  store.syncHistoryFromFiles()
+  startLlmWorker()
+
+  WORKSPACE_PATH = process.env.TRIB_MEMORY_WORKSPACE || process.cwd()
 }
-
-// No healthy server — start as primary
-acquireLock()
-
-// ── Store initialization ─────────────────────────────────────────────
-
-const mainConfig = readMainConfig()
-const opsPolicy = readMemoryOpsPolicy(mainConfig)
-const featureFlags = readMemoryFeatureFlags(mainConfig)
-const embeddingConfig = mainConfig?.embedding
-if (embeddingConfig?.provider || embeddingConfig?.ollamaModel || embeddingConfig?.dtype) {
-  configureEmbedding({
-    provider: embeddingConfig.provider,
-    ollamaModel: embeddingConfig.ollamaModel,
-    dtype: embeddingConfig.dtype,
-  })
-}
-
-const store = getMemoryStore(DATA_DIR)
-store.syncHistoryFromFiles()
-startLlmWorker()
-
-// WORKSPACE_PATH for cycle functions that call backfillProject(ws).
-// If the ws path doesn't resolve to a valid project dir, backfillProject
-// falls back to backfillAllProjects() which scans all project dirs directly.
-// This works on macOS, Windows, and WSL without slug-to-path conversion issues.
-const WORKSPACE_PATH = process.env.TRIB_MEMORY_WORKSPACE || process.cwd()
 
 function getPendingCandidateCount() {
   try {
@@ -256,37 +254,29 @@ function getPendingEmbedCount() {
   }
 }
 
-const startupBackfill = buildStartupBackfillOptions(opsPolicy, store)
-if (startupBackfill) {
-  try {
-    const n = startupBackfill.scope === 'workspace'
-      ? store.backfillProject(WORKSPACE_PATH, startupBackfill)
-      : store.backfillAllProjects(startupBackfill)
-    if (n > 0) {
-      process.stderr.write(
-        `[memory-service] startup backfill (${startupBackfill.scope}/${startupBackfill.sinceMs ? 'windowed' : 'all'}): ${n} episodes\n`,
-      )
+function _runStartupBackfill() {
+  const startupBackfill = buildStartupBackfillOptions(opsPolicy, store)
+  if (startupBackfill) {
+    try {
+      const n = startupBackfill.scope === 'workspace'
+        ? store.backfillProject(WORKSPACE_PATH, startupBackfill)
+        : store.backfillAllProjects(startupBackfill)
+      if (n > 0) {
+        process.stderr.write(
+          `[memory-service] startup backfill (${startupBackfill.scope}/${startupBackfill.sinceMs ? 'windowed' : 'all'}): ${n} episodes\n`,
+        )
+      }
+    } catch (e) {
+      process.stderr.write(`[memory-service] startup backfill failed: ${e.message}\n`)
     }
-  } catch (e) {
-    process.stderr.write(`[memory-service] startup backfill failed: ${e.message}\n`)
   }
 }
 
-// Rebuild lock: pauses cycles during manual rebuild
-let _rebuildLock = false
-
 // ── Cycle schedulers (last-run based, not wall-clock) ────────────────
-
-const cycle1Config = mainConfig?.cycle1 ?? {}
-const cycle1IntervalStr = cycle1Config.interval || '5m'
-const cycle1Ms = parseInterval(cycle1IntervalStr)
-const cycle2IntervalStr = mainConfig?.cycle2?.interval || '1h'
-const cycle2Ms = parseInterval(cycle2IntervalStr)
 
 function getCycleLastRun() {
   try {
     const state = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'memory-cycle.json'), 'utf8'))
-    // Flat keys — memory-cycle.mjs writes `state.lastCycle1At` / `state.lastSleepAt` directly.
     return {
       cycle1: Number(state?.lastCycle1At) || 0,
       cycle2: Number(state?.lastSleepAt) || 0,
@@ -297,6 +287,11 @@ function getCycleLastRun() {
 async function checkCycles(options = {}) {
   if (_rebuildLock) return
   if (mainConfig?.enabled === false) return
+
+  const cycle1Config = mainConfig?.cycle1 ?? {}
+  const cycle1Ms = parseInterval(cycle1Config.interval || '5m')
+  const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h')
+
   const startup = options.startup === true
   const now = Date.now()
   const last = getCycleLastRun()
@@ -305,7 +300,6 @@ async function checkCycles(options = {}) {
   const cycle1Due = now - last.cycle1 >= cycle1Ms
   const cycle2Due = now - last.cycle2 >= cycle2Ms
 
-  // cycle1: lastRunAt + interval elapsed
   if (
     startup
       ? shouldRunCycleCatchUp('cycle1', opsPolicy, {
@@ -326,7 +320,6 @@ async function checkCycles(options = {}) {
     }
   }
 
-  // cycle2: interval-based (default 1h)
   if (
     startup
       ? shouldRunCycleCatchUp('cycle2', opsPolicy, {
@@ -343,34 +336,29 @@ async function checkCycles(options = {}) {
       process.stderr.write(`[cycle2] error: ${e.message}\n`)
     }
   }
-
-  // autoFlush removed — pending candidates are now handled solely by the
-  // scheduled cycle1 interval. This prevents pending>=15 / 2h-elapsed triggers
-  // from spawning inline embedding runs during active conversations.
 }
 
-// Check every minute, run if due
-setInterval(() => { void checkCycles() }, opsPolicy.scheduler.checkIntervalMs)
-// Initial check after warmup (catches overdue cycles immediately)
-const startupDelayMs = Math.max(
-  Number(opsPolicy.startup.cycle1CatchUp.delayMs ?? 0),
-  Number(opsPolicy.startup.cycle2CatchUp.delayMs ?? 0),
-)
-setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
+function _startCycles() {
+  if (_cycleInterval) return  // already running
+  _cycleInterval = setInterval(() => { void checkCycles() }, opsPolicy.scheduler.checkIntervalMs)
+  const startupDelayMs = Math.max(
+    Number(opsPolicy.startup.cycle1CatchUp.delayMs ?? 0),
+    Number(opsPolicy.startup.cycle2CatchUp.delayMs ?? 0),
+  )
+  _startupTimeout = setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
+}
 
-// ── Server started timestamp (after startup backfill) ────────────────
-const serverStartedAt = localNow()
+function _stopCycles() {
+  if (_cycleInterval) { clearInterval(_cycleInterval); _cycleInterval = null }
+  if (_startupTimeout) { clearTimeout(_startupTimeout); _startupTimeout = null }
+}
 
-// ── Live transcript watcher: hybrid fs.watch + safety polling ────────
-// Primary mechanism: fs.watch (OS-level events, ~0 CPU idle cost).
-// Safety net: 5-minute sweep catches any events missed by fs.watch
-// (Windows ReadDirectoryChangesW can miss large-append events occasionally).
-{
+function _initTranscriptWatcher() {
   const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
-  const SAFETY_POLL_MS = 5 * 60_000  // 5 min full sweep
-  const DEBOUNCE_MS = 500            // coalesce rapid events per file
-  const watchedFiles = new Map()     // path → mtime
-  const pendingByFile = new Map()    // path → debounce timer
+  const SAFETY_POLL_MS = 5 * 60_000
+  const DEBOUNCE_MS = 500
+  const watchedFiles = new Map()
+  const pendingByFile = new Map()
 
   function isWatchable(relOrBase) {
     const base = path.basename(relOrBase)
@@ -421,7 +409,6 @@ const serverStartedAt = localNow()
           }
         } catch {}
       }
-      // Only watch files modified in the last 30 minutes
       const cutoff = Date.now() - 30 * 60_000
       return files.filter(f => f.mtime > cutoff)
     } catch { return [] }
@@ -436,12 +423,9 @@ const serverStartedAt = localNow()
     }
   }
 
-  // Initial scan after short delay (warm up + ingest anything pre-existing)
   setTimeout(safetySweep, 3_000)
-  // Safety net: 5-min periodic full sweep
   setInterval(safetySweep, SAFETY_POLL_MS)
 
-  // Primary: fs.watch with recursive OS events (Node 18+, Windows OK)
   try {
     const watcher = fs.watch(projectsRoot, { recursive: true, persistent: true }, (_event, filename) => {
       if (!filename) return
@@ -458,39 +442,51 @@ const serverStartedAt = localNow()
   }
 }
 
-// ── Startup migration: purge consolidated candidates + VACUUM (one-shot) ──
-// Legacy rows from when processed candidates were marked 'consolidated' instead
-// of deleted. Safe no-op after first run.
-try {
-  const legacyResult = store.db.prepare("DELETE FROM memory_candidates WHERE status='consolidated'").run()
-  const deleted = Number(legacyResult.changes ?? 0)
-  if (deleted > 0) {
-    process.stderr.write(`[migration] purged ${deleted} legacy consolidated candidates\n`)
-    try {
-      store.db.exec('VACUUM')
-      process.stderr.write(`[migration] VACUUM complete\n`)
-    } catch (ve) {
-      process.stderr.write(`[migration] VACUUM skipped: ${ve.message}\n`)
+function _runStartupMigrations() {
+  // Purge legacy consolidated candidates + VACUUM
+  try {
+    const legacyResult = store.db.prepare("DELETE FROM memory_candidates WHERE status='consolidated'").run()
+    const deleted = Number(legacyResult.changes ?? 0)
+    if (deleted > 0) {
+      process.stderr.write(`[migration] purged ${deleted} legacy consolidated candidates\n`)
+      try {
+        store.db.exec('VACUUM')
+        process.stderr.write(`[migration] VACUUM complete\n`)
+      } catch (ve) {
+        process.stderr.write(`[migration] VACUUM skipped: ${ve.message}\n`)
+      }
     }
+  } catch (e) {
+    process.stderr.write(`[migration] error: ${e.message}\n`)
   }
-} catch (e) {
-  process.stderr.write(`[migration] error: ${e.message}\n`)
+
+  // Chunk sync
+  try {
+    const synced = store.syncChunksFromClassifications()
+    if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications\n`)
+  } catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
+
+  // Refresh context.md
+  try {
+    fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
+    store.writeContextFile()
+    store.writeRecentFile({ serverStartedAt })
+    process.stderr.write(`[memory-service] context.md refreshed on startup\n`)
+  } catch (e) {
+    process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}\n`)
+  }
 }
 
-// ── Startup chunk sync: materialize classifications.chunks → memory_chunks ──
-try {
-  const synced = store.syncChunksFromClassifications()
-  if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications\n`)
-} catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
+// ── Full runtime init (store + backfill + cycles + watcher + migrations) ──
 
-// Refresh context.md on every startup (Core Memory + Bot only)
-try {
-  fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
-  store.writeContextFile()
-  store.writeRecentFile({ serverStartedAt })
-  process.stderr.write(`[memory-service] context.md refreshed on startup\n`)
-} catch (e) {
-  process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}\n`)
+async function _initRuntime() {
+  await _initStore()
+  _runStartupBackfill()
+  serverStartedAt = localNow()
+  _initTranscriptWatcher()
+  _runStartupMigrations()
+  _startCycles()
+  _initialized = true
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -906,12 +902,9 @@ const TOOL_DEFS = [
   },
 ]
 
-async function handleToolCall(req) {
-  const toolName = req.params.name
-  const args = req.params.arguments ?? {}
-
+async function handleToolCall(name, args) {
   try {
-    if (toolName === 'search_memories') {
+    if (name === 'search_memories') {
       const result = await handleRecall(args)
       return {
         content: [{ type: 'text', text: result.text }],
@@ -919,7 +912,7 @@ async function handleToolCall(req) {
       }
     }
 
-    if (toolName === 'memory_cycle') {
+    if (name === 'memory_cycle') {
       const result = await handleCycle(args)
       return {
         content: [{ type: 'text', text: result.text }],
@@ -928,22 +921,27 @@ async function handleToolCall(req) {
     }
 
     return {
-      content: [{ type: 'text', text: `unknown tool: ${toolName}` }],
+      content: [{ type: 'text', text: `unknown tool: ${name}` }],
       isError: true,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return {
-      content: [{ type: 'text', text: `${toolName} failed: ${msg}` }],
+      content: [{ type: 'text', text: `${name} failed: ${msg}` }],
       isError: true,
     }
   }
 }
 
+// MCP adapter: unwrap req envelope for the shared handleToolCall
+function _mcpToolHandler(req) {
+  return handleToolCall(req.params.name, req.params.arguments ?? {})
+}
+
 // ── Register handlers on primary (stdio) MCP server ─────────────────
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
-mcp.setRequestHandler(CallToolRequestSchema, handleToolCall)
+mcp.setRequestHandler(CallToolRequestSchema, _mcpToolHandler)
 
 // ── Factory: create a short-lived MCP server for HTTP requests ──────
 
@@ -953,7 +951,7 @@ function createHttpMcpServer() {
     { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT},
   )
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
-  s.setRequestHandler(CallToolRequestSchema, handleToolCall)
+  s.setRequestHandler(CallToolRequestSchema, _mcpToolHandler)
   return s
 }
 
@@ -1070,7 +1068,7 @@ const httpServer = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/api/tool') {
     try {
       const body = await readBody(req)
-      const result = await handleToolCall({ params: { name: body.name, arguments: body.arguments ?? {} } })
+      const result = await handleToolCall(body.name, body.arguments ?? {})
       sendJson(res, result)
     } catch (e) {
       sendJson(res, { content: [{ type: 'text', text: `api/tool error: ${e.message}` }], isError: true }, 500)
@@ -1167,8 +1165,35 @@ const httpServer = http.createServer(async (req, res) => {
   }
 })
 
+// ── Module exports (for unified server) ──────────────────────────────
+
+export { TOOL_DEFS }
+export { MEMORY_INSTRUCTIONS_TEXT as instructions }
+
+export async function init() {
+  if (_initialized) return
+  await _initRuntime()
+  // Start HTTP server for episode append, proactive endpoints (channels depends on it)
+  await _startHttpServer()
+  process.stderr.write('[memory-service] init() complete (unified mode)\n')
+}
+
+export { handleToolCall }
+
+export async function start() {
+  _startCycles()
+}
+
+export async function stop() {
+  _stopCycles()
+  void stopLlmWorker().catch(() => {})
+  if (httpServer) {
+    httpServer.close()
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════
-//  STARTUP
+//  STARTUP (standalone mode)
 // ══════════════════════════════════════════════════════════════════════
 
 // ── HTTP port binding ────────────────────────────────────────────────
@@ -1184,24 +1209,45 @@ function removePortFile() {
 }
 
 let activePort = BASE_PORT
-function tryListen() {
-  httpServer.listen(activePort, '127.0.0.1', () => {
-    writePortFile(activePort)
-    process.stderr.write(`[memory-service] HTTP listening on 127.0.0.1:${activePort}\n`)
+
+function _startHttpServer() {
+  return new Promise((resolve, reject) => {
+    function tryListen() {
+      httpServer.listen(activePort, '127.0.0.1', () => {
+        writePortFile(activePort)
+        process.stderr.write(`[memory-service] HTTP listening on 127.0.0.1:${activePort}\n`)
+        resolve(activePort)
+      })
+    }
+
+    httpServer.on('error', (err) => {
+      if (err.code === 'EADDRINUSE' && activePort < MAX_PORT) {
+        activePort++
+        tryListen()
+      } else {
+        process.stderr.write(`[memory-service] HTTP fatal: ${err.message}\n`)
+        reject(err)
+      }
+    })
+
+    tryListen()
   })
 }
 
-httpServer.on('error', (err) => {
-  if (err.code === 'EADDRINUSE' && activePort < MAX_PORT) {
-    activePort++
-    tryListen()
-  } else {
-    process.stderr.write(`[memory-service] HTTP fatal: ${err.message}\n`)
-    process.exit(1)
-  }
-})
+if (process.env.TRIB_UNIFIED !== '1') {
 
-tryListen()
+// ── Decide: proxy or primary ────────────────────────────────────────
+
+const existingPort = await isExistingServerHealthy()
+if (existingPort) {
+  await runProxyMode(existingPort)
+  process.exit(0)
+}
+
+// No healthy server — start as primary
+acquireLock()
+await _initRuntime()
+await _startHttpServer()
 
 // ── MCP stdio transport ──────────────────────────────────────────────
 
@@ -1213,6 +1259,7 @@ process.stderr.write('[memory-service] MCP stdio connected\n')
 
 function shutdown() {
   process.stderr.write('[memory-service] shutting down...\n')
+  _stopCycles()
   void stopLlmWorker().catch(() => {})
   removePortFile()
   releaseLock()
@@ -1223,3 +1270,5 @@ function shutdown() {
 
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
+
+} // end standalone guard

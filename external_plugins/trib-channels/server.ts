@@ -163,8 +163,10 @@ const INSTRUCTIONS = [
 ].filter(Boolean).join('\n\n')
 
 // ── MCP Server ─────────────────────────────────────────────────────────
+// In standalone mode, this is the local Server instance.
+// In unified mode, init() replaces it with the shared MCP server reference.
 
-const mcp = new Server(
+let mcpServer: InstanceType<typeof Server> | any = new Server(
   { name: 'trib-channels', version: PLUGIN_VERSION },
   {
     capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } },
@@ -582,7 +584,7 @@ async function startOwnerHttpServer(): Promise<number> {
           const injMeta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
           if (body.instruction) injMeta.instruction = body.instruction as string
           if (body.type) injMeta.type = body.type as string
-          void mcp.notification({
+          void mcpServer.notification({
             method: 'notifications/claude/channel',
             params: { content, meta: injMeta },
           }).catch(() => {})
@@ -915,7 +917,7 @@ scheduler.setInjectHandler((channelId: string, name: string, content: string, op
   }
   if (options?.instruction) meta.instruction = options.instruction
   if (options?.type) meta.type = options.type
-  void mcp.notification({
+  void mcpServer.notification({
     method: 'notifications/claude/channel',
     params: { content, meta },
   }).catch(e => {
@@ -990,7 +992,7 @@ eventQueue.setInjectHandler((channelId: string, name: string, content: string, o
   }
   if (options?.instruction) meta.instruction = options.instruction
   if (options?.type) meta.type = options.type
-  void mcp.notification({
+  void mcpServer.notification({
     method: 'notifications/claude/channel',
     params: { content, meta },
   }).catch(e => {
@@ -1144,7 +1146,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
 
   // GUI input removed — use /trib-channels slash commands or conversational skills
   // ── Default: forward interaction as MCP notification ──
-  void mcp.notification({
+  void mcpServer.notification({
     method: 'notifications/claude/channel',
     params: {
       content: `[interaction] ${interaction.type}: ${interaction.customId}${interaction.values ? ' values=' + interaction.values.join(',') : ''}`,
@@ -1659,7 +1661,7 @@ function createHttpMcpServer(): InstanceType<typeof Server> {
           const meta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
           if (args.instruction) meta.instruction = args.instruction as string
           if (args.type) meta.type = args.type as string
-          void mcp.notification({
+          void mcpServer.notification({
             method: 'notifications/claude/channel',
             params: { content, meta },
           }).catch(() => {})
@@ -1682,40 +1684,23 @@ function createHttpMcpServer(): InstanceType<typeof Server> {
 
 // ── Register tool definitions on primary (stdio) MCP server ─────────
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
+mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
 
-// ── Tool handlers ──────────────────────────────────────────────────────
+// ── Tool call handler (exported for unified server) ───────────────────
 
-mcp.setRequestHandler(CallToolRequestSchema, async req => {
-  // Forward pending assistant text before tool execution
-  await forwarder.forwardNewText()
+const BACKEND_TOOLS = new Set(['reply', 'fetch', 'react', 'edit_message', 'download_attachment'])
 
-  const toolName = req.params.name
-  const args = (req.params.arguments ?? {}) as Record<string, unknown>
+async function handleToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
   let result: { content: Array<{ type: string; text: string }>; isError?: boolean }
-
-  // Auto-connect: backend-dependent tools trigger ownership + connect (or proxy)
-  const BACKEND_TOOLS = new Set(['reply', 'fetch', 'react', 'edit_message', 'download_attachment'])
-  if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected && !proxyMode) {
-    if (!currentOwnerState().owned) claimBridgeOwnership('tool call')
-    // Tighter retry: 2 attempts with 300ms backoff (was 3 × 1s)
-    for (let i = 0; i < 2 && !bridgeRuntimeConnected && !proxyMode; i++) {
-      try { await refreshBridgeOwnership() } catch { /* logged internally */ }
-      if (!bridgeRuntimeConnected && !proxyMode) await new Promise(r => setTimeout(r, 300))
-    }
-    if (!bridgeRuntimeConnected && !proxyMode) {
-      return {
-        content: [{ type: 'text', text: `Discord auto-connect failed after retries. Check token and network.` }],
-        isError: true,
-      }
-    }
-  }
 
   try {
     // ── Proxy mode: forward BACKEND_TOOLS to owner via HTTP ──
-    if (proxyMode && BACKEND_TOOLS.has(toolName)) {
+    if (proxyMode && BACKEND_TOOLS.has(name)) {
       let proxyResult: { ok: boolean; data?: any; error?: string }
-      switch (toolName) {
+      switch (name) {
         case 'reply': {
           proxyResult = await proxyRequest('/send', 'POST', {
             chatId: args.chat_id,
@@ -1809,11 +1794,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           break
         }
         default:
-          result = { content: [{ type: 'text', text: `unknown proxy tool: ${toolName}` }], isError: true }
+          result = { content: [{ type: 'text', text: `unknown proxy tool: ${name}` }], isError: true }
       }
     } else {
     // ── Direct mode (owner) ──
-    switch (toolName) {
+    switch (name) {
       case 'reply': {
         // Typing is cleared by the Stop hook via the turn-end signal.
         const sendResult = await backend.sendMessage(
@@ -1912,15 +1897,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         break
       }
       case 'schedule_control': {
-        const name = args.name as string
+        const scName = args.name as string
         const action = args.action as string
         if (action === 'defer') {
           const minutes = (args.minutes as number) ?? 30
-          scheduler.defer(name, minutes)
-          result = { content: [{ type: 'text', text: `deferred "${name}" for ${minutes} minutes` }] }
+          scheduler.defer(scName, minutes)
+          result = { content: [{ type: 'text', text: `deferred "${scName}" for ${minutes} minutes` }] }
         } else if (action === 'skip_today') {
-          scheduler.skipToday(name)
-          result = { content: [{ type: 'text', text: `skipped "${name}" for today` }] }
+          scheduler.skipToday(scName)
+          result = { content: [{ type: 'text', text: `skipped "${scName}" for today` }] }
         } else {
           result = { content: [{ type: 'text', text: `unknown action: ${action}` }], isError: true }
         }
@@ -1958,7 +1943,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const meta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
         if (args.instruction) meta.instruction = args.instruction as string
         if (args.type) meta.type = args.type as string
-        void mcp.notification({
+        void mcpServer.notification({
           method: 'notifications/claude/channel',
           params: { content, meta },
         }).catch(() => {})
@@ -1973,7 +1958,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       // memory_cycle — handled by memory-service.mjs MCP
       default:
         result = {
-          content: [{ type: 'text', text: `unknown tool: ${toolName}` }],
+          content: [{ type: 'text', text: `unknown tool: ${name}` }],
           isError: true,
         }
     }
@@ -1981,10 +1966,40 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     result = {
-      content: [{ type: 'text', text: `${toolName} failed: ${msg}` }],
+      content: [{ type: 'text', text: `${name} failed: ${msg}` }],
       isError: true,
     }
   }
+
+  return result
+}
+
+// ── Tool handlers (stdio MCP server) ──────────────────────────────────
+
+mcpServer.setRequestHandler(CallToolRequestSchema, async req => {
+  // Forward pending assistant text before tool execution
+  await forwarder.forwardNewText()
+
+  const toolName = req.params.name
+  const args = (req.params.arguments ?? {}) as Record<string, unknown>
+
+  // Auto-connect: backend-dependent tools trigger ownership + connect (or proxy)
+  if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected && !proxyMode) {
+    if (!currentOwnerState().owned) claimBridgeOwnership('tool call')
+    // Tighter retry: 2 attempts with 300ms backoff (was 3 × 1s)
+    for (let i = 0; i < 2 && !bridgeRuntimeConnected && !proxyMode; i++) {
+      try { await refreshBridgeOwnership() } catch { /* logged internally */ }
+      if (!bridgeRuntimeConnected && !proxyMode) await new Promise(r => setTimeout(r, 300))
+    }
+    if (!bridgeRuntimeConnected && !proxyMode) {
+      return {
+        content: [{ type: 'text', text: `Discord auto-connect failed after retries. Check token and network.` }],
+        isError: true,
+      }
+    }
+  }
+
+  const result = await handleToolCall(toolName, args)
 
   // Forward tool log after execution
   const toolLine = OutputForwarder.buildToolLine(toolName, args)
@@ -2226,7 +2241,7 @@ async function handleInbound(
 
   const notificationContent = `[${now}]\n${messageBody}`
 
-  void mcp.notification({
+  void mcpServer.notification({
     method: 'notifications/claude/channel',
     params: {
       content: notificationContent,
@@ -2250,11 +2265,109 @@ async function handleInbound(
   })
 }
 
-// ── Start ──────────────────────────────────────────────────────────────
+// ── Module exports (for unified server) ──────────────────────────────
+export { TOOL_DEFS }
+export { INSTRUCTIONS as instructions }
+export { handleToolCall }
+
+export async function init(sharedMcp: any) {
+  // Replace the module-level MCP server with the shared instance.
+  // All notification calls (inject, schedule, event pipeline, inbound bridge)
+  // will route through the shared server.
+  mcpServer = sharedMcp
+
+  // Config, backend, scheduler, webhook, and event pipeline are already
+  // initialized at module load time. Wire up inject/send handlers (they
+  // reference mcpServer which is now the shared instance).
+  // Re-register handlers since mcpServer changed:
+  scheduler.setInjectHandler((channelId: string, name: string, content: string, options?: { instruction?: string; type?: string }) => {
+    const ts = new Date().toISOString()
+    const now = new Date()
+    const timeLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')} `
+    const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel
+    const meta: Record<string, string> = {
+      chat_id: channelId,
+      user: sourceLabel,
+      user_id: 'system',
+      ts,
+    }
+    if (options?.instruction) meta.instruction = options.instruction
+    if (options?.type) meta.type = options.type
+    void mcpServer.notification({
+      method: 'notifications/claude/channel',
+      params: { content, meta },
+    }).catch((e: any) => {
+      process.stderr.write(`trib-channels: notification failed: ${e}\n`)
+    })
+    void memoryAppendEpisode({
+      ts,
+      backend: backend.name,
+      channelId,
+      userId: 'system',
+      userName: `schedule:${name}`,
+      sessionId: null,
+      role: 'user',
+      kind: 'schedule-inject',
+      content: options?.instruction || content,
+      sourceRef: `schedule:${name}:${ts}`,
+    })
+  })
+
+  // Re-wire event queue inject handler for shared mcpServer
+  eventQueue.setInjectHandler((channelId: string, name: string, content: string, options?: { instruction?: string; type?: string }) => {
+    const ts = new Date().toISOString()
+    const now = new Date()
+    const timeLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')} `
+    const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel
+    const meta: Record<string, string> = {
+      chat_id: channelId,
+      user: sourceLabel,
+      user_id: 'system',
+      ts,
+    }
+    if (options?.instruction) meta.instruction = options.instruction
+    if (options?.type) meta.type = options.type
+    void mcpServer.notification({
+      method: 'notifications/claude/channel',
+      params: { content, meta },
+    }).catch((e: any) => {
+      try { process.stderr.write(`trib-channels event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
+    })
+    void memoryAppendEpisode({
+      ts,
+      backend: backend.name,
+      channelId,
+      userId: 'system',
+      userName: `event:${name}`,
+      sessionId: null,
+      role: 'user',
+      kind: 'event-inject',
+      content: options?.instruction || content,
+      sourceRef: `event:${name}:${ts}`,
+    })
+  })
+}
+
+export async function start() {
+  // Activate bridge, start scheduler, start webhook/events
+  channelBridgeActive = true
+  writeBridgeState(true)
+  await refreshBridgeOwnership({ restoreBinding: true })
+}
+
+export async function stop() {
+  // Stop scheduler, webhook, disconnect backend
+  await stopOwnedRuntime('unified server stop')
+  cleanupInstanceRuntimeFiles(INSTANCE_ID)
+}
+
+// ── Start (standalone mode) ───────────────────────────────────────────
+
+if (process.env.TRIB_UNIFIED !== '1') {
 
 const _bootLog = path.join(DATA_DIR, 'boot.log')
 fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect starting\n`)
-await mcp.connect(new StdioServerTransport())
+await mcpServer.connect(new StdioServerTransport())
 fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done\n`)
 
 // ── Auto-detect channel mode from parent process CLI flags ───────────
@@ -2385,7 +2498,7 @@ if (bridgeRuntimeConnected && channelBridgeActive) {
     }
 
     // Inject greeting — this creates the transcript
-    await mcp.notification({
+    await mcpServer.notification({
       method: 'notifications/claude/channel',
       params: {
         content: 'New session started. Say something different each time — mention recent work, ask a question, or just be casual. Never repeat the same greeting. One short message only, no tools. This is an internal system trigger. Do not mention that this is a greeting notification, session start, or system message. Just be natural.',
@@ -2458,3 +2571,5 @@ try {
     }, 500)
   })
 } catch { /* watch not supported */ }
+
+} // end standalone mode (TRIB_UNIFIED !== '1')

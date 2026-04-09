@@ -107,7 +107,11 @@ function fail(err) {
   return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
 }
 
+/** @type {((text: string) => void) | null} */
+let _notifyFn = null;
+
 function notify(text) {
+  if (_notifyFn) { _notifyFn(text); return; }
   server.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -496,29 +500,338 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 
-// --- Init providers + MCP clients, then start ---
+// ── Module exports (for unified server) ──────────────────────────────
 
-async function main() {
-  // loadConfig handles legacy mcp-tools.json migration into config.json automatically
+export { TOOLS as TOOL_DEFS };
+export { INSTRUCTIONS as instructions };
+
+export async function init() {
   const config = loadConfig();
   await initProviders(config.providers);
-
-  // MCP tool servers come from config.mcpServers (config.json)
-  if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
-    process.stderr.write(`[trib-agent] Loading ${Object.keys(config.mcpServers).length} MCP tool server(s) from config.json\n`);
-    await connectMcpServers(config.mcpServers);
-  }
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  process.on('SIGINT', async () => { await disconnectAll(); process.exit(0); });
-
-  // Block until the MCP connection closes (stdin EOF).
-  await new Promise((resolve) => { server.onclose = resolve });
+  seedDefaults();
+  if (config.mcpServers) await connectMcpServers(config.mcpServers);
 }
 
-main().catch((err) => {
-  process.stderr.write(`[trib-agent] Failed to start: ${err}\n`);
-  process.exit(1);
-});
+/**
+ * Handle a tool call from the unified server.
+ * @param {string} name - tool name
+ * @param {object} args - tool arguments
+ * @param {{ notifyFn?: (text: string) => void, elicitFn?: (opts: object) => Promise<object> }} [opts]
+ */
+export async function handleToolCall(name, args, opts = {}) {
+  if (opts.notifyFn) _notifyFn = opts.notifyFn;
+  const elicit = opts.elicitFn || null;
+
+  try {
+    switch (name) {
+      case 'create_session': {
+        const session = createSession(args);
+        return ok({
+          sessionId: session.id, provider: session.provider, model: session.model,
+          contextWindow: session.contextWindow, toolsAvailable: session.tools.length,
+          toolNames: session.tools.map(t => t.name),
+        });
+      }
+
+      case 'list_sessions': {
+        const sessions = listSessions();
+        if (sessions.length === 0) return ok('No active sessions.');
+
+        const choices = sessions.map((s, i) => {
+          const msgs = s.messages.length;
+          const inTok = fmtTokens(s.totalInputTokens || 0);
+          const outTok = fmtTokens(s.totalOutputTokens || 0);
+          return { const: String(i), title: `${s.provider}/${s.model} · ${msgs} msgs · ${inTok} in / ${outTok} out` };
+        });
+
+        if (elicit) {
+          try {
+            const result = await elicit({
+              message: `${sessions.length} active session(s). Select to resume:`,
+              requestedSchema: {
+                type: 'object',
+                properties: {
+                  session: {
+                    type: 'string',
+                    title: 'Session',
+                    oneOf: choices,
+                    default: '0',
+                  },
+                },
+                required: ['session'],
+              },
+            });
+
+            if (result.action === 'accept') {
+              const idx = parseInt(result.content.session, 10);
+              if (!isNaN(idx) && idx >= 0 && idx < sessions.length) {
+                const selected = sessions[idx];
+                if (selected) {
+                  const resumed = resumeSession(selected.id);
+                  if (resumed) {
+                    return ok(`Active session: ${selected.id} · ${selected.provider}/${selected.model} · ${selected.messages.length} msgs`);
+                  }
+                }
+              }
+            }
+            return ok('');
+          } catch {
+            // Elicitation not supported — fall back to plain list
+          }
+        }
+        return ok(sessions.map(s => ({
+          id: s.id, provider: s.provider, model: s.model,
+          messages: s.messages.length, tools: s.tools.length,
+          inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
+          createdAt: new Date(s.createdAt).toISOString(),
+        })));
+      }
+
+      case 'close_session': {
+        const closed = closeSession(args.sessionId);
+        return ok(closed ? `Session ${args.sessionId} closed.` : `Session ${args.sessionId} not found.`);
+      }
+
+      case 'list_models': {
+        const cfg = loadConfig();
+        const presets = listPresets(cfg);
+        const current = getDefaultPreset(cfg);
+
+        if (presets.length === 0) {
+          return ok('No presets configured. Use /trib-agent:config to add presets.');
+        }
+
+        const choices = presets.map((p, i) => {
+          const parts = [p.model];
+          if (p.effort) parts.push(p.effort);
+          if (p.fast) parts.push('fast');
+          return { const: String(i), title: parts.join(' · ') };
+        });
+
+        const currentIdx = current ? presets.findIndex(p => p.name === current.name) : 0;
+        const currentLabel = current ? `${current.model}${current.effort ? ' · ' + current.effort : ''}${current.fast ? ' · fast' : ''}` : 'none';
+
+        if (elicit) {
+          try {
+            const result = await elicit({
+              message: `Current: ${currentLabel}\nSelect a model preset:`,
+              requestedSchema: {
+                type: 'object',
+                properties: {
+                  preset: {
+                    type: 'string',
+                    title: 'Model Preset',
+                    oneOf: choices,
+                    default: String(currentIdx >= 0 ? currentIdx : 0),
+                  },
+                },
+                required: ['preset'],
+              },
+            });
+
+            if (result.action === 'accept') {
+              const idx = parseInt(result.content.preset, 10);
+              if (!isNaN(idx) && idx >= 0 && idx < presets.length) {
+                const selected = presets[idx];
+                if (selected) {
+                  setDefaultPreset(cfg, selected.name);
+                  return ok(`Default preset changed to: ${selected.model}${selected.effort ? ' · ' + selected.effort : ''}${selected.fast ? ' · fast' : ''}`);
+                }
+              }
+            }
+            return ok('');
+          } catch {
+            // Elicitation not supported — fall back to text list
+          }
+        }
+        // Fallback: text list
+        const lines = presets.map((p, i) => {
+          const parts = [p.model];
+          if (p.effort) parts.push(p.effort);
+          if (p.fast) parts.push('fast');
+          const mark = current && p.name === current.name ? '  ← active' : '';
+          return `[${i}] ${parts.join(' · ')}${mark}`;
+        });
+        const results = [];
+        for (const [provName, prov] of getAllProviders()) {
+          try {
+            const models = await prov.listModels();
+            results.push({ provider: provName, models });
+          } catch {
+            results.push({ provider: provName, models: [], error: 'failed to list models' });
+          }
+        }
+        return ok({ current: currentLabel, presets: lines, providers: results });
+      }
+
+      case 'delegate': {
+        let session;
+        if (args.sessionId) {
+          session = resumeSession(args.sessionId);
+          if (!session) return fail(`Session "${args.sessionId}" not found`);
+        } else {
+          let provider = args.provider;
+          let model = args.model;
+
+          if (!provider || !model) {
+            const cfg = loadConfig();
+            const preset = args.preset
+              ? getPreset(cfg, args.preset)
+              : getDefaultPreset(cfg);
+            if (preset) {
+              provider = provider || preset.provider;
+              model = model || preset.model;
+            }
+          }
+
+          if (!provider || !model) return fail('provider and model are required (or set a default preset)');
+          session = createSession({
+            provider, model,
+            agent: args.role, preset: args.preset || 'full',
+            cwd: args.cwd || process.cwd(),
+          });
+        }
+
+        const startedAt = Date.now();
+
+        function cleanupOldResults(dir) {
+          try {
+            for (const f of readdirSync(dir)) {
+              try { if (Date.now() - statSync(join(dir, f)).mtimeMs > 86400000) unlinkSync(join(dir, f)); } catch {}
+            }
+          } catch {}
+        }
+
+        if (args.background) {
+          const jobId = `job_${jobSeq++}_${Date.now()}`;
+          const resultsDir = join(getPluginData(), 'results');
+          mkdirSync(resultsDir, { recursive: true });
+          const resultPath = join(resultsDir, `${jobId}.json`);
+
+          askSession(session.id, args.task, args.context,
+            (iteration, calls) => {
+              const names = calls.map(c => c.name).join(', ');
+              notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}\n_job: ${jobId}_`);
+            },
+            args.cwd,
+          )
+            .then((result) => {
+              const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+              const inTok = fmtTokens(result.usage?.inputTokens);
+              const outTok = fmtTokens(result.usage?.outputTokens);
+              const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
+              const resultData = {
+                jobId, sessionId: session.id, status: 'completed',
+                provider: session.provider, model: session.model,
+                content: result.content,
+                usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
+              };
+              try {
+                writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
+                cleanupOldResults(resultsDir);
+              } catch (writeErr) {
+                process.stderr.write(`[trib-agent] Failed to write result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+              }
+              (async () => {
+                try {
+                  injectViaChannels(
+                    `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
+                    `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
+                    { type: 'delegate' },
+                  );
+                } catch (injectErr) {
+                  process.stderr.write(`[trib-agent] Failed to inject result via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
+                }
+              })();
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              try {
+                writeFileSync(resultPath, JSON.stringify({
+                  jobId, sessionId: session.id, status: 'failed',
+                  provider: session.provider, model: session.model,
+                  error: msg,
+                }, null, 2));
+              } catch (writeErr) {
+                process.stderr.write(`[trib-agent] Failed to write error result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+              }
+              (async () => {
+                try {
+                  injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
+                } catch (injectErr) {
+                  process.stderr.write(`[trib-agent] Failed to inject error via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
+                }
+              })();
+            });
+          return ok({ sessionId: session.id, jobId, status: 'working', resultPath });
+        }
+
+        const result = await askSession(session.id, args.task, args.context,
+          (iteration, calls) => {
+            const names = calls.map(c => c.name).join(', ');
+            notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}`);
+          },
+          args.cwd,
+        );
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+        const inTok = fmtTokens(result.usage?.inputTokens);
+        const outTok = fmtTokens(result.usage?.outputTokens);
+        const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
+        return ok({
+          sessionId: session.id,
+          content: result.content,
+          usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
+        });
+      }
+
+      case 'get_workflows': {
+        const workflows = listWorkflows();
+        return ok({ workflows });
+      }
+
+      case 'get_workflow': {
+        if (!args.name) return fail('name is required');
+        const workflow = getWorkflow(args.name);
+        if (!workflow) return fail('workflow not found');
+        return ok(workflow);
+      }
+
+      default:
+        return fail(`Unknown tool: ${name}`);
+    }
+  } catch (err) {
+    return fail(err);
+  }
+}
+
+export async function start() { /* noop — standalone mode uses main() */ }
+export async function stop() { await disconnectAll(); }
+
+// --- Init providers + MCP clients, then start (standalone) ---
+
+if (process.env.TRIB_UNIFIED !== '1') {
+  async function main() {
+    // loadConfig handles legacy mcp-tools.json migration into config.json automatically
+    const config = loadConfig();
+    await initProviders(config.providers);
+
+    // MCP tool servers come from config.mcpServers (config.json)
+    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+      process.stderr.write(`[trib-agent] Loading ${Object.keys(config.mcpServers).length} MCP tool server(s) from config.json\n`);
+      await connectMcpServers(config.mcpServers);
+    }
+
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+
+    process.on('SIGINT', async () => { await disconnectAll(); process.exit(0); });
+
+    // Block until the MCP connection closes (stdin EOF).
+    await new Promise((resolve) => { server.onclose = resolve });
+  }
+
+  main().catch((err) => {
+    process.stderr.write(`[trib-agent] Failed to start: ${err}\n`);
+    process.exit(1);
+  });
+}

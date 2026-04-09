@@ -487,17 +487,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: toolDefinitions,
 }))
 
-server.setRequestHandler(CallToolRequestSchema, async request => {
+async function handleToolCall(name, rawArgs) {
   const config = loadConfig()
   const usageState = loadUsageState()
   const cacheState = loadCacheState()
   const timeoutMs = getRequestTimeoutMs(config)
 
-  switch (request.params.name) {
+  switch (name) {
     case 'search': {
       let args
       try {
-        args = searchArgsSchema.parse(request.params.arguments || {})
+        args = searchArgsSchema.parse(rawArgs || {})
       } catch (e) {
         if (e instanceof z.ZodError) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
@@ -787,7 +787,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     case 'firecrawl_scrape': {
       let args
       try {
-        args = scrapeArgsSchema.parse(request.params.arguments || {})
+        args = scrapeArgsSchema.parse(rawArgs || {})
       } catch (e) {
         if (e instanceof z.ZodError) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
@@ -905,7 +905,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     case 'firecrawl_map': {
       let args
       try {
-        args = mapArgsSchema.parse(request.params.arguments || {})
+        args = mapArgsSchema.parse(rawArgs || {})
       } catch (e) {
         if (e instanceof z.ZodError) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
@@ -930,7 +930,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     case 'crawl': {
       let args
       try {
-        args = crawlArgsSchema.parse(request.params.arguments || {})
+        args = crawlArgsSchema.parse(rawArgs || {})
       } catch (e) {
         if (e instanceof z.ZodError) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
@@ -957,7 +957,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     case 'batch': {
       let args
       try {
-        args = batchArgsSchema.parse(request.params.arguments || {})
+        args = batchArgsSchema.parse(rawArgs || {})
       } catch (e) {
         if (e instanceof z.ZodError) {
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid arguments', details: e.errors }) }], isError: true }
@@ -1163,22 +1163,37 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       return await handleSetup(server)
     }
     default:
-      throw new Error(`Unknown tool: ${request.params.name}`)
+      throw new Error(`Unknown tool: ${name}`)
   }
-})
-
-const transport = new StdioServerTransport()
-await writeStartupSnapshot()
-await server.connect(transport)
-
-async function shutdown() {
-  flushUsageState()
-  flushCacheState()
-  process.exit(0)
 }
 
-// Block until the MCP connection closes (stdin EOF).
-await new Promise((resolve) => { server.onclose = resolve })
+server.setRequestHandler(CallToolRequestSchema, async request => {
+  return handleToolCall(request.params.name, request.params.arguments)
+})
 
-process.on('SIGTERM', () => { void shutdown() })
-process.on('SIGINT', () => { void shutdown() })
+/* ── Module exports (used when imported by trib-unified) ── */
+export { toolDefinitions as TOOL_DEFS }
+export { SEARCH_INSTRUCTIONS as instructions }
+
+export { handleToolCall }
+export async function start() { await writeStartupSnapshot() }
+export function stop() { flushUsageState(); flushCacheState() }
+
+/* ── Standalone MCP server (skipped when loaded as a module) ── */
+if (process.env.TRIB_UNIFIED !== '1') {
+  const transport = new StdioServerTransport()
+  await writeStartupSnapshot()
+  await server.connect(transport)
+
+  async function shutdown() {
+    flushUsageState()
+    flushCacheState()
+    process.exit(0)
+  }
+
+  // Block until the MCP connection closes (stdin EOF).
+  await new Promise((resolve) => { server.onclose = resolve })
+
+  process.on('SIGTERM', () => { void shutdown() })
+  process.on('SIGINT', () => { void shutdown() })
+}
