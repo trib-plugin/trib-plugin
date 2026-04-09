@@ -1,6 +1,6 @@
 {
   "name": "trib-agent",
-  "version": "0.0.33",
+  "version": "0.0.37",
   "description": "Agent workflow + multi-AI orchestration — team management, external model sessions with tool loop and context injection.",
   "author": { "name": "TRIBGAMES", "email": "dev@tribgames.com" },
   "homepage": "https://github.com/tribgames/trib-agent",

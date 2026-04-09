@@ -1,10 +1,7 @@
 ---
-description: List sessions or set the active orchestrator session
-argument-hint: "[sessionId|index]"
+description: Pick an active orchestrator session to resume
 disable-model-invocation: true
-allowed-tools: Bash(node:*)
+allowed-tools: mcp__plugin_trib-agent_trib-agent__list_sessions
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/orchestrator/cli.js" resume $ARGUMENTS`
-
-Present the full output to the user. Do not summarize.
+Call the `mcp__plugin_trib-agent_trib-agent__list_sessions` tool. Present the tool result verbatim to the user without summarizing.

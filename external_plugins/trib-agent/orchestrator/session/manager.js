@@ -3,11 +3,19 @@ import { trimMessages } from './trim.js';
 import { agentLoop } from './loop.js';
 import { getMcpTools } from '../mcp/client.js';
 import { BUILTIN_TOOLS } from '../tools/builtin.js';
-import { collectSkills, buildSkillToolDef, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.js';
+import { collectSkillsCached, buildSkillToolDef, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.js';
 import { saveSession, loadSession, deleteSession, listStoredSessions } from './store.js';
-function resolveToolPreset(preset) {
-    const mcp = getMcpTools();
-    const skills = collectSkills();
+let _mcpToolsCache = null;
+let _mcpToolsCacheTime = 0;
+const MCP_CACHE_TTL = 60000; // 1 minute
+
+function resolveToolPreset(preset, skills) {
+    const now = Date.now();
+    if (!_mcpToolsCache || now - _mcpToolsCacheTime > MCP_CACHE_TTL) {
+        _mcpToolsCache = getMcpTools();
+        _mcpToolsCacheTime = now;
+    }
+    const mcp = _mcpToolsCache;
     const skillTool = buildSkillToolDef(skills);
     switch (preset) {
         case 'mcp':
@@ -58,7 +66,7 @@ export function createSession(opts) {
     const messages = [];
     const claudeMd = collectClaudeMd(opts.cwd);
     const agentTemplate = opts.agent ? loadAgentTemplate(opts.agent, opts.cwd) : null;
-    const skills = collectSkills(opts.cwd);
+    const skills = collectSkillsCached(opts.cwd);
     const skillsSummary = skills.length
         ? skills.map(s => `- ${s.name}: ${s.description}`).join('\n')
         : undefined;
@@ -78,7 +86,7 @@ export function createSession(opts) {
         messages.push({ role: 'user', content: `Reference files:\n\n${fileContext}` });
         messages.push({ role: 'assistant', content: 'Understood. I have the files in context.' });
     }
-    const tools = resolveToolPreset(toolPreset);
+    const tools = resolveToolPreset(toolPreset, skills);
     const session = {
         id,
         provider: providerName,
@@ -148,7 +156,8 @@ export function resumeSession(sessionId, preset) {
         return null;
     // Refresh tools (MCP connections may have changed)
     const oldTools = session.tools || [];
-    session.tools = resolveToolPreset((preset || session.preset || 'full'));
+    const skills = collectSkillsCached(session.cwd);
+    session.tools = resolveToolPreset((preset || session.preset || 'full'), skills);
     const newTools = session.tools;
     const missing = oldTools.filter(t => !newTools.find(n => n.name === t.name));
     if (missing.length) {

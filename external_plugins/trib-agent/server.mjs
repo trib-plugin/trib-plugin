@@ -207,9 +207,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     switch (name) {
       case 'create_session': {
-        // Hot-reload config to pick up new providers/presets
-        const freshCfg = loadConfig();
-        await initProviders(freshCfg.providers);
         const session = createSession(args);
         return ok({
           sessionId: session.id, provider: session.provider, model: session.model,
@@ -253,18 +250,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               if (selected) {
                 const resumed = resumeSession(selected.id);
                 if (resumed) {
-                  return ok({ resumed: selected.id, provider: selected.provider, model: selected.model, messages: selected.messages.length });
+                  return ok(`Active session: ${selected.id} · ${selected.provider}/${selected.model} · ${selected.messages.length} msgs`);
                 }
               }
             }
           }
-          // Declined or cancelled — just show list
-          return ok(sessions.map(s => ({
-            id: s.id, provider: s.provider, model: s.model,
-            messages: s.messages.length, tools: s.tools.length,
-            inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
-            createdAt: new Date(s.createdAt).toISOString(),
-          })));
+          // Declined or cancelled — silent exit
+          return ok('');
         } catch {
           // Elicitation not supported — fall back to plain list
           return ok(sessions.map(s => ({
@@ -282,9 +274,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       case 'list_models': {
-        // Hot-reload config to pick up new providers/presets
         const cfg = loadConfig();
-        await initProviders(cfg.providers);
         const presets = listPresets(cfg);
         const current = getDefaultPreset(cfg);
 
@@ -330,7 +320,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               }
             }
           }
-          return ok(`Current preset: ${currentLabel}`);
+          // Declined or cancelled — silent exit
+          return ok('');
         } catch {
           // Elicitation not supported by client — fall back to text list
           const lines = presets.map((p, i) => {

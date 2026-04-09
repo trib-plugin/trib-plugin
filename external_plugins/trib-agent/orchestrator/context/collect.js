@@ -118,11 +118,26 @@ export function collectSkills(cwd) {
     }
     return skills;
 }
+// --- Skill cache (TTL-based) ---
+let _skillsCache = null;
+let _skillsCacheTime = 0;
+let _skillsCacheCwd = null;
+const SKILLS_CACHE_TTL = 30000; // 30 seconds
+export function collectSkillsCached(cwd) {
+    const now = Date.now();
+    if (_skillsCache && _skillsCacheCwd === cwd && now - _skillsCacheTime < SKILLS_CACHE_TTL) {
+        return _skillsCache;
+    }
+    _skillsCache = collectSkills(cwd);
+    _skillsCacheTime = now;
+    _skillsCacheCwd = cwd;
+    return _skillsCache;
+}
 /**
  * Load full skill content by name.
  */
 export function loadSkillContent(name, cwd) {
-    const skills = collectSkills(cwd);
+    const skills = collectSkillsCached(cwd);
     const skill = skills.find(s => s.name === name);
     if (!skill)
         return null;

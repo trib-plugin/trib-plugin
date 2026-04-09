@@ -1,10 +1,7 @@
 ---
-description: List presets or change the default preset
-argument-hint: "[name|index]"
+description: Pick the default model preset
 disable-model-invocation: true
-allowed-tools: Bash(node:*)
+allowed-tools: mcp__plugin_trib-agent_trib-agent__list_models
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/orchestrator/cli.js" model $ARGUMENTS`
-
-Present the full output to the user. Do not summarize.
+Call the `mcp__plugin_trib-agent_trib-agent__list_models` tool. Present the tool result verbatim to the user without summarizing.
