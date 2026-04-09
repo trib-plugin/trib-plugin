@@ -6,23 +6,21 @@ allowed-tools: Agent
 
 Route this request to the `trib-plugin:ask-forwarder` subagent using the Agent tool.
 
-Raw user request:
-$ARGUMENTS
-
-Execution:
-
-Spawn the subagent like this:
+Spawn the subagent with the CLI command baked into the prompt:
 
 ```
 Agent({
   subagent_type: "trib-plugin:ask-forwarder",
   description: "trib-agent ask",
-  prompt: "<the user's raw prompt text>"
+  prompt: "Run this exact Bash command and return stdout verbatim:\n\nCLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" node \"${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js\" ask \"<USER_PROMPT>\" 2>/dev/null"
 })
 ```
 
+Replace `<USER_PROMPT>` with the user's actual request below. Escape any double quotes in the prompt.
+
+User request: $ARGUMENTS
+
 Rules:
 - Return the subagent's output verbatim to the user.
-- Do not paraphrase, summarize, rewrite, or add commentary before or after it.
-- Do not inspect files, monitor progress, or do follow-up work of its own.
+- Do not paraphrase, summarize, rewrite, or add commentary.
 - If the user did not supply a prompt, tell them to provide one.
