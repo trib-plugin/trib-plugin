@@ -111,11 +111,13 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-const serverTs = join(pluginRoot, 'server.ts')
+const serverTs = join(pluginRoot, 'server-unified.ts')
+const serverTsFallback = join(pluginRoot, 'server.ts')
 const serverJs = join(pluginData, 'server.bundle.mjs')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
 const spawnEnv = {
   ...process.env,
+  TRIB_UNIFIED: '1',
   NODE_PATH: process.env.NODE_PATH
     ? `${dataNodeModules}${process.platform === 'win32' ? ';' : ':'}${process.env.NODE_PATH}`
     : dataNodeModules,
@@ -135,15 +137,18 @@ try {
   log('no pre-built bundle, building at runtime...')
   function buildBundle() {
     try {
-      const srcStat = statSync(serverTs)
+      // Use unified server if available, fallback to standalone
+      let entryTs = serverTs
+      try { statSync(entryTs) } catch { entryTs = serverTsFallback }
+      const srcStat = statSync(entryTs)
       try {
         const bundleStat = statSync(serverJs)
         if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
       } catch {}
       const result = spawnSync(esbuildBin, [
-        serverTs, '--bundle', '--platform=node', '--format=esm',
+        entryTs, '--bundle', '--platform=node', '--format=esm',
         `--outfile=${serverJs}`, '--packages=external',
-      ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 15000 })
+      ], { cwd: pluginRoot, stdio: 'pipe', shell: process.platform === 'win32', timeout: 30000 })
       if (result.status === 0) { log('bundle built'); return true }
       log(`bundle build failed: ${result.stderr?.toString().slice(0, 200)}`)
       return false
