@@ -175,7 +175,7 @@ function mergeConfig(existing, data) {
 function checkCli(name) {
   return new Promise(resolve => {
     const cmd = isWin ? `where ${name}` : `which ${name}`;
-    exec(cmd, (err, stdout) => {
+    exec(cmd, { windowsHide: true }, (err, stdout) => {
       if (err || !stdout.trim()) resolve({ installed: false });
       else resolve({ installed: true, path: stdout.trim().split(/\r?\n/)[0] });
     });
@@ -284,7 +284,7 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const { stdout } = await new Promise((resolve, reject) => {
-        exec(commands[tool], { timeout: 120000 }, (err, stdout, stderr) => {
+        exec(commands[tool], { timeout: 120000, windowsHide: true }, (err, stdout, stderr) => {
           if (err) reject(err);
           else resolve({ stdout, stderr });
         });
