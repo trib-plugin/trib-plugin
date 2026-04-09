@@ -1,0 +1,21 @@
+{
+  "name": "trib-plugin",
+  "version": "1.0.0",
+  "description": "Unified trib ecosystem — Discord channels, persistent memory, web search, AI agent orchestration",
+  "skills": [
+    "skills/recall",
+    "skills/search",
+    "skills/delegate",
+    "skills/workflow"
+  ],
+  "commands": [
+    "commands/ask.md",
+    "commands/clear.md",
+    "commands/config.md",
+    "commands/model.md",
+    "commands/new.md",
+    "commands/resume.md",
+    "commands/channels-config.md"
+  ],
+  "hooks": "hooks/hooks.json"
+}
