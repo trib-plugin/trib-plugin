@@ -185,7 +185,11 @@ function normalizeLegacyConfig(config) {
 
 export function loadConfig() {
   ensureDataDir()
-  const config = readJson(CONFIG_PATH, null)
+  let config = readJson(CONFIG_PATH, null)
+  // Unified mode: read from 'search' section of unified config
+  if (process.env.TRIB_UNIFIED === '1' && config && config.search) {
+    config = config.search
+  }
   if (!config) {
     writeJson(CONFIG_PATH, DEFAULT_CONFIG)
     process.stderr.write(

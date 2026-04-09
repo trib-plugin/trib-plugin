@@ -424,7 +424,12 @@ async function refreshEmbeddings(ws, options = {}) {
 
 export function readMainConfig() {
   const mainConfigPath = join(PLUGIN_DATA_DIR, 'config.json')
-  try { return JSON.parse(readFileSync(mainConfigPath, 'utf8')) } catch { return {} }
+  try {
+    const raw = JSON.parse(readFileSync(mainConfigPath, 'utf8'))
+    // Unified mode: read from 'memory' section
+    if (process.env.TRIB_UNIFIED === '1' && raw.memory) return raw.memory
+    return raw
+  } catch { return {} }
 }
 
 async function sleepCycleImpl(ws) {
