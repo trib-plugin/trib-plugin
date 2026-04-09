@@ -168,25 +168,38 @@ export async function ingestTranscript(filePath) {
 }
 
 /**
- * Pick a random proactive source weighted by score.
- * @returns {Promise<object|null>}
+ * Get all active proactive sources.
+ * @returns {Promise<object[]>}
  */
-export async function pickProactiveSource() {
+export async function getProactiveSources() {
   try {
-    return await memoryFetch('GET', '/proactive/pick')
+    const result = await memoryFetch('GET', '/proactive/sources')
+    return Array.isArray(result) ? result : []
   } catch {
-    return null
+    return []
   }
 }
 
 /**
- * Update proactive source score after use.
- * @param {number} id - Source ID
- * @param {boolean} hit - true if used, false if skipped
+ * Get recent memory context for proactive tick.
+ * @returns {Promise<string>}
  */
-export async function updateProactiveScore(id, hit) {
+export async function getProactiveContext() {
   try {
-    await memoryFetch('POST', '/proactive/score', { id, hit })
+    const result = await memoryFetch('GET', '/proactive/context')
+    return result?.context || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Apply source updates from delegate-cli (add/remove/score changes).
+ * @param {object} updates - { add: [], remove: [], scores: {} }
+ */
+export async function applyProactiveUpdates(updates) {
+  try {
+    await memoryFetch('POST', '/proactive/updates', updates)
   } catch { /* best effort */ }
 }
 

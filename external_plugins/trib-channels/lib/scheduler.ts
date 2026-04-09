@@ -635,81 +635,125 @@ export class Scheduler {
     })
   }
 
-  // ── Fire proactive (delegate-cli + memory-based) ────────────────────
+  // ── Fire proactive (delegate-cli autonomous) ────────────────────────
 
-  private proactiveSourcePicker: (() => any) | null = null
-  private proactiveScoreUpdater: ((id: number, hit: boolean) => void) | null = null
+  private proactiveDataFetcher: (() => Promise<{ memory: string; sources: any[] }>) | null = null
+  private proactiveDbUpdater: ((updates: any) => void) | null = null
 
-  setProactiveSourceHandlers(
-    picker: () => any,
-    updater: (id: number, hit: boolean) => void,
+  setProactiveHandlers(
+    dataFetcher: () => Promise<{ memory: string; sources: any[] }>,
+    dbUpdater: (updates: any) => void,
   ): void {
-    this.proactiveSourcePicker = picker
-    this.proactiveScoreUpdater = updater
+    this.proactiveDataFetcher = dataFetcher
+    this.proactiveDbUpdater = dbUpdater
   }
 
-  private fireProactiveTick(): void {
-    const source = this.proactiveSourcePicker?.()
-    if (!source) {
-      logSchedule('proactive: no active sources\n')
-      return
-    }
-
-    const model = this.proactive?.model ?? ''
-    const delegateCli = join(DATA_DIR, '..', '..', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-agent', 'scripts', 'delegate-cli.mjs')
-
-    if (!existsSync(delegateCli)) {
+  private async fireProactiveTick(): Promise<void> {
+    if (!existsSync(DELEGATE_CLI)) {
       logSchedule('proactive: delegate-cli not found, skipping\n')
       return
     }
 
-    const task = `You are a proactive assistant preparing conversation material.
-Topic: ${source.topic} (${source.category})
-Search query hint: ${source.query || source.topic}
+    // 1. Gather context
+    const data = await this.proactiveDataFetcher?.() ?? { memory: '', sources: [] }
+    const now = new Date()
+    const timeInfo = `${now.toLocaleDateString('ko-KR')} ${now.toLocaleTimeString('ko-KR')} (${['일','월','화','수','목','금','토'][now.getDay()]}요일)`
 
-Research this topic briefly and prepare a short, natural conversation starter (1-2 sentences) in Korean.
-If there is nothing interesting or useful to say, respond with exactly "SKIP".
-Do NOT be generic — be specific and current.`
+    const sourcesText = data.sources.length > 0
+      ? data.sources.map((s: any) => `- [${s.category}] ${s.topic} (score: ${s.score}, used: ${s.hit_count}/${s.hit_count + s.skip_count})`).join('\n')
+      : '(no sources registered)'
 
-    logSchedule(`proactive: researching "${source.topic}" (${source.category})\n`)
+    // 2. Build autonomous task
+    const task = `You are a proactive conversation agent. You run periodically in the background.
 
-    const args: string[] = []
+## Current Time
+${timeInfo}
+
+## User Recent Context (from memory)
+${data.memory || '(no recent context)'}
+
+## Available Conversation Sources
+${sourcesText}
+
+## Your Job (do all of these in order)
+1. **Judge availability**: Based on the memory context, is now a good time to talk? If the user seems busy, stressed, or in deep focus → respond with ONLY the JSON below with action:"skip".
+2. **Discover new sources**: If you see interesting topics from recent conversations that aren't in the source list, include them in sourceUpdates.add.
+3. **Pick a source**: Randomly pick one from the available sources (weighted by score). Research or compose material for it.
+4. **Prepare message**: Write a natural, casual conversation starter in Korean (1-2 sentences). Be specific, not generic.
+5. **Score adjustments**: Suggest score changes for sources based on what seems relevant now.
+
+## Response Format (JSON only, no markdown)
+{
+  "action": "talk" | "skip",
+  "message": "prepared conversation starter (Korean)",
+  "sourcePicked": "topic name",
+  "sourceUpdates": {
+    "add": [{ "category": "...", "topic": "...", "query": "..." }],
+    "remove": ["topic name"],
+    "scores": { "topic name": 0.1 }
+  },
+  "log": "brief internal note about what you decided and why"
+}`
+
+    logSchedule('proactive: firing delegate-cli\n')
+
+    const model = this.proactive?.model ?? ''
+    const args: string[] = [DELEGATE_CLI]
     if (model) args.push('--preset', model)
     args.push(task)
 
-    const { spawn: spawnChild } = require('child_process')
-    const child = spawnChild('node', [delegateCli, ...args], {
+    const child = spawn('node', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      timeout: 60_000,
+      timeout: 90_000,
       env: { ...process.env },
     })
 
     let stdout = ''
     child.stdout.on('data', (d: Buffer) => { stdout += d })
-    child.on('close', (code: number | null) => {
-      let result = ''
+    child.on('close', (_code: number | null) => {
+      let result: any
       try {
-        const parsed = JSON.parse(stdout)
-        result = parsed.content || stdout.trim()
+        // delegate-cli returns JSON with content field
+        const outer = JSON.parse(stdout)
+        const content = outer.content || stdout
+        // Parse the inner JSON from model response
+        const jsonMatch = content.match(/\{[\s\S]*\}/)
+        result = jsonMatch ? JSON.parse(jsonMatch[0]) : null
       } catch {
-        result = stdout.trim()
-      }
-
-      if (!result || result === 'SKIP' || result.includes('SKIP')) {
-        logSchedule(`proactive: "${source.topic}" → SKIP\n`)
-        this.proactiveScoreUpdater?.(source.id, false)
+        logSchedule(`proactive: failed to parse response\n`)
         return
       }
 
-      logSchedule(`proactive: "${source.topic}" → inject (${result.length} chars)\n`)
-      this.proactiveScoreUpdater?.(source.id, true)
+      if (!result) return
+
+      // Write log
+      if (result.log) {
+        const logPath = join(DATA_DIR, 'proactive.log')
+        try {
+          appendFileSync(logPath, `[${new Date().toISOString()}] ${result.log}\n`)
+        } catch { /* best effort */ }
+      }
+
+      // Apply source updates
+      if (result.sourceUpdates) {
+        this.proactiveDbUpdater?.(result.sourceUpdates)
+      }
+
+      // Skip
+      if (result.action !== 'talk' || !result.message) {
+        logSchedule(`proactive: skip (${result.log || 'no reason'})\n`)
+        return
+      }
+
+      // Inject
+      logSchedule(`proactive: "${result.sourcePicked}" → inject\n`)
       this.proactiveLastFire = Date.now()
       this.proactiveFiredToday++
 
       if (this.injectFn) {
-        this.injectFn('', `proactive:${source.topic}`, ' ', {
-          instruction: result,
+        this.injectFn('', `proactive:${result.sourcePicked || 'chat'}`, ' ', {
+          instruction: result.message,
         })
       }
     })

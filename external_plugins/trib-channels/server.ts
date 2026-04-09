@@ -32,7 +32,7 @@ import {
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
-import { appendEpisode as memoryAppendEpisode, ingestTranscript as memoryIngestTranscript, pickProactiveSource, updateProactiveScore } from './lib/memory-client.mjs'
+import { appendEpisode as memoryAppendEpisode, ingestTranscript as memoryIngestTranscript, getProactiveSources, getProactiveContext, applyProactiveUpdates } from './lib/memory-client.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -951,17 +951,18 @@ scheduler.setSendHandler(async (channelId: string, text: string) => {
   })
 })
 
-// ── Proactive source handlers ─────────────────────────────────────────
+// ── Proactive handlers ────────────────────────────────────────────────
 
-scheduler.setProactiveSourceHandlers(
+scheduler.setProactiveHandlers(
   async () => {
-    try {
-      const source = await pickProactiveSource()
-      return source?.skip ? null : source
-    } catch { return null }
+    const [memory, sources] = await Promise.all([
+      getProactiveContext(),
+      getProactiveSources(),
+    ])
+    return { memory, sources }
   },
-  (id: number, hit: boolean) => {
-    void updateProactiveScore(id, hit)
+  (updates: any) => {
+    void applyProactiveUpdates(updates)
   },
 )
 

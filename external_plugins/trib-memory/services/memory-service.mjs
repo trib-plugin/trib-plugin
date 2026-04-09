@@ -990,26 +990,62 @@ function sendError(res, msg, status = 500) {
 }
 
 const httpServer = http.createServer(async (req, res) => {
-  // GET /proactive/pick
-  if (req.method === 'GET' && req.url === '/proactive/pick') {
+  // GET /proactive/sources
+  if (req.method === 'GET' && req.url === '/proactive/sources') {
     try {
       store.seedProactiveSources()
-      const source = store.pickProactiveSource()
-      sendJson(res, source || { skip: true })
+      sendJson(res, store.getProactiveSources('active'))
     } catch (e) {
       sendError(res, e.message)
     }
     return
   }
 
-  // POST /proactive/score
-  if (req.method === 'POST' && req.url === '/proactive/score') {
+  // GET /proactive/context — recent memory for proactive tick
+  if (req.method === 'GET' && req.url === '/proactive/context') {
+    try {
+      const recent = store.db.prepare(`
+        SELECT ts, user_name, role, substr(content, 1, 200) as content
+        FROM episodes
+        WHERE kind = 'message' AND role IN ('user', 'assistant')
+        ORDER BY ts DESC LIMIT 20
+      `).all()
+      const lines = recent.reverse().map(r =>
+        `[${r.ts}] ${r.role === 'user' ? 'u' : 'a'}: ${r.content}`
+      ).join('\n')
+      sendJson(res, { context: lines })
+    } catch (e) {
+      sendError(res, e.message)
+    }
+    return
+  }
+
+  // POST /proactive/updates — apply source add/remove/score changes
+  if (req.method === 'POST' && req.url === '/proactive/updates') {
     let body = ''
     req.on('data', chunk => { body += chunk })
     req.on('end', () => {
       try {
-        const { id, hit } = JSON.parse(body)
-        store.updateProactiveScore(id, hit)
+        const updates = JSON.parse(body)
+        if (Array.isArray(updates.add)) {
+          for (const s of updates.add) {
+            store.addProactiveSource(s.category, s.topic, s.query || '')
+          }
+        }
+        if (Array.isArray(updates.remove)) {
+          const sources = store.getProactiveSources('active')
+          for (const topic of updates.remove) {
+            const found = sources.find(s => s.topic === topic)
+            if (found && !found.pinned) store.removeProactiveSource(found.id)
+          }
+        }
+        if (updates.scores && typeof updates.scores === 'object') {
+          const sources = store.getProactiveSources('active')
+          for (const [topic, delta] of Object.entries(updates.scores)) {
+            const found = sources.find(s => s.topic === topic)
+            if (found) store.updateProactiveScore(found.id, delta > 0)
+          }
+        }
         sendJson(res, { ok: true })
       } catch (e) {
         sendError(res, e.message)
