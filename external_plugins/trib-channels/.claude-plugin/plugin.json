@@ -1,6 +1,6 @@
 {
-  "name": "trib-channels",
-  "description": "Discord channel plugin for Claude Code with scheduler, voice transcription, and access control.",
+  "name": "trib-plugin",
+  "description": "Unified trib ecosystem — Discord channels, persistent memory, web search, AI agent orchestration",
   "version": "0.0.16",
   "author": {
     "name": "TRIBGAMES",
