@@ -9,13 +9,7 @@
     "skills/workflow"
   ],
   "commands": [
-    "commands/ask.md",
-    "commands/clear.md",
-    "commands/config.md",
-    "commands/model.md",
-    "commands/new.md",
-    "commands/resume.md",
-    "commands/channels-config.md"
+    "commands/config.md"
   ],
   "hooks": "hooks/hooks.json"
 }

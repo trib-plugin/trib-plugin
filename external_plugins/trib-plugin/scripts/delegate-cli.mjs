@@ -91,7 +91,7 @@ try {
   // stdout = result for Bash tool
   console.log(JSON.stringify(output, null, 2));
 
-  // Background mode: also inject via trib-channels HTTP
+  // Background mode: also inject via trib-plugin HTTP
   if (background) {
     await injectResult(`**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`, { type: 'delegate' });
   }
@@ -109,7 +109,7 @@ function injectResult(content, { type } = {}) {
   return new Promise((resolve) => {
     try {
       const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
-      const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
+      const portFile = join(tmpDir, 'trib-plugin', 'active-instance.json');
       const instance = JSON.parse(readFileSync(portFile, 'utf8'));
       if (!instance.httpPort) { resolve(); return; }
       const body = { content, source: 'trib-agent' };

@@ -11,12 +11,12 @@ import { DATA_DIR } from './config.js'
 import { runCliWorkerTask } from './cli-worker-host.js'
 
 const SCRIPTS_DIR = join(DATA_DIR, 'scripts')
-const NOPLUGIN_DIR = join(tmpdir(), 'trib-channels-noplugin')
+const NOPLUGIN_DIR = join(tmpdir(), 'trib-plugin-noplugin')
 const EVENT_LOG = join(DATA_DIR, 'event.log')
 
 export function logEvent(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
-  try { process.stderr.write(`trib-channels event: ${msg}\n`) } catch { /* EPIPE */ }
+  try { process.stderr.write(`trib-plugin event: ${msg}\n`) } catch { /* EPIPE */ }
   try { appendFileSync(EVENT_LOG, line) } catch { /* best effort */ }
 }
 

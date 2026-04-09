@@ -1,5 +1,5 @@
 /**
- * trib-channels PostToolUse hook
+ * trib-plugin PostToolUse hook
  * When a tool finishes execution, resolve any pending permission request
  * so the PermissionRequest hook can update the Discord message.
  *
@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-channels');
+const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-plugin');
 
 let input = '';
 process.stdin.on('data', d => { input += d; });

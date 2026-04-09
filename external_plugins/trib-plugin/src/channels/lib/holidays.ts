@@ -91,7 +91,7 @@ export async function isHoliday(date: Date, countryCode: string): Promise<boolea
       holidays = await fetchHolidays(year, countryCode)
       saveCache(year, countryCode, holidays)
     } catch (err) {
-      process.stderr.write(`trib-channels holidays: API fetch failed: ${err}\n`)
+      process.stderr.write(`trib-plugin holidays: API fetch failed: ${err}\n`)
       holidays = null
     }
   }

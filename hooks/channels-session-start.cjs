@@ -1,5 +1,5 @@
 /**
- * trib-channels session-start hook
+ * trib-plugin session-start hook
  *
  * Loads channel settings and injects them as additionalContext:
  *   1. contextFiles from config.json

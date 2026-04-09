@@ -16,7 +16,7 @@ export type ActiveInstanceState = {
   httpPort?: number
 }
 
-export const RUNTIME_ROOT = join(tmpdir(), 'trib-channels')
+export const RUNTIME_ROOT = join(tmpdir(), 'trib-plugin')
 export const OWNER_DIR = join(RUNTIME_ROOT, 'owners')
 export const ACTIVE_INSTANCE_FILE = join(RUNTIME_ROOT, 'active-instance.json')
 export const RUNTIME_STALE_TTL = 24 * 60 * 60 * 1000
@@ -78,7 +78,7 @@ export function readActiveInstance(): ActiveInstanceState | null {
   try {
     process.kill(state.pid, 0)
   } catch {
-    process.stderr.write(`trib-channels: stale active-instance.json (PID ${state.pid} is dead), removing\n`)
+    process.stderr.write(`trib-plugin: stale active-instance.json (PID ${state.pid} is dead), removing\n`)
     removeFileIfExists(ACTIVE_INSTANCE_FILE)
     return null
   }
@@ -136,7 +136,7 @@ function looksLikeTribChannelsServer(pid: number): boolean {
       const out = execFileSync('tasklist', ['/FI', `PID eq ${pidStr}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' }).trim()
       if (!out || out.includes('No tasks')) return false
       const lower = out.toLowerCase()
-      return lower.includes('server.ts') && (lower.includes('node') || lower.includes('tsx') || lower.includes('trib-channels'))
+      return lower.includes('server.ts') && (lower.includes('node') || lower.includes('tsx') || lower.includes('trib-plugin'))
     } catch {
       return true // tasklist failed — assume it's ours to be safe
     }
@@ -147,7 +147,7 @@ function looksLikeTribChannelsServer(pid: number): boolean {
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT ?? ''
     if (!cmd.includes('server.ts')) return false
     return (
-      cmd.includes('trib-channels') ||
+      cmd.includes('trib-plugin') ||
       (pluginRoot && cmd.includes(pluginRoot)) ||
       cmd.includes('tsx server.ts') ||
       (cmd.includes('node') && cmd.includes('server'))

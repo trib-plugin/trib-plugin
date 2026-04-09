@@ -152,7 +152,7 @@ export async function handleBotCommand(
     case 'help':
       return {
         embeds: [{
-          title: 'trib-channels Commands',
+          title: 'trib-plugin Commands',
           description: [
             '**Simple**',
             '`/bot status`',
@@ -166,7 +166,7 @@ export async function handleBotCommand(
             '`/bot schedule add ...`',
             '',
             '**Guided setup**',
-            'Use `/trib-channels setup` for first-run onboarding.',
+            'Use `/trib-plugin setup` for first-run onboarding.',
           ].join('\n'),
           color: 0x5865F2,
         }],
@@ -433,7 +433,7 @@ function handleSleeping(parsed: ParsedCommand, ctx: CommandContext): CommandResu
     }
     case 'now':
     case 'run': {
-      return { text: 'Use `/trib-channels memory sleep` or MCP `memory_cycle` tool to run memory summarize.' }
+      return { text: 'Use `/trib-plugin memory sleep` or MCP `memory_cycle` tool to run memory summarize.' }
     }
     default:
       return { text: t('unknown_action', ctx.lang, { action }) }

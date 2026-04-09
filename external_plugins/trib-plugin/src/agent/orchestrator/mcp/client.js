@@ -8,7 +8,7 @@ import { tmpdir, homedir } from 'os';
 /** Known auto-detect targets: port file path relative to tmpdir */
 const AUTO_DETECT_PORTS = {
     'trib-memory': { dir: 'trib-memory', file: 'memory-port', endpoint: '/mcp' },
-    'trib-channels': { dir: 'trib-channels', file: 'active-instance.json', endpoint: '/mcp', portField: 'httpPort' },
+    'trib-plugin': { dir: 'trib-plugin', file: 'active-instance.json', endpoint: '/mcp', portField: 'httpPort' },
 };
 // --- State ---
 const servers = new Map();

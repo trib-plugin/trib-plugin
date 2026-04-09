@@ -10,8 +10,8 @@ import type { AccessConfig, ChannelBackend, PluginConfig, BotConfig, ProfileConf
 
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.stderr.write(
-    'trib-channels: CLAUDE_PLUGIN_DATA not set.\n' +
-    '  This plugin must be run through Claude Code (claude --channels plugin:trib-channels@trib-channels).\n',
+    'trib-plugin: CLAUDE_PLUGIN_DATA not set.\n' +
+    '  This plugin must be run through Claude Code.\n',
   )
   process.exit(1)
 }
@@ -80,7 +80,9 @@ export function loadConfig(): PluginConfig {
     }
 
     return {
+      ...DEFAULT_CONFIG,
       ...raw,
+      backend: raw.backend || 'discord',
       access: {
         ...DEFAULT_ACCESS,
         ...(raw.access ?? {}),
@@ -94,7 +96,7 @@ export function loadConfig(): PluginConfig {
       mkdirSync(DATA_DIR, { recursive: true })
       writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n')
       process.stderr.write(
-        `trib-channels: default config created at ${CONFIG_FILE}\n` +
+        `trib-plugin: default config created at ${CONFIG_FILE}\n` +
         `  edit discord.token and channelsConfig.channels.general.id to connect.\n`,
       )
       return DEFAULT_CONFIG as PluginConfig
@@ -103,15 +105,24 @@ export function loadConfig(): PluginConfig {
   }
 }
 
-export function createBackend(config: PluginConfig): ChannelBackend {
-  if (config.backend !== 'discord') {
-    process.stderr.write(`trib-channels: unsupported backend "${config.backend}" (discord only)\n`)
-    process.exit(1)
-  }
+const HEADLESS_BACKEND: ChannelBackend = {
+  name: 'headless',
+  async connect() {},
+  async disconnect() {},
+  async sendMessage() { return { ids: [] } },
+  async fetchMessages() { return [] },
+  async react() {},
+  async removeReaction() {},
+  async editMessage() { return '' },
+  async deleteMessage() {},
+  async downloadAttachment() { return Buffer.alloc(0) },
+  on() {},
+}
 
-  if (!config.discord?.token) {
-    process.stderr.write('trib-channels: discord.token required in config.json\n')
-    process.exit(1)
+export function createBackend(config: PluginConfig): ChannelBackend {
+  if (config.backend !== 'discord' || !config.discord?.token) {
+    process.stderr.write('trib-plugin: discord not configured, running in headless mode\n')
+    return HEADLESS_BACKEND
   }
 
   const stateDir =

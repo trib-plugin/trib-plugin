@@ -11,18 +11,18 @@ import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
-import { DATA_DIR } from './config.js'
+import { DATA_DIR, PLUGIN_ROOT } from './config.js'
 import { appendFileSync } from 'fs'
 import { spawn } from 'child_process'
 import { spawnClaudeP, runScript as execScript, ensureNopluginDir } from './executor.js'
 
-const DELEGATE_CLI = join(DATA_DIR, '..', '..', 'marketplaces', 'trib-plugin', 'scripts', 'delegate-cli.mjs')
+const DELEGATE_CLI = join(PLUGIN_ROOT, 'scripts', 'delegate-cli.mjs')
 
 const SCHEDULE_LOG = join(DATA_DIR, 'schedule.log')
 // SCRIPTS_DIR moved to executor.ts
 function logSchedule(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
-  process.stderr.write(`trib-channels scheduler: ${msg}\n`)
+  process.stderr.write(`trib-plugin scheduler: ${msg}\n`)
   try { appendFileSync(SCHEDULE_LOG, line) } catch { /* best effort */ }
 }
 import { isHoliday } from './holidays.js'
@@ -155,7 +155,7 @@ export class Scheduler {
     return `${header}\n\n${prompt}`
   }
 
-  private static SCHEDULER_LOCK = join(tmpdir(), 'trib-channels-scheduler.lock')
+  private static SCHEDULER_LOCK = join(tmpdir(), 'trib-plugin-scheduler.lock')
   private static INSTANCE_UUID = randomUUID()
 
   start(): void {
@@ -163,7 +163,7 @@ export class Scheduler {
     const total = this.nonInteractive.length + this.interactive.length
       + (this.proactive?.items.length ?? 0)
     if (total === 0) {
-      process.stderr.write('trib-channels scheduler: no schedules configured\n')
+      process.stderr.write('trib-plugin scheduler: no schedules configured\n')
       return
     }
 
@@ -191,9 +191,9 @@ export class Scheduler {
           if (isAlive) {
             if (lockAge > 60 * 60 * 1000 && lockUuid !== Scheduler.INSTANCE_UUID) {
               // Lock is >1h old and PID is alive but UUID differs — likely PID reuse, reclaim
-              process.stderr.write(`trib-channels scheduler: lock PID ${pid} alive but stale (${Math.round(lockAge / 60000)}m), reclaiming (PID reuse)\n`)
+              process.stderr.write(`trib-plugin scheduler: lock PID ${pid} alive but stale (${Math.round(lockAge / 60000)}m), reclaiming (PID reuse)\n`)
             } else {
-              process.stderr.write(`trib-channels scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`)
+              process.stderr.write(`trib-plugin scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`)
               return
             }
           }
@@ -249,7 +249,7 @@ export class Scheduler {
     this.proactiveSlotsDate = ''
     this.proactiveFiredToday = 0
     if (this.deferred.size > 0 || this.skippedToday.size > 0) {
-      process.stderr.write(`trib-channels scheduler: reload clearing ${this.deferred.size} deferred, ${this.skippedToday.size} skipped\n`)
+      process.stderr.write(`trib-plugin scheduler: reload clearing ${this.deferred.size} deferred, ${this.skippedToday.size} skipped\n`)
     }
     this.deferred.clear()
     this.skippedToday.clear()
@@ -325,7 +325,7 @@ export class Scheduler {
 
   private tick(): void {
     this.tickAsync().catch(err =>
-      process.stderr.write(`trib-channels scheduler: tick error: ${err}\n`),
+      process.stderr.write(`trib-plugin scheduler: tick error: ${err}\n`),
     )
   }
 
@@ -343,10 +343,10 @@ export class Scheduler {
       try {
         this.todayIsHoliday = await isHoliday(now, this.holidayCountry)
         if (this.todayIsHoliday) {
-          process.stderr.write(`trib-channels scheduler: today (${dateStr}) is a holiday — weekday schedules will be skipped\n`)
+          process.stderr.write(`trib-plugin scheduler: today (${dateStr}) is a holiday — weekday schedules will be skipped\n`)
         }
       } catch (err) {
-        process.stderr.write(`trib-channels scheduler: holiday check failed: ${err}\n`)
+        process.stderr.write(`trib-plugin scheduler: holiday check failed: ${err}\n`)
         this.todayIsHoliday = false
       }
     }
@@ -397,7 +397,7 @@ export class Scheduler {
 
       this.lastFired.set(s.name, now.toISOString())
       this.fireTimed(s, type).catch(err =>
-        process.stderr.write(`trib-channels scheduler: ${s.name} failed: ${err}\n`),
+        process.stderr.write(`trib-plugin scheduler: ${s.name} failed: ${err}\n`),
       )
     }
 
@@ -482,7 +482,7 @@ export class Scheduler {
       slots.add(start + Math.floor(Math.random() * (end - start)))
     }
     this.proactiveSlots = [...slots].sort((a, b) => a - b)
-    process.stderr.write(`trib-channels scheduler: proactive slots for ${dateStr}: ${this.proactiveSlots.map(m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`).join(', ')}\n`)
+    process.stderr.write(`trib-plugin scheduler: proactive slots for ${dateStr}: ${this.proactiveSlots.map(m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`).join(', ')}\n`)
   }
 
   // ── Fire timed schedule ─────────────────────────────────────────────
@@ -496,7 +496,7 @@ export class Scheduler {
     // For script/script+prompt modes, run script first
     if (execMode === 'script' || execMode === 'script+prompt') {
       if (!schedule.script) {
-        process.stderr.write(`trib-channels scheduler: no script specified for "${schedule.name}"\n`)
+        process.stderr.write(`trib-plugin scheduler: no script specified for "${schedule.name}"\n`)
         return
       }
 
@@ -515,10 +515,10 @@ export class Scheduler {
           this.running.delete(schedule.name)
           if (scriptResult && this.sendFn) {
             await this.sendFn(channelId, scriptResult).catch(err =>
-              process.stderr.write(`trib-channels scheduler: ${schedule.name} relay failed: ${err}\n`),
+              process.stderr.write(`trib-plugin scheduler: ${schedule.name} relay failed: ${err}\n`),
             )
           }
-          process.stderr.write(`trib-channels scheduler: ${schedule.name} script done\n`)
+          process.stderr.write(`trib-plugin scheduler: ${schedule.name} script done\n`)
           return
         }
 
@@ -526,7 +526,7 @@ export class Scheduler {
         const prompt = this.loadPrompt(schedule.prompt ?? `${schedule.name}.md`)
         if (!prompt) {
           this.running.delete(schedule.name)
-          process.stderr.write(`trib-channels scheduler: prompt not found for "${schedule.name}"\n`)
+          process.stderr.write(`trib-plugin scheduler: prompt not found for "${schedule.name}"\n`)
           return
         }
 
@@ -537,7 +537,7 @@ export class Scheduler {
         return
       } catch (err) {
         this.running.delete(schedule.name)
-        process.stderr.write(`trib-channels scheduler: ${schedule.name} script error: ${err}\n`)
+        process.stderr.write(`trib-plugin scheduler: ${schedule.name} script error: ${err}\n`)
         return
       }
     }
@@ -545,7 +545,7 @@ export class Scheduler {
     // Default: prompt mode
     const prompt = this.resolvePrompt(schedule)
     if (!prompt) {
-      process.stderr.write(`trib-channels scheduler: prompt not found for "${schedule.name}"\n`)
+      process.stderr.write(`trib-plugin scheduler: prompt not found for "${schedule.name}"\n`)
       return
     }
 
@@ -602,7 +602,7 @@ export class Scheduler {
         }
         if (result && this.sendFn) {
           this.sendFn(channelId, result).catch(err =>
-            process.stderr.write(`trib-channels scheduler: ${schedule.name} relay failed: ${err}\n`),
+            process.stderr.write(`trib-plugin scheduler: ${schedule.name} relay failed: ${err}\n`),
           )
         }
         logSchedule(`${schedule.name} delegate done (${code})\n`)
@@ -613,7 +613,7 @@ export class Scheduler {
         this.running.delete(schedule.name)
         if (result && this.sendFn) {
           this.sendFn(channelId, result).catch(err =>
-            process.stderr.write(`trib-channels scheduler: ${schedule.name} relay failed: ${err}\n`),
+            process.stderr.write(`trib-plugin scheduler: ${schedule.name} relay failed: ${err}\n`),
           )
         }
         logSchedule(`${schedule.name} claude-p done (${code})\n`)

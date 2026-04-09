@@ -111,8 +111,7 @@ async function syncDependenciesIfNeeded() {
 
 await syncDependenciesIfNeeded()
 
-const serverTs = join(pluginRoot, 'server-unified.ts')
-const serverTsFallback = join(pluginRoot, 'server.ts')
+const serverTs = join(pluginRoot, 'server.ts')
 const serverJs = join(pluginRoot, 'server.bundle.mjs')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
 const sep = process.platform === 'win32' ? ';' : ':'
@@ -136,9 +135,7 @@ try {
   log('no pre-built bundle, building at runtime...')
   function buildBundle() {
     try {
-      // Use unified server if available, fallback to standalone
       let entryTs = serverTs
-      try { statSync(entryTs) } catch { entryTs = serverTsFallback }
       const srcStat = statSync(entryTs)
       try {
         const bundleStat = statSync(serverJs)

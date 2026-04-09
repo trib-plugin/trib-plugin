@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * trib-channels — Discord channel plugin for Claude Code.
+ * trib-plugin — Discord channel plugin for Claude Code.
  *
  * Main entrypoint: reads config, initializes the selected backend,
  * registers MCP tools, and bridges inbound messages as notifications.
@@ -19,6 +19,7 @@ import * as http from 'http'
 import * as https from 'https'
 import * as os from 'os'
 import * as path from 'path'
+import { pathToFileURL } from 'url'
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from './lib/config.js'
 import { loadSettings, tryRead } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
@@ -57,7 +58,7 @@ import {
 import type { InboundMessage } from './backends/types.js'
 import { PLUGIN_ROOT } from './lib/config.js'
 
-const memoryClientModulePath = './lib/memory-client.mjs'
+const memoryClientModulePath = pathToFileURL(path.join(PLUGIN_ROOT, 'src/channels/lib/memory-client.mjs')).href
 const {
   appendEpisode: memoryAppendEpisode,
   ingestTranscript: memoryIngestTranscript,
@@ -94,12 +95,12 @@ function logCrash(label: string, err: unknown): void {
   if (err instanceof Error && err.message.includes('EPIPE')) {
     try {
       const crashLog = path.join(DATA_DIR, 'crash.log')
-      fs.appendFileSync(crashLog, `[${localTimestamp()}] trib-channels: EPIPE detected, disconnecting + exiting\n`)
+      fs.appendFileSync(crashLog, `[${localTimestamp()}] trib-plugin: EPIPE detected, disconnecting + exiting\n`)
     } catch { /* best effort */ }
     process.exit(1)
   }
 
-  const msg = `[${localTimestamp()}] trib-channels: ${label}: ${err}\n${err instanceof Error ? err.stack : ''}\n`
+  const msg = `[${localTimestamp()}] trib-plugin: ${label}: ${err}\n${err instanceof Error ? err.stack : ''}\n`
   try { process.stderr.write(msg) } catch { /* EPIPE */ }
   try {
     const crashLog = path.join(DATA_DIR, 'crash.log')
@@ -120,7 +121,7 @@ if (process.env.TRIB_CHANNELS_NO_CONNECT) {
 }
 
 const _bootLogEarly = path.join(
-  process.env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), 'trib-channels'),
+  process.env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), 'trib-plugin'),
   'boot.log',
 )
 fs.appendFileSync(_bootLogEarly, `[${localTimestamp()}] bootstrap start pid=${process.pid}\n`)
@@ -176,7 +177,7 @@ const INSTRUCTIONS = [
 // In unified mode, init() replaces it with the shared MCP server reference.
 
 let mcpServer: InstanceType<typeof Server> | any = new Server(
-  { name: 'trib-channels', version: PLUGIN_VERSION },
+  { name: 'trib-plugin', version: PLUGIN_VERSION },
   {
     capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } },
     instructions: INSTRUCTIONS,
@@ -197,7 +198,7 @@ let channelBridgeActive = false
 
 function writeBridgeState(active: boolean): void {
   try {
-    const stateFile = path.join(os.tmpdir(), 'trib-channels', 'bridge-state.json')
+    const stateFile = path.join(os.tmpdir(), 'trib-plugin', 'bridge-state.json')
     fs.mkdirSync(path.dirname(stateFile), { recursive: true })
     fs.writeFileSync(stateFile, JSON.stringify({ active, ts: Date.now() }))
   } catch {}
@@ -210,7 +211,7 @@ export function isChannelBridgeActive(): boolean {
 // ── Typing state management ───────────────────────────────────────────
 
 let typingChannelId: string | null = null
-let controlWorker: import('child_process').ChildProcess | null = null
+// controlWorker removed — ownership handled by runtime-paths
 
 type BackendInteraction = {
   type: string
@@ -315,14 +316,7 @@ const forwarder = new OutputForwarder({
 // Multiple plugin processes may coexist; only the current owner connects
 // Discord/webhook/scheduler and claims channel state.
 
-try {
-  controlWorker = spawn(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'control-worker.cjs'), INSTANCE_ID], {
-    stdio: 'ignore',
-    detached: false,
-  })
-} catch (err) {
-  process.stderr.write(`trib-channels: control worker start failed: ${err}\n`)
-}
+// control-worker removed — ownership is handled by runtime-paths instance management
 
 // Wire up forwarder's idle detection to server idle handling
 forwarder.setOnIdle(() => {
@@ -643,7 +637,7 @@ async function startOwnerHttpServer(): Promise<number> {
   for (let port = PROXY_PORT_MIN; port <= PROXY_PORT_MAX; port++) {
     if (await tryListenPort(server, port)) {
       ownerHttpServer = server
-      process.stderr.write(`trib-channels: owner HTTP server listening on 127.0.0.1:${port}\n`)
+      process.stderr.write(`trib-plugin: owner HTTP server listening on 127.0.0.1:${port}\n`)
       return port
     }
     // Remove error listener from failed attempt so it doesn't accumulate
@@ -726,7 +720,7 @@ function bindPersistedTranscriptIfAny(): void {
           if (data.channelId) {
             statusState.update((state: Record<string, unknown>) => { Object.assign(state, data) })
             currentStatus = statusState.read()
-            process.stderr.write(`trib-channels: restored status from ${fp}\n`)
+            process.stderr.write(`trib-plugin: restored status from ${fp}\n`)
             break
           }
         } catch { /* skip unreadable files */ }
@@ -742,12 +736,12 @@ function bindPersistedTranscriptIfAny(): void {
     if (mainId) {
       statusState.update((state: Record<string, unknown>) => { state.channelId = mainId })
       currentStatus = statusState.read()
-      process.stderr.write(`trib-channels: auto-bound to main channel ${mainId}\n`)
+      process.stderr.write(`trib-plugin: auto-bound to main channel ${mainId}\n`)
     }
   }
   if (!currentStatus.channelId) return
   applyTranscriptBinding(currentStatus.channelId, initBound.transcriptPath)
-  process.stderr.write(`trib-channels: initial transcript bind: ${initBound.transcriptPath}\n`)
+  process.stderr.write(`trib-plugin: initial transcript bind: ${initBound.transcriptPath}\n`)
 }
 
 async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Promise<void> {
@@ -758,7 +752,7 @@ async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Pr
   try {
     await backend.connect()
   } catch (e) {
-    process.stderr.write(`trib-channels: backend connect failed (non-fatal): ${e instanceof Error ? e.message : String(e)}\n`)
+    process.stderr.write(`trib-plugin: backend connect failed (non-fatal): ${e instanceof Error ? e.message : String(e)}\n`)
     return // MCP server continues without Discord — memory tools still work
   }
   bridgeRuntimeConnected = true
@@ -772,12 +766,12 @@ async function startOwnedRuntime(options: { restoreBinding?: boolean } = {}): Pr
   try {
     httpPort = await startOwnerHttpServer()
   } catch (e) {
-    process.stderr.write(`trib-channels: HTTP server start failed (non-fatal): ${e instanceof Error ? e.message : String(e)}\n`)
+    process.stderr.write(`trib-plugin: HTTP server start failed (non-fatal): ${e instanceof Error ? e.message : String(e)}\n`)
   }
 
   refreshActiveInstance(INSTANCE_ID, httpPort ? { httpPort } : undefined)
   if (options.restoreBinding !== false) bindPersistedTranscriptIfAny()
-  process.stderr.write(`trib-channels: running with ${backend.name} backend\n`)
+  process.stderr.write(`trib-plugin: running with ${backend.name} backend\n`)
   logOwnership(`active owner pid=${process.pid}`)
 }
 
@@ -930,7 +924,7 @@ scheduler.setInjectHandler((channelId: string, name: string, content: string, op
     method: 'notifications/claude/channel',
     params: { content, meta },
   }).catch((e: unknown) => {
-    process.stderr.write(`trib-channels: notification failed: ${e}\n`)
+    process.stderr.write(`trib-plugin: notification failed: ${e}\n`)
   })
   void memoryAppendEpisode({
     ts,
@@ -1005,7 +999,7 @@ eventQueue.setInjectHandler((channelId: string, name: string, content: string, o
     method: 'notifications/claude/channel',
     params: { content, meta },
   }).catch((e: unknown) => {
-    try { process.stderr.write(`trib-channels event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
+    try { process.stderr.write(`trib-plugin event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
   })
   void memoryAppendEpisode({
     ts,
@@ -1059,7 +1053,7 @@ function editDiscordMessage(channelId: string, messageId: string, label: string)
     },
   }, res => { res.resume(); res.on('end', () => {}); })
   req.on('error', (err: Error) => {
-    process.stderr.write(`trib-channels: editDiscordMessage failed: ${err}\n`)
+    process.stderr.write(`trib-plugin: editDiscordMessage failed: ${err}\n`)
   })
   req.write(body)
   req.end()
@@ -1119,7 +1113,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
     }
 
     if (access.allowFrom?.length > 0 && !access.allowFrom.includes(interaction.userId)) {
-      process.stderr.write(`trib-channels: perm button rejected — user ${interaction.userId} not in allowFrom\n`)
+      process.stderr.write(`trib-plugin: perm button rejected — user ${interaction.userId} not in allowFrom\n`)
       return
     }
 
@@ -1153,7 +1147,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
     return
   }
 
-  // GUI input removed — use /trib-channels slash commands or conversational skills
+  // GUI input removed — use /trib-plugin slash commands or conversational skills
   // ── Default: forward interaction as MCP notification ──
   void mcpServer.notification({
     method: 'notifications/claude/channel',
@@ -1171,7 +1165,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
       },
     },
   }).catch((e: unknown) => {
-    process.stderr.write(`trib-channels: notification failed: ${e}\n`)
+    process.stderr.write(`trib-plugin: notification failed: ${e}\n`)
   })
 }
 
@@ -1413,7 +1407,7 @@ async function transcribeVoice(audioPath: string): Promise<string | null> {
     const text = await runCmd(whisperCmd, args, true)
     return text.trim() || null
   } catch (err) {
-    process.stderr.write(`trib-channels: transcribeVoice failed: ${err}\n`)
+    process.stderr.write(`trib-plugin: transcribeVoice failed: ${err}\n`)
     return null
   }
 }
@@ -1605,7 +1599,7 @@ const TOOL_DEFS = [
 
 function createHttpMcpServer(): InstanceType<typeof Server> {
   const s = new Server(
-    { name: 'trib-channels', version: PLUGIN_VERSION },
+    { name: 'trib-plugin', version: PLUGIN_VERSION },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   )
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
@@ -2023,7 +2017,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req: any) => {
 
 const INBOUND_DEDUP_TTL = 5 * 60_000 // 5 minutes
 const inboundSeen = new Map<string, number>()
-const INBOUND_DEDUP_DIR = path.join(os.tmpdir(), 'trib-channels-inbound')
+const INBOUND_DEDUP_DIR = path.join(os.tmpdir(), 'trib-plugin-inbound')
 ensureDir(INBOUND_DEDUP_DIR)
 
 function claimChannelOwner(channelId: string): boolean {
@@ -2170,7 +2164,7 @@ backend.onMessage = (msg) => {
   inboundQueue(() => handleInbound(msg, route, {
     sessionId: boundTranscript?.sessionId ?? sessionIdFromTranscriptPath(transcriptPath),
   }).catch(err => {
-    process.stderr.write(`trib-channels: handleInbound error: ${err}\n`)
+    process.stderr.write(`trib-plugin: handleInbound error: ${err}\n`)
   }).finally(() => {
     stopServerTyping()
   }))
@@ -2201,15 +2195,15 @@ async function handleInbound(
           const transcript = await transcribeVoice(f.path)
           if (transcript) {
             text = transcript
-            process.stderr.write(`trib-channels: transcribed voice (${f.name}): ${transcript.slice(0, 50)}\n`)
+            process.stderr.write(`trib-plugin: transcribed voice (${f.name}): ${transcript.slice(0, 50)}\n`)
           } else {
-            process.stderr.write(`trib-channels: voice transcription returned empty (${f.name})\n`)
+            process.stderr.write(`trib-plugin: voice transcription returned empty (${f.name})\n`)
             text = text || '[voice message — transcription failed]'
           }
         }
       }
     } catch (err) {
-      process.stderr.write(`trib-channels: voice transcription failed: ${err}\n`)
+      process.stderr.write(`trib-plugin: voice transcription failed: ${err}\n`)
       text = text || '[voice message — transcription error]'
     }
   }
@@ -2257,7 +2251,7 @@ async function handleInbound(
       meta: notificationMeta,
     },
   }).catch((e: unknown) => {
-    process.stderr.write(`trib-channels: notification failed: ${e}\n`)
+    process.stderr.write(`trib-plugin: notification failed: ${e}\n`)
   })
 
   void memoryAppendEpisode({
@@ -2306,7 +2300,7 @@ export async function init(sharedMcp: any) {
       method: 'notifications/claude/channel',
       params: { content, meta },
     }).catch((e: any) => {
-      process.stderr.write(`trib-channels: notification failed: ${e}\n`)
+      process.stderr.write(`trib-plugin: notification failed: ${e}\n`)
     })
     void memoryAppendEpisode({
       ts,
@@ -2340,7 +2334,7 @@ export async function init(sharedMcp: any) {
       method: 'notifications/claude/channel',
       params: { content, meta },
     }).catch((e: any) => {
-      try { process.stderr.write(`trib-channels event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
+      try { process.stderr.write(`trib-plugin event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
     })
     void memoryAppendEpisode({
       ts,
@@ -2521,7 +2515,7 @@ if (bridgeRuntimeConnected && channelBridgeActive) {
       if (t?.exists) {
         if (!forwarder.hasBinding()) {
           applyTranscriptBinding(greetChannel, t.transcriptPath, { persistStatus: false })
-          process.stderr.write(`trib-channels: greeting transcript bound: ${t.transcriptPath}\n`)
+          process.stderr.write(`trib-plugin: greeting transcript bound: ${t.transcriptPath}\n`)
         }
         break
       }
@@ -2535,7 +2529,7 @@ function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
   writeBridgeState(false)
-  try { process.stderr.write('trib-channels: shutting down\n') } catch { /* EPIPE */ }
+  try { process.stderr.write('trib-plugin: shutting down\n') } catch { /* EPIPE */ }
   // Hard deadline: exit after 3s no matter what
   setTimeout(() => process.exit(0), 3000)
   if (bridgeOwnershipTimer) {
@@ -2543,7 +2537,7 @@ function shutdown(): void {
     bridgeOwnershipTimer = null
   }
   try { turnEndWatcher.close() } catch {}
-  try { controlWorker?.kill() } catch {}
+  // controlWorker cleanup removed
   void stopCliWorker().catch(() => {})
   // memory-service lifecycle managed by .mcp.json
   // ML service removed — temporal parser is spawned by memory-service
@@ -2556,16 +2550,16 @@ function shutdown(): void {
     })
 }
 process.stdin.on('end', () => {
-  try { process.stderr.write('[trib-channels] stdin end, shutting down...\n') } catch { /* EPIPE */ }
+  try { process.stderr.write('[trib-plugin] stdin end, shutting down...\n') } catch { /* EPIPE */ }
   shutdown()
 })
 process.stdin.on('close', () => {
-  try { process.stderr.write('[trib-channels] stdin closed, shutting down...\n') } catch { /* EPIPE */ }
+  try { process.stderr.write('[trib-plugin] stdin closed, shutting down...\n') } catch { /* EPIPE */ }
   shutdown()
 })
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', () => {
-  process.stderr.write('[trib-channels] SIGINT received, ignoring (handled by host)\n')
+  process.stderr.write('[trib-plugin] SIGINT received, ignoring (handled by host)\n')
 })
 
 // ── Auto-reload config on file change ─────────────────────────────────

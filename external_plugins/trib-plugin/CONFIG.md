@@ -1,4 +1,4 @@
-# trib-channels Configuration Reference
+# trib-plugin Configuration Reference
 
 All settings live in `config.json` inside the plugin data directory (`$CLAUDE_PLUGIN_DATA/config.json`).
 

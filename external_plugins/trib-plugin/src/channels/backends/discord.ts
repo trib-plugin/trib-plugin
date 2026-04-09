@@ -1,5 +1,5 @@
 /**
- * Discord backend for trib-channels.
+ * Discord backend for trib-plugin.
  *
  * Implements ChannelBackend with full access control (pairing, allowlists,
  * guild-channel support with mention-triggering). Policy lives in config.json.
@@ -146,7 +146,7 @@ export class DiscordBackend implements ChannelBackend {
     if (this.isStatic) {
       const a = this.loadAccess()
       if (a.dmPolicy === 'pairing') {
-        process.stderr.write('trib-channels discord: static mode — dmPolicy "pairing" downgraded to "allowlist"\n')
+        process.stderr.write('trib-plugin discord: static mode — dmPolicy "pairing" downgraded to "allowlist"\n')
         a.dmPolicy = 'allowlist'
       }
       a.pending = {}
@@ -154,7 +154,7 @@ export class DiscordBackend implements ChannelBackend {
     }
 
     this.client.on('error', err => {
-      process.stderr.write(`trib-channels discord: client error: ${err}\n`)
+      process.stderr.write(`trib-plugin discord: client error: ${err}\n`)
     })
 
     this.client.on('messageCreate', msg => {
@@ -163,7 +163,7 @@ export class DiscordBackend implements ChannelBackend {
       }
       if (msg.author.bot) return
       this.handleInbound(msg).catch(e =>
-        process.stderr.write(`trib-channels discord: handleInbound failed: ${e}\n`),
+        process.stderr.write(`trib-plugin discord: handleInbound failed: ${e}\n`),
       )
     })
 
@@ -237,12 +237,12 @@ export class DiscordBackend implements ChannelBackend {
           }
         }
       } catch (err) {
-        process.stderr.write(`trib-channels discord: interaction error: ${err}\n`)
+        process.stderr.write(`trib-plugin discord: interaction error: ${err}\n`)
       }
     })
 
     this.client.on('ready', async c => {
-      process.stderr.write(`trib-channels discord: gateway connected as ${c.user.tag}\n`)
+      process.stderr.write(`trib-plugin discord: gateway connected as ${c.user.tag}\n`)
       // Register /stop slash command on all guilds
       try {
         for (const [guildId] of c.guilds.cache) {
@@ -251,26 +251,26 @@ export class DiscordBackend implements ChannelBackend {
             description: 'Stop the current Claude Code response',
           }, guildId)
         }
-        process.stderr.write(`trib-channels discord: /stop command registered\n`)
+        process.stderr.write(`trib-plugin discord: /stop command registered\n`)
       } catch (err) {
-        process.stderr.write(`trib-channels discord: slash command registration failed: ${err}\n`)
+        process.stderr.write(`trib-plugin discord: slash command registration failed: ${err}\n`)
       }
     })
 
     this.client.on('shardDisconnect', (ev, id) => {
-      process.stderr.write(`trib-channels discord: shard ${id} disconnected (code ${ev.code}). Will auto-reconnect.\n`)
+      process.stderr.write(`trib-plugin discord: shard ${id} disconnected (code ${ev.code}). Will auto-reconnect.\n`)
     })
 
     this.client.on('shardReconnecting', id => {
-      process.stderr.write(`trib-channels discord: shard ${id} reconnecting...\n`)
+      process.stderr.write(`trib-plugin discord: shard ${id} reconnecting...\n`)
     })
 
     this.client.on('shardResume', (id, replayedEvents) => {
-      process.stderr.write(`trib-channels discord: shard ${id} resumed (replayed ${replayedEvents} events)\n`)
+      process.stderr.write(`trib-plugin discord: shard ${id} resumed (replayed ${replayedEvents} events)\n`)
     })
 
     this.client.on('warn', msg => {
-      process.stderr.write(`trib-channels discord: warn: ${msg}\n`)
+      process.stderr.write(`trib-plugin discord: warn: ${msg}\n`)
     })
 
 
@@ -598,7 +598,7 @@ export class DiscordBackend implements ChannelBackend {
       try {
         await msg.reply(`${lead} — run in Claude Code:\n\n/discord:access pair ${result.code}`)
       } catch (err) {
-        process.stderr.write(`trib-channels discord: failed to send pairing code: ${err}\n`)
+        process.stderr.write(`trib-plugin discord: failed to send pairing code: ${err}\n`)
       }
       return
     }
@@ -633,7 +633,7 @@ export class DiscordBackend implements ChannelBackend {
             })
           }
         } catch (err) {
-          process.stderr.write(`trib-channels discord: custom command reply failed: ${err}\n`)
+          process.stderr.write(`trib-plugin discord: custom command reply failed: ${err}\n`)
         }
       }
       this.onCustomCommand(text, msg.channelId, msg.author.id, replyFn)
@@ -686,7 +686,7 @@ export class DiscordBackend implements ChannelBackend {
           }
           rmSync(file, { force: true })
         } catch (err) {
-          process.stderr.write(`trib-channels discord: approval confirm failed: ${err}\n`)
+          process.stderr.write(`trib-plugin discord: approval confirm failed: ${err}\n`)
           rmSync(file, { force: true })
         }
       })()

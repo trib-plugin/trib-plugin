@@ -15,14 +15,12 @@ import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync, exis
 
 const WEBHOOKS_DIR = join(DATA_DIR, 'webhooks')
 
-// Resolve delegate-cli path relative to trib-plugin root
-const TRIB_ROOT = join(DATA_DIR, '..', '..', 'marketplaces', 'trib-plugin')
-const DELEGATE_CLI = join(TRIB_ROOT, 'scripts', 'delegate-cli.mjs')
+const DELEGATE_CLI = join(PLUGIN_ROOT, 'scripts', 'delegate-cli.mjs')
 
 const WEBHOOK_LOG = join(DATA_DIR, 'webhook.log')
 function logWebhook(msg: string): void {
   const line = `[${new Date().toISOString()}] ${msg}\n`
-  try { process.stderr.write(`trib-channels webhook: ${msg}\n`) } catch { /* EPIPE */ }
+  try { process.stderr.write(`trib-plugin webhook: ${msg}\n`) } catch { /* EPIPE */ }
   try { appendFileSync(WEBHOOK_LOG, line) } catch { /* best effort */ }
 }
 

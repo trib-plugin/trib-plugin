@@ -1,4 +1,4 @@
-# trib-channels
+# trib-plugin
 
 Discord integration plugin for Claude Code. Provides messaging, scheduling, proactive chat, voice transcription, webhook events, and access control.
 

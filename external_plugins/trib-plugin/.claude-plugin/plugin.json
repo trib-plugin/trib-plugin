@@ -1,13 +1,13 @@
 {
   "name": "trib-plugin",
   "description": "Unified trib ecosystem — Discord channels, persistent memory, web search, AI agent orchestration",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "author": {
     "name": "TRIBGAMES",
     "email": "dev@tribgames.com"
   },
-  "homepage": "https://github.com/tribgames/trib-channels",
-  "repository": "https://github.com/tribgames/trib-channels",
+  "homepage": "https://github.com/tribgames/trib-plugin",
+  "repository": "https://github.com/tribgames/trib-plugin",
   "license": "Apache-2.0",
   "keywords": [
     "channel",

@@ -28,7 +28,7 @@ function injectViaChannels(content, { type, instruction } = {}) {
     const toolArgs = { content, source: 'trib-agent' };
     if (type) toolArgs.type = type;
     if (instruction) toolArgs.instruction = instruction;
-    executeMcpTool('mcp__trib-channels__inject', toolArgs)
+    executeMcpTool('mcp__trib-plugin__inject', toolArgs)
       .catch(() => { notify(content); });
   });
 }
@@ -37,7 +37,7 @@ function injectViaHttp(content, { type, instruction } = {}) {
   return new Promise((resolve, reject) => {
     try {
       const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
-      const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
+      const portFile = join(tmpDir, 'trib-plugin', 'active-instance.json');
       const instance = JSON.parse(readFileSync(portFile, 'utf8'));
       if (!instance.httpPort) { reject(new Error('no httpPort')); return; }
       const body = { content, source: 'trib-agent' };

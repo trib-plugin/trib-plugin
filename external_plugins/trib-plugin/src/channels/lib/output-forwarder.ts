@@ -528,7 +528,7 @@ export class OutputForwarder {
           }
           this.sendQueue.shift()
         } catch (err) {
-          process.stderr.write(`trib-channels: send failed: ${err}\n`)
+          process.stderr.write(`trib-plugin: send failed: ${err}\n`)
           this.scheduleRetry()
           break
         }
@@ -606,7 +606,7 @@ export class OutputForwarder {
 
   /** Check if a tool name is recall_memory */
   static isRecallMemory(name: string): boolean {
-    return name === 'recall_memory' || name === 'mcp__plugin_trib-channels_trib-channels__recall_memory'
+    return name === 'recall_memory' || name === 'mcp__plugin_trib-plugin_trib-plugin__recall_memory'
   }
 
   /** Check if a file path points to a memory file */
@@ -621,8 +621,8 @@ export class OutputForwarder {
   /** Check if a tool should be hidden */
   static isHidden(name: string): boolean {
     if (OutputForwarder.HIDDEN_TOOLS.has(name)) return true
-    // Hide trib-channels's own MCP tools from mirrored output.
-    if ((name.includes('plugin_trib-channels') && !name.endsWith('recall_memory')) || name === 'reply' || name === 'react'
+    // Hide trib-plugin's own MCP tools from mirrored output.
+    if ((name.includes('plugin_trib-plugin') && !name.endsWith('recall_memory')) || name === 'reply' || name === 'react'
       || name === 'edit_message' || name === 'fetch' || name === 'download_attachment') return true
     return false
   }
@@ -733,7 +733,7 @@ export class OutputForwarder {
         if (!this.transcriptPath || existsSync(this.transcriptPath)) return
         const relocated = findLatestTranscriptByMtime()
         if (relocated && relocated !== this.transcriptPath) {
-          process.stderr.write(`trib-channels: watched transcript disappeared, relocated to ${relocated}\n`)
+          process.stderr.write(`trib-plugin: watched transcript disappeared, relocated to ${relocated}\n`)
           this.closeWatcher()
           this.transcriptPath = relocated
           this.mainSessionId = ''
@@ -786,7 +786,7 @@ export class OutputForwarder {
       if (this.transcriptPath && !existsSync(this.transcriptPath)) {
         const relocated = findLatestTranscriptByMtime()
         if (relocated && relocated !== this.transcriptPath) {
-          process.stderr.write(`trib-channels: watched transcript gone during flush, relocated to ${relocated}\n`)
+          process.stderr.write(`trib-plugin: watched transcript gone during flush, relocated to ${relocated}\n`)
           this.closeWatcher()
           this.transcriptPath = relocated
           this.mainSessionId = ''

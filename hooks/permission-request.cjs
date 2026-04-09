@@ -1,6 +1,6 @@
 if (process.env.TRIB_CHANNELS_NO_CONNECT) process.exit(0);
 /**
- * trib-channels PermissionRequest hook
+ * trib-plugin PermissionRequest hook
  * 1. Send Discord message with approve/deny buttons
  * 2. Poll runtime/perm-{instance}-{uuid}.result for decision
  * 3. Return JSON decision to stdout
@@ -16,7 +16,7 @@ const DEBUG = process.env.TRIB_CHANNELS_DEBUG === '1';
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
 
-const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-channels');
+const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-plugin');
 try { fs.mkdirSync(RUNTIME_ROOT, { recursive: true }); } catch {}
 const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
 

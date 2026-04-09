@@ -14,7 +14,7 @@ const execFileAsync = promisify(execFile)
 
 const DELEGATE_CLI = join(
   homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin',
-  'external_plugins', 'trib-agent', 'scripts', 'delegate-cli.mjs',
+  'external_plugins', 'trib-plugin', 'scripts', 'delegate-cli.mjs',
 )
 
 // Reverse map: connection format → trib-agent provider name

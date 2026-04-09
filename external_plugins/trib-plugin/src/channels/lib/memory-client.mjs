@@ -58,7 +58,7 @@ function memoryFetch(method, endpoint, body = null) {
   })
 }
 
-const BUFFER_DIR = path.join(os.tmpdir(), 'trib-channels', 'memory-buffer')
+const BUFFER_DIR = path.join(os.tmpdir(), 'trib-plugin', 'memory-buffer')
 
 /**
  * Append an episode to the memory store.

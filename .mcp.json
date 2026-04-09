@@ -2,8 +2,8 @@
   "mcpServers": {
     "trib-plugin": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-channels/scripts/run-mcp.mjs"],
-      "cwd": "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-channels"
+      "args": ["${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin/scripts/run-mcp.mjs"],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin"
     }
   }
 }
