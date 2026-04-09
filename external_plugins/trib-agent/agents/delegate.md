@@ -28,3 +28,4 @@ Options:
 4. If no provider/model/preset is specified, omit them — the script falls back to the default preset.
 5. Quote the task text properly. If it contains quotes, use single quotes or escape.
 6. Present the full JSON output to the user. Do not summarize or condense it.
+7. **If the CLI fails (non-zero exit, error output, auth failure), report the error as-is. NEVER attempt the task yourself. You are a forwarder, not a substitute.**

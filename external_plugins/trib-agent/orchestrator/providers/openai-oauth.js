@@ -282,20 +282,30 @@ export class OpenAIOAuthProvider {
         return this.tokens;
     }
     async send(messages, model, tools, sendOpts) {
-        const auth = await this.ensureAuth();
+        let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.2-codex';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
-        const response = await fetch(CODEX_API_URL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${auth.access_token}`,
-                'Content-Type': 'application/json',
-                'chatgpt-account-id': auth.account_id || '',
-                'originator': 'codex_cli_rs',
-                'OpenAI-Beta': 'responses=experimental',
-            },
-            body: JSON.stringify(body),
-        });
+        const doRequest = async (token) => {
+            return fetch(CODEX_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token.access_token}`,
+                    'Content-Type': 'application/json',
+                    'chatgpt-account-id': token.account_id || '',
+                    'originator': 'codex_cli_rs',
+                    'OpenAI-Beta': 'responses=experimental',
+                },
+                body: JSON.stringify(body),
+            });
+        };
+        let response = await doRequest(auth);
+        // Auto-retry on 401: force token refresh and retry once
+        if (response.status === 401) {
+            process.stderr.write(`[openai-oauth] Got 401, forcing token refresh and retrying...\n`);
+            this.tokens.expires_at = 0; // force refresh
+            auth = await this.ensureAuth();
+            response = await doRequest(auth);
+        }
         if (!response.ok) {
             const text = await response.text().catch(() => '');
             process.stderr.write(`[openai-oauth] API error ${response.status}: ${text.slice(0, 200)}\n`);

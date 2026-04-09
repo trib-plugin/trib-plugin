@@ -27,17 +27,7 @@ try {
   if (sig.channelsEnabled === false) process.exit(0);
 } catch {}
 
-// Skip when channel bridge is not active (not started with --channels flag).
-const BRIDGE_STATE_FILE = path.join(RUNTIME_ROOT, 'bridge-state.json');
-try {
-  const state = JSON.parse(fs.readFileSync(BRIDGE_STATE_FILE, 'utf8'));
-  if (!state.active) process.exit(0);
-} catch {
-  // No bridge state file means bridge is not active — skip.
-  process.exit(0);
-}
-
-// Double-check: verify this Claude Code process was actually started with --channels.
+// Verify this Claude Code process was actually started with --channels.
 // bridge-state.json can be stale from a previous session.
 function detectChannelFlagHook() {
   const { execSync } = require('child_process');
