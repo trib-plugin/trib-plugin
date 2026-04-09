@@ -1,21 +1,28 @@
 ---
 description: Ask the trib-agent orchestrator (auto-creates a session from the default preset if none is active)
 argument-hint: "<prompt>"
-context: fork
-disable-model-invocation: true
-allowed-tools: Bash(node:*)
+allowed-tools: Agent
 ---
 
-Route this request to the `ask-forwarder` subagent.
-The final user-visible response must be the orchestrator's output verbatim.
+Route this request to the `trib-plugin:ask-forwarder` subagent using the Agent tool.
 
 Raw user request:
 $ARGUMENTS
 
-Operating rules:
+Execution:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" ask "<prompt>" 2>/dev/null` and return that command's stdout as-is.
-- Return the orchestrator stdout verbatim to the user.
+Spawn the subagent like this:
+
+```
+Agent({
+  subagent_type: "trib-plugin:ask-forwarder",
+  description: "trib-agent ask",
+  prompt: "<the user's raw prompt text>"
+})
+```
+
+Rules:
+- Return the subagent's output verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not inspect files, monitor progress, or do follow-up work of its own.
 - If the user did not supply a prompt, tell them to provide one.
