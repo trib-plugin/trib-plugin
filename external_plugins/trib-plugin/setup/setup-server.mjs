@@ -14,6 +14,8 @@ const pluginsData = join(home, '.claude', 'plugins', 'data');
 const DATA_DIR = join(pluginsData, 'trib-plugin-trib-plugin');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const BOT_PATH = join(DATA_DIR, 'bot.json');
+const MEMORY_PATH = join(DATA_DIR, 'memory-config.json');
+const SEARCH_PATH = join(DATA_DIR, 'search-config.json');
 const PORT = 3458;
 const APP_WIDTH = 850;
 const APP_HEIGHT = 900;
@@ -176,8 +178,9 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/config') {
     const config = readConfig();
-    const bot = readJsonFile(BOT_PATH);
-    config._bot = bot;
+    config._bot = readJsonFile(BOT_PATH);
+    config._memory = readJsonFile(MEMORY_PATH);
+    config._search = readJsonFile(SEARCH_PATH);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(config));
     return;
@@ -187,17 +190,31 @@ const server = http.createServer(async (req, res) => {
     const data = await readBody(req);
 
     const botData = data._bot;
+    const memoryData = data._memory;
+    const searchData = data._search;
     delete data._bot;
+    delete data._memory;
+    delete data._search;
 
     const existing = readConfig();
     const merged = mergeConfig(existing, data);
     writeConfig(merged);
-    console.log('  Config saved: channels');
+    console.log('  Config saved: main');
 
     if (botData) {
       const existingBot = readJsonFile(BOT_PATH);
       writeJsonFile(BOT_PATH, { ...existingBot, ...botData });
       console.log('  Config saved: bot.json');
+    }
+    if (memoryData) {
+      const existingMem = readJsonFile(MEMORY_PATH);
+      writeJsonFile(MEMORY_PATH, { ...existingMem, ...memoryData });
+      console.log('  Config saved: memory-config.json');
+    }
+    if (searchData) {
+      const existingSearch = readJsonFile(SEARCH_PATH);
+      writeJsonFile(SEARCH_PATH, { ...existingSearch, ...searchData });
+      console.log('  Config saved: search-config.json');
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
