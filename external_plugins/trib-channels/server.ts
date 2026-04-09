@@ -892,19 +892,22 @@ function reloadRuntimeConfig(): void {
   eventPipeline.reloadConfig(config.events, config.channelsConfig)
 }
 
-scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => {
+scheduler.setInjectHandler((channelId: string, name: string, content: string, options?: { instruction?: string; type?: string }) => {
   const ts = new Date().toISOString()
+  const now = new Date()
+  const timeLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')} `
+  const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel
+  const meta: Record<string, string> = {
+    chat_id: channelId,
+    user: sourceLabel,
+    user_id: 'system',
+    ts,
+  }
+  if (options?.instruction) meta.instruction = options.instruction
+  if (options?.type) meta.type = options.type
   void mcp.notification({
     method: 'notifications/claude/channel',
-    params: {
-      content: prompt,
-      meta: {
-        chat_id: channelId,
-        user: `schedule:${name}`,
-        user_id: 'system',
-        ts,
-      },
-    },
+    params: { content, meta },
   }).catch(e => {
     process.stderr.write(`trib-channels: notification failed: ${e}\n`)
   })
@@ -917,7 +920,7 @@ scheduler.setInjectHandler((channelId: string, name: string, prompt: string) => 
     sessionId: null,
     role: 'user',
     kind: 'schedule-inject',
-    content: prompt,
+    content: options?.instruction || content,
     sourceRef: `schedule:${name}:${ts}`,
   })
 })
@@ -949,19 +952,22 @@ wireWebhookHandlers()
 // ── Event pipeline handler wiring ─────────────────────────────────────
 
 const eventQueue = eventPipeline.getQueue()
-eventQueue.setInjectHandler((channelId: string, name: string, prompt: string) => {
+eventQueue.setInjectHandler((channelId: string, name: string, content: string, options?: { instruction?: string; type?: string }) => {
   const ts = new Date().toISOString()
+  const now = new Date()
+  const timeLabel = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')} `
+  const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel
+  const meta: Record<string, string> = {
+    chat_id: channelId,
+    user: sourceLabel,
+    user_id: 'system',
+    ts,
+  }
+  if (options?.instruction) meta.instruction = options.instruction
+  if (options?.type) meta.type = options.type
   void mcp.notification({
     method: 'notifications/claude/channel',
-    params: {
-      content: prompt,
-      meta: {
-        chat_id: channelId,
-        user: `event:${name}`,
-        user_id: 'system',
-        ts,
-      },
-    },
+    params: { content, meta },
   }).catch(e => {
     try { process.stderr.write(`trib-channels event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
   })
@@ -974,7 +980,7 @@ eventQueue.setInjectHandler((channelId: string, name: string, prompt: string) =>
     sessionId: null,
     role: 'user',
     kind: 'event-inject',
-    content: prompt,
+    content: options?.instruction || content,
     sourceRef: `event:${name}:${ts}`,
   })
 })

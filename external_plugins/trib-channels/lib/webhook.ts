@@ -5,14 +5,19 @@
 
 import * as http from 'http'
 import * as crypto from 'crypto'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { spawn, spawnSync } from 'child_process'
+import { fileURLToPath } from 'url'
 import type { WebhookConfig, ChannelsConfig } from '../backends/types.js'
 import type { EventPipeline } from './event-pipeline.js'
-import { DATA_DIR } from './config.js'
+import { DATA_DIR, PLUGIN_ROOT } from './config.js'
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from 'fs'
 
 const WEBHOOKS_DIR = join(DATA_DIR, 'webhooks')
+
+// Resolve delegate-cli path relative to trib-agent
+const AGENT_ROOT = join(dirname(PLUGIN_ROOT), 'trib-agent')
+const DELEGATE_CLI = join(AGENT_ROOT, 'scripts', 'delegate-cli.mjs')
 
 const WEBHOOK_LOG = join(DATA_DIR, 'webhook.log')
 function logWebhook(msg: string): void {
@@ -293,6 +298,57 @@ export class WebhookServer {
     if (options.autoStart !== false && config.enabled) this.start()
   }
 
+  // ── Delegate analysis via trib-agent ────────────────────────────────
+
+  private delegateAnalysis(
+    name: string,
+    prompt: string,
+    model: string | null,
+    channel: string,
+    exec: 'interactive' | 'non-interactive',
+  ): void {
+    const args: string[] = []
+    if (model) args.push('--preset', model)
+    args.push(prompt)
+    const child = spawn('node', [DELEGATE_CLI, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      timeout: 120_000,
+      env: { ...process.env },
+    })
+
+    let stdout = ''
+    let stderr = ''
+    if (child.stdout) child.stdout.on('data', (d: Buffer) => { stdout += d })
+    if (child.stderr) child.stderr.on('data', (d: Buffer) => { stderr += d })
+
+    child.on('close', (code: number | null) => {
+      let result = ''
+      try {
+        const parsed = JSON.parse(stdout)
+        result = parsed.content || stdout.trim()
+      } catch {
+        result = stdout.trim()
+      }
+
+      if (!result) {
+        logWebhook(`${name}: delegate returned empty (code=${code}, stderr=${stderr.slice(0, 200)})`)
+        return
+      }
+
+      logWebhook(`${name}: delegate done (${model}, ${result.length} chars)`)
+
+      // Route result based on exec mode
+      if (this.eventPipeline) {
+        this.eventPipeline.enqueueDirect(name, result, channel, exec)
+      }
+    })
+
+    child.on('error', (err: Error) => {
+      logWebhook(`${name}: delegate spawn error: ${err.message}`)
+    })
+  }
+
   // ── Webhook handler ───────────────────────────────────────────────
 
   private handleWebhook(
@@ -308,15 +364,19 @@ export class WebhookServer {
       try {
         const instructions = readFileSync(instructionsPath, 'utf8').trim()
 
-        // Optional config: channel, exec
+        // Optional config: channel, exec, model, analyze
         let channel = 'main'
         let exec: 'interactive' | 'non-interactive' = 'interactive'
+        let model: string | null = null
+        let analyze = false
         const configPath = join(folderPath, 'config.json')
         if (existsSync(configPath)) {
           try {
             const cfg = JSON.parse(readFileSync(configPath, 'utf8'))
             if (cfg.channel) channel = cfg.channel
             if (cfg.exec) exec = cfg.exec
+            if (cfg.model) model = cfg.model
+            if (cfg.analyze === true) analyze = true
           } catch { /* use defaults */ }
         }
 
@@ -328,6 +388,16 @@ export class WebhookServer {
 
         const prompt = `${instructions}\n\n--- Webhook Headers ---\n${headersSummary}\n\n--- Webhook Payload ---\n${payload}`
 
+        // Analyze enabled → delegate-cli for background analysis
+        if (analyze && existsSync(DELEGATE_CLI)) {
+          this.delegateAnalysis(name, prompt, model, channel, exec)
+          logWebhook(`${name}: folder-based → delegate (${model})`)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ status: 'accepted', handler: 'delegate' }))
+          return
+        }
+
+        // No model → raw inject
         if (this.eventPipeline) {
           this.eventPipeline.enqueueDirect(name, prompt, channel, exec)
           logWebhook(`${name}: folder-based → enqueued (${exec})`)

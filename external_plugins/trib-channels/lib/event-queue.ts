@@ -13,6 +13,7 @@ import {
   spawnClaudeP,
   runScript,
   type InjectFn,
+  type InjectOptions,
   type SendFn,
   type SessionStateGetter,
 } from './executor.js'
@@ -158,10 +159,11 @@ export class EventQueue {
   private executeItem(item: QueueItem, file: string | null): void {
     if (item.exec === 'interactive') {
       if (this.injectFn) {
-        const wrapped = `<event source="${item.source}" name="${item.name}">\n${item.prompt}\n</event>`
-        this.injectFn('', `event:${item.name}`, wrapped)
+        // Use instruction meta: content visible, instruction hidden
+        const opts: InjectOptions = { type: item.source === 'webhook' ? 'webhook' : 'event' }
+        this.injectFn('', `event:${item.name}`, item.prompt, opts)
       }
-      if (file) this.moveToProcessed(file, 'done')
+      // Interactive stays in queue — user must confirm processing
       return
     }
 

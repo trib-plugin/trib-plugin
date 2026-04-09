@@ -22,7 +22,11 @@ export function logEvent(msg: string): void {
 
 // ── Callback types ──────────────────────────────────────────────────
 
-export type InjectFn = (channelId: string, name: string, promptContent: string) => void
+export interface InjectOptions {
+  instruction?: string
+  type?: string    // 'webhook' | 'schedule' | '' (proactive)
+}
+export type InjectFn = (channelId: string, name: string, content: string, options?: InjectOptions) => void
 export type SendFn = (channelId: string, text: string) => Promise<void>
 export type SessionStateGetter = () => 'idle' | 'active' | 'recent'
 

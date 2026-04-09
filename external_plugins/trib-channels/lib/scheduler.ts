@@ -28,7 +28,8 @@ import { tryRead } from './settings.js'
 const TICK_INTERVAL = 60_000 // 1 minute
 
 /** Callback to inject a prompt into the current session */
-type InjectFn = (channelId: string, name: string, promptContent: string) => void
+type InjectOptions = { instruction?: string; type?: string }
+type InjectFn = (channelId: string, name: string, content: string, options?: InjectOptions) => void
 
 /** Callback to send a message via the main session's backend */
 type SendFn = (channelId: string, text: string) => Promise<void>
@@ -559,8 +560,12 @@ export class Scheduler {
     logSchedule(`firing ${schedule.name} (${type})\n`)
 
     if (type === 'interactive') {
-      const wrapped = this.wrapPrompt(schedule.name, prompt, 'interactive')
-      if (this.injectFn) this.injectFn(channelId, schedule.name, wrapped)
+      if (this.injectFn) {
+        this.injectFn(channelId, schedule.name, ' ', {
+          instruction: prompt,
+          type: 'schedule',
+        })
+      }
       return
     }
 
@@ -620,8 +625,11 @@ export class Scheduler {
     this.proactiveFiredToday++
     this.lastFired.set(`proactive:${item.topic}`, new Date().toISOString().slice(0, 16))
 
-    prompt = this.wrapPrompt(`proactive:${item.topic}`, prompt, 'proactive')
-    if (this.injectFn) this.injectFn(this.resolveChannel(item.channel), `proactive:${item.topic}`, prompt)
+    if (this.injectFn) {
+      this.injectFn(this.resolveChannel(item.channel), `proactive:${item.topic}`, ' ', {
+        instruction: prompt,
+      })
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────
