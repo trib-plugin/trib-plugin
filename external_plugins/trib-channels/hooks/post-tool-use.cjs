@@ -40,10 +40,20 @@ process.stdin.on('end', () => {
       } catch { continue; }
 
       // Tool executed → permission was granted from terminal. Write .resolved.
-      fs.writeFileSync(resolvedFile, String(Date.now()));
+      try {
+        fs.writeFileSync(resolvedFile, String(Date.now()));
+      } catch (err) {
+        process.stderr.write(`[post-tool-use] Failed to write ${resolvedFile}: ${err.message}\n`);
+        // Synchronous retry — one attempt
+        try {
+          fs.writeFileSync(resolvedFile, String(Date.now()));
+        } catch (retryErr) {
+          process.stderr.write(`[post-tool-use] Retry also failed for ${resolvedFile}: ${retryErr.message}\n`);
+        }
+      }
     }
-  } catch {
-    // Non-critical — fail silently
+  } catch (err) {
+    process.stderr.write(`[post-tool-use] Outer error: ${err.message}\n`);
   }
   process.exit(0);
 });

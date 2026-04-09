@@ -377,20 +377,40 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                 content: result.content,
                 usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
               };
-              writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
-              injectViaChannels(
-                `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
-                `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
-              );
+              try {
+                writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
+              } catch (writeErr) {
+                process.stderr.write(`[trib-agent] Failed to write result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+              }
+              (async () => {
+                try {
+                  injectViaChannels(
+                    `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
+                    `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
+                  );
+                } catch (injectErr) {
+                  process.stderr.write(`[trib-agent] Failed to inject result via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
+                }
+              })();
             })
             .catch((err) => {
               const msg = err instanceof Error ? err.message : String(err);
-              writeFileSync(resultPath, JSON.stringify({
-                jobId, sessionId: session.id, status: 'failed',
-                provider: session.provider, model: session.model,
-                error: msg,
-              }, null, 2));
-              injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`);
+              try {
+                writeFileSync(resultPath, JSON.stringify({
+                  jobId, sessionId: session.id, status: 'failed',
+                  provider: session.provider, model: session.model,
+                  error: msg,
+                }, null, 2));
+              } catch (writeErr) {
+                process.stderr.write(`[trib-agent] Failed to write error result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
+              }
+              (async () => {
+                try {
+                  injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`);
+                } catch (injectErr) {
+                  process.stderr.write(`[trib-agent] Failed to inject error via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
+                }
+              })();
             });
           return ok({ sessionId: session.id, jobId, status: 'working', resultPath });
         }

@@ -52,7 +52,29 @@ export async function executeMcpTool(name, args) {
     const server = servers.get(serverName);
     if (!server)
         throw new Error(`MCP server "${serverName}" not connected`);
-    const result = await server.client.callTool({ name: toolName, arguments: args });
+    let result;
+    try {
+        result = await server.client.callTool({ name: toolName, arguments: args });
+    } catch (firstErr) {
+        const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+        process.stderr.write(`[mcp-client] Tool call failed, attempting reconnect...\n`);
+        try {
+            await server.client.close();
+        } catch { /* ignore close error */ }
+        try {
+            await connectServer(serverName, server.cfg);
+        } catch (reconnectErr) {
+            const reconnectMsg = reconnectErr instanceof Error ? reconnectErr.message : String(reconnectErr);
+            throw new Error(`Tool call failed: ${firstMsg}; reconnect also failed: ${reconnectMsg}`);
+        }
+        const retryServer = servers.get(serverName);
+        try {
+            result = await retryServer.client.callTool({ name: toolName, arguments: args });
+        } catch (retryErr) {
+            const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+            throw new Error(`Tool call failed: ${firstMsg}; retry after reconnect also failed: ${retryMsg}`);
+        }
+    }
     const content = result.content;
     if (Array.isArray(content)) {
         return content
@@ -219,6 +241,6 @@ async function connectServer(name, cfg) {
         inputSchema: (t.inputSchema || { type: 'object', properties: {} }),
     }));
     const mode = cfg.pluginCache ? `pluginCache(${cfg.pluginCache})` : cfg.autoDetect ? `autoDetect(${cfg.autoDetect})` : cfg.transport || 'stdio';
-    servers.set(name, { name, client, transport, tools });
+    servers.set(name, { name, client, transport, tools, cfg });
     process.stderr.write(`[mcp-client] Connected "${name}" via ${mode} — ${tools.length} tools\n`);
 }

@@ -3,7 +3,8 @@
  * Sessions are saved to disk so CLI and MCP server can share state,
  * and sessions survive server restarts (resume).
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, renameSync } from 'fs';
+import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { getPluginData } from '../config.js';
 function getStoreDir() {
@@ -16,7 +17,15 @@ function sessionPath(id) {
     return join(getStoreDir(), `${id}.json`);
 }
 export function saveSession(session) {
-    writeFileSync(sessionPath(session.id), JSON.stringify(session), 'utf-8');
+    const target = sessionPath(session.id);
+    const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';
+    try {
+        writeFileSync(tmp, JSON.stringify(session), 'utf-8');
+        renameSync(tmp, target);
+    } catch (err) {
+        try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
+        throw err;
+    }
 }
 export function loadSession(id) {
     const path = sessionPath(id);
