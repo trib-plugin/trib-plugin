@@ -1,19 +1,26 @@
 {
   "name": "trib-plugin",
+  "version": "0.0.1",
   "description": "Unified trib ecosystem — Discord channels, persistent memory, web search, AI agent orchestration",
-  "version": "0.0.17",
-  "author": {
-    "name": "TRIBGAMES",
-    "email": "dev@tribgames.com"
-  },
-  "homepage": "https://github.com/tribgames/trib-plugin",
-  "repository": "https://github.com/tribgames/trib-plugin",
-  "license": "Apache-2.0",
-  "keywords": [
-    "channel",
-    "discord",
-    "messaging",
-    "mcp",
-    "discord-bot"
-  ]
+  "agents": [
+    "agents/Worker.md",
+    "agents/Reviewer.md",
+    "agents/ask-forwarder.md",
+    "agents/delegate.md"
+  ],
+  "skills": [
+    "skills/recall",
+    "skills/search",
+    "skills/delegate",
+    "skills/workflow"
+  ],
+  "commands": [
+    "commands/ask.md",
+    "commands/clear.md",
+    "commands/config.md",
+    "commands/model.md",
+    "commands/new.md",
+    "commands/resume.md"
+  ],
+  "hooks": "hooks/hooks.json"
 }
