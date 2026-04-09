@@ -14,11 +14,19 @@ export function getPluginData() {
     if (process.env.CLAUDE_PLUGIN_DATA) return process.env.CLAUDE_PLUGIN_DATA;
     const root = process.env.CLAUDE_PLUGIN_ROOT;
     if (root) {
-        const pluginName = basename(root);
+        const dirName = basename(root);
+        // Cache path: .../cache/{marketplace}/{plugin}/{version}/
+        // → basename = version, parent = plugin, grandparent = marketplace
+        if (/^\d+\.\d+\.\d+/.test(dirName)) {
+            const pluginName = basename(join(root, '..'));
+            const marketplace = basename(join(root, '..', '..'));
+            return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
+        }
+        // Marketplace path: .../marketplaces/{marketplace}/external_plugins/{plugin}/
         const marketplace = basename(join(root, '..', '..'));
-        return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
+        return join(homedir(), '.claude', 'plugins', 'data', `${dirName}-${marketplace}`);
     }
-    return join(homedir(), '.claude', 'plugins', 'data', 'trib-agent-trib-plugin');
+    return join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
 }
 const ENV_KEY_MAP = {
     openai: 'OPENAI_API_KEY',
