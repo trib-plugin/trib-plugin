@@ -25,7 +25,16 @@ function getOwnTokenPath() {
     return join(dir, 'openai-oauth.json');
 }
 function loadTokens() {
-    // Try Codex CLI format first
+    // Try own token store first (has accurate expires_at from refresh)
+    const ownPath = getOwnTokenPath();
+    if (existsSync(ownPath)) {
+        try {
+            const own = JSON.parse(readFileSync(ownPath, 'utf-8'));
+            if (own.access_token && own.refresh_token) return own;
+        }
+        catch { /* fall through */ }
+    }
+    // Fall back to Codex CLI auth.json (initial bootstrap only)
     const codexPath = join(homedir(), '.codex', 'auth.json');
     if (existsSync(codexPath)) {
         try {
@@ -45,15 +54,7 @@ function loadTokens() {
         }
         catch { /* fall through */ }
     }
-    const ownPath = getOwnTokenPath();
-    if (!existsSync(ownPath))
-        return null;
-    try {
-        return JSON.parse(readFileSync(ownPath, 'utf-8'));
-    }
-    catch {
-        return null;
-    }
+    return null;
 }
 function saveTokens(tokens) {
     writeFileSync(getOwnTokenPath(), JSON.stringify(tokens, null, 2));
