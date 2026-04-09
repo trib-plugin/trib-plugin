@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { loadConfig } from '../config.js';
 const MODELS = [
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000 },
     { id: 'claude-opus-4-0', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000 },
@@ -83,12 +84,36 @@ function parseToolCalls(response) {
 export class AnthropicProvider {
     name = 'anthropic';
     client;
+    config;
     constructor(config) {
+        this.config = config;
         this.client = new Anthropic({
             apiKey: config.apiKey || process.env.ANTHROPIC_API_KEY,
         });
     }
+    reloadApiKey() {
+        try {
+            const freshConfig = loadConfig();
+            const cfg = freshConfig.providers?.anthropic;
+            const newKey = cfg?.apiKey || process.env.ANTHROPIC_API_KEY;
+            if (newKey) {
+                this.client = new Anthropic({ apiKey: newKey });
+            }
+        } catch { /* best effort */ }
+    }
     async send(messages, model, tools, sendOpts) {
+        try {
+            return await this._doSend(messages, model, tools, sendOpts);
+        } catch (err) {
+            if (err.message && (err.message.includes('401') || err.message.includes('403'))) {
+                process.stderr.write(`[provider] Auth error, re-reading config...\n`);
+                this.reloadApiKey();
+                return await this._doSend(messages, model, tools, sendOpts);
+            }
+            throw err;
+        }
+    }
+    async _doSend(messages, model, tools, sendOpts) {
         const useModel = model || 'claude-sonnet-4-0';
         const maxTokens = MAX_TOKENS[useModel] || 8192;
         const opts = sendOpts || {};

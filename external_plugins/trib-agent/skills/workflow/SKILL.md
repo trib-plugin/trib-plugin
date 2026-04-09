@@ -15,7 +15,7 @@ description: >
 1. **Background-first.** Always delegate work to background agents. Foreground agents block the user — use only when the result is needed before the next response.
 2. **Gather feedback during discussion, deliver on approval.** Do not forward requirements piecemeal — collect during the discussion phase, then send everything at once after approval.
 3. **One-off tasks go to background agents. Multi-step continuous work MUST use TeamCreate** — no exceptions. Teams provide session persistence and context cache hits.
-4. **Never push, deploy, or build without explicit user approval.** Commit is allowed during execute phase, but push/deploy/build require a separate explicit "push" request from the user. No assumptions.
+4. **Never push, deploy, or build without explicit user approval.** Commit is allowed during execute phase, but push/deploy/build require a separate explicit "push" request from the user. Each commit/push requires its own approval — prior approval does not carry over to subsequent commits. No assumptions.
 5. **Always pass `mode: bypassPermissions` when spawning any agent.** This includes all subagent types (Worker, Reviewer, Explore, etc.). Omitting it causes permission prompts that block work.
 
 ## Required Tool Call Patterns
@@ -63,18 +63,21 @@ TeamCreate({ name: "task-name" })
 ## Lead State Cycle
 
 ```
-idle → discuss → approve → execute → verify → idle
- ↑                                              |
- └──────── new agenda ──────────────────────────┘
+idle → discuss → approve → execute → verify → [Deploy Approval] → commit/push → idle
+ ↑                                                                                |
+ └──────── new agenda ───────────────────────────────────────────────────────────┘
 ```
 
 | State | Lead action |
 |-------|-------------|
 | **idle** | Waiting for user input |
 | **discuss** | Collecting requirements. No work — only collect and organize |
-| **approve** | User explicitly approves → start work |
+| **approve** | User explicitly approves → start work (Work Approval). No code changes before this. |
 | **execute** | Agents running. Lead stays responsive to user |
 | **verify** | Check results directly (Read/Grep). Re-request if issues found |
+| **deploy** | User explicitly approves commit/push (Deploy Approval). Each commit/push needs its own approval. |
+
+Work Approval and Deploy Approval are independent — each new task requires both, no carry-over between tasks.
 
 ## Tool Usage
 

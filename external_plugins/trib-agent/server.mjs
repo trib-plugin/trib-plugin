@@ -207,6 +207,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     switch (name) {
       case 'create_session': {
+        // Hot-reload config to pick up new providers/presets
+        const freshCfg = loadConfig();
+        await initProviders(freshCfg.providers);
         const session = createSession(args);
         return ok({
           sessionId: session.id, provider: session.provider, model: session.model,
@@ -279,7 +282,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       case 'list_models': {
+        // Hot-reload config to pick up new providers/presets
         const cfg = loadConfig();
+        await initProviders(cfg.providers);
         const presets = listPresets(cfg);
         const current = getDefaultPreset(cfg);
 
@@ -335,7 +340,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             const mark = current && p.name === current.name ? '  ← active' : '';
             return `[${i}] ${parts.join(' · ')}${mark}`;
           });
-          return ok(`Current: ${currentLabel}\n\n${lines.join('\n')}`);
+          // Also list live provider models
+          const results = [];
+          for (const [provName, prov] of getAllProviders()) {
+            try {
+              const models = await prov.listModels();
+              results.push({ provider: provName, models });
+            } catch {
+              results.push({ provider: provName, models: [], error: 'failed to list models' });
+            }
+          }
+          return ok({ current: currentLabel, presets: lines, providers: results });
         }
       }
 

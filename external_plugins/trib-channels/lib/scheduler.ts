@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'fs'
 import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
 import { appendFileSync } from 'fs'
@@ -151,6 +152,7 @@ export class Scheduler {
   }
 
   private static SCHEDULER_LOCK = join(tmpdir(), 'trib-channels-scheduler.lock')
+  private static INSTANCE_UUID = randomUUID()
 
   start(): void {
     if (this.tickTimer) return
@@ -163,19 +165,37 @@ export class Scheduler {
 
     ensureNopluginDir()
 
+    const lockContent = `${process.pid}\n${Date.now()}\n${Scheduler.INSTANCE_UUID}`
+
     // Scheduler-level lock: only one session runs the scheduler
     try {
-      writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`, { flag: 'wx' })
+      writeFileSync(Scheduler.SCHEDULER_LOCK, lockContent, { flag: 'wx' })
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         try {
           const content = readFileSync(Scheduler.SCHEDULER_LOCK, 'utf8')
-          const pid = parseInt(content.split('\n')[0])
-          // Check if the process is still alive
-          try { process.kill(pid, 0); process.stderr.write(`trib-channels scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`); return } catch { /* dead, take over */ }
+          const lines = content.split('\n')
+          const pid = parseInt(lines[0])
+          const lockTime = parseInt(lines[1]) || 0
+          const lockUuid = lines[2] || ''
+          const lockAge = Date.now() - lockTime
+
+          // If the PID is alive, check for PID reuse: lock older than 1h with different UUID
+          let isAlive = false
+          try { process.kill(pid, 0); isAlive = true } catch { /* dead */ }
+
+          if (isAlive) {
+            if (lockAge > 60 * 60 * 1000 && lockUuid !== Scheduler.INSTANCE_UUID) {
+              // Lock is >1h old and PID is alive but UUID differs — likely PID reuse, reclaim
+              process.stderr.write(`trib-channels scheduler: lock PID ${pid} alive but stale (${Math.round(lockAge / 60000)}m), reclaiming (PID reuse)\n`)
+            } else {
+              process.stderr.write(`trib-channels scheduler: another session (PID ${pid}) owns the scheduler, skipping\n`)
+              return
+            }
+          }
+          // Previous owner is dead or stale PID reuse — reclaim the lock
         } catch { /* can't read, take over */ }
-        // Previous owner is dead — reclaim the lock
-        writeFileSync(Scheduler.SCHEDULER_LOCK, `${process.pid}\n${Date.now()}`)
+        writeFileSync(Scheduler.SCHEDULER_LOCK, lockContent)
       } else {
         throw err
       }
@@ -224,6 +244,11 @@ export class Scheduler {
     this.proactiveSlots = []
     this.proactiveSlotsDate = ''
     this.proactiveFiredToday = 0
+    if (this.deferred.size > 0 || this.skippedToday.size > 0) {
+      process.stderr.write(`trib-channels scheduler: reload clearing ${this.deferred.size} deferred, ${this.skippedToday.size} skipped\n`)
+    }
+    this.deferred.clear()
+    this.skippedToday.clear()
     if (options.restart === false) return
     this.restart()
   }

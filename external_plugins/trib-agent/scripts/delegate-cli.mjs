@@ -72,6 +72,8 @@ if (sessionId) {
 }
 
 // --- Execute ---
+// 401 retry is handled by each provider's send() wrapper (OpenAIOAuthProvider,
+// AnthropicProvider, GeminiProvider, OpenAICompatProvider all retry on 401/403).
 const startedAt = Date.now();
 try {
   const result = await askSession(session.id, task, context);

@@ -113,6 +113,10 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
     }
     const beforeCount = session.messages.length + 1;
     const budget = Math.floor(session.contextWindow * 0.8);
+    const promptTokenEstimate = prompt.length * 0.5; // conservative for CJK
+    if (promptTokenEstimate > budget * 0.7) {
+        process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${budget} budget)\n`);
+    }
     const outgoing = trimMessages([...session.messages, { role: 'user', content: prompt }], budget);
     const messagesDropped = beforeCount - outgoing.length;
     const effectiveCwd = cwdOverride || session.cwd;
@@ -143,7 +147,13 @@ export function resumeSession(sessionId, preset) {
     if (!session)
         return null;
     // Refresh tools (MCP connections may have changed)
+    const oldTools = session.tools || [];
     session.tools = resolveToolPreset((preset || session.preset || 'full'));
+    const newTools = session.tools;
+    const missing = oldTools.filter(t => !newTools.find(n => n.name === t.name));
+    if (missing.length) {
+        process.stderr.write(`[session] Warning: ${missing.length} tools no longer available: ${missing.map(t => t.name).join(', ')}\n`);
+    }
     saveSession(session);
     return session;
 }

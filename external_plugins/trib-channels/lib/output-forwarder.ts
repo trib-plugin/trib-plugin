@@ -219,6 +219,7 @@ export class OutputForwarder {
   private mainSessionId = ''
   private watchDebounce: ReturnType<typeof setTimeout> | null = null
   private turnTextBuffer = ''
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null
 
   hasBinding(): boolean {
     return !!this.transcriptPath
@@ -237,6 +238,15 @@ export class OutputForwarder {
   ): void {
     this.channelId = channelId
     if (!transcriptPath) return
+
+    // If the watched file no longer exists, try to relocate
+    if (this.transcriptPath && !existsSync(this.transcriptPath)) {
+      const relocated = findLatestTranscriptByMtime()
+      if (relocated) {
+        transcriptPath = relocated
+      }
+    }
+
     if (this.transcriptPath !== transcriptPath) {
       this.closeWatcher()
       this.transcriptPath = transcriptPath
@@ -716,6 +726,21 @@ export class OutputForwarder {
     } catch {
       this.closeWatcher()
     }
+
+    // Periodic health check: verify watched file still exists every 30s
+    if (!this.healthCheckTimer) {
+      this.healthCheckTimer = setInterval(() => {
+        if (!this.transcriptPath || existsSync(this.transcriptPath)) return
+        const relocated = findLatestTranscriptByMtime()
+        if (relocated && relocated !== this.transcriptPath) {
+          process.stderr.write(`trib-channels: watched transcript disappeared, relocated to ${relocated}\n`)
+          this.closeWatcher()
+          this.transcriptPath = relocated
+          this.mainSessionId = ''
+          this.startWatch()
+        }
+      }, 30_000)
+    }
   }
 
   /** No-op — watch is kept alive permanently */
@@ -741,6 +766,10 @@ export class OutputForwarder {
       clearTimeout(this.sendRetryTimer)
       this.sendRetryTimer = null
     }
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer)
+      this.healthCheckTimer = null
+    }
     if (this.watcher) {
       this.watcher.close()
       this.watcher = null
@@ -752,6 +781,20 @@ export class OutputForwarder {
     if (this.watchDebounce) clearTimeout(this.watchDebounce)
     this.watchDebounce = setTimeout(() => {
       this.watchDebounce = null
+
+      // If watched file disappeared, try to relocate
+      if (this.transcriptPath && !existsSync(this.transcriptPath)) {
+        const relocated = findLatestTranscriptByMtime()
+        if (relocated && relocated !== this.transcriptPath) {
+          process.stderr.write(`trib-channels: watched transcript gone during flush, relocated to ${relocated}\n`)
+          this.closeWatcher()
+          this.transcriptPath = relocated
+          this.mainSessionId = ''
+          this.startWatch()
+        }
+        return
+      }
+
       void this.forwardNewText().then(hadText => {
         // Only reset idle timer when visible text was actually forwarded.
         // HIDDEN tools (SendMessage, TaskUpdate etc.) should not delay idle detection.

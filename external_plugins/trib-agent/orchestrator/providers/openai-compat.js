@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { loadConfig } from '../config.js';
 const PRESETS = {
     openai: {
         baseURL: 'https://api.openai.com/v1',
@@ -79,11 +80,13 @@ export class OpenAICompatProvider {
     name;
     client;
     defaultModel;
+    config;
     constructor(name, config) {
         const preset = PRESETS[name];
         const baseURL = config.baseURL || preset?.baseURL || 'http://localhost:8080/v1';
         const apiKey = config.apiKey || 'no-key';
         this.name = name;
+        this.config = config;
         this.defaultModel = preset?.defaultModel || 'default';
         this.client = new OpenAI({
             baseURL,
@@ -91,7 +94,35 @@ export class OpenAICompatProvider {
             defaultHeaders: preset?.extraHeaders,
         });
     }
+    reloadApiKey() {
+        try {
+            const freshConfig = loadConfig();
+            const cfg = freshConfig.providers?.[this.name];
+            const preset = PRESETS[this.name];
+            const newKey = cfg?.apiKey || this.config.apiKey;
+            const baseURL = cfg?.baseURL || this.config.baseURL || preset?.baseURL || 'http://localhost:8080/v1';
+            if (newKey) {
+                this.client = new OpenAI({
+                    baseURL,
+                    apiKey: newKey,
+                    defaultHeaders: preset?.extraHeaders,
+                });
+            }
+        } catch { /* best effort */ }
+    }
     async send(messages, model, tools, sendOpts) {
+        try {
+            return await this._doSend(messages, model, tools, sendOpts);
+        } catch (err) {
+            if (err.message && (err.message.includes('401') || err.message.includes('403'))) {
+                process.stderr.write(`[provider] Auth error, re-reading config...\n`);
+                this.reloadApiKey();
+                return await this._doSend(messages, model, tools, sendOpts);
+            }
+            throw err;
+        }
+    }
+    async _doSend(messages, model, tools, sendOpts) {
         const useModel = model || this.defaultModel;
         const opts = sendOpts || {};
         const params = {

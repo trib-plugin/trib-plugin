@@ -213,6 +213,11 @@ process.stdin.on('end', async () => {
     while (Date.now() - startTime < TIMEOUT) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL));
 
+      // Pending file deleted externally — exit gracefully
+      if (!fs.existsSync(pendingFile)) {
+        process.exit(0);
+      }
+
       // Abort immediately when the stop flag is written.
       try {
         if (fs.existsSync(STOP_FLAG)) {

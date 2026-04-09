@@ -71,7 +71,19 @@ export function getChannelOwnerPath(channelId: string): string {
 }
 
 export function readActiveInstance(): ActiveInstanceState | null {
-  return readJsonFile<ActiveInstanceState | null>(ACTIVE_INSTANCE_FILE, null)
+  const state = readJsonFile<ActiveInstanceState | null>(ACTIVE_INSTANCE_FILE, null)
+  if (!state) return null
+
+  // Verify PID is alive; if dead, clean up stale file
+  try {
+    process.kill(state.pid, 0)
+  } catch {
+    process.stderr.write(`trib-channels: stale active-instance.json (PID ${state.pid} is dead), removing\n`)
+    removeFileIfExists(ACTIVE_INSTANCE_FILE)
+    return null
+  }
+
+  return state
 }
 
 export function writeActiveInstance(state: ActiveInstanceState): void {

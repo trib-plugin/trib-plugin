@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'child_process'
 import type { WebhookConfig, ChannelsConfig } from '../backends/types.js'
 import type { EventPipeline } from './event-pipeline.js'
 import { DATA_DIR } from './config.js'
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs'
 
 const WEBHOOK_LOG = join(DATA_DIR, 'webhook.log')
 function logWebhook(msg: string): void {
@@ -186,10 +186,25 @@ export class WebhookServer {
   /** Kill any previous ngrok process left behind from a crashed session */
   private killPreviousNgrok(): void {
     try {
-      const pid = parseInt(readFileSync(NGROK_PID_FILE, 'utf8').trim())
+      const pidContent = readFileSync(NGROK_PID_FILE, 'utf8').trim()
+      const pid = parseInt(pidContent)
       if (pid > 0) {
-        try { process.kill(pid) } catch { /* already dead */ }
-        logWebhook(`killed previous ngrok (PID ${pid})`)
+        // Check if PID file is stale (>1h) — delete without killing
+        try {
+          const age = Date.now() - statSync(NGROK_PID_FILE).mtimeMs
+          if (age > 60 * 60 * 1000) {
+            logWebhook(`ngrok PID file stale (${Math.round(age / 60000)}m old), removing without kill`)
+            try { unlinkSync(NGROK_PID_FILE) } catch {}
+            return
+          }
+        } catch { /* stat failed, proceed with kill attempt */ }
+
+        // Verify PID is alive before killing
+        try {
+          process.kill(pid, 0)
+          process.kill(pid)
+          logWebhook(`killed previous ngrok (PID ${pid})`)
+        } catch { /* already dead */ }
       }
     } catch { /* no PID file or unreadable */ }
     try { unlinkSync(NGROK_PID_FILE) } catch {}

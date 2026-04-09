@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { loadConfig } from '../config.js';
 const MODELS = [
     { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', contextWindow: 1000000 },
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'gemini', contextWindow: 1000000 },
@@ -91,10 +92,34 @@ function parseToolCalls(parts) {
 export class GeminiProvider {
     name = 'gemini';
     genAI;
+    config;
     constructor(config) {
+        this.config = config;
         this.genAI = new GoogleGenerativeAI(config.apiKey || process.env.GEMINI_API_KEY || '');
     }
+    reloadApiKey() {
+        try {
+            const freshConfig = loadConfig();
+            const cfg = freshConfig.providers?.gemini;
+            const newKey = cfg?.apiKey || process.env.GEMINI_API_KEY;
+            if (newKey) {
+                this.genAI = new GoogleGenerativeAI(newKey);
+            }
+        } catch { /* best effort */ }
+    }
     async send(messages, model, tools) {
+        try {
+            return await this._doSend(messages, model, tools);
+        } catch (err) {
+            if (err.message && (err.message.includes('401') || err.message.includes('403'))) {
+                process.stderr.write(`[provider] Auth error, re-reading config...\n`);
+                this.reloadApiKey();
+                return await this._doSend(messages, model, tools);
+            }
+            throw err;
+        }
+    }
+    async _doSend(messages, model, tools) {
         const useModel = model || 'gemini-2.5-flash';
         const systemMsgs = messages.filter(m => m.role === 'system');
         const chatMsgs = messages.filter(m => m.role !== 'system');
