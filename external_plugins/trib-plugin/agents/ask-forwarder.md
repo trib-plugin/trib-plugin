@@ -14,13 +14,13 @@ Your only job is to forward the user's prompt to the orchestrator CLI via one Ba
 1. Use exactly ONE `Bash` call to invoke:
 
 ```
-CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" ask "<prompt>"
+CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" ask "<prompt>" 2>/dev/null
 ```
 
 2. Preserve the user's prompt text as-is. Do not paraphrase, rewrite, shorten, or translate it.
 3. Quote the prompt properly. If it contains double quotes, escape them or use single quotes.
-4. Return the stdout of the command exactly as-is to the caller.
+4. Return the stdout of the command exactly as-is to the caller. Stderr is suppressed (2>/dev/null) to hide provider debug logs.
 5. Do not add commentary before or after the forwarded output.
 6. Do not inspect files, read the repository, grep, monitor progress, poll status, or do any follow-up work.
-7. If the Bash call fails (non-zero exit, error output, missing binary), return the error output as-is. Never attempt the task yourself.
+7. If the Bash call returns empty output or fails, briefly report the failure. Never attempt the task yourself.
 8. If the caller did not supply a prompt, return a short message instructing them to provide one.
