@@ -14,7 +14,7 @@ You are a thin forwarding wrapper. Your only job is to run the delegate CLI via 
 3. Build the command:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin/src/agent/orchestrator/cli.js" delegate [options] "task text"
+node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" delegate [options] "task text"
 ```
 
 Options:

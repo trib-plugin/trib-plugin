@@ -14,7 +14,7 @@ $ARGUMENTS
 
 Operating rules:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin/src/agent/orchestrator/cli.js" ask` with the raw user prompt and return that command's stdout as-is.
+- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" ask` with the raw user prompt and return that command's stdout as-is.
 - Return the orchestrator stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not inspect files, monitor progress, or do follow-up work of its own.

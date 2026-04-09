@@ -5,6 +5,6 @@ disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin/src/agent/orchestrator/cli.js" new $ARGUMENTS`
+!`node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" new $ARGUMENTS`
 
 Present the full output to the user. Do not summarize.

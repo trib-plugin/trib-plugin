@@ -14,7 +14,7 @@ Your only job is to forward the user's prompt to the orchestrator CLI via one Ba
 1. Use exactly ONE `Bash` call to invoke:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin/src/agent/orchestrator/cli.js" ask "<prompt>"
+node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" ask "<prompt>"
 ```
 
 2. Preserve the user's prompt text as-is. Do not paraphrase, rewrite, shorten, or translate it.

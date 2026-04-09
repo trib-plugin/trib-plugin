@@ -14,7 +14,7 @@ const execFileAsync = promisify(execFile)
 
 const DELEGATE_CLI = join(
   homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin',
-  'external_plugins', 'trib-plugin', 'scripts', 'delegate-cli.mjs',
+  'external_plugins', 'trib-plugin', 'src', 'agent', 'orchestrator', 'cli.js',
 )
 
 // Reverse map: connection format → trib-agent provider name
@@ -138,7 +138,7 @@ export async function callLLM(prompt, provider, options = {}) {
 
 async function callDelegateCli(prompt, provider, options = {}) {
   const agentProvider = provider.apiProvider || CONNECTION_TO_PROVIDER[provider.connection] || provider.connection
-  const args = [DELEGATE_CLI, '--provider', agentProvider, '--model', provider.model || 'gpt-5.4-mini']
+  const args = [DELEGATE_CLI, 'delegate', '--provider', agentProvider, '--model', provider.model || 'gpt-5.4-mini']
   args.push(prompt)
 
   return new Promise((resolve, reject) => {

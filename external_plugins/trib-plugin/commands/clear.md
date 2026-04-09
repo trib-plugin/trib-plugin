@@ -4,6 +4,6 @@ disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/external_plugins/trib-plugin/src/agent/orchestrator/cli.js" clear`
+!`node "${CLAUDE_PLUGIN_ROOT}/src/agent/orchestrator/cli.js" clear`
 
 Present the full output to the user. Do not summarize.
