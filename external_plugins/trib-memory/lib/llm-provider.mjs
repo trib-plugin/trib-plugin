@@ -1,14 +1,29 @@
 /**
  * llm-provider.mjs — Unified LLM provider abstraction layer.
- * Supports: codex, cli (claude), ollama, api (placeholder).
+ * Delegates to trib-agent's delegate-cli for model calls.
+ * Falls back to direct provider calls if delegate-cli is unavailable.
  */
 
 import { execFile, spawn } from 'child_process'
+import { existsSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 import { promisify } from 'util'
 
 const execFileAsync = promisify(execFile)
 
-function shouldUseWorker() { return hasLlmWorker() }
+const DELEGATE_CLI = join(
+  homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin',
+  'external_plugins', 'trib-agent', 'scripts', 'delegate-cli.mjs',
+)
+
+// Reverse map: connection format → trib-agent provider name
+const CONNECTION_TO_PROVIDER = {
+  codex: 'openai-oauth',
+  cli: 'native',
+  ollama: 'ollama',
+  api: 'openai',  // default, overridden by apiProvider field
+}
 
 async function execBuffered(command, args, options = {}) {
   const { stdout, stderr } = await execFileAsync(command, args, {
@@ -82,11 +97,20 @@ async function execWithInput(command, args, stdin, options = {}) {
  * @returns {Promise<string>} — LLM response text
  */
 export async function callLLM(prompt, provider, options = {}) {
+  // Try delegate-cli first (unified model management via trib-agent)
+  if (existsSync(DELEGATE_CLI) && provider.connection !== 'cli') {
+    try {
+      return await callDelegateCli(prompt, provider, options)
+    } catch (e) {
+      process.stderr.write(`[llm-provider] delegate-cli failed, falling back to direct: ${e.message}\n`)
+    }
+  }
+
+  // Fallback: direct provider calls
   const maxRetries = Math.max(0, Number(options.retries ?? 1))
   const baseTimeout = options.timeout || 180000
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    // Extend timeout on retry to handle MCP connection slowness
     const attemptTimeout = baseTimeout + (attempt * 60000)
     const attemptOptions = { ...options, timeout: attemptTimeout }
 
@@ -106,10 +130,45 @@ export async function callLLM(prompt, provider, options = {}) {
     } catch (e) {
       const isTimeout = /timed?\s*out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up/i.test(e.message)
       if (!isTimeout || attempt >= maxRetries) throw e
-      process.stderr.write(`[llm-provider] timeout on attempt ${attempt + 1}, retrying (${attemptTimeout}ms -> ${attemptTimeout + 60000}ms)...\n`)
+      process.stderr.write(`[llm-provider] timeout on attempt ${attempt + 1}, retrying...\n`)
       await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
     }
   }
+}
+
+async function callDelegateCli(prompt, provider, options = {}) {
+  const agentProvider = provider.apiProvider || CONNECTION_TO_PROVIDER[provider.connection] || provider.connection
+  const args = [DELEGATE_CLI, '--provider', agentProvider, '--model', provider.model || 'gpt-5.4-mini']
+  args.push(prompt)
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      timeout: options.timeout || 180000,
+      env: { ...process.env },
+    })
+
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', d => { stdout += d })
+    child.stderr.on('data', d => { stderr += d })
+
+    child.on('close', code => {
+      if (code !== 0) {
+        reject(new Error(`delegate-cli exited ${code}: ${stderr.slice(0, 300)}`))
+        return
+      }
+      try {
+        const parsed = JSON.parse(stdout)
+        resolve(parsed.content || stdout.trim())
+      } catch {
+        resolve(stdout.trim())
+      }
+    })
+
+    child.on('error', reject)
+  })
 }
 
 async function callCodex(prompt, provider, options) {
