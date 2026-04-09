@@ -6,7 +6,7 @@ import { createSession, askSession, listSessions, closeSession, resumeSession } 
 import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset } from './orchestrator/config.js';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.js';
-import { writeFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { request as httpRequest } from 'http';
 import { fileURLToPath } from 'url';
@@ -61,8 +61,8 @@ function buildInstructions() {
     'Enforcement: TeamCreate before Worker/Reviewer. Independent agents in parallel (one message, multiple Agent calls). bypassPermissions and run_in_background on every Agent call.',
     'Lead uses tools directly for fast ops. Delegate slow/parallel work to background agents.',
     '',
-    'Orchestrator MCP tools: `delegate`, `create_session`, `list_sessions`, `close_session`, `list_models`, `get_workflows`, `get_workflow`.',
-    '`delegate`(task, provider, model) — send a task to an external AI model (GPT, Gemini, etc). Sync by default, returns result directly. Reuse sessionId for follow-up turns. Set background=true for async.',
+    'Orchestrator MCP tools: `create_session`, `list_sessions`, `close_session`, `list_models`, `get_workflows`, `get_workflow`.',
+    'Delegation to external models: use the `delegate` skill/agent (routes through cli.js delegate).',
     'Sessions auto-inject CLAUDE.md, agent rules, skills, and register builtin+MCP tools.',
   ];
 
@@ -128,8 +128,6 @@ function fmtTokens(n) {
   return `${(n / 1000).toFixed(1)}k`;
 }
 
-let jobSeq = 1;
-
 // --- Tool definitions ---
 
 const TOOLS = [
@@ -168,25 +166,6 @@ const TOOLS = [
     name: 'list_models',
     description: 'List available models from all enabled providers.',
     inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'delegate',
-    description: 'Delegate a task to an external AI model. Sync: blocks and returns result as tool output. Async (background=true): returns jobId, result via notification. Reuse sessionId for follow-up turns.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        task: { type: 'string', description: 'Task prompt to send to the external model' },
-        sessionId: { type: 'string', description: 'Existing session ID for follow-up. Omit to create new session.' },
-        provider: { type: 'string', description: 'Required if no sessionId. openai, openai-oauth, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
-        model: { type: 'string', description: 'Required if no sessionId. e.g., gpt-5.4-mini, gemini-2.5-pro' },
-        role: { type: 'string', enum: ['Worker', 'Reviewer'], description: 'Agent template to inject' },
-        preset: { type: 'string', enum: ['full', 'readonly', 'mcp'], description: 'Tool preset (default: full)' },
-        context: { type: 'string', description: 'Additional context to inject' },
-        background: { type: 'boolean', description: 'If true, returns immediately with jobId. Result arrives via notification.' },
-        cwd: { type: 'string', description: 'Working directory for tool execution' },
-      },
-      required: ['task'],
-    },
   },
   {
     name: 'get_workflows',
@@ -353,128 +332,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           }
           return ok({ current: currentLabel, presets: lines, providers: results });
         }
-      }
-
-      case 'delegate': {
-        // Resolve or create session
-        let session;
-        if (args.sessionId) {
-          session = resumeSession(args.sessionId);
-          if (!session) return fail(`Session "${args.sessionId}" not found`);
-        } else {
-          let provider = args.provider;
-          let model = args.model;
-
-          // Resolve preset → provider/model if not explicitly given
-          if (!provider || !model) {
-            const cfg = loadConfig();
-            const preset = args.preset
-              ? getPreset(cfg, args.preset)
-              : getDefaultPreset(cfg);
-            if (preset) {
-              provider = provider || preset.provider;
-              model = model || preset.model;
-            }
-          }
-
-          if (!provider || !model) return fail('provider and model are required (or set a default preset)');
-          session = createSession({
-            provider, model,
-            agent: args.role, preset: args.preset || 'full',
-            cwd: args.cwd || process.cwd(),
-          });
-        }
-
-        const startedAt = Date.now();
-
-        // Cleanup old result files (>24h)
-        function cleanupOldResults(dir) {
-          try {
-            for (const f of readdirSync(dir)) {
-              try { if (Date.now() - statSync(join(dir, f)).mtimeMs > 86400000) unlinkSync(join(dir, f)); } catch {}
-            }
-          } catch {}
-        }
-
-        // Background mode — fire, save result to file
-        if (args.background) {
-          const jobId = `job_${jobSeq++}_${Date.now()}`;
-          const resultsDir = join(getPluginData(), 'results');
-          mkdirSync(resultsDir, { recursive: true });
-          const resultPath = join(resultsDir, `${jobId}.json`);
-
-          askSession(session.id, args.task, args.context,
-            (iteration, calls) => {
-              const names = calls.map(c => c.name).join(', ');
-              notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}\n_job: ${jobId}_`);
-            },
-            args.cwd,
-          )
-            .then((result) => {
-              const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-              const inTok = fmtTokens(result.usage?.inputTokens);
-              const outTok = fmtTokens(result.usage?.outputTokens);
-              const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-              const resultData = {
-                jobId, sessionId: session.id, status: 'completed',
-                provider: session.provider, model: session.model,
-                content: result.content,
-                usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
-              };
-              try {
-                writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
-                cleanupOldResults(resultsDir);
-              } catch (writeErr) {
-                process.stderr.write(`[trib-agent] Failed to write result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
-              }
-              (async () => {
-                try {
-                  injectViaChannels(
-                    `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
-                    `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
-                    { type: 'delegate' },
-                  );
-                } catch (injectErr) {
-                  process.stderr.write(`[trib-agent] Failed to inject result via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
-                }
-              })();
-            })
-            .catch((err) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              try {
-                writeFileSync(resultPath, JSON.stringify({
-                  jobId, sessionId: session.id, status: 'failed',
-                  provider: session.provider, model: session.model,
-                  error: msg,
-                }, null, 2));
-              } catch (writeErr) {
-                process.stderr.write(`[trib-agent] Failed to write error result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
-              }
-              (async () => {
-                try {
-                  injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
-                } catch (injectErr) {
-                  process.stderr.write(`[trib-agent] Failed to inject error via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
-                }
-              })();
-            });
-          return ok({ sessionId: session.id, jobId, status: 'working', resultPath });
-        }
-
-        // Sync mode — block and return result (no progress notifications)
-        const result = await askSession(session.id, args.task, args.context,
-          null,
-          args.cwd,
-        );
-        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-        const inTok = fmtTokens(result.usage?.inputTokens);
-        const outTok = fmtTokens(result.usage?.outputTokens);
-        const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-        return ok({
-          sessionId: session.id,
-          content: result.content,
-          usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
-        });
       }
 
       case 'get_workflows': {
@@ -659,126 +516,6 @@ export async function handleToolCall(name, args, opts = {}) {
           }
         }
         return ok({ current: currentLabel, presets: lines, providers: results });
-      }
-
-      case 'delegate': {
-        let session;
-        if (args.sessionId) {
-          session = resumeSession(args.sessionId);
-          if (!session) return fail(`Session "${args.sessionId}" not found`);
-        } else {
-          let provider = args.provider;
-          let model = args.model;
-
-          if (!provider || !model) {
-            const cfg = loadConfig();
-            const preset = args.preset
-              ? getPreset(cfg, args.preset)
-              : getDefaultPreset(cfg);
-            if (preset) {
-              provider = provider || preset.provider;
-              model = model || preset.model;
-            }
-          }
-
-          if (!provider || !model) return fail('provider and model are required (or set a default preset)');
-          session = createSession({
-            provider, model,
-            agent: args.role, preset: args.preset || 'full',
-            cwd: args.cwd || process.cwd(),
-          });
-        }
-
-        const startedAt = Date.now();
-
-        function cleanupOldResults(dir) {
-          try {
-            for (const f of readdirSync(dir)) {
-              try { if (Date.now() - statSync(join(dir, f)).mtimeMs > 86400000) unlinkSync(join(dir, f)); } catch {}
-            }
-          } catch {}
-        }
-
-        if (args.background) {
-          const jobId = `job_${jobSeq++}_${Date.now()}`;
-          const resultsDir = join(getPluginData(), 'results');
-          mkdirSync(resultsDir, { recursive: true });
-          const resultPath = join(resultsDir, `${jobId}.json`);
-
-          askSession(session.id, args.task, args.context,
-            (iteration, calls) => {
-              const names = calls.map(c => c.name).join(', ');
-              notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}\n_job: ${jobId}_`);
-            },
-            args.cwd,
-          )
-            .then((result) => {
-              const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-              const inTok = fmtTokens(result.usage?.inputTokens);
-              const outTok = fmtTokens(result.usage?.outputTokens);
-              const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-              const resultData = {
-                jobId, sessionId: session.id, status: 'completed',
-                provider: session.provider, model: session.model,
-                content: result.content,
-                usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
-              };
-              try {
-                writeFileSync(resultPath, JSON.stringify(resultData, null, 2));
-                cleanupOldResults(resultsDir);
-              } catch (writeErr) {
-                process.stderr.write(`[trib-agent] Failed to write result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
-              }
-              (async () => {
-                try {
-                  injectViaChannels(
-                    `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n` +
-                    `_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
-                    { type: 'delegate' },
-                  );
-                } catch (injectErr) {
-                  process.stderr.write(`[trib-agent] Failed to inject result via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
-                }
-              })();
-            })
-            .catch((err) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              try {
-                writeFileSync(resultPath, JSON.stringify({
-                  jobId, sessionId: session.id, status: 'failed',
-                  provider: session.provider, model: session.model,
-                  error: msg,
-                }, null, 2));
-              } catch (writeErr) {
-                process.stderr.write(`[trib-agent] Failed to write error result file ${resultPath}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}\n`);
-              }
-              (async () => {
-                try {
-                  injectViaChannels(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
-                } catch (injectErr) {
-                  process.stderr.write(`[trib-agent] Failed to inject error via channels: ${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`);
-                }
-              })();
-            });
-          return ok({ sessionId: session.id, jobId, status: 'working', resultPath });
-        }
-
-        const result = await askSession(session.id, args.task, args.context,
-          (iteration, calls) => {
-            const names = calls.map(c => c.name).join(', ');
-            notify(`🔧 [${session.provider}/${session.model}] Tool #${iteration}: ${names}`);
-          },
-          args.cwd,
-        );
-        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-        const inTok = fmtTokens(result.usage?.inputTokens);
-        const outTok = fmtTokens(result.usage?.outputTokens);
-        const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops, ${result.toolCallsTotal} tool calls` : '';
-        return ok({
-          sessionId: session.id,
-          content: result.content,
-          usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
-        });
       }
 
       case 'get_workflows': {

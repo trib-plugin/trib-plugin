@@ -872,11 +872,11 @@ function loadConfig() {
     return {
       ...DEFAULT_CONFIG,
       ...raw,
-      backend: raw.backend || "discord",
+      backend: "discord",
+      discord: { ...DEFAULT_CONFIG.discord, ...raw.discord },
       access: {
         ...DEFAULT_ACCESS,
-        ...raw.access ?? {},
-        allowFrom: raw.access?.allowFrom ?? [],
+        ...raw.access,
         channels: accessChannels,
         pending: raw.access?.pending ?? {}
       }
