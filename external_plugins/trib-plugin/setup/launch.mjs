@@ -35,10 +35,11 @@ const alive = await ping();
 if (!alive) {
   const child = spawn(process.execPath, [server], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'ignore'],
     cwd: dirname(__dirname),
     env: { ...process.env, TRIB_SETUP_OPEN_ON_START: '1' },
     windowsHide: true,
+    shell: false,
   });
   child.unref();
 } else if (!await requestOpen()) {

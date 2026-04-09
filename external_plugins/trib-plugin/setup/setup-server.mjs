@@ -57,9 +57,10 @@ function getCenteredWindowPosition() {
     'Write-Output "$($a.X),$($a.Y),$($a.Width),$($a.Height)"',
   ].join(';');
   try {
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], {
       encoding: 'utf8',
       windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     if (result.status !== 0) return null;
     const [x, y, width, height] = (result.stdout || '').trim().split(',').map(Number);
@@ -70,6 +71,22 @@ function getCenteredWindowPosition() {
     };
   } catch {
     return null;
+  }
+}
+
+function setAlwaysOnTop(title) {
+  if (isWin) {
+    const ps = `Add-Type -Name W -Namespace N -Member '[DllImport("user32.dll")]public static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int w,int h2,uint f);[DllImport("user32.dll")]public static extern IntPtr FindWindow(string c,string t);';$h=[N.W]::FindWindow([NullString]::Value,'${title}');if($h-ne[IntPtr]::Zero){[N.W]::SetWindowPos($h,[IntPtr]::new(-1),0,0,0,0,3)}`;
+    try {
+      spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps], {
+        detached: true, stdio: 'ignore', windowsHide: true,
+      }).unref();
+    } catch {}
+  } else if (process.platform === 'darwin') {
+    const osa = `tell application "System Events" to set frontmost of every process whose name contains "Chrome" to true`;
+    try {
+      spawn('osascript', ['-e', osa], { detached: true, stdio: 'ignore' }).unref();
+    } catch {}
   }
 }
 
@@ -92,14 +109,34 @@ function openAppWindow() {
           windowsHide: true,
         });
         child.unref();
+        // Set always-on-top after window opens
+        setTimeout(() => setAlwaysOnTop('TRIB-CHANNELS CONFIG'), 1500);
         return true;
       } catch {}
     }
-    exec(`cmd.exe /c start "" "${appUrl}"`, { windowsHide: true });
+    // Fallback: use PowerShell Start-Process to avoid cmd.exe console flash
+    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', `Start-Process "${appUrl}"`], {
+      detached: true, stdio: 'ignore', windowsHide: true,
+    }).unref();
     return true;
   }
 
   if (process.platform === 'darwin') {
+    const macBrowsers = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ];
+    const macBrowser = macBrowsers.find(p => existsSync(p));
+    if (macBrowser) {
+      try {
+        const child = spawn(macBrowser, [`--app=${appUrl}`, `--window-size=${APP_WIDTH},${APP_HEIGHT}`], {
+          detached: true, stdio: 'ignore',
+        });
+        child.unref();
+        setTimeout(() => setAlwaysOnTop('TRIB-CHANNELS CONFIG'), 1500);
+        return true;
+      } catch {}
+    }
     exec(`open "${appUrl}"`);
     return true;
   }
