@@ -13,7 +13,10 @@ import { randomUUID } from 'crypto'
 import type { TimedSchedule, ProactiveConfig, ProactiveItem, ChannelsConfig, BotConfig } from '../backends/types.js'
 import { DATA_DIR } from './config.js'
 import { appendFileSync } from 'fs'
+import { spawn } from 'child_process'
 import { spawnClaudeP, runScript as execScript, ensureNopluginDir } from './executor.js'
+
+const DELEGATE_CLI = join(DATA_DIR, '..', '..', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-agent', 'scripts', 'delegate-cli.mjs')
 
 const SCHEDULE_LOG = join(DATA_DIR, 'schedule.log')
 // SCRIPTS_DIR moved to executor.ts
@@ -573,15 +576,49 @@ export class Scheduler {
     if (this.running.has(schedule.name)) return
     this.running.add(schedule.name)
 
-    spawnClaudeP(schedule.name, prompt, (result, code) => {
-      this.running.delete(schedule.name)
-      if (result && this.sendFn) {
-        this.sendFn(channelId, result).catch(err =>
-          process.stderr.write(`trib-channels scheduler: ${schedule.name} relay failed: ${err}\n`),
-        )
-      }
-      process.stderr.write(`trib-channels scheduler: ${schedule.name} exited (${code})\n`)
-    })
+    // Use delegate-cli if available, fallback to claude -p
+    if (existsSync(DELEGATE_CLI)) {
+      const args: string[] = [DELEGATE_CLI]
+      if (this.proactive?.model) args.push('--preset', this.proactive.model)
+      args.push(prompt)
+
+      const child = spawn('node', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        timeout: 120_000,
+        env: { ...process.env },
+      })
+
+      let stdout = ''
+      child.stdout.on('data', (d: Buffer) => { stdout += d })
+      child.on('close', (code: number | null) => {
+        this.running.delete(schedule.name)
+        let result = ''
+        try {
+          const parsed = JSON.parse(stdout)
+          result = parsed.content || stdout.trim()
+        } catch {
+          result = stdout.trim()
+        }
+        if (result && this.sendFn) {
+          this.sendFn(channelId, result).catch(err =>
+            process.stderr.write(`trib-channels scheduler: ${schedule.name} relay failed: ${err}\n`),
+          )
+        }
+        logSchedule(`${schedule.name} delegate done (${code})\n`)
+      })
+      child.on('error', () => { this.running.delete(schedule.name) })
+    } else {
+      spawnClaudeP(schedule.name, prompt, (result, code) => {
+        this.running.delete(schedule.name)
+        if (result && this.sendFn) {
+          this.sendFn(channelId, result).catch(err =>
+            process.stderr.write(`trib-channels scheduler: ${schedule.name} relay failed: ${err}\n`),
+          )
+        }
+        logSchedule(`${schedule.name} claude-p done (${code})\n`)
+      })
+    }
   }
 
   // ── Script execution (delegates to shared executor) ────────────────
