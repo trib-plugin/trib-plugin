@@ -542,7 +542,7 @@ async function handleGrep(query, options) {
   })
 
   // Score and sort
-  const { computeFinalScore } = await import('../lib/memory-score-utils.mjs')
+  const { computeFinalScore } = await import('./lib/memory-score-utils.mjs')
   let items = results.map(item => {
     const baseScore = item.base_score ?? 0
     item._finalScore = computeFinalScore(baseScore, item, query)
