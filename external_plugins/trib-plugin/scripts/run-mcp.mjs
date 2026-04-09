@@ -113,14 +113,13 @@ await syncDependenciesIfNeeded()
 
 const serverTs = join(pluginRoot, 'server-unified.ts')
 const serverTsFallback = join(pluginRoot, 'server.ts')
-const serverJs = join(pluginData, 'server.bundle.mjs')
+const serverJs = join(pluginRoot, 'server.bundle.mjs')
 const esbuildBin = join(dataNodeModules, '.bin', process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild')
+const sep = process.platform === 'win32' ? ';' : ':'
 const spawnEnv = {
   ...process.env,
   TRIB_UNIFIED: '1',
-  NODE_PATH: process.env.NODE_PATH
-    ? `${dataNodeModules}${process.platform === 'win32' ? ';' : ':'}${process.env.NODE_PATH}`
-    : dataNodeModules,
+  NODE_PATH: [dataNodeModules, pluginRoot, process.env.NODE_PATH].filter(Boolean).join(sep),
 }
 
 // Prefer pre-built bundle shipped with the plugin (no runtime esbuild needed).

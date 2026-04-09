@@ -32,7 +32,6 @@ import {
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
-import { appendEpisode as memoryAppendEpisode, ingestTranscript as memoryIngestTranscript, getProactiveSources, getProactiveContext, applyProactiveUpdates } from './lib/memory-client.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -57,6 +56,15 @@ import {
 } from './lib/runtime-paths.js'
 import type { InboundMessage } from './backends/types.js'
 import { PLUGIN_ROOT } from './lib/config.js'
+
+const memoryClientModulePath = './lib/memory-client.mjs'
+const {
+  appendEpisode: memoryAppendEpisode,
+  ingestTranscript: memoryIngestTranscript,
+  getProactiveSources,
+  getProactiveContext,
+  applyProactiveUpdates,
+} = await import(memoryClientModulePath) as any
 
 const DEFAULT_PLUGIN_VERSION = '0.0.1'
 
@@ -116,6 +124,7 @@ const _bootLogEarly = path.join(
   'boot.log',
 )
 fs.appendFileSync(_bootLogEarly, `[${localTimestamp()}] bootstrap start pid=${process.pid}\n`)
+const _bootLog = path.join(DATA_DIR, 'boot.log')
 
 let config = loadConfig()
 let botConfig = loadBotConfig()
@@ -920,7 +929,7 @@ scheduler.setInjectHandler((channelId: string, name: string, content: string, op
   void mcpServer.notification({
     method: 'notifications/claude/channel',
     params: { content, meta },
-  }).catch(e => {
+  }).catch((e: unknown) => {
     process.stderr.write(`trib-channels: notification failed: ${e}\n`)
   })
   void memoryAppendEpisode({
@@ -995,7 +1004,7 @@ eventQueue.setInjectHandler((channelId: string, name: string, content: string, o
   void mcpServer.notification({
     method: 'notifications/claude/channel',
     params: { content, meta },
-  }).catch(e => {
+  }).catch((e: unknown) => {
     try { process.stderr.write(`trib-channels event: notification failed: ${e}\n`) } catch { /* EPIPE */ }
   })
   void memoryAppendEpisode({
@@ -1161,7 +1170,7 @@ backend.onInteraction = (interaction: BackendInteraction) => {
         ...(interaction.message ? { message_id: interaction.message.id } : {}),
       },
     },
-  }).catch(e => {
+  }).catch((e: unknown) => {
     process.stderr.write(`trib-channels: notification failed: ${e}\n`)
   })
 }
@@ -1976,7 +1985,7 @@ async function handleToolCall(
 
 // ── Tool handlers (stdio MCP server) ──────────────────────────────────
 
-mcpServer.setRequestHandler(CallToolRequestSchema, async req => {
+mcpServer.setRequestHandler(CallToolRequestSchema, async (req: any) => {
   // Forward pending assistant text before tool execution
   await forwarder.forwardNewText()
 
@@ -2247,7 +2256,7 @@ async function handleInbound(
       content: notificationContent,
       meta: notificationMeta,
     },
-  }).catch(e => {
+  }).catch((e: unknown) => {
     process.stderr.write(`trib-channels: notification failed: ${e}\n`)
   })
 
@@ -2365,7 +2374,6 @@ export async function stop() {
 
 if (process.env.TRIB_UNIFIED !== '1') {
 
-const _bootLog = path.join(DATA_DIR, 'boot.log')
 fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect starting\n`)
 await mcpServer.connect(new StdioServerTransport())
 fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done\n`)

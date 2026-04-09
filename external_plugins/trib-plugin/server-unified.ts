@@ -32,40 +32,44 @@ const PLUGIN_VERSION = readPluginVersion()
 
 // ── Module imports ─────────────────────────────────────────────────────
 
-import {
-  TOOL_DEFS as SEARCH_TOOLS,
-  instructions as searchInstructions,
-  handleToolCall as searchHandleToolCall,
-  start as searchStart,
-  stop as searchStop,
-} from './src/search/index.mjs'
+const searchModulePath = './src/search/index.mjs'
+const {
+  TOOL_DEFS: SEARCH_TOOLS,
+  instructions: searchInstructions,
+  handleToolCall: searchHandleToolCall,
+  start: searchStart,
+  stop: searchStop,
+} = await import(searchModulePath) as any
 
-import {
-  TOOL_DEFS as AGENT_TOOLS,
-  instructions as agentInstructions,
-  init as agentInit,
-  handleToolCall as agentHandleToolCall,
-  start as agentStart,
-  stop as agentStop,
-} from './src/agent/index.mjs'
+const agentModulePath = './src/agent/index.mjs'
+const {
+  TOOL_DEFS: AGENT_TOOLS,
+  instructions: agentInstructions,
+  init: agentInit,
+  handleToolCall: agentHandleToolCall,
+  start: agentStart,
+  stop: agentStop,
+} = await import(agentModulePath) as any
 
-import {
-  TOOL_DEFS as MEMORY_TOOLS,
-  instructions as memoryInstructions,
-  init as memoryInit,
-  handleToolCall as memoryHandleToolCall,
-  start as memoryStart,
-  stop as memoryStop,
-} from './src/memory/index.mjs'
+const memoryModulePath = './src/memory/index.mjs'
+const {
+  TOOL_DEFS: MEMORY_TOOLS,
+  instructions: memoryInstructions,
+  init: memoryInit,
+  handleToolCall: memoryHandleToolCall,
+  start: memoryStart,
+  stop: memoryStop,
+} = await import(memoryModulePath) as any
 
-import {
-  TOOL_DEFS as CHANNELS_TOOLS,
-  instructions as channelsInstructions,
-  init as channelsInit,
-  handleToolCall as channelsHandleToolCall,
-  start as channelsStart,
-  stop as channelsStop,
-} from './src/channels/index.ts'
+const channelsModulePath = './src/channels/index.ts'
+const {
+  TOOL_DEFS: CHANNELS_TOOLS,
+  instructions: channelsInstructions,
+  init: channelsInit,
+  handleToolCall: channelsHandleToolCall,
+  start: channelsStart,
+  stop: channelsStop,
+} = await import(channelsModulePath) as any
 
 // ── Tool routing ───────────────────────────────────────────────────────
 
@@ -125,13 +129,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
+  const toolArgs = (args ?? {}) as Record<string, unknown>
   const module = routeToolCall(name)
 
   switch (module) {
     case 'search':
-      return await searchHandleToolCall(name, args)
+      return await searchHandleToolCall(name, toolArgs)
     case 'agent':
-      return await agentHandleToolCall(name, args, {
+      return await agentHandleToolCall(name, toolArgs, {
         notifyFn: (text: string) => {
           server.notification({
             method: 'notifications/claude/channel',
@@ -141,9 +146,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         elicitFn: (opts: any) => (server as any).elicitInput?.(opts),
       })
     case 'memory':
-      return await memoryHandleToolCall(name, args)
+      return await memoryHandleToolCall(name, toolArgs)
     case 'channels':
-      return await channelsHandleToolCall(name, args)
+      return await channelsHandleToolCall(name, toolArgs)
     default: {
       if (!module) return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
       return { content: [{ type: 'text', text: `Unhandled module: ${module}` }], isError: true }

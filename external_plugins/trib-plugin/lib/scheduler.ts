@@ -313,7 +313,7 @@ export class Scheduler {
         if (this.lastActivity > 0 && (Date.now() - this.lastActivity) < 5 * 60_000) {
           return `skipped proactive "${topic}" — conversation active (last activity ${Math.floor((Date.now() - this.lastActivity) / 1000)}s ago)`
         }
-        this.fireProactive(item)
+        await this.fireProactiveTick(item.topic)
         return `triggered proactive "${topic}"`
       }
     }
@@ -648,7 +648,7 @@ export class Scheduler {
     this.proactiveDbUpdater = dbUpdater
   }
 
-  private async fireProactiveTick(): Promise<void> {
+  private async fireProactiveTick(preferredTopic?: string): Promise<void> {
     if (!existsSync(DELEGATE_CLI)) {
       logSchedule('proactive: delegate-cli not found, skipping\n')
       return
@@ -664,6 +664,10 @@ export class Scheduler {
       : '(no sources registered)'
 
     // 2. Build autonomous task
+    const preferredTopicText = preferredTopic
+      ? `\n## Manual Trigger Preference\nPrefer the topic "${preferredTopic}" if it is available and suitable. Only choose another source when that topic is unavailable or clearly not a good fit right now.\n`
+      : ''
+
     const task = `You are a proactive conversation agent. You run periodically in the background.
 
 ## Current Time
@@ -674,6 +678,7 @@ ${data.memory || '(no recent context)'}
 
 ## Available Conversation Sources
 ${sourcesText}
+${preferredTopicText}
 
 ## Your Job (do all of these in order)
 1. **Judge availability**: Based on the memory context, is now a good time to talk? If the user seems busy, stressed, or in deep focus → respond with ONLY the JSON below with action:"skip".
