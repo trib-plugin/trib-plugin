@@ -5041,20 +5041,6 @@ var TOOL_DEFS = [
   },
   // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
   {
-    name: "inject",
-    title: "Inject Notification",
-    annotations: { title: "Inject Notification", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: "Inject a notification into the conversation via the channel notification path. Used by trib-agent to deliver async delegate results without requiring separate channel registration.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        content: { type: "string", description: "Text content to inject into the conversation" },
-        source: { type: "string", description: 'Source identifier (e.g. "trib-agent")' }
-      },
-      required: ["content"]
-    }
-  },
-  {
     name: "reload_config",
     title: "Reload Config",
     annotations: { title: "Reload Config", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -5122,19 +5108,6 @@ function createHttpMcpServer() {
           writeBridgeState(active);
           if (active) void refreshBridgeOwnership({ restoreBinding: true });
           return { content: [{ type: "text", text: `channel bridge ${active ? "activated" : "deactivated"}` }] };
-        }
-        case "inject": {
-          const content = args.content;
-          const source = args.source || "trib-agent";
-          const meta = { user: source, user_id: "system", ts: (/* @__PURE__ */ new Date()).toISOString() };
-          if (args.instruction) meta.instruction = args.instruction;
-          if (args.type) meta.type = args.type;
-          void mcpServer.notification({
-            method: "notifications/claude/channel",
-            params: { content, meta }
-          }).catch(() => {
-          });
-          return { content: [{ type: "text", text: "injected" }] };
         }
         case "reload_config": {
           reloadRuntimeConfig();
@@ -5379,20 +5352,6 @@ ${lines.join("\n")}` }]
             }
             result = { content: [{ type: "text", text: `channel bridge ${active ? "activated" : "deactivated"}` }] };
           }
-          break;
-        }
-        case "inject": {
-          const content = args.content;
-          const source = args.source || "trib-agent";
-          const meta = { user: source, user_id: "system", ts: (/* @__PURE__ */ new Date()).toISOString() };
-          if (args.instruction) meta.instruction = args.instruction;
-          if (args.type) meta.type = args.type;
-          void mcpServer.notification({
-            method: "notifications/claude/channel",
-            params: { content, meta }
-          }).catch(() => {
-          });
-          result = { content: [{ type: "text", text: "injected" }] };
           break;
         }
         case "reload_config": {

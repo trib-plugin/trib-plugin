@@ -1573,20 +1573,6 @@ const TOOL_DEFS = [
   },
   // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
   {
-    name: 'inject',
-    title: 'Inject Notification',
-    annotations: { title: 'Inject Notification', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Inject a notification into the conversation via the channel notification path. Used by trib-agent to deliver async delegate results without requiring separate channel registration.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        content: { type: 'string', description: 'Text content to inject into the conversation' },
-        source: { type: 'string', description: 'Source identifier (e.g. "trib-agent")' },
-      },
-      required: ['content'],
-    },
-  },
-  {
     name: 'reload_config',
     title: 'Reload Config',
     annotations: { title: 'Reload Config', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -1657,18 +1643,6 @@ function createHttpMcpServer(): InstanceType<typeof Server> {
           writeBridgeState(active)
           if (active) void refreshBridgeOwnership({ restoreBinding: true })
           return { content: [{ type: 'text', text: `channel bridge ${active ? 'activated' : 'deactivated'}` }] }
-        }
-        case 'inject': {
-          const content = args.content as string
-          const source = (args.source as string) || 'trib-agent'
-          const meta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
-          if (args.instruction) meta.instruction = args.instruction as string
-          if (args.type) meta.type = args.type as string
-          void mcpServer.notification({
-            method: 'notifications/claude/channel',
-            params: { content, meta },
-          }).catch(() => {})
-          return { content: [{ type: 'text', text: 'injected' }] }
         }
         case 'reload_config': {
           reloadRuntimeConfig()
@@ -1938,19 +1912,6 @@ async function handleToolCall(
           }
           result = { content: [{ type: 'text', text: `channel bridge ${active ? 'activated' : 'deactivated'}` }] }
         }
-        break
-      }
-      case 'inject': {
-        const content = args.content as string
-        const source = (args.source as string) || 'trib-agent'
-        const meta: Record<string, string> = { user: source, user_id: 'system', ts: new Date().toISOString() }
-        if (args.instruction) meta.instruction = args.instruction as string
-        if (args.type) meta.type = args.type as string
-        void mcpServer.notification({
-          method: 'notifications/claude/channel',
-          params: { content, meta },
-        }).catch(() => {})
-        result = { content: [{ type: 'text', text: 'injected' }] }
         break
       }
       case 'reload_config': {

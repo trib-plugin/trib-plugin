@@ -3,7 +3,7 @@
  * Orchestrator CLI — slash command entry point.
  *
  * Subcommands:
- *   ask [--bg] [--context "text"] [:sessionId] <prompt>
+ *   ask [--provider X] [--model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>
  *   new [prompt]
  *   resume [sessionId]
  *   clear
@@ -28,7 +28,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from '
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { spawn } from 'child_process';
-import { request as httpReq } from 'http';
 
 // --- Active session pointer ---
 
@@ -74,24 +73,28 @@ async function ensureMcpConnected(config) {
 // --- Subcommands ---
 
 async function cmdAsk(args) {
-    // Parse: [--bg] [--context "text"] [:sessionId] <prompt>
-    const bgIndex = args.indexOf('--bg');
-    const isBackground = bgIndex !== -1 || args.indexOf('--background') !== -1;
-    const filtered = args.filter(a => a !== '--bg' && a !== '--background');
-    let context;
-    let i = 0;
-    if (filtered[i] === '--context' && filtered.length >= i + 2) {
-        context = filtered[i + 1];
-        i += 2;
+    // Parse flags: [--bg] [--provider X] [--model Y] [--preset Z] [--role R]
+    //              [--context "text"] [:sessionId] <prompt>
+    let isBackground = false;
+    let provider = null, model = null, presetName = null, role = null;
+    let context = null, explicitSession = null;
+    const positional = [];
+
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--bg' || a === '--background') { isBackground = true; continue; }
+        if (a === '--provider' && args[i + 1]) { provider = args[++i]; continue; }
+        if (a === '--model' && args[i + 1]) { model = args[++i]; continue; }
+        if (a === '--preset' && args[i + 1]) { presetName = args[++i]; continue; }
+        if (a === '--role' && args[i + 1]) { role = args[++i]; continue; }
+        if (a === '--context' && args[i + 1]) { context = args[++i]; continue; }
+        if (!explicitSession && a.startsWith(':')) { explicitSession = a.slice(1); continue; }
+        positional.push(a);
     }
-    let explicitSession = null;
-    if (filtered[i] && filtered[i].startsWith(':')) {
-        explicitSession = filtered[i].slice(1);
-        i++;
-    }
-    const prompt = filtered.slice(i).join(' ').trim();
+
+    const prompt = positional.join(' ').trim();
     if (!prompt) {
-        process.stderr.write('Usage: ask [--bg] [--context "text"] [:sessionId] <prompt>\n');
+        process.stderr.write('Usage: ask [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n');
         process.exit(1);
     }
 
@@ -102,6 +105,10 @@ async function cmdAsk(args) {
     if (isBackground) {
         const jobId = createJob(explicitSession || readActiveSession() || '', prompt, context);
         const childArgs = ['ask'];
+        if (provider) childArgs.push('--provider', provider);
+        if (model) childArgs.push('--model', model);
+        if (presetName) childArgs.push('--preset', presetName);
+        if (role) childArgs.push('--role', role);
         if (context) childArgs.push('--context', context);
         if (explicitSession) childArgs.push(`:${explicitSession}`);
         childArgs.push(prompt);
@@ -122,15 +129,35 @@ async function cmdAsk(args) {
     let session = sessionId ? resumeSession(sessionId) : null;
 
     if (!session) {
-        // Auto-create from default preset
-        const preset = getDefaultPreset(config);
-        if (!preset) {
-            process.stderr.write('No active session and no default preset configured.\n');
-            process.stderr.write('Run /trib-agent:config to create a preset, then /trib-agent:new.\n');
-            process.exit(1);
+        // If provider/model specified, create session with those
+        if (provider || model || presetName) {
+            let resolvedProvider = provider;
+            let resolvedModel = model;
+            if (presetName && config.presets) {
+                const p = config.presets.find(x => x.id === presetName || x.name === presetName);
+                if (p) { resolvedProvider = resolvedProvider || p.provider; resolvedModel = resolvedModel || p.model; }
+            }
+            if (!resolvedProvider || !resolvedModel) {
+                const def = getDefaultPreset(config);
+                if (def) { resolvedProvider = resolvedProvider || def.provider; resolvedModel = resolvedModel || def.model; }
+            }
+            if (!resolvedProvider || !resolvedModel) {
+                process.stderr.write('provider and model required.\n');
+                process.exit(1);
+            }
+            await ensureMcpConnected(config);
+            session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, preset: 'full', cwd: process.cwd() });
+        } else {
+            // Default preset
+            const preset = getDefaultPreset(config);
+            if (!preset) {
+                process.stderr.write('No active session and no default preset configured.\n');
+                process.stderr.write('Run /trib-agent:config to create a preset, then /trib-agent:new.\n');
+                process.exit(1);
+            }
+            await ensureMcpConnected(config);
+            session = createSession({ preset, cwd: process.cwd() });
         }
-        await ensureMcpConnected(config);
-        session = createSession({ preset, cwd: process.cwd() });
         writeActiveSession(session.id);
     } else {
         await ensureMcpConnected(config);
@@ -297,123 +324,6 @@ function cmdSessions() {
     process.exit(0);
 }
 
-// --- Delegate subcommand (merged from delegate-cli.mjs) ---
-
-async function cmdDelegate(args) {
-    // Parse: [--provider X] [--model Y] [--preset Z] [--session S]
-    //        [--context C] [--role R] [--background] <task>
-    let provider = null, model = null, sessionId = null, presetName = null;
-    let context = null, role = null, background = false;
-    const positional = [];
-
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a === '--provider' && args[i + 1]) { provider = args[++i]; continue; }
-        if (a === '--model' && args[i + 1]) { model = args[++i]; continue; }
-        if (a === '--session' && args[i + 1]) { sessionId = args[++i]; continue; }
-        if (a === '--preset' && args[i + 1]) { presetName = args[++i]; continue; }
-        if (a === '--context' && args[i + 1]) { context = args[++i]; continue; }
-        if (a === '--role' && args[i + 1]) { role = args[++i]; continue; }
-        if (a === '--background') { background = true; continue; }
-        positional.push(a);
-    }
-
-    const task = positional.join(' ').trim();
-    if (!task) {
-        process.stderr.write('Usage: cli.js delegate [--provider X --model Y | --preset Z | --session S] "task"\n');
-        process.exit(1);
-    }
-
-    const config = loadConfig();
-    await initProviders(config.providers);
-
-    // Resolve session
-    let session;
-    if (sessionId) {
-        session = resumeSession(sessionId);
-        if (!session) { process.stderr.write(`Session "${sessionId}" not found\n`); process.exit(1); }
-    } else {
-        let resolvedProvider = provider;
-        let resolvedModel = model;
-        if (presetName && config.presets) {
-            const preset = config.presets.find(p => p.id === presetName || p.name === presetName);
-            if (preset) {
-                resolvedProvider = resolvedProvider || preset.provider;
-                resolvedModel = resolvedModel || preset.model;
-            }
-        }
-        if (!resolvedProvider && !resolvedModel) {
-            const def = getDefaultPreset(config);
-            if (def) { resolvedProvider = def.provider; resolvedModel = def.model; }
-        }
-        if (!resolvedProvider || !resolvedModel) {
-            process.stderr.write('provider and model required (use --provider/--model, --preset, or set default in config)\n');
-            process.exit(1);
-        }
-        await ensureMcpConnected(config);
-        session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, preset: 'full', cwd: process.cwd() });
-    }
-
-    // Execute
-    const startedAt = Date.now();
-    try {
-        const result = await askSession(session.id, task, context, (iteration, calls) => {
-            const names = calls.map(c => c.name).join(', ');
-            process.stderr.write(`  tool #${iteration}: ${names}\n`);
-        }, process.cwd());
-        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-        const inTok = result.usage?.inputTokens || 0;
-        const outTok = result.usage?.outputTokens || 0;
-        const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
-
-        const output = {
-            sessionId: session.id,
-            content: result.content,
-            usage: `${elapsed}s · ${inTok} in · ${outTok} out${loopNote}`,
-        };
-
-        process.stdout.write(JSON.stringify(output, null, 2) + '\n');
-
-        if (background) {
-            await injectResult(
-                `**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`,
-                { type: 'delegate' },
-            );
-        }
-        process.exit(0);
-    } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(JSON.stringify({ error: msg }) + '\n');
-        if (background) {
-            await injectResult(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
-        }
-        process.exit(1);
-    }
-}
-
-// --- HTTP inject helper (for delegate background) ---
-
-function injectResult(content, { type } = {}) {
-    return new Promise((resolve) => {
-        try {
-            const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
-            const portFile = join(tmpDir, 'trib-plugin', 'active-instance.json');
-            const instance = JSON.parse(readFileSync(portFile, 'utf8'));
-            if (!instance.httpPort) { resolve(); return; }
-            const body = { content, source: 'trib-agent' };
-            if (type) body.type = type;
-            const payload = JSON.stringify(body);
-            const req = httpReq({
-                hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-                timeout: 5000,
-            }, (res) => { res.resume(); res.on('end', resolve); });
-            req.on('error', resolve);
-            req.end(payload);
-        } catch { resolve(); }
-    });
-}
-
 // --- Main dispatcher ---
 
 async function main() {
@@ -428,17 +338,15 @@ async function main() {
         case 'clear':     cmdClear(); break;
         case 'model':     cmdModel(rest); break;
         case 'sessions':  cmdSessions(); break;
-        case 'delegate':  await cmdDelegate(rest); break;
         default:
             process.stderr.write(
                 'Usage:\n' +
-                '  cli.js ask [--bg] [--context "text"] [:sessionId] <prompt>\n' +
+                '  cli.js ask [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n' +
                 '  cli.js new [prompt]\n' +
                 '  cli.js resume [sessionId]\n' +
                 '  cli.js clear\n' +
                 '  cli.js model [name|index]\n' +
-                '  cli.js sessions\n' +
-                '  cli.js delegate [--provider X --model Y | --preset Z | --session S] "task"\n'
+                '  cli.js sessions\n'
             );
             process.exit(1);
     }

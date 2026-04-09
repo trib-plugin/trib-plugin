@@ -138,7 +138,7 @@ export async function callLLM(prompt, provider, options = {}) {
 
 async function callDelegateCli(prompt, provider, options = {}) {
   const agentProvider = provider.apiProvider || CONNECTION_TO_PROVIDER[provider.connection] || provider.connection
-  const args = [DELEGATE_CLI, 'delegate', '--provider', agentProvider, '--model', provider.model || 'gpt-5.4-mini']
+  const args = [DELEGATE_CLI, 'ask', '--provider', agentProvider, '--model', provider.model || 'gpt-5.4-mini']
   args.push(prompt)
 
   return new Promise((resolve, reject) => {
