@@ -24,8 +24,11 @@ const PLUGIN_VERSION = readPluginVersion();
 function injectViaChannels(content, { type, instruction } = {}) {
   // Try direct HTTP endpoint first (no MCP session overhead, survives reconnects)
   injectViaHttp(content, { type, instruction }).catch(() => {
-    // Fallback to MCP tool call
-    executeMcpTool('mcp__trib-channels__inject', { content, source: 'trib-agent' })
+    // Fallback to MCP tool call — preserve type/instruction
+    const toolArgs = { content, source: 'trib-agent' };
+    if (type) toolArgs.type = type;
+    if (instruction) toolArgs.instruction = instruction;
+    executeMcpTool('mcp__trib-channels__inject', toolArgs)
       .catch(() => { notify(content); });
   });
 }

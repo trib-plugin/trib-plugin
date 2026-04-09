@@ -68,7 +68,7 @@ if (sessionId) {
     console.error('provider and model required (use --provider/--model, --preset, or set default in config)');
     process.exit(1);
   }
-  session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, preset: 'mcp' });
+  session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, preset: 'full' });
 }
 
 // --- Execute ---
@@ -93,33 +93,35 @@ try {
 
   // Background mode: also inject via trib-channels HTTP
   if (background) {
-    injectResult(`**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`, { type: 'delegate' });
+    await injectResult(`**[${session.provider}/${session.model}]** (${elapsed}s)\n\n${result.content}\n\n---\n_session: ${session.id} · ${inTok} in · ${outTok} out${loopNote}_`, { type: 'delegate' });
   }
 } catch (err) {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(JSON.stringify({ error: msg }));
   if (background) {
-    injectResult(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
+    await injectResult(`**[${session.provider}/${session.model}]** FAILED\n\n${msg}`, { type: 'delegate' });
   }
   process.exit(1);
 }
 
 // --- HTTP inject helper ---
 function injectResult(content, { type } = {}) {
-  try {
-    const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
-    const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
-    const instance = JSON.parse(readFileSync(portFile, 'utf8'));
-    if (!instance.httpPort) return;
-    const body = { content, source: 'trib-agent' };
-    if (type) body.type = type;
-    const payload = JSON.stringify(body);
-    const req = httpRequest({
-      hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: 5000,
-    }, (res) => { res.resume(); });
-    req.on('error', () => {});
-    req.end(payload);
-  } catch { /* best effort */ }
+  return new Promise((resolve) => {
+    try {
+      const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
+      const portFile = join(tmpDir, 'trib-channels', 'active-instance.json');
+      const instance = JSON.parse(readFileSync(portFile, 'utf8'));
+      if (!instance.httpPort) { resolve(); return; }
+      const body = { content, source: 'trib-agent' };
+      if (type) body.type = type;
+      const payload = JSON.stringify(body);
+      const req = httpRequest({
+        hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 5000,
+      }, (res) => { res.resume(); res.on('end', resolve); });
+      req.on('error', resolve);
+      req.end(payload);
+    } catch { resolve(); }
+  });
 }
