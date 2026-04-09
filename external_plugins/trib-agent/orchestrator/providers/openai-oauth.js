@@ -293,7 +293,7 @@ export class OpenAIOAuthProvider {
     }
     async send(messages, model, tools, sendOpts) {
         let auth = await this.ensureAuth();
-        const useModel = model || 'gpt-5.2-codex';
+        const useModel = model || 'gpt-5.4';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
         const doRequest = async (token) => {
             return fetch(CODEX_API_URL, {
