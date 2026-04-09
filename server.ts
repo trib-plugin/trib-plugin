@@ -18,9 +18,14 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(impo
 
 function readPluginVersion(): string {
   try {
-    const manifestPath = join(PLUGIN_ROOT, '.claude-plugin', 'marketplace.json')
+    const manifestPath = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
     return JSON.parse(readFileSync(manifestPath, 'utf8')).version || '0.0.1'
-  } catch { return '0.0.1' }
+  } catch {
+    try {
+      const fallback = join(PLUGIN_ROOT, '.claude-plugin', 'marketplace.json')
+      return JSON.parse(readFileSync(fallback, 'utf8')).version || '0.0.1'
+    } catch { return '0.0.1' }
+  }
 }
 
 const PLUGIN_VERSION = readPluginVersion()
@@ -67,7 +72,7 @@ import {
 const SEARCH_TOOL_NAMES = new Set((SEARCH_TOOLS as any[]).map((t: any) => t.name))
 const AGENT_TOOL_NAMES = new Set((AGENT_TOOLS as any[]).map((t: any) => t.name))
 const MEMORY_TOOL_NAMES = new Set((MEMORY_TOOLS as any[]).map((t: any) => t.name))
-// Channels handles everything else
+const CHANNELS_TOOL_NAMES = new Set((CHANNELS_TOOLS as any[]).map((t: any) => t.name))
 
 const ALL_TOOLS = [
   ...(CHANNELS_TOOLS as any[]),
@@ -76,11 +81,12 @@ const ALL_TOOLS = [
   ...(AGENT_TOOLS as any[]),
 ]
 
-function routeToolCall(name: string): string {
+function routeToolCall(name: string): string | null {
   if (SEARCH_TOOL_NAMES.has(name)) return 'search'
   if (AGENT_TOOL_NAMES.has(name)) return 'agent'
   if (MEMORY_TOOL_NAMES.has(name)) return 'memory'
-  return 'channels'
+  if (CHANNELS_TOOL_NAMES.has(name)) return 'channels'
+  return null
 }
 
 // ── Instructions merge ─────────────────────────────────────────────────
@@ -132,13 +138,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             params: { content: text, meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() } },
           }).catch(() => {})
         },
+        elicitFn: (opts: any) => (server as any).elicitInput?.(opts),
       })
     case 'memory':
       return await memoryHandleToolCall(name, args)
     case 'channels':
       return await channelsHandleToolCall(name, args)
-    default:
-      return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
+    default: {
+      if (!module) return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
+      return { content: [{ type: 'text', text: `Unhandled module: ${module}` }], isError: true }
+    }
   }
 })
 
@@ -152,19 +161,19 @@ async function main() {
   await agentInit()
   await channelsInit(server)  // channels needs shared MCP server for notifications
 
-  // Start modules
+  // Connect transport BEFORE starting modules (prevents notification loss)
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+
+  process.stderr.write(`[trib-plugin] MCP server connected, starting modules...\n`)
+
+  // Start modules (transport already connected, notifications will work)
   await searchStart()
   await memoryStart()
   await agentStart()
   await channelsStart()
 
-  process.stderr.write(`[trib-plugin] all modules initialized, ${ALL_TOOLS.length} tools registered\n`)
-
-  // Connect transport
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
-
-  process.stderr.write(`[trib-plugin] MCP server connected\n`)
+  process.stderr.write(`[trib-plugin] all modules started, ${ALL_TOOLS.length} tools registered\n`)
 }
 
 // ── Shutdown ───────────────────────────────────────────────────────────

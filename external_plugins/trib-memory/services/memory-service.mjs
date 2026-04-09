@@ -1188,7 +1188,7 @@ export async function stop() {
   _stopCycles()
   void stopLlmWorker().catch(() => {})
   if (httpServer) {
-    httpServer.close()
+    await new Promise(resolve => httpServer.close(resolve))
   }
 }
 

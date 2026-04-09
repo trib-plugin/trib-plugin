@@ -23,21 +23,24 @@ const npm = isWin ? 'npm.cmd' : 'npm'
 function mergedDeps() {
   const subPlugins = ['trib-channels', 'trib-memory', 'trib-search', 'trib-agent']
   const deps = {}
-  const devDeps = {}
+  const optDeps = {}
   for (const name of subPlugins) {
     const pkgPath = join(pluginRoot, 'external_plugins', name, 'package.json')
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
       Object.assign(deps, pkg.dependencies || {})
-      Object.assign(devDeps, pkg.devDependencies || {})
+      Object.assign(optDeps, pkg.optionalDependencies || {})
     } catch { /* skip if missing */ }
   }
+  // Ensure build tools are in deps (not devDeps)
+  deps['esbuild'] = deps['esbuild'] || '^0.25.0'
+  deps['tsx'] = deps['tsx'] || '^4.19.0'
   return {
     name: 'trib-plugin-unified',
     version: '1.0.0',
     type: 'module',
     dependencies: deps,
-    devDependencies: devDeps,
+    optionalDependencies: optDeps,
   }
 }
 
