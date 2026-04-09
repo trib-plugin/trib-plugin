@@ -42,6 +42,7 @@ export class EventQueue {
   private injectFn: InjectFn | null = null
   private sendFn: SendFn | null = null
   private sessionStateGetter: SessionStateGetter | null = null
+  private notifiedFiles = new Set<string>()  // track files already notified during active state
 
   constructor(config?: EventQueueConfig, channelsConfig?: ChannelsConfig) {
     this.config = config ?? {}
@@ -103,18 +104,48 @@ export class EventQueue {
     const files = this.readQueueFiles()
     if (files.length === 0) return
 
+    const sessionState = this.sessionStateGetter?.() ?? 'idle'
+
+    // Collect interactive items for state-aware handling
+    const interactiveFiles: { file: string; item: QueueItem }[] = []
+
     for (const file of files) {
       const item = this.readItem(file)
       if (!item) continue
       if (item.priority === 'low') continue
 
       if (item.exec === 'interactive') {
-        this.executeItem(item, file)
-        return
+        interactiveFiles.push({ file, item })
+        continue
       }
 
       if (this.runningCount >= maxConcurrent) return
       this.executeItem(item, file)
+    }
+
+    // Handle interactive items based on session state
+    if (interactiveFiles.length === 0) return
+
+    if (sessionState === 'idle') {
+      // Idle → inject items for processing
+      this.notifiedFiles.clear()
+      for (const { file, item } of interactiveFiles) {
+        this.executeItem(item, file)
+      }
+    } else {
+      // Active/recent → notify count only (once per item)
+      const unnotified = interactiveFiles.filter(f => !this.notifiedFiles.has(f.file))
+      if (unnotified.length > 0 && this.injectFn) {
+        const count = interactiveFiles.length
+        this.injectFn('', 'queue', ' ', {
+          instruction: `There are ${count} pending webhook/event items in the queue. The user is currently busy. Do not process them now — just be aware they exist. When the user seems available, briefly mention "${count} pending items" naturally.`,
+          type: 'queue',
+        })
+        for (const { file } of unnotified) {
+          this.notifiedFiles.add(file)
+        }
+        logEvent(`queue: notified ${count} pending interactive items (session=${sessionState})`)
+      }
     }
   }
 
@@ -238,9 +269,33 @@ export class EventQueue {
     return typeof entry === 'string' ? entry : entry.id ?? label
   }
 
+  /** Remove items from queue — after processing, dismissal, or any resolution */
+  resolveItems(name: string, status: 'done' | 'dismissed' = 'done'): number {
+    const files = this.readQueueFiles()
+    let count = 0
+    for (const file of files) {
+      const item = this.readItem(file)
+      if (!item) continue
+      if (item.name === name || name === '*') {
+        this.moveToProcessed(file, status)
+        this.notifiedFiles.delete(file)
+        count++
+      }
+    }
+    if (count > 0) logEvent(`queue: resolved ${count} items (name=${name}, status=${status})`)
+    return count
+  }
+
   /** Get queue status */
   getStatus(): { pending: number; running: number } {
     const pending = this.readQueueFiles().length
     return { pending, running: this.runningCount }
+  }
+
+  /** List pending interactive items */
+  getPendingInteractive(): QueueItem[] {
+    return this.readQueueFiles()
+      .map(f => this.readItem(f))
+      .filter((item): item is QueueItem => item !== null && item.exec === 'interactive')
   }
 }

@@ -404,34 +404,34 @@ export class Scheduler {
 
   // ── Proactive tick ──────────────────────────────────────────────────
 
-  private tickProactive(now: Date, dateStr: string): void {
-    if (!this.proactive || this.proactive.items.length === 0) return
+  private proactiveNextTick = 0  // timestamp of next proactive tick
+
+  private tickProactive(now: Date, _dateStr: string): void {
+    if (!this.proactive) return
 
     // DND check
     if (this.isQuietHours(now)) return
 
-    // Generate daily random slots if new day
-    if (this.proactiveSlotsDate !== dateStr) {
-      this.generateDailySlots(dateStr)
+    // Interval with ±20% jitter
+    if (this.proactiveNextTick === 0) {
+      this.scheduleNextProactiveTick()
     }
+    if (Date.now() < this.proactiveNextTick) return
 
-    const minuteOfDay = now.getHours() * 60 + now.getMinutes()
-    if (!this.proactiveSlots.includes(minuteOfDay)) return
-
-    // Session state guard — only fire when idle (no activity for 5+ minutes)
+    // Session state guard — only fire when idle
     if (this.getSessionState() !== 'idle') return
 
-    // Frequency-based cooldown
-    const freq = Math.max(1, Math.min(5, this.proactive.frequency))
-    const { idleMinutes } = FREQUENCY_MAP[freq]
-    const elapsed = (Date.now() - this.proactiveLastFire) / 60_000
-    if (this.proactiveLastFire > 0 && elapsed < idleMinutes) return
+    // Fire and schedule next
+    this.scheduleNextProactiveTick()
+    this.fireProactiveTick()
+  }
 
-    // Pick a random topic, skip if deferred/skipped
-    const items = this.proactive.items
-    const item = items[Math.floor(Math.random() * items.length)]
-    if (this.shouldSkip(`proactive:${item.topic}`)) return
-    this.fireProactive(item)
+  private scheduleNextProactiveTick(): void {
+    const intervalMs = (this.proactive?.interval ?? 60) * 60_000
+    const jitter = intervalMs * 0.2
+    this.proactiveNextTick = Date.now() + intervalMs + (Math.random() * jitter * 2 - jitter)
+    const next = new Date(this.proactiveNextTick)
+    logSchedule(`proactive next tick: ${next.toLocaleTimeString()}\n`)
   }
 
   /** Day abbreviation → JS day number (0=Sun...6=Sat) */
@@ -598,38 +598,88 @@ export class Scheduler {
     })
   }
 
-  // ── Fire proactive ──────────────────────────────────────────────────
+  // ── Fire proactive (delegate-cli + memory-based) ────────────────────
 
-  private fireProactive(item: ProactiveItem): void {
-    const topicPrompt = this.loadPrompt(`${item.topic}.md`)
-    if (!topicPrompt) {
-      process.stderr.write(`trib-channels scheduler: proactive prompt not found for "${item.topic}"\n`)
+  private proactiveSourcePicker: (() => any) | null = null
+  private proactiveScoreUpdater: ((id: number, hit: boolean) => void) | null = null
+
+  setProactiveSourceHandlers(
+    picker: () => any,
+    updater: (id: number, hit: boolean) => void,
+  ): void {
+    this.proactiveSourcePicker = picker
+    this.proactiveScoreUpdater = updater
+  }
+
+  private fireProactiveTick(): void {
+    const source = this.proactiveSourcePicker?.()
+    if (!source) {
+      logSchedule('proactive: no active sources\n')
       return
     }
 
-    // Replace template variables in prompt
-    const channelId = this.resolveChannel(item.channel)
-    let prompt = topicPrompt.replace(/\{\{CHAT_ID\}\}/g, channelId)
+    const model = this.proactive?.model ?? ''
+    const delegateCli = join(DATA_DIR, '..', '..', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-agent', 'scripts', 'delegate-cli.mjs')
 
-    // Merge topic prompt + feedback file
-    if (this.proactive?.feedback) {
-      const feedbackPath = join(DATA_DIR, 'proactive-feedback.md')
-      const feedback = tryRead(feedbackPath)
-      if (feedback) {
-        prompt = `${topicPrompt}\n\n---\n## Proactive Feedback History\n${feedback}`
+    if (!existsSync(delegateCli)) {
+      logSchedule('proactive: delegate-cli not found, skipping\n')
+      return
+    }
+
+    const task = `You are a proactive assistant preparing conversation material.
+Topic: ${source.topic} (${source.category})
+Search query hint: ${source.query || source.topic}
+
+Research this topic briefly and prepare a short, natural conversation starter (1-2 sentences) in Korean.
+If there is nothing interesting or useful to say, respond with exactly "SKIP".
+Do NOT be generic — be specific and current.`
+
+    logSchedule(`proactive: researching "${source.topic}" (${source.category})\n`)
+
+    const args: string[] = []
+    if (model) args.push('--preset', model)
+    args.push(task)
+
+    const { spawn: spawnChild } = require('child_process')
+    const child = spawnChild('node', [delegateCli, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      timeout: 60_000,
+      env: { ...process.env },
+    })
+
+    let stdout = ''
+    child.stdout.on('data', (d: Buffer) => { stdout += d })
+    child.on('close', (code: number | null) => {
+      let result = ''
+      try {
+        const parsed = JSON.parse(stdout)
+        result = parsed.content || stdout.trim()
+      } catch {
+        result = stdout.trim()
       }
-    }
 
-    logSchedule(`firing proactive "${item.topic}"\n`)
-    this.proactiveLastFire = Date.now()
-    this.proactiveFiredToday++
-    this.lastFired.set(`proactive:${item.topic}`, new Date().toISOString().slice(0, 16))
+      if (!result || result === 'SKIP' || result.includes('SKIP')) {
+        logSchedule(`proactive: "${source.topic}" → SKIP\n`)
+        this.proactiveScoreUpdater?.(source.id, false)
+        return
+      }
 
-    if (this.injectFn) {
-      this.injectFn(this.resolveChannel(item.channel), `proactive:${item.topic}`, ' ', {
-        instruction: prompt,
-      })
-    }
+      logSchedule(`proactive: "${source.topic}" → inject (${result.length} chars)\n`)
+      this.proactiveScoreUpdater?.(source.id, true)
+      this.proactiveLastFire = Date.now()
+      this.proactiveFiredToday++
+
+      if (this.injectFn) {
+        this.injectFn('', `proactive:${source.topic}`, ' ', {
+          instruction: result,
+        })
+      }
+    })
+
+    child.on('error', (err: Error) => {
+      logSchedule(`proactive: delegate error: ${err.message}\n`)
+    })
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────

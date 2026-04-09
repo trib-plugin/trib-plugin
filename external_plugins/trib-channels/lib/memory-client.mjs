@@ -168,6 +168,29 @@ export async function ingestTranscript(filePath) {
 }
 
 /**
+ * Pick a random proactive source weighted by score.
+ * @returns {Promise<object|null>}
+ */
+export async function pickProactiveSource() {
+  try {
+    return await memoryFetch('GET', '/proactive/pick')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Update proactive source score after use.
+ * @param {number} id - Source ID
+ * @param {boolean} hit - true if used, false if skipped
+ */
+export async function updateProactiveScore(id, hit) {
+  try {
+    await memoryFetch('POST', '/proactive/score', { id, hit })
+  } catch { /* best effort */ }
+}
+
+/**
  * Check if the memory service is healthy.
  * @returns {Promise<boolean>}
  */

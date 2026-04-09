@@ -32,7 +32,7 @@ import {
 } from './lib/output-forwarder.js'
 import { controlClaudeSession } from './lib/session-control.js'
 import { JsonStateFile, ensureDir, removeFileIfExists, writeTextFile, type StatusState } from './lib/state-file.js'
-import { appendEpisode as memoryAppendEpisode, ingestTranscript as memoryIngestTranscript } from './lib/memory-client.mjs'
+import { appendEpisode as memoryAppendEpisode, ingestTranscript as memoryIngestTranscript, pickProactiveSource, updateProactiveScore } from './lib/memory-client.mjs'
 import {
   buildModalRequestSpec,
   PendingInteractionStore,
@@ -940,6 +940,20 @@ scheduler.setSendHandler(async (channelId: string, text: string) => {
     sourceRef: `schedule-send:${channelId}:${Date.now()}`,
   })
 })
+
+// ── Proactive source handlers ─────────────────────────────────────────
+
+scheduler.setProactiveSourceHandlers(
+  async () => {
+    try {
+      const source = await pickProactiveSource()
+      return source?.skip ? null : source
+    } catch { return null }
+  },
+  (id: number, hit: boolean) => {
+    void updateProactiveScore(id, hit)
+  },
+)
 
 // ── Webhook → Event pipeline wiring ───────────────────────────────────
 

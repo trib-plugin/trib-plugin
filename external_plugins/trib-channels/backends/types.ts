@@ -370,8 +370,12 @@ export interface ProactiveConfig {
   frequency: number
   /** Whether to append proactive-feedback.md to prompts */
   feedback: boolean
-  /** Topic items — each gets its own prompt file */
+  /** Topic items — each gets its own prompt file (legacy) */
   items: ProactiveItem[]
+  /** Interval in minutes between proactive ticks (default: 60) */
+  interval?: number
+  /** Model preset for delegate-cli source research */
+  model?: string
   /** Do-not-disturb start time "HH:MM" (e.g. "23:00") */
   dndStart?: string
   /** Do-not-disturb end time "HH:MM" (e.g. "07:00") */

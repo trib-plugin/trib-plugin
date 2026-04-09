@@ -451,6 +451,23 @@ export class MemoryStore {
       CREATE INDEX IF NOT EXISTS idx_core_memory_status ON core_memory(status, final_score DESC);
       CREATE INDEX IF NOT EXISTS idx_core_memory_cls ON core_memory(classification_id);
 
+      CREATE TABLE IF NOT EXISTS proactive_sources (
+        id INTEGER PRIMARY KEY,
+        category TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        query TEXT,
+        score REAL NOT NULL DEFAULT 0.5,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'dormant', 'removed')),
+        pinned INTEGER NOT NULL DEFAULT 0,
+        last_used TEXT,
+        hit_count INTEGER NOT NULL DEFAULT 0,
+        skip_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_proactive_status ON proactive_sources(status, score DESC);
+
       CREATE TABLE IF NOT EXISTS classification_stats (
         classification_id INTEGER NOT NULL UNIQUE,
         mention_count INTEGER NOT NULL DEFAULT 0,
@@ -1104,6 +1121,69 @@ export class MemoryStore {
     }
 
     return parts.join('\n\n').trim()
+  }
+
+  // ── Proactive sources ────────────────────────────────────────────
+
+  getProactiveSources(status = 'active') {
+    return this.db.prepare(`
+      SELECT * FROM proactive_sources WHERE status = ? ORDER BY score DESC
+    `).all(status)
+  }
+
+  pickProactiveSource() {
+    const sources = this.getProactiveSources('active')
+    if (sources.length === 0) return null
+    // Weighted random by score
+    const total = sources.reduce((sum, s) => sum + s.score, 0)
+    let r = Math.random() * total
+    for (const s of sources) {
+      r -= s.score
+      if (r <= 0) return s
+    }
+    return sources[sources.length - 1]
+  }
+
+  updateProactiveScore(id, hit) {
+    const delta = hit ? 0.05 : -0.03
+    this.db.prepare(`
+      UPDATE proactive_sources
+      SET score = MAX(0.1, MIN(1.0, score + ?)),
+          ${hit ? 'hit_count = hit_count + 1' : 'skip_count = skip_count + 1'},
+          last_used = datetime('now'),
+          updated_at = unixepoch()
+      WHERE id = ? AND pinned = 0
+    `).run(delta, id)
+  }
+
+  addProactiveSource(category, topic, query, pinned = false) {
+    return this.db.prepare(`
+      INSERT INTO proactive_sources (category, topic, query, pinned)
+      VALUES (?, ?, ?, ?)
+    `).run(category, topic, query, pinned ? 1 : 0)
+  }
+
+  removeProactiveSource(id, pinned = false) {
+    if (pinned) {
+      // User removal — mark as removed + pinned so it doesn't come back
+      this.db.prepare(`UPDATE proactive_sources SET status = 'removed', pinned = 1, updated_at = unixepoch() WHERE id = ?`).run(id)
+    } else {
+      this.db.prepare(`DELETE FROM proactive_sources WHERE id = ? AND pinned = 0`).run(id)
+    }
+  }
+
+  seedProactiveSources() {
+    const count = this.db.prepare('SELECT COUNT(*) as n FROM proactive_sources').get().n
+    if (count > 0) return
+    const seeds = [
+      ['memory', 'Recent work follow-up', 'recent work tasks decisions'],
+      ['news', 'Tech & AI news', 'latest AI technology news'],
+      ['work', 'Project status', 'project issues PRs build status'],
+      ['weather', 'Weather', 'current weather forecast'],
+      ['casual', 'Break & wellness', 'take a break productivity tips'],
+    ]
+    const stmt = this.db.prepare('INSERT INTO proactive_sources (category, topic, query) VALUES (?, ?, ?)')
+    for (const [cat, topic, query] of seeds) stmt.run(cat, topic, query)
   }
 
   writeContextFile() {

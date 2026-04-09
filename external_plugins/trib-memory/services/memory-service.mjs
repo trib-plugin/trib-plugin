@@ -990,6 +990,34 @@ function sendError(res, msg, status = 500) {
 }
 
 const httpServer = http.createServer(async (req, res) => {
+  // GET /proactive/pick
+  if (req.method === 'GET' && req.url === '/proactive/pick') {
+    try {
+      store.seedProactiveSources()
+      const source = store.pickProactiveSource()
+      sendJson(res, source || { skip: true })
+    } catch (e) {
+      sendError(res, e.message)
+    }
+    return
+  }
+
+  // POST /proactive/score
+  if (req.method === 'POST' && req.url === '/proactive/score') {
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', () => {
+      try {
+        const { id, hit } = JSON.parse(body)
+        store.updateProactiveScore(id, hit)
+        sendJson(res, { ok: true })
+      } catch (e) {
+        sendError(res, e.message)
+      }
+    })
+    return
+  }
+
   // GET /health
   if (req.method === 'GET' && req.url === '/health') {
     try {
