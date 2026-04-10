@@ -446,7 +446,7 @@
   /* -- Agent module styles -- */
   .r-tag {
     font-size: 11px; padding: 3px 0; border-radius: 4px;
-    font-weight: 500; margin-left: 12px; flex-shrink: 0;
+    font-weight: 500; margin-left: auto; flex-shrink: 0;
     width: 64px; text-align: center; display: inline-flex; align-items: center; justify-content: center;
   }
   .r-tag.ok { background: var(--green-dim); color: var(--green); }
@@ -476,7 +476,7 @@
   .input-group .eye-btn:hover { color: var(--text-1); }
 
   .r-link {
-    margin-left: 12px; font-size: 11px; color: #bbb;
+    margin-left: auto; font-size: 11px; color: #bbb;
     text-decoration: none; white-space: nowrap; flex-shrink: 0;
     transition: color 0.15s; display: inline-flex; align-items: center; justify-content: center;
     width: 64px;
@@ -664,8 +664,8 @@
   }
   .file-label { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 6px; display: flex; align-items: center; }
   .file-label .file-hint { font-weight: 400; color: var(--text-3); font-size: 11px; margin-left: 6px; }
-  .file-label .file-open { margin-left: auto; font-size: 11px; color: var(--accent); cursor: pointer; font-weight: 500; text-decoration: none; }
-  .file-label .file-open:hover { color: #fff; }
+  .file-open { margin-left: auto; font-size: 11px; color: var(--accent); cursor: pointer; font-weight: 500; text-decoration: none; }
+  .file-open:hover { color: #fff; }
   .file-area {
     width: 100%; height: 200px; padding: 10px;
     background: var(--bg-input); border: 1px solid var(--border);
@@ -1358,6 +1358,8 @@ document.addEventListener('change', () => { isDirty = true; });
 window.addEventListener('beforeunload', () => {
   if (isDirty) {
     const data = buildChannelsData();
+    // Strip invalid schedule items (no name)
+    if (data.schedules?.items) data.schedules.items = data.schedules.items.filter(s => s.name?.trim());
     navigator.sendBeacon('/config', JSON.stringify(data));
   }
   navigator.sendBeacon('/close', '');
@@ -1725,8 +1727,11 @@ function addScheduleCard(data) {
       '<div class="r" data-channel-row style="' + (d.type === 'non-interactive' ? '' : 'display:none') + '"><span class="r-name-wide">Channel</span>' + makeChannelSelect(d.channel) + '</div>' +
       '<div class="r"><span class="r-name-wide">Model</span><select class="r-select" data-f="sc-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
-        '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Prompt</div>' +
-        '<textarea class="r-input" data-f="sc-prompt" placeholder="What should the bot do at this time?" style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
+        '<div style="display:flex;align-items:center;margin-bottom:6px">' +
+          '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
+          '<span class="file-open" onclick="schedOpenPrompt(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
+        '</div>' +
+        '<textarea class="r-input" data-f="sc-prompt" placeholder="Describe what the bot should do." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
       '</div>' +
     '</div>';
   list.appendChild(card);
@@ -1736,6 +1741,25 @@ function addScheduleCard(data) {
   if (d.name) card.classList.add('collapsed');
   const freqSel = card.querySelector('[data-f="sc-freq"]');
   if (freqSel) onSchedFreqChange(freqSel);
+  // Fill model dropdown immediately
+  const modelSel = card.querySelector('[data-f="sc-model"]');
+  if (modelSel) {
+    const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
+    const initial = modelSel.dataset.initial || 'sonnet-mid';
+    modelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  }
+}
+
+function webhookOpenInstructions(encodedName) {
+  const name = decodeURIComponent(encodedName);
+  if (!name) { alert('Save the webhook first.'); return; }
+  fetch('/webhooks/file/' + encodedName);
+}
+
+function schedOpenPrompt(encodedName) {
+  const name = decodeURIComponent(encodedName);
+  if (!name) { alert('Save the schedule first.'); return; }
+  fetch('/schedules/file/' + encodedName);
 }
 
 function onSchedFreqChange(sel) {
@@ -1789,7 +1813,10 @@ function addEventCard(data) {
         '<select class="r-select" data-f="ev-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
       '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
-        '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Instructions</div>' +
+        '<div style="display:flex;align-items:center;margin-bottom:6px">' +
+          '<span style="font-size:11px;color:var(--text-3)">Instructions</span>' +
+          '<span class="file-open" onclick="webhookOpenInstructions(\'' + encodeURIComponent(d.name || '') + '\')">Open</span>' +
+        '</div>' +
         '<textarea class="r-input" data-f="ev-instructions" placeholder="Describe how to handle this webhook payload." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.instructions || '') + '</textarea>' +
       '</div>' +
     '</div>';
@@ -1798,6 +1825,13 @@ function addEventCard(data) {
   const evTitleEl = card.querySelector('[data-f="ev-title"]');
   evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
   if (isExisting) card.classList.add('collapsed');
+  // Fill model dropdown immediately
+  const evModelSel = card.querySelector('[data-f="ev-model"]');
+  if (evModelSel) {
+    const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
+    const initial = evModelSel.dataset.initial || 'sonnet-mid';
+    evModelSel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (initial === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  }
 }
 
 async function deleteWebhook(card) {
@@ -1912,7 +1946,7 @@ async function loadChannelsConfig() {
   const cfgRes = await fetch('/config').then(r => r.json()).catch(() => ({}));
   chConfig = cfgRes;
   if (cfgRes._bot) { chExtraData.bot = cfgRes._bot; delete cfgRes._bot; }
-  populateChannels(cfgRes);
+  await populateChannels(cfgRes);
 }
 
 async function populateChannels(cfg) {
@@ -2045,6 +2079,18 @@ async function savePanel() {
     for (const card of whCards) {
       const wh = { name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '', channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main', exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive', model: card.querySelector('[data-f="ev-model"]')?.value || '', secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined, instructions: card.querySelector('[data-f="ev-instructions"]')?.value || '' };
       if (wh.name) { await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) }); card.dataset.originalName = wh.name; }
+    }
+    // Save schedules individually
+    const scCards = document.querySelectorAll('#sched-tasks .card');
+    for (const card of scCards) {
+      const name = card.querySelector('[data-f="sc-name"]')?.value.trim() || '';
+      if (name) {
+        const sc = { name, time: '', days: 'daily', channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', model: card.querySelector('[data-f="sc-model"]')?.value || '', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' };
+        const freq = card.querySelector('[data-f="sc-freq"]')?.value || 'interval';
+        if (freq === 'interval') { const iv = card.querySelector('[data-f="sc-interval"]')?.value.trim() || '01:00'; const m = iv.match(/^(\d+):(\d+)$/); const mins = m ? parseInt(m[1]) * 60 + parseInt(m[2]) : 60; if (mins <= 5) sc.time = 'every5m'; else if (mins <= 10) sc.time = 'every10m'; else if (mins <= 30) sc.time = 'every30m'; else sc.time = 'hourly'; }
+        else { sc.time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00'; sc.days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily'; }
+        await fetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sc) });
+      }
     }
     // Save config
     const data = buildChannelsData();

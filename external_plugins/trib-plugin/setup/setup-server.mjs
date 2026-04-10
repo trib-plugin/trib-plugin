@@ -536,6 +536,7 @@ function readBody(req) {
 
 // -- Server --
 let openGeneration = 0;
+let windowOpen = false;
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -620,6 +621,62 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // -- Schedules CRUD --
+  const SCHEDULES_DIR = join(DATA_DIR, 'schedules');
+
+  if (req.method === 'GET' && path === '/schedules') {
+    const result = [];
+    if (existsSync(SCHEDULES_DIR)) {
+      for (const name of readdirSync(SCHEDULES_DIR, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)) {
+        const cfg = readJsonFile(join(SCHEDULES_DIR, name, 'config.json')) || {};
+        let prompt = '';
+        try { prompt = readFileSync(join(SCHEDULES_DIR, name, 'prompt.md'), 'utf8'); } catch {}
+        result.push({ name, ...cfg, prompt });
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/schedules') {
+    const sc = await readBody(req);
+    if (!sc.name) { res.writeHead(400); res.end('name required'); return; }
+    const dir = join(SCHEDULES_DIR, sc.name);
+    mkdirSync(dir, { recursive: true });
+    const prompt = sc.prompt || '';
+    delete sc.prompt;
+    const name = sc.name;
+    delete sc.name;
+    writeFileSync(join(dir, 'config.json'), JSON.stringify(sc, null, 2));
+    writeFileSync(join(dir, 'prompt.md'), prompt);
+    console.log('  Schedule saved:', name);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'DELETE' && path === '/schedules') {
+    const name = url.searchParams.get('name');
+    if (!name) { res.writeHead(400); res.end('name required'); return; }
+    const dir = join(SCHEDULES_DIR, name);
+    if (existsSync(dir)) { rmSync(dir, { recursive: true }); console.log('  Schedule deleted:', name); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path.startsWith('/schedules/file/')) {
+    const name = decodeURIComponent(path.slice('/schedules/file/'.length));
+    const filePath = join(SCHEDULES_DIR, name, 'prompt.md');
+    if (!existsSync(filePath)) { mkdirSync(join(SCHEDULES_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
+    if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
+    else { exec(`open "${filePath}"`); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // -- Webhooks CRUD --
   const WEBHOOKS_DIR = join(DATA_DIR, 'webhooks');
 
@@ -660,6 +717,17 @@ const server = http.createServer(async (req, res) => {
     if (!name) { res.writeHead(400); res.end('name required'); return; }
     const dir = join(WEBHOOKS_DIR, name);
     if (existsSync(dir)) { rmSync(dir, { recursive: true }); console.log('  Webhook deleted:', name); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path.startsWith('/webhooks/file/')) {
+    const name = decodeURIComponent(path.slice('/webhooks/file/'.length));
+    const filePath = join(WEBHOOKS_DIR, name, 'instructions.md');
+    if (!existsSync(filePath)) { mkdirSync(join(WEBHOOKS_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
+    if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
+    else { exec(`open "${filePath}"`); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -1038,6 +1106,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (path === '/close') {
+    windowOpen = false;
     res.writeHead(200);
     res.end();
     console.log('  Window closed');
@@ -1045,7 +1114,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (path === '/open') {
-    openAppWindow();
+    if (!windowOpen) {
+      openAppWindow();
+      windowOpen = true;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -1066,6 +1138,7 @@ server.listen(PORT, () => {
   console.log(`  http://localhost:${PORT}\n`);
   if (process.env.TRIB_SETUP_OPEN_ON_START === '1') {
     openGeneration++;
+    windowOpen = true;
     setTimeout(() => { openAppWindow(); }, 0);
   }
 });
