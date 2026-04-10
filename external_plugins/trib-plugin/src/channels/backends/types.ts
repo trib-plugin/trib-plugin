@@ -235,6 +235,8 @@ export interface PluginConfig {
   access?: AccessConfig
   /** Named channel configuration */
   channelsConfig?: ChannelsConfig
+  /** Label of the main channel (default: "main") */
+  mainChannel?: string
   /** MD file paths to inject as additional context into instructions */
   contextFiles?: string[]
   /** Spawns a separate claude -p session at the scheduled time */
@@ -243,12 +245,8 @@ export interface PluginConfig {
   interactive?: TimedSchedule[]
   /** Bot-initiated conversation based on frequency and idle guard */
   proactive?: ProactiveConfig
-  /** Directory containing prompt .md files */
-  promptsDir?: string
   /** Voice message transcription settings */
   voice?: VoiceConfig
-  /** UI / response language override (e.g. "ko", "en", "ja") */
-  language?: string
   /** Webhook receiver configuration */
   webhook?: WebhookConfig
   /** Event automation system */
@@ -307,8 +305,8 @@ export interface PluginConfig {
 export interface QuietConfig {
   /** Quiet hours for timed schedules "HH:MM-HH:MM" (e.g. "23:00-07:00") */
   schedule?: string
-  /** ISO 3166-1 alpha-2 country code for public holiday lookup (e.g. "KR") */
-  holidays?: string
+  /** Enable public holiday lookup. true = auto-detect country from OS locale, or ISO 3166-1 alpha-2 code (e.g. "KR") */
+  holidays?: string | boolean
   /** IANA timezone for date evaluation (e.g. "Asia/Seoul"). Default: system tz */
   timezone?: string
 }
@@ -456,13 +454,17 @@ export interface WebhookEndpoint {
 export interface WebhookConfig {
   enabled: boolean
   /** HTTP server port (default: 3333) */
-  port: number
+  port?: number
+  /** ngrok auth token */
+  authtoken?: string
+  /** ngrok domain */
+  domain?: string
   /** ngrok fixed domain for external access */
   ngrokDomain?: string
   /** Shared secret for HMAC-SHA256 signature verification */
   secret?: string
   /** Named webhook endpoints */
-  endpoints: Record<string, WebhookEndpoint>
+  endpoints?: Record<string, WebhookEndpoint>
   /** Batch processing interval in minutes (default: 30) */
-  batchInterval: number
+  batchInterval?: number
 }

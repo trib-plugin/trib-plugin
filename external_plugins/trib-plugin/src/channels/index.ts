@@ -394,7 +394,6 @@ const scheduler = new Scheduler(
   config.interactive ?? [],
   config.proactive,
   config.channelsConfig,
-  config.promptsDir,
   botConfig,
 )
 
@@ -730,7 +729,7 @@ function bindPersistedTranscriptIfAny(): void {
   // Fallback: auto-bind to main channel from channelsConfig
   if (!currentStatus.channelId && channelBridgeActive) {
     const chCfg = config.channelsConfig as Record<string, any> | undefined
-    const mainLabel = (config as any).mainChannel ?? 'main'
+    const mainLabel = config.mainChannel ?? 'main'
     const mainEntry = chCfg?.channels?.[mainLabel] ?? chCfg?.[mainLabel]
     const mainId = mainEntry?.channelId ?? mainEntry?.id
     if (mainId) {
@@ -1234,7 +1233,6 @@ function detectDeviceLanguage(): string {
     process.env.LC_MESSAGES,
     process.env.LANG,
     Intl.DateTimeFormat().resolvedOptions().locale,
-    config.language,
   ]
 
   for (const candidate of candidates) {

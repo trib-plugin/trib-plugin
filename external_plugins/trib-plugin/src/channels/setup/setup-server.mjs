@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { exec, spawn, spawnSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -124,8 +124,7 @@ function mergeConfig(existing, data) {
   if (data.access) config.access = data.access;
   if (data.voice) config.voice = data.voice;
   if (data.schedules) config.schedules = data.schedules;
-  if (data.autotalk) config.autotalk = data.autotalk;
-  if (data.events) config.events = data.events;
+  if (data.proactive) config.proactive = data.proactive;
   if (data.webhook) config.webhook = data.webhook;
 
   return config;
@@ -199,6 +198,51 @@ const server = http.createServer(async (req, res) => {
       writeJsonFile(BOT_PATH, { ...existingBot, ...botData });
       console.log('  Config saved: bot.json');
     }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // -- Webhooks CRUD --
+  const WEBHOOKS_DIR = join(DATA_DIR, 'webhooks');
+
+  if (req.method === 'GET' && path === '/webhooks') {
+    const result = [];
+    if (existsSync(WEBHOOKS_DIR)) {
+      for (const name of readdirSync(WEBHOOKS_DIR, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)) {
+        const cfg = readJsonFile(join(WEBHOOKS_DIR, name, 'config.json')) || {};
+        let instructions = '';
+        try { instructions = readFileSync(join(WEBHOOKS_DIR, name, 'instructions.md'), 'utf8'); } catch {}
+        result.push({ name, ...cfg, instructions });
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/webhooks') {
+    const wh = await readBody(req);
+    if (!wh.name) { res.writeHead(400); res.end('name required'); return; }
+    const dir = join(WEBHOOKS_DIR, wh.name);
+    mkdirSync(dir, { recursive: true });
+    const instructions = wh.instructions || '';
+    delete wh.instructions;
+    const name = wh.name;
+    delete wh.name;
+    writeFileSync(join(dir, 'config.json'), JSON.stringify(wh, null, 2));
+    writeFileSync(join(dir, 'instructions.md'), instructions);
+    console.log('  Webhook saved:', name);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'DELETE' && path === '/webhooks') {
+    const name = url.searchParams.get('name');
+    if (!name) { res.writeHead(400); res.end('name required'); return; }
+    const dir = join(WEBHOOKS_DIR, name);
+    if (existsSync(dir)) { rmSync(dir, { recursive: true }); console.log('  Webhook deleted:', name); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

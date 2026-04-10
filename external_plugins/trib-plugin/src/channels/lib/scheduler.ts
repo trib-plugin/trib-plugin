@@ -79,15 +79,22 @@ export class Scheduler {
     interactive: TimedSchedule[],
     proactive: ProactiveConfig | undefined,
     channelsConfig: ChannelsConfig | undefined,
-    promptsDir?: string,
     botConfig?: BotConfig,
   ) {
     this.nonInteractive = nonInteractive.filter(s => s.enabled !== false)
     this.interactive = interactive.filter(s => s.enabled !== false)
     this.proactive = proactive ?? null
     this.channelsConfig = channelsConfig ?? null
-    this.promptsDir = promptsDir ?? join(DATA_DIR, 'prompts')
-    this.holidayCountry = botConfig?.quiet?.holidays ?? null
+    this.promptsDir = join(DATA_DIR, 'prompts')
+    const hol = botConfig?.quiet?.holidays
+    if (hol === true) {
+      const locale = Intl.DateTimeFormat().resolvedOptions().locale ?? ''
+      this.holidayCountry = locale.split('-')[1] || locale.toUpperCase().slice(0, 2)
+    } else if (typeof hol === 'string' && hol) {
+      this.holidayCountry = hol
+    } else {
+      this.holidayCountry = null
+    }
     this.quietSchedule = botConfig?.quiet?.schedule ?? null
   }
 
@@ -232,7 +239,6 @@ export class Scheduler {
     interactive: TimedSchedule[],
     proactive: ProactiveConfig | undefined,
     channelsConfig: ChannelsConfig | undefined,
-    promptsDir?: string,
     botConfig?: BotConfig,
     options: { restart?: boolean } = {},
   ): void {
@@ -240,8 +246,16 @@ export class Scheduler {
     this.interactive = interactive.filter(s => s.enabled !== false)
     this.proactive = proactive ?? null
     this.channelsConfig = channelsConfig ?? null
-    this.promptsDir = promptsDir ?? join(DATA_DIR, 'prompts')
-    this.holidayCountry = botConfig?.quiet?.holidays ?? null
+    this.promptsDir = join(DATA_DIR, 'prompts')
+    const hol2 = botConfig?.quiet?.holidays
+    if (hol2 === true) {
+      const locale = Intl.DateTimeFormat().resolvedOptions().locale ?? ''
+      this.holidayCountry = locale.split('-')[1] || locale.toUpperCase().slice(0, 2)
+    } else if (typeof hol2 === 'string' && hol2) {
+      this.holidayCountry = hol2
+    } else {
+      this.holidayCountry = null
+    }
     this.quietSchedule = botConfig?.quiet?.schedule ?? null
     this.holidayChecked = ''
     this.todayIsHoliday = false

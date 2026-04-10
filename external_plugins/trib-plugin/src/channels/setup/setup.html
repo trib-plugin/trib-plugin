@@ -966,38 +966,43 @@ function addEventCard(data) {
   const card = document.createElement('div');
   card.className = 'card';
   const d = data || {};
-
   const nameVal = d.name || 'Untitled';
+  const isExisting = !!d.name;
   card.innerHTML =
     '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
       '<span class="card-title" data-f="ev-title">' + nameVal + '</span>' +
       '<div class="card-hdr-right">' +
-        '<div class="r-toggle' + (d.enabled !== false ? ' on' : '') + '" onclick="event.stopPropagation();this.classList.toggle(\'on\')" data-f="ev-enabled"></div>' +
-        '<span class="card-remove" onclick="event.stopPropagation();this.closest(\'.card\').remove()">&times;</span>' +
+        '<span class="card-remove" onclick="event.stopPropagation();deleteWebhook(this.closest(\'.card\'))">&times;</span>' +
       '</div>' +
     '</div>' +
     '<div class="card-content">' +
-      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;"></div>' +
-      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
-      '<div class="r"><span class="r-name-wide">Type</span>' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;"' + (isExisting ? ' readonly' : '') + '></div>' +
+      '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="' + (d.channel || 'main') + '" data-f="ev-channel" style="flex:1;"></div>' +
+      '<div class="r"><span class="r-name-wide">Exec</span>' +
         '<select class="r-select" data-f="ev-exec">' +
         '<option value="interactive"' + (d.exec === 'interactive' ? ' selected' : '') + '>Interactive</option>' +
         '<option value="non-interactive"' + (d.exec === 'non-interactive' || !d.exec ? ' selected' : '') + '>Non-interactive</option>' +
         '</select></div>' +
+      '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
-        '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Prompt</div>' +
-        '<textarea class="r-input" data-f="ev-execute" placeholder="Review the webhook payload and take appropriate action." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.execute || '') + '</textarea>' +
+        '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Instructions</div>' +
+        '<textarea class="r-input" data-f="ev-instructions" placeholder="Describe how to handle this webhook payload." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.instructions || '') + '</textarea>' +
       '</div>' +
     '</div>';
   list.appendChild(card);
-
-  // Sync header title with name input
   const evNameInput = card.querySelector('[data-f="ev-name"]');
   const evTitleEl = card.querySelector('[data-f="ev-title"]');
   evNameInput?.addEventListener('input', () => { evTitleEl.textContent = evNameInput.value || 'Untitled'; });
+  if (isExisting) card.classList.add('collapsed');
+}
 
-  // Collapse existing cards
-  if (d.name) card.classList.add('collapsed');
+async function deleteWebhook(card) {
+  const name = card.querySelector('[data-f="ev-name"]')?.value;
+  if (name) { await fetch('/webhooks?name=' + encodeURIComponent(name), { method: 'DELETE' }); }
+  card.remove();
+  const list = document.getElementById('event-rules');
+  const emptyEl = document.getElementById('webhook-empty');
+  if (emptyEl && !list.querySelector('.card')) emptyEl.style.display = '';
 }
 
 // -- Advanced: CLI status rendering --
@@ -1157,7 +1162,7 @@ function populateAll(cfg) {
   const bot = extraData.bot || {};
   const quiet = bot.quiet || {};
   populateQuietHours(quiet.schedule);
-  if (bot.holidays || quiet.holidays) document.getElementById('bot-holidays').classList.add('on');
+  if (quiet.holidays) document.getElementById('bot-holidays').classList.add('on');
 
   // Autotalk
   const autotalk = bot.autotalk || cfg?.autotalk || {};
@@ -1176,9 +1181,8 @@ function populateAll(cfg) {
   ];
   allSchedules.forEach(s => addScheduleCard(s));
 
-  // Events
-  const events = cfg?.events || {};
-  (events.rules || []).forEach(r => addEventCard(r));
+  // Webhooks (folder-based)
+  try { const whs = await fetch('/webhooks').then(r => r.json()); whs.forEach(w => addEventCard(w)); } catch {}
 }
 
 function populateQuietHours(schedule) {
@@ -1254,21 +1258,6 @@ function buildData() {
     });
   });
 
-  // Events
-  const eventRules = [];
-  document.querySelectorAll('#event-rules .card').forEach(card => {
-    eventRules.push({
-      name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '',
-      source: 'webhook',
-      priority: 'normal',
-      exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive',
-      channel: 'main',
-      enabled: card.querySelector('[data-f="ev-enabled"]')?.classList.contains('on') ?? true,
-      execute: card.querySelector('[data-f="ev-execute"]')?.value || '',
-      secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined,
-    });
-  });
-
   // Voice (only if installed)
   const voice = {};
   const voiceCmd = document.getElementById('voice-command');
@@ -1308,13 +1297,12 @@ function buildData() {
       freq: parseInt(document.getElementById('bot-autotalk-freq').value) || 3,
       enabled: document.getElementById('bot-autotalk-enabled').classList.contains('on'),
     },
-    events: { rules: eventRules },
     webhook,
     _bot: {
       quiet: {
         schedule: quietSchedule,
+        holidays: document.getElementById('bot-holidays').classList.contains('on'),
       },
-      holidays: document.getElementById('bot-holidays').classList.contains('on'),
       autotalk: {
         freq: parseInt(document.getElementById('bot-autotalk-freq').value) || 3,
         enabled: document.getElementById('bot-autotalk-enabled').classList.contains('on'),
@@ -1343,10 +1331,16 @@ async function savePanel() {
   const btn = activePanel?.querySelector('.save');
   warnEl.textContent = '';
 
-  const data = buildData();
-
   if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
   try {
+    // Save webhooks individually
+    const whCards = document.querySelectorAll('#event-rules .card');
+    for (const card of whCards) {
+      const wh = { name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '', channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main', exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive', secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined, instructions: card.querySelector('[data-f="ev-instructions"]')?.value || '' };
+      if (wh.name) await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) });
+    }
+    // Save config
+    const data = buildData();
     await fetch('/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

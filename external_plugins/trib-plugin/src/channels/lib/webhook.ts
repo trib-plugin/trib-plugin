@@ -79,6 +79,20 @@ function verifySignature(secret: string, rawBody: string, signatureValue: string
   }
 }
 
+// ── ngrok binary resolution ───────────────────────────────────────────
+
+function resolveNgrokBin(): string | null {
+  const isWin = process.platform === 'win32'
+  const cmd = isWin ? 'where' : 'which'
+  const target = isWin ? 'ngrok.exe' : 'ngrok'
+  try {
+    const r = spawnSync(cmd, [target], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+    const resolved = (r.stdout || '').trim().split(/\r?\n/)[0]
+    if (r.status === 0 && resolved) return resolved
+  } catch {}
+  return null
+}
+
 // ── WebhookServer ─────────────────────────────────────────────────────
 
 const NGROK_PID_FILE = join(DATA_DIR, 'ngrok.pid')
@@ -225,14 +239,13 @@ export class WebhookServer {
     // Kill any orphaned ngrok from a previous session
     this.killPreviousNgrok()
 
-    // Resolve ngrok binary path (cross-platform)
-    let ngrokBin = 'ngrok'
-    const whichCmd = process.platform === 'win32' ? 'where' : 'which'
-    try {
-      const r = spawnSync(whichCmd, ['ngrok'], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
-      const resolved = (r.stdout || '').trim().split(/\r?\n/)[0]
-      if (r.status === 0 && resolved) ngrokBin = resolved
-    } catch { /* use default */ }
+    // Resolve ngrok binary path
+    const ngrokBin = resolveNgrokBin()
+    if (!ngrokBin) {
+      logWebhook('ngrok binary not found — webhook tunnel disabled')
+      this.ngrokStarting = false
+      return
+    }
 
     // Set authtoken (array args — no injection risk)
     spawnSync(ngrokBin, ['config', 'add-authtoken', authtoken], { stdio: 'ignore', timeout: 10000, windowsHide: true })

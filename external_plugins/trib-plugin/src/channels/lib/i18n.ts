@@ -5,40 +5,17 @@
  * Fallback chain: requested lang → en → key itself.
  */
 
-import { readFileSync } from 'fs'
-import { join } from 'path'
-import { DATA_DIR } from './config.js'
-
 export type Lang = 'en' | 'ko' | 'ja' | 'zh'
 
 type I18nEntry = Partial<Record<Lang, string>>
 
-// ── Config language override ────────────────────────────────────────
-
-let configLangCache: Lang | null | undefined = undefined
-
-function getConfigLang(): Lang | null {
-  if (configLangCache !== undefined) return configLangCache
-  try {
-    const configPath = join(DATA_DIR, 'config.json')
-    const config = JSON.parse(readFileSync(configPath, 'utf8'))
-    const lang = config.language as string | undefined
-    if (lang === 'en' || lang === 'ko' || lang === 'ja' || lang === 'zh') {
-      configLangCache = lang
-      return lang
-    }
-  } catch { /* ignore */ }
-  configLangCache = null
-  return null
-}
-
-/** Resolve a Discord locale string to a supported Lang */
-export function getLang(locale: string): Lang {
-  const override = getConfigLang()
-  if (override) return override
-  if (locale === 'ko') return 'ko'
-  if (locale === 'ja') return 'ja'
-  if (locale.startsWith('zh')) return 'zh'
+/** Detect language from OS locale */
+export function getLang(): Lang {
+  const locale = Intl.DateTimeFormat().resolvedOptions().locale // e.g. "ko-KR"
+  const lang = locale.split('-')[0]
+  if (lang === 'ko') return 'ko'
+  if (lang === 'ja') return 'ja'
+  if (lang === 'zh') return 'zh'
   return 'en'
 }
 
@@ -142,7 +119,7 @@ const dict: Record<string, I18nEntry> = {
 export function t(key: string, lang: Lang | string, vars?: Record<string, string | number>): string {
   const resolved: Lang = (typeof lang === 'string' && (lang === 'en' || lang === 'ko' || lang === 'ja' || lang === 'zh'))
     ? lang
-    : getLang(lang)
+    : getLang()
   let text = dict[key]?.[resolved] ?? dict[key]?.en ?? key
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
