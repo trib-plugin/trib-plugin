@@ -67,9 +67,9 @@ import { handleSetup } from './lib/setup-handler.mjs'
 ensureDataDir()
 
 const searchArgsSchema = z.object({
-  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional(),
-  site: z.string().optional(),
-  type: z.enum(['web', 'news', 'images']).optional(),
+  keywords: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).optional().describe('Search query string or array of queries. Required for non-GitHub-read operations.'),
+  site: z.string().optional().describe('Restrict results to a specific domain (e.g. "github.com").'),
+  type: z.enum(['web', 'news', 'images']).optional().describe('Search type. Default: web.'),
   github_type: z.enum(['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls']).optional().describe('GitHub type. Search: repositories/code/issues. Read: file (read file contents), repo (repo info), issue (issue/PR detail), pulls (PR list).'),
   owner: z.string().optional().describe('GitHub owner (org or user). Required for github_type: file, repo, issue, pulls.'),
   repo: z.string().optional().describe('GitHub repository name. Required for github_type: file, repo, issue, pulls.'),
@@ -77,7 +77,7 @@ const searchArgsSchema = z.object({
   number: z.number().int().optional().describe('Issue or PR number. Required for github_type: issue.'),
   ref: z.string().optional().describe('Git ref (branch, tag, SHA). Optional for github_type: file.'),
   state: z.enum(['open', 'closed', 'all']).optional().describe('Filter state for github_type: pulls. Default: open.'),
-  maxResults: z.number().int().min(1).max(20).optional(),
+  maxResults: z.number().int().min(1).max(20).optional().describe('Maximum number of results to return (1-20).'),
 }).refine(
   data => {
     const isGithubRead = ['file', 'repo', 'issue', 'pulls'].includes(data.github_type)
@@ -94,21 +94,21 @@ const aiSearchArgsSchema = z.object({
 })
 
 const scrapeArgsSchema = z.object({
-  urls: z.array(z.string().url()).min(1),
+  urls: z.array(z.string().url()).min(1).describe('List of URLs to scrape.'),
 })
 
 const mapArgsSchema = z.object({
-  url: z.string().url(),
-  limit: z.number().int().min(1).max(200).optional(),
-  sameDomainOnly: z.boolean().optional(),
-  search: z.string().optional(),
+  url: z.string().url().describe('The page URL to discover links from.'),
+  limit: z.number().int().min(1).max(200).optional().describe('Maximum number of links to return (1-200).'),
+  sameDomainOnly: z.boolean().optional().describe('If true, only return links on the same domain.'),
+  search: z.string().optional().describe('Filter discovered links by a search term.'),
 })
 
 const crawlArgsSchema = z.object({
-  url: z.string().url(),
-  maxPages: z.number().int().min(1).max(200).optional(),
-  maxDepth: z.number().int().min(0).max(5).optional(),
-  sameDomainOnly: z.boolean().optional(),
+  url: z.string().url().describe('Starting URL to begin crawling from.'),
+  maxPages: z.number().int().min(1).max(200).optional().describe('Maximum number of pages to visit (1-200).'),
+  maxDepth: z.number().int().min(0).max(5).optional().describe('Maximum link depth to follow (0-5).'),
+  sameDomainOnly: z.boolean().optional().describe('If true, only follow links on the same domain.'),
 })
 
 const batchItemSchema = z.discriminatedUnion('action', [
@@ -424,28 +424,28 @@ const toolDefinitions = [
   {
     name: 'search',
     title: 'Search',
-    description: 'Unified search tool. Providers are auto-selected based on configured priority.',
+    description: 'Search the web using configured providers (Serper, Brave, Tavily, Perplexity, xAI). Returns ranked results with titles, URLs, and snippets. Auto-selects provider based on priority config.',
     inputSchema: buildInputSchema(searchArgsSchema),
     annotations: { title: 'Search', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: 'firecrawl_scrape',
     title: 'Scrape',
-    description: 'Fetch and extract readable content from known URLs.',
+    description: 'Fetch a single URL and extract its readable content as clean text or markdown. Use for known URLs when you need page content.',
     inputSchema: buildInputSchema(scrapeArgsSchema),
     annotations: { title: 'Scrape', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: 'firecrawl_map',
     title: 'Map',
-    description: 'Discover links from a page.',
+    description: 'Discover all links on a given page. Returns a list of URLs found. Use to explore site structure before scraping specific pages.',
     inputSchema: buildInputSchema(mapArgsSchema),
     annotations: { title: 'Map', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: 'crawl',
     title: 'Crawl',
-    description: 'Traverse links from a starting URL and collect page summaries.',
+    description: 'Crawl a website starting from a URL, following links up to a configured depth. Collects page summaries from each visited page. Not supported in batch mode.',
     inputSchema: buildInputSchema(crawlArgsSchema),
     annotations: { title: 'Crawl', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },

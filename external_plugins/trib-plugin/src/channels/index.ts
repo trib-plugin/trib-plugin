@@ -1421,8 +1421,8 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        chat_id: { type: 'string' },
-        text: { type: 'string' },
+        chat_id: { type: 'string', description: 'Channel ID where the message will be sent' },
+        text: { type: 'string', description: 'Message text content (markdown supported)' },
         reply_to: {
           type: 'string',
           description: 'Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch.',
@@ -1454,9 +1454,9 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        chat_id: { type: 'string' },
-        message_id: { type: 'string' },
-        emoji: { type: 'string' },
+        chat_id: { type: 'string', description: 'Channel ID containing the message' },
+        message_id: { type: 'string', description: 'ID of the message to react to' },
+        emoji: { type: 'string', description: 'Unicode emoji (e.g. "\ud83d\udc4d") or custom emoji in <:name:id> format' },
       },
       required: ['chat_id', 'message_id', 'emoji'],
     },
@@ -1469,9 +1469,9 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        chat_id: { type: 'string' },
-        message_id: { type: 'string' },
-        text: { type: 'string' },
+        chat_id: { type: 'string', description: 'Channel ID containing the message' },
+        message_id: { type: 'string', description: 'ID of the bot message to edit' },
+        text: { type: 'string', description: 'New message text content' },
         embeds: {
           type: 'array',
           items: { type: 'object' },
@@ -1494,8 +1494,8 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        chat_id: { type: 'string' },
-        message_id: { type: 'string' },
+        chat_id: { type: 'string', description: 'Channel ID containing the message' },
+        message_id: { type: 'string', description: 'ID of the message with attachments' },
       },
       required: ['chat_id', 'message_id'],
     },
@@ -1508,7 +1508,7 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        channel: { type: 'string' },
+        channel: { type: 'string', description: 'Channel name label (e.g. "main", "general") as configured in channelsConfig' },
         limit: {
           type: 'number',
           description: 'Max messages (default 20, capped at 100).',
