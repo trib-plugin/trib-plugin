@@ -1,112 +1,202 @@
 #!/usr/bin/env node
 /**
- * MCP server entry point — fast handshake + lazy bundle load + single-instance lock.
+ * MCP server entry point for trib-plugin.
  *
- * Flow:
- * 1. Kill previous instance via lockfile (prevent zombies)
- * 2. MCP handshake immediately (SDK only, no heavy imports)
- * 3. On first tool request → load server.bundle.mjs
- * 4. Wire up 24 tools via setup()
+ * Handles Claude Code's aggressive process lifecycle:
+ * - Returns cached tools instantly in ListTools (no blocking)
+ * - Lazy-loads bundle on first CallTool
+ * - Kills previous process instance to prevent zombies
+ * - Maintains process after stdin closes (120s grace period)
  */
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, appendFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { spawnSync } from 'child_process'
 
+// ── Paths ──
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA ?? join(PLUGIN_ROOT, '.data')
 mkdirSync(PLUGIN_DATA, { recursive: true })
 
-// ── Single-instance lock ──
-const lockFile = join(PLUGIN_DATA, 'mcp.lock')
-try {
-  const oldPid = parseInt(readFileSync(lockFile, 'utf8'), 10)
-  if (oldPid && oldPid !== process.pid) {
-    try {
-      process.kill(oldPid, 0)
-      if (process.platform === 'win32') {
-        spawnSync('taskkill', ['/PID', String(oldPid), '/F'], { stdio: 'pipe', timeout: 3000, shell: true })
-      } else {
-        process.kill(oldPid, 'SIGTERM')
-      }
-    } catch {}
-  }
-} catch {}
-writeFileSync(lockFile, String(process.pid))
-process.on('exit', () => { try { unlinkSync(lockFile) } catch {} })
+const LOG_FILE = join(PLUGIN_DATA, 'mcp-debug.log')
+const LOCK_FILE = join(PLUGIN_DATA, 'mcp.lock')
+const CACHE_FILE = join(PLUGIN_DATA, 'tools-cache.json')
 
-// ── Fast MCP handshake ──
+// ── Logging ──
+function log(msg) {
+  try {
+    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`)
+  } catch {}
+}
+
+// ── Singleton lock: kill previous instance ──
+function acquireLock() {
+  try {
+    const prevPid = parseInt(readFileSync(LOCK_FILE, 'utf8'), 10)
+    if (prevPid && prevPid !== process.pid) {
+      try {
+        process.kill(prevPid, 0)
+        // Process exists, kill it
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/PID', String(prevPid), '/F'], {
+            stdio: 'pipe',
+            timeout: 3000,
+            shell: true,
+          })
+        } else {
+          process.kill(prevPid, 'SIGTERM')
+        }
+      } catch {}
+    }
+  } catch {}
+  writeFileSync(LOCK_FILE, String(process.pid))
+}
+
+acquireLock()
+
+// ── Cleanup on exit ──
+process.on('exit', () => {
+  try {
+    unlinkSync(LOCK_FILE)
+  } catch {}
+})
+
+// ── Tool cache ──
+let cachedTools = null
+try {
+  cachedTools = JSON.parse(readFileSync(CACHE_FILE, 'utf8'))
+} catch {}
+
+// ── Env flags ──
 globalThis.__tribFastEntry = true
 process.env.TRIB_UNIFIED = '1'
 
-function readPluginVersion() {
+// ── Plugin version ──
+function getPluginVersion() {
   try {
-    return JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version || '0.0.1'
-  } catch { return '0.0.1' }
+    return JSON.parse(
+      readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')
+    ).version || '0.0.1'
+  } catch {
+    return '0.0.1'
+  }
 }
 
+// ── MCP server setup ──
 const server = new Server(
-  { name: 'trib-plugin', version: readPluginVersion() },
+  { name: 'trib-plugin', version: getPluginVersion() },
   {
     capabilities: {
       tools: {},
-      experimental: { 'claude/channel': {}, 'claude/channel/permission': {} },
+      experimental: {
+        'claude/channel': {},
+        'claude/channel/permission': {},
+      },
     },
     instructions: '',
-  },
+  }
 )
 
+let bundleReady = false
 let resolveReady
-const ready = new Promise(r => { resolveReady = r })
+const ready = new Promise(r => {
+  resolveReady = r
+})
 
+// ── ListTools: return cached tools instantly ──
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  await ensureBundleLoaded()
-  await ready
-  return { tools: globalThis.__tribTools || [] }
+  const tools = bundleReady ? globalThis.__tribTools || cachedTools || [] : cachedTools || []
+  return { tools }
 })
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  await ensureBundleLoaded()
-  await ready
+// ── CallTool: lazy-load bundle, retry until ready ──
+const CALL_TOOL_TIMEOUT = 30_000
+server.setRequestHandler(CallToolRequestSchema, async req => {
+  try {
+    // Start loading if not already started
+    loadBundle().catch(e => log(`setup error: ${e.stack || e}`))
+
+    // Wait for bundle to load
+    await Promise.race([loadBundle(), new Promise((_, r) => setTimeout(() => r(new Error('timeout')), CALL_TOOL_TIMEOUT))])
+
+    // Wait for setup to complete
+    await Promise.race([ready, new Promise((_, r) => setTimeout(() => r(new Error('timeout')), CALL_TOOL_TIMEOUT))])
+  } catch {
+    return {
+      content: [{ type: 'text', text: 'Server initializing — please retry.' }],
+      isError: true,
+    }
+  }
+
   const handler = globalThis.__tribHandleToolCall
-  if (!handler) return { content: [{ type: 'text', text: 'Server still initializing' }], isError: true }
-  return handler(request, server)
+  if (!handler) {
+    return {
+      content: [{ type: 'text', text: 'Handler unavailable.' }],
+      isError: true,
+    }
+  }
+
+  return handler(req, server)
 })
 
+// ── Connect MCP transport ──
 const transport = new StdioServerTransport()
 await server.connect(transport)
-process.stderr.write(`[trib-plugin] MCP handshake done\n`)
+log(`start pid=${process.pid} cached=${cachedTools?.length ?? 0}`)
 
-// ── Lazy bundle load ──
+// ── Bundle loader ──
 const bundlePath = join(PLUGIN_ROOT, 'server.bundle.mjs')
-let loadingBundle = null
+let loadingPromise = null
 
-async function ensureBundleLoaded() {
-  if (loadingBundle) return loadingBundle
-  loadingBundle = (async () => {
-    process.stderr.write(`[trib-plugin] loading modules...\n`)
-    const mod = await import(pathToFileURL(bundlePath).href)
-    if (mod.setup) { await mod.setup(server, resolveReady) }
-    else { process.stderr.write(`[trib-plugin] ERROR: bundle has no setup()\n`); process.exit(1) }
-  })()
-  return loadingBundle
+function loadBundle() {
+  if (loadingPromise) return loadingPromise
+  if (bundleReady) return Promise.resolve()
+
+  return (loadingPromise = (async () => {
+    const bundleUrl = pathToFileURL(bundlePath).href
+    const mod = await import(bundleUrl)
+    if (!mod.setup) {
+      log('setup function not exported')
+      process.exit(1)
+    }
+
+    await mod.setup(server, resolveReady)
+    bundleReady = true
+
+    // Update cache
+    try {
+      writeFileSync(CACHE_FILE, JSON.stringify(globalThis.__tribTools || []))
+    } catch {}
+
+    log(`ready ${(globalThis.__tribTools || []).length} tools`)
+  })())
 }
 
-// ── Shutdown ──
+// Start loading eagerly in background
+loadBundle().catch(e => log(`setup error: ${e.stack || e}`))
+
+// ── Shutdown handling ──
 let isShuttingDown = false
-async function shutdown(reason) {
+
+function shutdown(reason) {
   if (isShuttingDown) return
   isShuttingDown = true
-  try { process.stderr.write(`[trib-plugin] ${reason}\n`) } catch {}
-  if (globalThis.__tribShutdown) { try { await globalThis.__tribShutdown() } catch {} }
-  process.exit(0)
+  log(`shutdown: ${reason}`)
+  setTimeout(() => process.exit(0), 3000)
+
+  const fn = globalThis.__tribShutdown
+  if (fn) fn().catch(() => {}).finally(() => process.exit(0))
+  else process.exit(0)
 }
 
-server.onclose = () => { void shutdown('transport closed') }
-process.stdin.on('end', () => { void shutdown('stdin ended') })
-process.stdout.on('error', (err) => { if (err.code === 'EPIPE') void shutdown('stdout EPIPE') })
-process.on('SIGTERM', () => { void shutdown('SIGTERM') })
-process.on('SIGINT', () => { void shutdown('SIGINT') })
+server.onclose = () => shutdown('transport closed')
+process.stdin.on('end', () => setTimeout(() => shutdown('stdin idle'), 120_000))
+process.stdout.on('error', e => {
+  if (e.code === 'EPIPE') shutdown('EPIPE')
+})
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
