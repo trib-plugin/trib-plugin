@@ -107,7 +107,7 @@ function migrateMcpToolsFile(configPath) {
     }
 }
 function getConfigPath() {
-    return join(getPluginData(), 'config.json');
+    return join(getPluginData(), 'agent-config.json');
 }
 export function loadConfig() {
     const configPath = getConfigPath();

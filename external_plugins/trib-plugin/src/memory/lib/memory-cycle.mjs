@@ -422,10 +422,16 @@ async function refreshEmbeddings(ws, options = {}) {
 }
 
 export function readMainConfig() {
+  // Try memory-config.json first (dedicated memory settings)
+  const memoryConfigPath = join(PLUGIN_DATA_DIR, 'memory-config.json')
+  try {
+    const raw = JSON.parse(readFileSync(memoryConfigPath, 'utf8'))
+    if (raw.enabled !== undefined || raw.cycle1 || raw.cycle2) return raw
+  } catch { }
+  // Fall back to config.json (legacy unified format)
   const mainConfigPath = join(PLUGIN_DATA_DIR, 'config.json')
   try {
     const raw = JSON.parse(readFileSync(mainConfigPath, 'utf8'))
-    // If config has a 'memory' section, use it (unified config format)
     if (raw.memory && (raw.memory.cycle1 || raw.memory.enabled !== undefined)) return raw.memory
     return raw
   } catch { return {} }
@@ -832,7 +838,7 @@ function resolveApiKey(provider) {
   if (envKey && process.env[envKey]) return process.env[envKey]
   // Try reading from trib-agent config file (no HTTP dependency)
   try {
-    const agentConfigPath = join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin', 'config.json')
+    const agentConfigPath = join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin', 'agent-config.json')
     const agentConfig = JSON.parse(readFileSync(agentConfigPath, 'utf8'))
     return agentConfig?.providers?.[provider]?.apiKey || null
   } catch { return null }

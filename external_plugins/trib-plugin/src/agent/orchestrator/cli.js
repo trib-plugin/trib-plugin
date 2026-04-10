@@ -92,7 +92,13 @@ async function cmdAsk(args) {
         positional.push(a);
     }
 
-    const prompt = positional.join(' ').trim();
+    let prompt = positional.join(' ').trim();
+    if (!prompt && !process.stdin.isTTY) {
+        // Read from stdin when no CLI argument provided
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        prompt = Buffer.concat(chunks).toString('utf8').trim();
+    }
     if (!prompt) {
         process.stderr.write('Usage: ask [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n');
         process.exit(1);

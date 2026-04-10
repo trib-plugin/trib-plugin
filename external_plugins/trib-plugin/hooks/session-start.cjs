@@ -9,11 +9,12 @@
  *   2. memory.md     (when memory-config.json has enabled)
  *   3. channels.md   (when channel backend configured)
  *   4. search.md     (when search-config.json has enabled)
- *   5. context.md    (auto-generated core memory snapshot)
- *   6. user.md       (user profile)
- *   7. bot.md        (bot persona)
- *   8. user name     (from memory-config.json user.name)
- *   9. user title    (from memory-config.json user.title)
+ *   5. agent.md      (always)
+ *   6. context.md    (auto-generated core memory snapshot)
+ *   7. user.md       (user profile)
+ *   8. bot.md        (bot persona)
+ *   9. user name     (from memory-config.json user.name)
+ *  10. user title    (from memory-config.json user.title)
  */
 
 const fs = require('fs');
@@ -75,19 +76,23 @@ if (searchConfig.enabled) {
   if (search) parts.push(search);
 }
 
-// --- 5. Context (auto-generated core memory snapshot) ---
+// --- 5. Agent (always) ---
+const agent = readOptional(path.join(RULES_DIR, 'agent.md'));
+if (agent) parts.push(agent);
+
+// --- 6. Context (auto-generated core memory snapshot) ---
 const contextContent = readOptional(path.join(HISTORY_DIR, 'context.md'));
 if (contextContent) parts.push(contextContent);
 
-// --- 6. User profile ---
+// --- 7. User profile ---
 const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
 if (userProfileContent) parts.push(userProfileContent);
 
-// --- 7. Bot persona ---
+// --- 8. Bot persona ---
 const botContent = readOptional(path.join(HISTORY_DIR, 'bot.md'));
 if (botContent) parts.push(botContent);
 
-// --- 8-9. User name & title (from memory-config.json) ---
+// --- 9-10. User name & title (from memory-config.json) ---
 const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
 const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
 if (userName) {

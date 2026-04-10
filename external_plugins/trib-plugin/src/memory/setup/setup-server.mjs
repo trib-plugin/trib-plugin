@@ -12,7 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
 const DATA_DIR = join(home, '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
-const CONFIG_PATH = join(DATA_DIR, 'config.json');
+const CONFIG_PATH = join(DATA_DIR, 'memory-config.json');
 const FILES_DIR = join(DATA_DIR, 'history');
 const DB_PATH = join(DATA_DIR, 'memory.sqlite');
 const PORT = 3457;
@@ -56,7 +56,7 @@ const STATIC_MODELS = {
 };
 
 function getAgentConfig() {
-  try { return JSON.parse(readFileSync(join(AGENT_DATA_DIR, 'config.json'), 'utf8')); }
+  try { return JSON.parse(readFileSync(join(AGENT_DATA_DIR, 'agent-config.json'), 'utf8')); }
   catch { return {}; }
 }
 
