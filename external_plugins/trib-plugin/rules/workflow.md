@@ -2,7 +2,7 @@
 
 Every task starts with /plan.
 
-/plan → /execute → /verify → /ship → /retro
+/plan → /execute → /verify → /test → /ship → /retro
 
 ## Non-negotiable
 1. /plan before any work — always.

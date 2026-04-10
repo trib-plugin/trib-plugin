@@ -1270,6 +1270,10 @@ function _startHttpServer() {
       if (err.code === 'EADDRINUSE' && activePort < MAX_PORT) {
         activePort++
         tryListen()
+      } else if (err.code === 'EADDRINUSE') {
+        process.stderr.write(`[memory-service] ports ${BASE_PORT}-${MAX_PORT} all busy, using OS-assigned port\n`)
+        activePort = 0
+        tryListen()
       } else {
         process.stderr.write(`[memory-service] HTTP fatal: ${err.message}\n`)
         reject(err)
