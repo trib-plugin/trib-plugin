@@ -110,12 +110,14 @@ export class EventPipeline {
     prompt: string,
     channel: string,
     exec: 'interactive' | 'non-interactive' = 'interactive',
+    instruction?: string,
   ): void {
     const item: QueueItem = {
       name,
       source: 'webhook',
       priority: 'normal',
       prompt,
+      instruction,
       exec,
       channel,
       timestamp: Date.now(),

@@ -2360,22 +2360,23 @@ var init_webhook = __esm({
             }
             const payload = JSON.stringify(body, null, 2);
             const headersSummary = Object.entries(headers).filter(([k]) => k.startsWith("x-") || k === "content-type").map(([k, v]) => `${k}: ${v}`).join("\n");
-            const prompt = `${instructions}
-
---- Webhook Headers ---
+            const payloadContent = `--- Webhook Headers ---
 ${headersSummary}
 
 --- Webhook Payload ---
 ${payload}`;
+            const fullPrompt = `${instructions}
+
+${payloadContent}`;
             if (analyze && existsSync4(DELEGATE_CLI2)) {
-              this.delegateAnalysis(name, prompt, model, channel, exec);
+              this.delegateAnalysis(name, fullPrompt, model, channel, exec);
               logWebhook(`${name}: folder-based \u2192 delegate (${model})`);
               res.writeHead(200, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ status: "accepted", handler: "delegate" }));
               return;
             }
             if (this.eventPipeline) {
-              this.eventPipeline.enqueueDirect(name, prompt, channel, exec);
+              this.eventPipeline.enqueueDirect(name, payloadContent, channel, exec, instructions);
               logWebhook(`${name}: folder-based \u2192 enqueued (${exec})`);
             }
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -2614,7 +2615,13 @@ ${it.prompt}`).join("\n\n")}`;
         if (item.exec === "interactive") {
           if (this.injectFn) {
             const opts = { type: item.source === "webhook" ? "webhook" : "event" };
-            this.injectFn("", `event:${item.name}`, item.prompt, opts);
+            if (item.instruction) {
+              opts.instruction = item.instruction;
+              this.injectFn("", `event:${item.name}`, item.prompt, opts);
+            } else {
+              opts.instruction = item.prompt;
+              this.injectFn("", `event:${item.name}`, " ", opts);
+            }
           }
           if (file) this.moveToProcessed(file, "injected");
           return;
@@ -2796,12 +2803,13 @@ var init_event_pipeline = __esm({
         }
       }
       // ── Direct enqueue (folder-based webhooks) ─────────────────────────
-      enqueueDirect(name, prompt, channel, exec = "interactive") {
+      enqueueDirect(name, prompt, channel, exec = "interactive", instruction) {
         const item = {
           name,
           source: "webhook",
           priority: "normal",
           prompt,
+          instruction,
           exec,
           channel,
           timestamp: Date.now()

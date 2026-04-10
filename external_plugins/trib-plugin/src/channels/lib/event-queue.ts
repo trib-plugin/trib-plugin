@@ -26,6 +26,7 @@ export interface QueueItem {
   source: string
   priority: 'high' | 'normal' | 'low'
   prompt: string
+  instruction?: string
   exec: 'interactive' | 'non-interactive' | 'script'
   channel: string
   script?: string
@@ -190,9 +191,16 @@ export class EventQueue {
   private executeItem(item: QueueItem, file: string | null): void {
     if (item.exec === 'interactive') {
       if (this.injectFn) {
-        // Use instruction meta: content visible, instruction hidden
         const opts: InjectOptions = { type: item.source === 'webhook' ? 'webhook' : 'event' }
-        this.injectFn('', `event:${item.name}`, item.prompt, opts)
+        if (item.instruction) {
+          // Instructions hidden in meta, payload visible as content
+          opts.instruction = item.instruction
+          this.injectFn('', `event:${item.name}`, item.prompt, opts)
+        } else {
+          // Legacy: entire prompt as instruction (hidden), content empty
+          opts.instruction = item.prompt
+          this.injectFn('', `event:${item.name}`, ' ', opts)
+        }
       }
       // Move to processed after inject — do not re-inject
       if (file) this.moveToProcessed(file, 'injected')

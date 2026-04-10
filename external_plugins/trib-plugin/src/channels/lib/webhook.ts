@@ -397,20 +397,21 @@ export class WebhookServer {
           .map(([k, v]) => `${k}: ${v}`)
           .join('\n')
 
-        const prompt = `${instructions}\n\n--- Webhook Headers ---\n${headersSummary}\n\n--- Webhook Payload ---\n${payload}`
+        const payloadContent = `--- Webhook Headers ---\n${headersSummary}\n\n--- Webhook Payload ---\n${payload}`
+        const fullPrompt = `${instructions}\n\n${payloadContent}`
 
         // Analyze enabled → delegate-cli for background analysis
         if (analyze && existsSync(DELEGATE_CLI)) {
-          this.delegateAnalysis(name, prompt, model, channel, exec)
+          this.delegateAnalysis(name, fullPrompt, model, channel, exec)
           logWebhook(`${name}: folder-based → delegate (${model})`)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ status: 'accepted', handler: 'delegate' }))
           return
         }
 
-        // No model → raw inject
+        // No model → raw inject (instructions hidden, payload visible)
         if (this.eventPipeline) {
-          this.eventPipeline.enqueueDirect(name, prompt, channel, exec)
+          this.eventPipeline.enqueueDirect(name, payloadContent, channel, exec, instructions)
           logWebhook(`${name}: folder-based → enqueued (${exec})`)
         }
 
