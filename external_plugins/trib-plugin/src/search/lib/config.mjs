@@ -10,7 +10,7 @@ export const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(curren
 const SEARCH_DATA_DIR = path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin')
 export const DATA_DIR = fs.existsSync(SEARCH_DATA_DIR) ? SEARCH_DATA_DIR
   : (process.env.CLAUDE_PLUGIN_DATA || path.join(PLUGIN_ROOT, '.trib-search-data'))
-export const CONFIG_PATH = path.join(DATA_DIR, 'config.json')
+export const CONFIG_PATH = path.join(DATA_DIR, 'search-config.json')
 export const USAGE_PATH = path.join(DATA_DIR, 'usage.local.json')
 export const CACHE_PATH = path.join(DATA_DIR, 'cache.local.json')
 export const CLI_HOME_DIR = path.join(DATA_DIR, 'cli-home')

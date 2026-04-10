@@ -489,6 +489,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 async function handleToolCall(name, rawArgs) {
   const config = loadConfig()
+  Object.assign(process.env, buildRuntimeEnv(config))
   const usageState = loadUsageState()
   const cacheState = loadCacheState()
   const timeoutMs = getRequestTimeoutMs(config)

@@ -1,6 +1,7 @@
-# 메모리
+# Memory
 
-- 과거 맥락 참조 시 `search_memories` 사용.
-- 최근 대화는 `period: "last"` 우선.
-- 저장은 자동. 검색만 수동.
-- MEMORY.md에 쓰거나 sqlite 직접 접근 금지.
+- Use search_memories for past context retrieval.
+- Recent conversations: period "last" first.
+- Storage is automatic. Only retrieval is manual.
+- Never write to MEMORY.md or access sqlite directly.
+- When user explicitly asks to remember something → memory_cycle with action "remember", topic, and element.

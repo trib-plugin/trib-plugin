@@ -856,6 +856,41 @@ async function handleCycle(args) {
     const c1result = await runCycle1(ws, config, { force: true })
     return { text: `Backfill: ${created} candidates created from ${uncovered.length} episodes. Cycle1: ${JSON.stringify(c1result)}` }
   }
+  if (action === 'remember') {
+    const topic = String(args.topic ?? '').trim()
+    const element = String(args.element ?? '').trim()
+    if (!topic || !element) {
+      return { text: 'remember requires topic and element', isError: true }
+    }
+    const ts = new Date().toISOString()
+    const dayKey = ts.slice(0, 10)
+    const importance = String(args.importance ?? 'fact')
+
+    // 1. Create episode
+    const epResult = store.db.prepare(`
+      INSERT INTO episodes (ts, day_key, kind, role, content)
+      VALUES (?, ?, 'message', 'user', ?)
+    `).run(ts, dayKey, `[user_inject] ${topic}: ${element}`)
+    const episodeId = epResult.lastInsertRowid
+
+    // 2. Create classification
+    const clsResult = store.db.prepare(`
+      INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, confidence, importance, status)
+      VALUES (?, ?, ?, 'fact', ?, ?, 'user_inject', 1.0, ?, 'active')
+    `).run(episodeId, ts, dayKey, topic, element, importance)
+    const classificationId = clsResult.lastInsertRowid
+
+    // 3. Insert into core_memory
+    store.db.prepare(`
+      INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
+      VALUES (?, ?, ?, ?, 1.0, ?, ?, 'active')
+      ON CONFLICT(classification_id) DO UPDATE SET
+        topic = excluded.topic, element = excluded.element,
+        importance = excluded.importance, last_seen_at = excluded.last_seen_at, status = 'active'
+    `).run(classificationId, topic, element, importance, ts, ts)
+
+    return { text: `Remembered: [${topic}] ${element}` }
+  }
   return { text: `unknown memory action: ${action}`, isError: true }
 }
 
@@ -879,7 +914,10 @@ const TOOL_DEFS = [
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status'], description: 'Memory operation to run' },
+        action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status', 'remember'], description: 'Memory operation to run. remember: inject into core memory.' },
+        topic: { type: 'string', description: 'Topic for remember action (e.g. "user preference", "project rule")' },
+        element: { type: 'string', description: 'Content for remember action (e.g. "prefers dark mode")' },
+        importance: { type: 'string', description: 'Importance level for remember action (default: fact)' },
         maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
         window: { type: 'string', description: 'Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
