@@ -181,7 +181,7 @@ async function connectServer(name, cfg) {
             env: {
                 ...process.env,
                 CLAUDE_PLUGIN_ROOT: resolved.dir,
-                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', `${cfg.pluginCache}-trib-plugin`),
+                CLAUDE_PLUGIN_DATA: join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin'),
             },
         });
         process.stderr.write(`[mcp-client] Connecting "${name}" via ${resolved.source}\n`);

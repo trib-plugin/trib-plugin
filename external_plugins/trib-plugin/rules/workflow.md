@@ -1,12 +1,3 @@
----
-name: workflow
-user-invocable: false
-description: >
-  WHEN: Any task that requires action — edit, fix, refactor, investigate, research, explore, search, setup, deploy, review, compare, analyze.
-  Includes casual requests: "check this", "fix it", "try it", "look into this".
-  MUST invoke BEFORE any work or exploration.
----
-
 ## Phases
 
 ### Phase 1: Research & Planning

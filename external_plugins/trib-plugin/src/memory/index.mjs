@@ -73,7 +73,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || (() => {
     // Fallback: find plugin data dir by convention
     const candidates = [
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-memory-trib-plugin'),
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin'),
     ]
     for (const c of candidates) {
       if (fs.existsSync(path.join(c, 'memory.sqlite'))) return c

@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isWin = process.platform === 'win32';
 const home = homedir();
-const DATA_DIR = join(home, '.claude', 'plugins', 'data', 'trib-memory-trib-plugin');
+const DATA_DIR = join(home, '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const FILES_DIR = join(DATA_DIR, 'history');
 const DB_PATH = join(DATA_DIR, 'memory.sqlite');
@@ -26,7 +26,7 @@ const NATIVE_MODELS = [
   { id: 'native/haiku', label: 'Claude Haiku (Native)' },
 ];
 
-const AGENT_DATA_DIR = join(home, '.claude', 'plugins', 'data', 'trib-agent-trib-plugin');
+const AGENT_DATA_DIR = join(home, '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
 
 const STATIC_MODELS = {
   anthropic: [

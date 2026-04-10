@@ -14,8 +14,7 @@ import { cosineSimilarity as cosineSimilarityShared, hashEmbeddingInput } from '
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
   const candidates = [
-    join(homedir(), '.claude', 'plugins', 'data', 'trib-memory-trib-plugin'),
-    join(homedir(), '.claude', 'plugins', 'data', 'trib-memory-trib-memory'),
+    join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin'),
   ]
   for (const c of candidates) {
     if (existsSync(join(c, 'memory.sqlite'))) return c
@@ -833,7 +832,7 @@ function resolveApiKey(provider) {
   if (envKey && process.env[envKey]) return process.env[envKey]
   // Try reading from trib-agent config file (no HTTP dependency)
   try {
-    const agentConfigPath = join(homedir(), '.claude', 'plugins', 'data', 'trib-agent-trib-plugin', 'config.json')
+    const agentConfigPath = join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin', 'config.json')
     const agentConfig = JSON.parse(readFileSync(agentConfigPath, 'utf8'))
     return agentConfig?.providers?.[provider]?.apiKey || null
   } catch { return null }

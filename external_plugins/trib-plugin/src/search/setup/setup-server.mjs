@@ -12,7 +12,7 @@ const isWin = process.platform === 'win32';
 const home = homedir();
 const pluginsData = join(home, '.claude', 'plugins', 'data');
 
-const CONFIG_PATH = join(pluginsData, 'trib-search-trib-plugin', 'config.json');
+const CONFIG_PATH = join(pluginsData, 'trib-plugin-trib-plugin', 'config.json');
 const PORT = 3456;
 const APP_WIDTH = 750;
 const APP_HEIGHT = 850;

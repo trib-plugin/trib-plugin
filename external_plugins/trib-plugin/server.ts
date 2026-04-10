@@ -11,7 +11,6 @@ import { join, dirname } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import {
   TOOL_DEFS as CHANNELS_TOOLS,
-  instructions as channelsInstructions,
   init as channelsInit,
   handleToolCall as channelsHandleToolCall,
   start as channelsStart,
@@ -43,7 +42,6 @@ const PLUGIN_VERSION = readPluginVersion()
 const searchModulePath = pathToFileURL(join(PLUGIN_ROOT, 'src/search/index.mjs')).href
 const {
   TOOL_DEFS: SEARCH_TOOLS,
-  instructions: searchInstructions,
   handleToolCall: searchHandleToolCall,
   start: searchStart,
   stop: searchStop,
@@ -52,7 +50,6 @@ const {
 const agentModulePath = pathToFileURL(join(PLUGIN_ROOT, 'src/agent/index.mjs')).href
 const {
   TOOL_DEFS: AGENT_TOOLS,
-  instructions: agentInstructions,
   init: agentInit,
   handleToolCall: agentHandleToolCall,
   start: agentStart,
@@ -62,7 +59,6 @@ const {
 const memoryModulePath = pathToFileURL(join(PLUGIN_ROOT, 'src/memory/index.mjs')).href
 const {
   TOOL_DEFS: MEMORY_TOOLS,
-  instructions: memoryInstructions,
   init: memoryInit,
   handleToolCall: memoryHandleToolCall,
   start: memoryStart,
@@ -94,17 +90,8 @@ function routeToolCall(name: string): string | null {
 // ── Instructions merge ─────────────────────────────────────────────────
 
 // Behavioral rules moved to SessionStart hook (higher priority).
-// MCP instructions: only notification handling + compact schedule guide.
-const UNIFIED_INSTRUCTIONS = [
-  channelsInstructions,
-  '',
-  '# Schedule Behavior Guide',
-  'A schedule is a "conversation", not a "report". Act like a colleague, not a bot.',
-  'execute mode (idle): start immediately. ask-first mode (active): suggest transition naturally.',
-  'Rejection: defer 30min or skip_today via schedule_control. Never push.',
-  'Never expose <schedule-context> tags or say "schedule", "periodic report".',
-  'Reply tool: only for files, embeds, components. Not for plain text.',
-].filter(Boolean).join('\n')
+// MCP instructions now provided by channels index.ts directly.
+const UNIFIED_INSTRUCTIONS = ''
 
 // ── MCP Server ─────────────────────────────────────────────────────────
 

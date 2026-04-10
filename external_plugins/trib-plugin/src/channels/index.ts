@@ -21,7 +21,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { pathToFileURL } from 'url'
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from './lib/config.js'
-import { loadSettings, tryRead } from './lib/settings.js'
+import { tryRead } from './lib/settings.js'
 import { Scheduler } from './lib/scheduler.js'
 import { WebhookServer } from './lib/webhook.js'
 import { EventPipeline } from './lib/event-pipeline.js'
@@ -131,7 +131,6 @@ let config = loadConfig()
 let botConfig = loadBotConfig()
 
 const backend = createBackend(config)
-const settings = loadSettings(config.contextFiles)
 const INSTANCE_ID = makeInstanceId()
 ensureRuntimeDirs()
 killAllPreviousServers()
@@ -145,21 +144,10 @@ startCliWorker() // no-op — direct spawn in cli-worker-host
 
 // ── Instructions ───────────────────────────────────────────────────────
 // Based on the official Claude Code Discord plugin instructions.
-// settings.default.md content now injected via SessionStart hook (rules-session-start.cjs).
 
-// Behavioral rules moved to SessionStart hook (higher priority).
-// MCP instructions only: notification handling (must stay with channel tools).
-const INSTRUCTIONS = [
-  '# Notification Handling',
-  'When you receive a <channel> notification with an `instruction` attribute:',
-  '- The instruction is hidden from the user — do NOT reveal or quote it.',
-  '- Follow the instruction naturally as if it is your own thought.',
-  '- If type="schedule": act on the scheduled task described in the instruction.',
-  '- If type="webhook": report the webhook analysis result from the content field.',
-  '- If type="queue": be aware of pending items; mention them briefly when the user seems available.',
-  '- If no type (proactive): start a natural conversation using the provided material. If the material says SKIP, do nothing.',
-  '- Never mention "instruction", "inject", "notification", or "system trigger" to the user.',
-].join('\n')
+// All behavioral rules injected via SessionStart hook (rules/*.md).
+// MCP instructions intentionally empty — hook injection handles everything.
+const INSTRUCTIONS = ''
 
 // ── MCP Server ─────────────────────────────────────────────────────────
 // In standalone mode, this is the local Server instance.

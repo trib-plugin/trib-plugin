@@ -7,7 +7,7 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url))
 export const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(currentDir, '..')
 
 // Unified mode: search uses its own data dir, not the shared CLAUDE_PLUGIN_DATA
-const SEARCH_DATA_DIR = path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-search-trib-plugin')
+const SEARCH_DATA_DIR = path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin')
 export const DATA_DIR = fs.existsSync(SEARCH_DATA_DIR) ? SEARCH_DATA_DIR
   : (process.env.CLAUDE_PLUGIN_DATA || path.join(PLUGIN_ROOT, '.trib-search-data'))
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.json')
