@@ -440,7 +440,7 @@ var init_discord = __esm({
         }
         const access = this.loadAccess();
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT));
-        const replyMode = access.replyToMode ?? "first";
+        const replyMode = access.replyToMode ?? "off";
         const chunks = chunk(text, limit);
         const sentIds = [];
         try {
@@ -2433,38 +2433,10 @@ function writeTextFile(filePath, value) {
   writeFileSync6(filePath, value);
 }
 function writeJsonFile(filePath, value) {
-  const json = JSON.stringify(value);
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = filePath + ".tmp";
   ensureDir(dirname2(filePath));
-  writeFileSync6(tmpPath, json);
-  try {
-    renameSync2(tmpPath, filePath);
-    return;
-  } catch (err) {
-    const code = err.code;
-    const isReplaceIssue = code === "EPERM" || code === "EEXIST" || code === "EBUSY";
-    if (!isReplaceIssue) {
-      try {
-        unlinkSync3(tmpPath);
-      } catch {
-      }
-      throw err;
-    }
-  }
-  try {
-    unlinkSync3(filePath);
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-  }
-  try {
-    renameSync2(tmpPath, filePath);
-  } catch {
-    writeFileSync6(filePath, json);
-    try {
-      unlinkSync3(tmpPath);
-    } catch {
-    }
-  }
+  writeFileSync6(tmpPath, JSON.stringify(value));
+  renameSync2(tmpPath, filePath);
 }
 var JsonStateFile;
 var init_state_file = __esm({
@@ -2644,6 +2616,7 @@ ${it.prompt}`).join("\n\n")}`;
             const opts = { type: item.source === "webhook" ? "webhook" : "event" };
             this.injectFn("", `event:${item.name}`, item.prompt, opts);
           }
+          if (file) this.moveToProcessed(file, "injected");
           return;
         }
         const channelId = this.resolveChannel(item.channel);
