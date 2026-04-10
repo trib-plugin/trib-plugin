@@ -194,7 +194,8 @@ export class EventQueue {
         const opts: InjectOptions = { type: item.source === 'webhook' ? 'webhook' : 'event' }
         this.injectFn('', `event:${item.name}`, item.prompt, opts)
       }
-      // Interactive stays in queue — user must confirm processing
+      // Move to processed after inject — do not re-inject
+      if (file) this.moveToProcessed(file, 'injected')
       return
     }
 
