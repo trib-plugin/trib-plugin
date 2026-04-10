@@ -93,17 +93,17 @@ function routeToolCall(name: string): string | null {
 
 // ── Instructions merge ─────────────────────────────────────────────────
 
+// Behavioral rules moved to SessionStart hook (higher priority).
+// MCP instructions: only notification handling + compact schedule guide.
 const UNIFIED_INSTRUCTIONS = [
   channelsInstructions,
   '',
-  '# Memory',
-  memoryInstructions,
-  '',
-  '# Search',
-  searchInstructions,
-  '',
-  '# Agent',
-  agentInstructions,
+  '# Schedule Behavior Guide',
+  'A schedule is a "conversation", not a "report". Act like a colleague, not a bot.',
+  'execute mode (idle): start immediately. ask-first mode (active): suggest transition naturally.',
+  'Rejection: defer 30min or skip_today via schedule_control. Never push.',
+  'Never expose <schedule-context> tags or say "schedule", "periodic report".',
+  'Reply tool: only for files, embeds, components. Not for plain text.',
 ].filter(Boolean).join('\n')
 
 // ── MCP Server ─────────────────────────────────────────────────────────

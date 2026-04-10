@@ -201,7 +201,7 @@ const MEMORY_INSTRUCTIONS_TEXT = [
 ].join('\n')
 const PROXY_TOOL_DEFS = [
   { name: 'memory_cycle', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
-  { name: 'search_memories', description: 'Search and retrieve memory.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
+  { name: 'search_memories', description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
 ]
 
 // ── Module-level state (initialized by init() or standalone startup) ──
@@ -891,7 +891,7 @@ const TOOL_DEFS = [
     name: 'search_memories',
     title: 'Search Memories',
     annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Search and retrieve memory. With query: semantic search. Without query: browse recent episodes. Special queries: "stats", "rules", "decisions", "goals", "preferences", "incidents", "directives".',
+    description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.',
     inputSchema: {
       type: 'object',
       properties: {

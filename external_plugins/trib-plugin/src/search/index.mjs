@@ -424,7 +424,7 @@ const toolDefinitions = [
   {
     name: 'search',
     title: 'Search',
-    description: 'Search the web using configured providers (Serper, Brave, Tavily, Perplexity, xAI). Returns ranked results with titles, URLs, and snippets. Auto-selects provider based on priority config.',
+    description: 'Search the web for external information. Use this instead of built-in WebSearch/WebFetch. For 2+ lookups use batch tool. Not for codebase (Grep/Glob/Read) or past context (search_memories).',
     inputSchema: buildInputSchema(searchArgsSchema),
     annotations: { title: 'Search', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
