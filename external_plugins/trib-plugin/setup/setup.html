@@ -2003,7 +2003,7 @@ function buildChannelsData() {
 
   const webhook = {};
   const webhookAuthtoken = document.getElementById('ch-webhook-authtoken');
-  if (webhookAuthtoken) { webhook.enabled = document.getElementById('ch-webhook-enabled')?.classList.contains('on') || false; webhook.authtoken = webhookAuthtoken.value; const domainVal = document.getElementById('ch-webhook-domain')?.value || undefined; webhook.domain = domainVal; webhook.ngrokDomain = domainVal; webhook.port = parseInt(document.getElementById('ch-webhook-port')?.value) || undefined; webhook.batchInterval = parseInt(document.getElementById('ch-webhook-batch-interval')?.value) || undefined; }
+  if (webhookAuthtoken) { webhook.enabled = document.getElementById('ch-webhook-enabled')?.classList.contains('on') || false; webhook.authtoken = webhookAuthtoken.value; webhook.domain = document.getElementById('ch-webhook-domain')?.value || undefined; webhook.port = parseInt(document.getElementById('ch-webhook-port')?.value) || undefined; webhook.batchInterval = parseInt(document.getElementById('ch-webhook-batch-interval')?.value) || undefined; }
 
   return {
     discord: { token: document.getElementById('ch-discord-token').value, applicationId: document.getElementById('ch-discord-appid').value },

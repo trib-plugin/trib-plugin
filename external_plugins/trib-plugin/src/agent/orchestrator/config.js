@@ -156,6 +156,7 @@ export function saveConfig(config) {
         }
     }
     const payload = {
+        guide: config.guide || undefined,
         providers: persistedProviders,
         mcpServers: config.mcpServers || {},
         presets: Array.isArray(config.presets) ? config.presets : [],
@@ -166,17 +167,24 @@ export function saveConfig(config) {
     renameSync(tmp, path);
 }
 // --- Preset helpers ---
-// preset shape: { name (or id), provider, model, effort?, fast?, tools }
+// preset shape: { id, name, type, provider?, model, effort?, fast?, tools? }
+// type: "worker" (Claude Code native) or "bridge" (external model via ask.mjs)
+// worker presets have no provider (spawned via Agent tool with model param)
 function presetKey(p) { return p?.name || p?.id || ''; }
 function normalizePreset(preset) {
     if (!preset || typeof preset !== 'object')
         return null;
+    const id = String(preset.id || preset.name || '').trim();
     const name = String(preset.name || preset.id || '').trim();
-    const provider = String(preset.provider || '').trim();
+    const type = preset.type === 'worker' ? 'worker' : 'bridge';
     const model = String(preset.model || '').trim();
-    if (!name || !provider || !model)
+    if (!name || !model)
         return null;
-    const out = { name, provider, model };
+    const out = { id, name, type, model };
+    // provider is required for bridge, optional for worker
+    const provider = String(preset.provider || '').trim();
+    if (provider) out.provider = provider;
+    if (type === 'bridge' && !provider) return null;
     if (preset.effort)
         out.effort = String(preset.effort).trim();
     if (preset.fast === true)
