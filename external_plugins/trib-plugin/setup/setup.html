@@ -315,14 +315,15 @@
   }
   .card-hdr:hover { background: rgba(255,255,255,0.02); }
   .card-hdr::before {
-    content: '\25BE'; color: var(--text-4); margin-right: 8px;
-    font-size: 10px; transition: transform 0.15s;
+    content: '\25B8'; color: var(--text-2); margin-right: 10px;
+    font-size: 12px; transition: transform 0.15s;
   }
-  .card.collapsed .card-hdr::before { transform: rotate(-90deg); }
-  .card-title { font-size: 13px; font-weight: 600; color: var(--text-1); flex: 1; }
+  .card:not(.collapsed) .card-hdr::before { content: '\25BE'; }
+  .card.collapsed .card-hdr::before { transform: none; }
+  .card-title { font-size: 14px; font-weight: 600; color: var(--text-1); flex: 1; }
   .card-hdr-right { display: flex; align-items: center; gap: 10px; }
   .card-hdr-right .card-remove {
-    position: static; font-size: 14px; color: var(--text-4);
+    position: static; font-size: 18px; color: var(--text-3);
     cursor: pointer; transition: color 0.15s; line-height: 1;
   }
   .card-hdr-right .card-remove:hover { color: var(--red); }
@@ -444,9 +445,9 @@
 
   /* -- Agent module styles -- */
   .r-tag {
-    font-size: 11px; padding: 3px 8px; border-radius: 4px;
-    font-weight: 500; margin-left: auto; flex-shrink: 0;
-    min-width: 64px; text-align: center; display: inline-block;
+    font-size: 11px; padding: 3px 0; border-radius: 4px;
+    font-weight: 500; margin-left: 12px; flex-shrink: 0;
+    width: 64px; text-align: center; display: inline-flex; align-items: center; justify-content: center;
   }
   .r-tag.ok { background: var(--green-dim); color: var(--green); }
   .r-tag.no { background: var(--red-dim); color: var(--red); }
@@ -475,9 +476,10 @@
   .input-group .eye-btn:hover { color: var(--text-1); }
 
   .r-link {
-    margin-left: 8px; font-size: 12px; color: #bbb;
+    margin-left: 12px; font-size: 11px; color: #bbb;
     text-decoration: none; white-space: nowrap; flex-shrink: 0;
-    transition: color 0.15s; display: flex; align-items: center;
+    transition: color 0.15s; display: inline-flex; align-items: center; justify-content: center;
+    width: 64px;
   }
   .r-link:hover { color: #fff; }
 
@@ -541,7 +543,7 @@
   }
   .preset-actions { display: flex; gap: 6px; flex-shrink: 0; }
   .icon-btn {
-    height: 28px; padding: 0 10px; min-width: 56px;
+    height: 28px; padding: 0 10px; min-width: 64px;
     background: rgba(0,0,0,0.25); border: 1px solid var(--border);
     border-radius: 4px; color: var(--text-2);
     font-size: 11px; font-weight: 500; cursor: pointer;
@@ -660,8 +662,10 @@
     color: var(--text-3); font-size: 13px; padding: 8px 12px;
     background: var(--bg-raised); border-radius: 6px; border: 1px solid var(--border);
   }
-  .file-label { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 6px; }
+  .file-label { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 6px; display: flex; align-items: center; }
   .file-label .file-hint { font-weight: 400; color: var(--text-3); font-size: 11px; margin-left: 6px; }
+  .file-label .file-open { margin-left: auto; font-size: 11px; color: var(--accent); cursor: pointer; font-weight: 500; text-decoration: none; }
+  .file-label .file-open:hover { color: #fff; }
   .file-area {
     width: 100%; height: 200px; padding: 10px;
     background: var(--bg-input); border: 1px solid var(--border);
@@ -797,25 +801,6 @@
             <span class="r-name-wide">Ack reaction <span class="tip">?<span class="tip-text">React with an emoji to acknowledge received messages</span></span></span>
             <div class="r-toggle" id="ch-ackreaction" onclick="this.classList.toggle('on')"></div>
           </div>
-          <div class="r">
-            <span class="r-name-wide">Reply Mode <span class="tip">?<span class="tip-text">off: no reply / first: reply to first message / all: reply to all messages</span></span></span>
-            <select class="r-select" id="ch-replytomode">
-              <option value="off">off</option>
-              <option value="first">first</option>
-              <option value="all">all</option>
-            </select>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Text Chunk Limit <span class="tip">?<span class="tip-text">Maximum character count per text chunk</span></span></span>
-            <input class="r-input" id="ch-textchunklimit" type="number" placeholder="2000">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Chunk Mode <span class="tip">?<span class="tip-text">length: split by character count / newline: split by newline</span></span></span>
-            <select class="r-select" id="ch-chunkmode">
-              <option value="length">length</option>
-              <option value="newline">newline</option>
-            </select>
-          </div>
         </div>
       </div>
       <div class="save-area">
@@ -850,12 +835,19 @@
             <div class="r-toggle" id="bot-holidays" onclick="this.classList.toggle('on')"></div>
           </div>
           <div class="r">
-            <span class="r-name-wide">Sleep Mode <span class="tip">?<span class="tip-text">Enable sleep mode to pause the bot during sleep hours</span></span></span>
-            <div class="r-toggle" id="bot-sleep-enabled" onclick="this.classList.toggle('on')"></div>
+            <span class="r-name-wide">Sleep Mode <span class="tip">?<span class="tip-text">Auto-sleep the bot at a set time</span></span></span>
+            <select class="r-select" id="bot-sleep-preset" onchange="onSleepPresetChange()">
+              <option value="off">Off</option>
+              <option value="23:00">23:00</option>
+              <option value="00:00">00:00</option>
+              <option value="01:00">01:00</option>
+              <option value="custom">Custom...</option>
+            </select>
+            <input class="r-input" id="bot-sleep-custom" type="text" placeholder="HH:MM" style="width:80px;flex:none;margin-left:8px;display:none">
           </div>
           <div class="r">
-            <span class="r-name-wide">Sleep Time <span class="tip">?<span class="tip-text">Time to enter sleep mode (HH:MM format)</span></span></span>
-            <input class="r-input" id="bot-sleep-time" type="text" placeholder="23:00">
+            <span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Model preset for bot responses</span></span></span>
+            <select class="r-select" id="bot-model"></select>
           </div>
           <div class="r">
             <span class="r-name-wide">Display Mode <span class="tip">?<span class="tip-text">view: show bot activity / hide: hide bot activity</span></span></span>
@@ -890,7 +882,7 @@
           </div>
           <div class="r">
             <span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Model preset for source research (e.g. GPT5.4-MINI)</span></span></span>
-            <input class="r-input" id="proactive-model" type="text" placeholder="default preset">
+            <select class="r-select" id="proactive-model"></select>
           </div>
         </div>
       </div>
@@ -1084,17 +1076,21 @@
       </div>
       <div id="mem-settings-body" class="settings-body">
         <div class="sec">
-          <div class="sec-title">Extraction</div>
+          <div class="sec-title">Cycle 1 — Extraction</div>
           <div class="sec-body">
             <div class="r">
-              <span class="r-name-wide">Retention</span>
+              <span class="r-name-wide">Interval</span>
               <select class="r-select" id="mem-set-retention">
-                <option value="1m">Very High (1m)</option>
-                <option value="5m">High (5m)</option>
-                <option value="10m" selected>Normal (10m)</option>
-                <option value="30m">Low (30m)</option>
-                <option value="1h">Minimal (1h)</option>
+                <option value="1m">1 min</option>
+                <option value="5m">5 min</option>
+                <option value="10m" selected>10 min</option>
+                <option value="30m">30 min</option>
+                <option value="1h">1 hour</option>
               </select>
+            </div>
+            <div class="r">
+              <span class="r-name-wide">Model</span>
+              <select class="r-select" id="mem-cycle1-preset"></select>
             </div>
             <div class="r">
               <span class="r-name-wide">Timeout</span>
@@ -1108,26 +1104,15 @@
           </div>
         </div>
         <div class="sec">
-          <div class="sec-title">Consolidation</div>
+          <div class="sec-title">Cycle 2 — Consolidation</div>
           <div class="sec-body">
             <div class="r">
               <span class="r-name-wide">Schedule</span>
               <input class="r-input" id="mem-set-schedule" type="text" placeholder="03:00">
             </div>
-          </div>
-        </div>
-        <div class="sec">
-          <div class="sec-title">Cycle Model</div>
-          <div class="sec-body">
             <div class="r">
-              <span class="r-name-wide">Cycle 1</span>
-              <select class="r-select" id="mem-cycle1-preset"></select>
-              <span class="r-unit">Extraction</span>
-            </div>
-            <div class="r">
-              <span class="r-name-wide">Cycle 2</span>
+              <span class="r-name-wide">Model</span>
               <select class="r-select" id="mem-cycle2-preset"></select>
-              <span class="r-unit">Consolidation</span>
             </div>
           </div>
         </div>
@@ -1242,11 +1227,11 @@
         </div>
       </div>
       <div class="file-group">
-        <div class="file-label">bot.md<span class="file-hint">Bot persona and behavior</span></div>
+        <div class="file-label">bot.md<span class="file-hint">Bot persona and behavior</span><span class="file-open" onclick="memOpenFile('bot.md')">Open</span></div>
         <textarea class="file-area" id="mem-file-bot"></textarea>
       </div>
       <div class="file-group">
-        <div class="file-label">user.md<span class="file-hint">User information</span></div>
+        <div class="file-label">user.md<span class="file-hint">User information</span><span class="file-open" onclick="memOpenFile('user.md')">Open</span></div>
         <textarea class="file-area" id="mem-file-user-profile"></textarea>
       </div>
       <div class="sec">
@@ -1282,12 +1267,12 @@
         <div class="sec-title">GitHub</div>
         <div class="sec-body">
           <div class="r">
-            <span class="r-name">GitHub</span>
+            <span class="r-name" style="width:90px">GitHub</span>
             <div class="input-group" style="flex:1;width:auto;">
               <input class="r-input" id="sr-gh-token" type="password" placeholder="GITHUB TOKEN">
               <button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button>
             </div>
-            <a class="r-link" href="https://github.com/settings/tokens" target="_blank">Get token &#8599;</a>
+            <a class="r-link" href="https://github.com/settings/tokens" target="_blank">Get &#8599;</a>
           </div>
         </div>
       </div>
@@ -1370,9 +1355,12 @@ let myGeneration = 0;
 
 document.addEventListener('input', () => { isDirty = true; });
 document.addEventListener('change', () => { isDirty = true; });
-window.addEventListener('beforeunload', (e) => {
-  if (isDirty) { e.preventDefault(); }
-  else { navigator.sendBeacon('/close', ''); }
+window.addEventListener('beforeunload', () => {
+  if (isDirty) {
+    const data = buildChannelsData();
+    navigator.sendBeacon('/config', JSON.stringify(data));
+  }
+  navigator.sendBeacon('/close', '');
 });
 
 function requestClose() {
@@ -1474,15 +1462,17 @@ window.addEventListener('load', async () => {
   initSliders();
 
   // Load all configs in parallel
-  await Promise.all([
+  const results = await Promise.allSettled([
     loadChannelsConfig(),
     loadChannelsCliCheck(),
     loadAgentData(),
     loadMemoryData(),
     loadSearchConfig(),
   ]);
+  results.forEach((r, i) => { if (r.status === 'rejected') console.error('[trib] loader', i, 'failed:', r.reason); });
 
-  // Post-load init
+  // Post-load init — populate preset dropdowns after agConfig is ready
+  populatePresetDropdowns();
   renderAdvanced();
   isDirty = false;
 
@@ -1557,6 +1547,12 @@ function onQuietPresetChange() {
   const custom = document.getElementById('bot-quiet-custom');
   if (sel.value === 'custom') custom.classList.remove('hidden');
   else custom.classList.add('hidden');
+}
+
+function onSleepPresetChange() {
+  const sel = document.getElementById('bot-sleep-preset');
+  const custom = document.getElementById('bot-sleep-custom');
+  custom.style.display = sel.value === 'custom' ? '' : 'none';
 }
 
 
@@ -1727,6 +1723,7 @@ function addScheduleCard(data) {
         '</select>' +
         '<span style="flex:1;font-size:11px;color:var(--text-4);margin-left:8px" data-f="sc-type-hint">' + (d.type === 'non-interactive' ? 'Sends result to channel' : 'Injects into current session') + '</span></div>' +
       '<div class="r" data-channel-row style="' + (d.type === 'non-interactive' ? '' : 'display:none') + '"><span class="r-name-wide">Channel</span>' + makeChannelSelect(d.channel) + '</div>' +
+      '<div class="r"><span class="r-name-wide">Model</span><select class="r-select" data-f="sc-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
         '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Prompt</div>' +
         '<textarea class="r-input" data-f="sc-prompt" placeholder="What should the bot do at this time?" style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5">' + (d.prompt || '') + '</textarea>' +
@@ -1772,6 +1769,7 @@ function addEventCard(data) {
   const d = data || {};
   const nameVal = d.name || 'Untitled';
   const isExisting = !!d.name;
+  card.dataset.originalName = d.name || '';
   card.innerHTML =
     '<div class="card-hdr" onclick="this.parentElement.classList.toggle(\'collapsed\')">' +
       '<span class="card-title" data-f="ev-title">' + nameVal + '</span>' +
@@ -1780,13 +1778,15 @@ function addEventCard(data) {
       '</div>' +
     '</div>' +
     '<div class="card-content">' +
-      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;"' + (isExisting ? ' readonly' : '') + '></div>' +
+      '<div class="r"><span class="r-name-wide">Name</span><input class="r-input" type="text" placeholder="Endpoint name (e.g. github-issues)" value="' + (d.name || '') + '" data-f="ev-name" style="flex:1;" oninput="this.closest(\'.card\').querySelector(\'[data-f=ev-title]\').textContent=this.value||\'Untitled\'">' + '</div>' +
       '<div class="r"><span class="r-name-wide">Channel</span><input class="r-input" type="text" placeholder="main" value="' + (d.channel || 'main') + '" data-f="ev-channel" style="flex:1;"></div>' +
       '<div class="r"><span class="r-name-wide">Exec</span>' +
         '<select class="r-select" data-f="ev-exec">' +
         '<option value="interactive"' + (d.exec === 'interactive' ? ' selected' : '') + '>Interactive</option>' +
         '<option value="non-interactive"' + (d.exec === 'non-interactive' || !d.exec ? ' selected' : '') + '>Non-interactive</option>' +
         '</select></div>' +
+      '<div class="r"><span class="r-name-wide">Model</span>' +
+        '<select class="r-select" data-f="ev-model" data-initial="' + (d.model || 'sonnet-mid') + '"></select></div>' +
       '<div class="r"><span class="r-name-wide">Secret</span><input class="r-input" type="password" value="' + (d.secret || '') + '" placeholder="Optional" data-f="ev-secret"></div>' +
       '<div style="padding:12px 14px;border-top:1px solid var(--border)">' +
         '<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">Instructions</div>' +
@@ -1814,6 +1814,39 @@ async function loadChannelsCliCheck() {
   try { cliStatus = await fetch('/cli-check').then(r => r.json()); } catch {}
 }
 
+function populatePresetDropdowns() {
+  const presets = agPresets.length ? agPresets : (agConfig?.presets || []);
+  console.log('[trib] populatePresetDropdowns:', presets.length, 'presets');
+  if (!presets.length) return;
+  ['bot-model', 'proactive-model'].forEach(selId => {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    sel.innerHTML = '';
+    presets.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id || p.name;
+      opt.textContent = (p.name || p.id) + ' (' + p.model + ')';
+      sel.appendChild(opt);
+    });
+  });
+  const bot = chExtraData.bot || {};
+  document.getElementById('bot-model').value = bot.model || 'sonnet-mid';
+  const proactive = chConfig?.proactive || {};
+  document.getElementById('proactive-model').value = proactive.model || 'sonnet-mid';
+
+  // Webhook event cards — fill model dropdowns
+  document.querySelectorAll('#event-rules .card [data-f="ev-model"]').forEach(sel => {
+    const current = sel.value || sel.dataset.initial || 'sonnet-mid';
+    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  });
+
+  // Schedule + Webhook cards — fill model dropdowns
+  document.querySelectorAll('#sched-tasks .card [data-f="sc-model"], #event-rules .card [data-f="ev-model"]').forEach(sel => {
+    const current = sel.value || sel.dataset.initial || 'sonnet-mid';
+    sel.innerHTML = presets.map(p => '<option value="' + (p.id || p.name) + '"' + (current === (p.id || p.name) ? ' selected' : '') + '>' + (p.name || p.id) + ' (' + p.model + ')</option>').join('');
+  });
+}
+
 function renderAdvanced() {
   renderVoiceSection();
   renderWebhookSection();
@@ -1832,24 +1865,7 @@ function renderVoiceSection() {
   } else {
     const v = chConfig?.voice || {};
     el.innerHTML =
-      '<div class="collapsible-toggle" onclick="toggleCollapsible(this)">' +
-        '<span class="arrow">&#9654;</span>' +
-        '<span style="color:var(--green);">Installed</span>' +
-        '<span style="color:var(--text-4);font-size:12px;margin-left:4px;">&#8212; click to configure</span>' +
-      '</div>' +
-      '<div class="collapsible-body">' +
-        '<div class="r"><span class="r-name-wide">Command <span class="tip">?<span class="tip-text">Whisper CLI command. Leave empty for auto-detection</span></span></span><input class="r-input" id="voice-command" type="text" placeholder="auto" value="' + (v.command || '') + '"></div>' +
-        '<div class="r"><span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Path to the GGML model file</span></span></span><input class="r-input" id="voice-model" type="text" placeholder="path/to/model.bin" value="' + (v.model || '') + '"></div>' +
-        '<div class="r"><span class="r-name-wide">Language <span class="tip">?<span class="tip-text">Speech recognition language. auto detects automatically</span></span></span>' +
-          '<select class="r-select" id="voice-language">' +
-          '<option value="auto"' + ((v.language || 'auto') === 'auto' ? ' selected' : '') + '>auto</option>' +
-          '<option value="ko"' + (v.language === 'ko' ? ' selected' : '') + '>ko</option>' +
-          '<option value="en"' + (v.language === 'en' ? ' selected' : '') + '>en</option>' +
-          '<option value="ja"' + (v.language === 'ja' ? ' selected' : '') + '>ja</option>' +
-          '<option value="zh"' + (v.language === 'zh' ? ' selected' : '') + '>zh</option>' +
-          '</select></div>' +
-        '<div class="r"><span class="r-name-wide">Python Model <span class="tip">?<span class="tip-text">Python whisper model size (e.g. base, small, medium, large)</span></span></span><input class="r-input" id="voice-python-model" type="text" placeholder="base" value="' + (v.pythonModel || '') + '"></div>' +
-      '</div>';
+      '<div class="r"><span style="color:var(--green);font-size:13px;">&#10003; Installed</span><span style="color:var(--text-4);font-size:12px;margin-left:8px;">Auto-configured</span></div>';
   }
 }
 
@@ -1871,15 +1887,12 @@ function renderWebhookSection() {
       '</div>';
   } else {
     const w = chConfig?.webhook || {};
-    const domain = w.domain || w.ngrokDomain || '';
     el.innerHTML =
       '<div class="r"><span class="r-name-wide">Enabled</span><div class="r-toggle' + (w.enabled ? ' on' : '') + '" onclick="this.classList.toggle(\'on\')" id="ch-webhook-enabled"></div></div>' +
-      '<div class="r"><span class="r-name-wide">Auth Token</span><input class="r-input" id="ch-webhook-authtoken" type="text" placeholder="2x..." value="' + (w.authtoken || '') + '">' +
+      '<div class="r"><span class="r-name-wide">Auth Token</span><div class="input-group" style="flex:1;width:auto;"><input class="r-input" id="ch-webhook-authtoken" type="password" placeholder="2x..." value="' + (w.authtoken || '') + '"><button class="eye-btn" onclick="toggleVis(this)" type="button">&#128065;</button></div>' +
         (!w.authtoken ? '<a href="https://dashboard.ngrok.com/get-started/your-authtoken" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>' +
-      '<div class="r"><span class="r-name-wide">Domain</span><input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev" value="' + domain + '">' +
-        (!domain ? '<a href="https://dashboard.ngrok.com/domains" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>' +
-      '<div class="r"><span class="r-name-wide">Port</span><input class="r-input" id="ch-webhook-port" type="number" placeholder="3100" value="' + (w.port || '') + '"></div>' +
-      '<div class="r"><span class="r-name-wide">Batch Interval (ms)</span><input class="r-input" id="ch-webhook-batch-interval" type="number" placeholder="5000" value="' + (w.batchInterval || '') + '"></div>';
+      '<div class="r"><span class="r-name-wide">Domain</span><input class="r-input" id="ch-webhook-domain" type="text" placeholder="your-name.ngrok-free.dev" value="' + (w.domain || '') + '">' +
+        (!w.domain ? '<a href="https://dashboard.ngrok.com/domains" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px;margin-left:8px;white-space:nowrap">Get &#8599;</a>' : '') + '</div>';
   }
 }
 
@@ -1902,7 +1915,7 @@ async function loadChannelsConfig() {
   populateChannels(cfgRes);
 }
 
-function populateChannels(cfg) {
+async function populateChannels(cfg) {
   // Connection
   const discord = cfg?.discord || {};
   if (discord.token) document.getElementById('ch-discord-token').value = discord.token;
@@ -1934,14 +1947,17 @@ function populateChannels(cfg) {
   const quiet = bot.quiet || {};
   populateQuietHours(quiet.schedule);
   if (quiet.holidays) document.getElementById('bot-holidays').classList.add('on');
-  if (bot.sleepEnabled) document.getElementById('bot-sleep-enabled').classList.add('on');
-  if (bot.sleepTime) document.getElementById('bot-sleep-time').value = bot.sleepTime;
+  if (bot.sleepEnabled && bot.sleepTime) {
+    const sel = document.getElementById('bot-sleep-preset');
+    const presets = ['23:00', '00:00', '01:00'];
+    if (presets.includes(bot.sleepTime)) { sel.value = bot.sleepTime; }
+    else { sel.value = 'custom'; document.getElementById('bot-sleep-custom').value = bot.sleepTime; document.getElementById('bot-sleep-custom').style.display = ''; }
+  }
   if (bot.displayMode) document.getElementById('bot-display-mode').value = bot.displayMode;
 
-  // Proactive
+  // Proactive (non-preset fields)
   const proactive = cfg?.proactive || {};
   if (proactive.interval) document.getElementById('proactive-interval').value = proactive.interval;
-  if (proactive.model) document.getElementById('proactive-model').value = proactive.model;
   (proactive.items || []).forEach(item => addProactiveItem(item.topic));
   populateProactiveFeedback(cfg);
 
@@ -1994,7 +2010,7 @@ function buildChannelsData() {
       if (mins <= 5) time = 'every5m'; else if (mins <= 10) time = 'every10m'; else if (mins <= 30) time = 'every30m'; else time = 'hourly';
       days = 'daily';
     } else { time = card.querySelector('[data-f="sc-at"]')?.value.trim() || '09:00'; days = freq === 'weekday' ? 'weekday' : freq === 'weekly' ? 'weekend' : 'daily'; }
-    scheduleItems.push({ name: card.querySelector('[data-f="sc-name"]')?.value.trim() || '', time, days, channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' });
+    scheduleItems.push({ name: card.querySelector('[data-f="sc-name"]')?.value.trim() || '', time, days, channel: card.querySelector('[data-f="channel"]')?.value || '', type: card.querySelector('[data-f="sc-type"]')?.value || 'interactive', model: card.querySelector('[data-f="sc-model"]')?.value || '', enabled: card.querySelector('[data-f="sc-enabled"]')?.classList.contains('on') ?? true, prompt: card.querySelector('[data-f="sc-prompt"]')?.value || '' });
   });
 
   const voice = {};
@@ -2008,11 +2024,11 @@ function buildChannelsData() {
   return {
     discord: { token: document.getElementById('ch-discord-token').value, applicationId: document.getElementById('ch-discord-appid').value },
     channelsConfig, mainChannel,
-    access: { dmPolicy: document.getElementById('ch-dm-policy').value, allowFrom: getTagValues('ch-allowfrom'), mentionPatterns: getTagValues('ch-mentionpatterns'), ackReaction: document.getElementById('ch-ackreaction').classList.contains('on'), replyToMode: document.getElementById('ch-replytomode').value, textChunkLimit: parseInt(document.getElementById('ch-textchunklimit').value) || undefined, chunkMode: document.getElementById('ch-chunkmode').value },
+    access: { dmPolicy: document.getElementById('ch-dm-policy').value, allowFrom: getTagValues('ch-allowfrom'), mentionPatterns: getTagValues('ch-mentionpatterns'), ackReaction: document.getElementById('ch-ackreaction').classList.contains('on') },
     voice, schedules: { items: scheduleItems },
     proactive: buildProactiveData(),
     webhook,
-    _bot: { quiet: { schedule: quietSchedule, holidays: document.getElementById('bot-holidays').classList.contains('on') }, sleepEnabled: document.getElementById('bot-sleep-enabled').classList.contains('on'), sleepTime: document.getElementById('bot-sleep-time').value || undefined, displayMode: document.getElementById('bot-display-mode').value },
+    _bot: { quiet: { schedule: quietSchedule, holidays: document.getElementById('bot-holidays').classList.contains('on') }, sleepEnabled: document.getElementById('bot-sleep-preset').value !== 'off', sleepTime: (function(){ const v = document.getElementById('bot-sleep-preset').value; return v === 'off' ? undefined : v === 'custom' ? document.getElementById('bot-sleep-custom').value || undefined : v; })(), model: document.getElementById('bot-model').value || 'sonnet-mid', displayMode: document.getElementById('bot-display-mode').value },
   };
 }
 
@@ -2027,15 +2043,15 @@ async function savePanel() {
     // Save webhooks individually
     const whCards = document.querySelectorAll('#event-rules .card');
     for (const card of whCards) {
-      const wh = { name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '', channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main', exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive', secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined, instructions: card.querySelector('[data-f="ev-instructions"]')?.value || '' };
-      if (wh.name) await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) });
+      const wh = { name: card.querySelector('[data-f="ev-name"]')?.value.trim() || '', channel: card.querySelector('[data-f="ev-channel"]')?.value || 'main', exec: card.querySelector('[data-f="ev-exec"]')?.value || 'non-interactive', model: card.querySelector('[data-f="ev-model"]')?.value || '', secret: card.querySelector('[data-f="ev-secret"]')?.value || undefined, instructions: card.querySelector('[data-f="ev-instructions"]')?.value || '' };
+      if (wh.name) { await fetch('/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wh) }); card.dataset.originalName = wh.name; }
     }
     // Save config
     const data = buildChannelsData();
     await fetch('/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     isDirty = false;
     if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500); }
-  } catch (e) { warnEl.textContent = 'Save failed'; if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
+  } catch (e) { console.error('[trib] save error:', e); warnEl.textContent = 'Save failed: ' + (e?.message || e); if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
 }
 
 async function saveConfig() { await savePanel(); }
@@ -2062,11 +2078,17 @@ const AG_LOCAL_PROVIDERS = [
 ];
 
 const AG_EFFORT_OPTIONS = {
+  'claude-code': [{v:'',label:'(Default)'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
   openai: [{v:'',label:'(Default)'},{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
   'openai-oauth': [{v:'',label:'(Default)'},{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
   anthropic: [{v:'',label:'(Default)'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
 };
-const AG_FAST_PROVIDERS = new Set(['anthropic', 'openai', 'openai-oauth']);
+const AG_CLAUDE_CODE_EFFORT = {
+  opus: ['', 'low', 'medium', 'high', 'max'],
+  sonnet: ['', 'low', 'medium', 'high'],
+  haiku: [],
+};
+const AG_FAST_PROVIDERS = new Set(['claude-code', 'anthropic', 'openai', 'openai-oauth']);
 const AG_ACCESS_LABELS = { full: 'Read & Write', readonly: 'Read Only', mcp: 'None' };
 
 async function loadAgentData() {
@@ -2140,8 +2162,8 @@ async function agDoSave(data, panelId) {
 }
 
 function agGetEnabledProviders() {
+  const out = ['claude-code'];
   const c = agConfig.providers || {};
-  const out = [];
   for (const p of AG_API_PROVIDERS) { if (c[p.id]?.apiKey || agAuth.envKeys?.[p.id]) out.push(p.id); }
   if (agAuth.codexOAuth) out.push('openai-oauth');
   if (agAuth.copilot) out.push('copilot');
@@ -2159,7 +2181,8 @@ function agRenderPresetList() {
   if (agPresets.length === 0) { list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New Preset</strong> to create one.</div>'; return; }
   list.innerHTML = agPresets.map(p => {
     const accessLabel = AG_ACCESS_LABELS[p.tools] || 'Read & Write';
-    const meta = [`${p.provider}/${p.model}`, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
+    const provModel = p.type === 'worker' ? p.model : `${p.provider}/${p.model}`;
+    const meta = [provModel, p.type === 'worker' ? 'Claude Code' : null, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
     return `<div class="preset-card"><div class="preset-info"><div class="preset-id">${escapeHtml(p.name || p.id)}</div><div class="preset-meta">${escapeHtml(meta)}</div></div><div class="preset-actions"><button class="icon-btn edit-btn" onclick="agOpenPresetForm('${escapeAttr(p.id)}')">Edit</button><button class="icon-btn danger" onclick="agDeletePreset('${escapeAttr(p.id)}')">Delete</button></div></div>`;
   }).join('');
 }
@@ -2196,13 +2219,37 @@ async function agOnProviderChange() {
   const modelSel = document.getElementById('ag-pf-model');
   const effortSel = document.getElementById('ag-pf-effort');
   const fastRow = document.getElementById('ag-pf-fast-row');
-  const opts = AG_EFFORT_OPTIONS[provider] || [{v:'',label:'(Provider Default)'}];
-  effortSel.innerHTML = opts.map(o => `<option value="${o.v}">${o.label}</option>`).join('');
   fastRow.style.display = AG_FAST_PROVIDERS.has(provider) ? 'flex' : 'none';
   if (!AG_FAST_PROVIDERS.has(provider)) document.getElementById('ag-pf-fast').classList.remove('on');
+
+  if (provider === 'claude-code') {
+    const models = ['opus', 'sonnet', 'haiku'];
+    modelSel.disabled = false;
+    modelSel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+    agUpdateClaudeCodeEffort();
+    modelSel.onchange = agUpdateClaudeCodeEffort;
+    return;
+  }
+  modelSel.onchange = null;
+  const opts = AG_EFFORT_OPTIONS[provider] || [{v:'',label:'(Provider Default)'}];
+  effortSel.innerHTML = opts.map(o => `<option value="${o.v}">${o.label}</option>`).join('');
   modelSel.disabled = true;
   modelSel.innerHTML = '<option value="">Loading...</option>';
   try { const r = await fetch(`/agent/models?provider=${encodeURIComponent(provider)}`).then(r => r.json()); const models = r.models || []; if (models.length === 0) { modelSel.innerHTML = '<option value="">No models found</option>'; agReplaceModelWithInput(''); } else { modelSel.innerHTML = models.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join(''); modelSel.disabled = false; } } catch { modelSel.innerHTML = '<option value="">Failed to fetch</option>'; agReplaceModelWithInput(''); }
+}
+
+function agUpdateClaudeCodeEffort() {
+  const model = document.getElementById('ag-pf-model').value;
+  const effortSel = document.getElementById('ag-pf-effort');
+  const allowed = AG_CLAUDE_CODE_EFFORT[model] || [];
+  if (allowed.length === 0) {
+    effortSel.innerHTML = '<option value="">(Not available)</option>';
+    effortSel.disabled = true;
+  } else {
+    const labels = { '': '(Default)', low: 'Low', medium: 'Medium', high: 'High', max: 'Max' };
+    effortSel.innerHTML = allowed.map(v => `<option value="${v}">${labels[v] || v}</option>`).join('');
+    effortSel.disabled = false;
+  }
 }
 
 function agReplaceModelWithInput(value) { const old = document.getElementById('ag-pf-model'); if (old.tagName === 'INPUT') return; const inp = document.createElement('input'); inp.id = 'ag-pf-model'; inp.className = 'r-input'; inp.placeholder = 'Enter model ID manually'; inp.value = value || ''; old.replaceWith(inp); }
@@ -2224,7 +2271,9 @@ async function agSavePreset() {
   if (!model) { warn.textContent = 'Model is required'; return; }
   const id = agEditingPresetId || name.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
-  const body = { id, name, provider, model, tools };
+  const isWorker = provider === 'claude-code';
+  const body = { id, name, model, tools };
+  if (isWorker) { body.type = 'worker'; } else { body.type = 'bridge'; body.provider = provider; }
   if (effort) body.effort = effort;
   if (fast && AG_FAST_PROVIDERS.has(provider)) body.fast = true;
   try { const r = await fetch('/agent/presets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()); if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; } isDirty = false; agClosePresetForm(); await agLoadPresets(); } catch (err) { warn.textContent = 'Save failed: ' + (err?.message || 'network error'); }
@@ -2284,6 +2333,7 @@ function memToggleMemory() {
 function memRenderAll() {
   const c = memConfig.providers || {};
   const apiSec = document.getElementById('mem-api-sec');
+  if (!apiSec) return;
   apiSec.innerHTML = '';
   for (const p of MEM_API_PROVIDERS) {
     const key = c[p.id]?.apiKey || '';
@@ -2428,6 +2478,10 @@ function memPopulateCycleDropdowns() {
 
 async function memLoadFiles() { try{const data=await fetch('/memory/files').then(r=>r.json());document.getElementById('mem-file-bot').value=data['bot.md']||'';document.getElementById('mem-file-user-profile').value=data['user.md']||'';}catch{} }
 
+function memOpenFile(name) {
+  fetch('/memory/file/' + encodeURIComponent(name));
+}
+
 async function memSaveFiles() {
   const btn=document.querySelector('#panel-mem-files .save'); const warn=document.getElementById('warn-mem-files');
   warn.textContent=''; btn.textContent='Saving...'; btn.disabled=true;
@@ -2494,7 +2548,7 @@ function srMakeSearchRow(p) {
   d.className = 'r'; d.dataset.id = p.id; d.draggable = true;
   const handle = document.createElement('span'); handle.className = 'drag-handle'; handle.textContent = '\u283F'; d.appendChild(handle);
   const chk = document.createElement('div'); chk.className = 'r-check'; d.appendChild(chk);
-  const nm = document.createElement('span'); nm.className = 'r-name'; nm.textContent = p.name; d.appendChild(nm);
+  const nm = document.createElement('span'); nm.className = 'r-name'; nm.style.width = '90px'; nm.textContent = p.name; d.appendChild(nm);
   const group = document.createElement('div'); group.className = 'input-group'; group.style.flex = '1'; group.style.width = 'auto';
   const inp = document.createElement('input'); inp.className = 'r-input'; inp.type = 'password'; inp.placeholder = 'API KEY'; inp.dataset.k = 'sr-' + p.id;
   inp.addEventListener('input', () => { if (inp.value.trim()) chk.classList.add('on'); else chk.classList.remove('on'); inp.classList.remove('warn', 'valid'); });
@@ -2518,6 +2572,7 @@ function srMakeProviderRow(id, name, connType) {
 function srBuildProviderPanels() {
   const rawSec = document.getElementById('sr-raw-priority-sec');
   const aiSec = document.getElementById('sr-ai-priority-sec');
+  if (!rawSec || !aiSec) return;
   rawSec.innerHTML = ''; aiSec.innerHTML = '';
   SR_PROVIDERS.forEach(p => rawSec.appendChild(srMakeProviderRow(p.id, p.name, 'api')));
   SR_AI.forEach(p => { const conn = p.cli ? 'cli' : 'api'; aiSec.appendChild(srMakeProviderRow(p.id, p.name, conn)); });
@@ -2578,11 +2633,11 @@ function srPopulateSearch(cfg) {
 
   SR_PROVIDERS.forEach(p => { const inp = document.querySelector('[data-k="sr-' + p.id + '"]'); const row = inp?.closest('.r'); const chk = row?.querySelector('.r-check'); const key = creds[p.id]?.apiKey || ''; if (inp) inp.value = key; if (chk && key) chk.classList.add('on'); });
 
-  if (priority.length) { const sec = document.getElementById('sr-search-sec'); const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; priority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); }
-  if (priority.length) { const sec = document.getElementById('sr-raw-priority-sec'); const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; priority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); }
+  if (priority.length) { const sec = document.getElementById('sr-search-sec'); if (sec) { const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; priority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); } }
+  if (priority.length) { const sec = document.getElementById('sr-raw-priority-sec'); if (sec) { const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; priority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); } }
 
   const filteredAiPriority = aiPriority.filter(id => id !== 'grok');
-  if (filteredAiPriority.length) { const sec = document.getElementById('sr-ai-priority-sec'); const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; filteredAiPriority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); }
+  if (filteredAiPriority.length) { const sec = document.getElementById('sr-ai-priority-sec'); if (sec) { const rows = Array.from(sec.querySelectorAll('.r')); const ordered = []; filteredAiPriority.forEach(id => { const r = rows.find(r => r.dataset.id === id); if (r) ordered.push(r); }); rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); }); ordered.forEach(r => sec.appendChild(r)); } }
 
   SR_AI.forEach(p => { const profile = aiProfiles[p.id]; if (profile) { const row = document.querySelector('#sr-ai-priority-sec .r[data-id="' + p.id + '"]'); if (row) { const tag = row.querySelector('.r-tag'); if (tag) { const conn = profile.connection || (p.cli ? 'cli' : 'api'); tag.textContent = conn; tag.className = 'r-tag ' + (conn === 'api' ? 'ok' : 'no'); } } } });
 
@@ -2653,7 +2708,7 @@ async function srSavePanel() {
     await fetch('/search/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     isDirty = false;
     if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500); }
-  } catch (e) { warnEl.textContent = 'Save failed'; if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
+  } catch (e) { console.error('[trib] save error:', e); warnEl.textContent = 'Save failed: ' + (e?.message || e); if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
 }
 </script>
 

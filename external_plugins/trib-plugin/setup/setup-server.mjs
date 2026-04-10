@@ -859,6 +859,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && path.startsWith('/memory/file/')) {
+    const name = decodeURIComponent(path.slice('/memory/file/'.length));
+    if (!['bot.md', 'user.md', 'context.md'].includes(name)) { res.writeHead(404); res.end('Not found'); return; }
+    const filePath = join(MEMORY_FILES_DIR, name);
+    mkdirSync(MEMORY_FILES_DIR, { recursive: true });
+    if (!existsSync(filePath)) writeFileSync(filePath, '', 'utf8');
+    if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
+    else { exec(`open "${filePath}"`); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   if (req.method === 'POST' && path === '/memory/files') {
     const data = await readBody(req);
     mkdirSync(MEMORY_FILES_DIR, { recursive: true });
@@ -1032,16 +1045,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (path === '/open') {
-    // Try to focus existing window instead of opening a new one
-    if (isWin) {
-      try {
-        spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command',
-          `Add-Type -Name W -Namespace N -Member '[DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);[DllImport("user32.dll")]public static extern IntPtr FindWindow(string c,string t);';$h=[N.W]::FindWindow([NullString]::Value,'TRIB CONFIG');if($h-ne[IntPtr]::Zero){[N.W]::SetForegroundWindow($h)}else{Start-Process "http://localhost:${PORT}"}`
-        ], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      } catch { openAppWindow(); }
-    } else {
-      openAppWindow();
-    }
+    openAppWindow();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

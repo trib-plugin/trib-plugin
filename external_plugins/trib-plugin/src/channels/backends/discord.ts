@@ -349,7 +349,7 @@ export class DiscordBackend implements ChannelBackend {
 
     const access = this.loadAccess()
     const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
-    const replyMode = access.replyToMode ?? 'first'
+    const replyMode = access.replyToMode ?? 'off'
     const chunks = chunk(text, limit)
     const sentIds: string[] = []
 
