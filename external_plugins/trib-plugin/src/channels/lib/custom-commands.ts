@@ -605,7 +605,7 @@ function scheduleAdd(parsed: ParsedCommand, ctx: CommandContext): CommandResult 
 
   // Write the prompt file when prompt content is provided.
   if (prompt) {
-    const promptsDir = config.promptsDir ?? join(DATA_DIR, 'prompts')
+    const promptsDir = join(DATA_DIR, 'prompts')
     mkdirSync(promptsDir, { recursive: true })
     const promptPath = join(promptsDir, `${name}.md`)
     writeFileSync(promptPath, prompt + '\n', 'utf8')
@@ -642,7 +642,7 @@ function scheduleEdit(parsed: ParsedCommand, ctx: CommandContext): CommandResult
 
   // Update the prompt file when new prompt content is provided.
   if (parsed.params.prompt) {
-    const promptsDir = config.promptsDir ?? join(DATA_DIR, 'prompts')
+    const promptsDir = join(DATA_DIR, 'prompts')
     mkdirSync(promptsDir, { recursive: true })
     const promptPath = join(promptsDir, `${name}.md`)
     writeFileSync(promptPath, parsed.params.prompt + '\n', 'utf8')

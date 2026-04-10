@@ -882,7 +882,6 @@ function reloadRuntimeConfig(): void {
     config.interactive ?? [],
     config.proactive,
     config.channelsConfig,
-    config.promptsDir,
     botConfig,
     { restart: bridgeRuntimeConnected },
   )
