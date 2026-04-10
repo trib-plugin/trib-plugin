@@ -130,19 +130,24 @@ async function cmdAsk(args) {
         process.exit(0);
     }
 
-    // Resolve session
-    let sessionId = explicitSession || readActiveSession();
+    // Resolve session — skip active session when --preset is explicit
+    let sessionId = explicitSession || (presetName ? null : readActiveSession());
     let session = sessionId ? resumeSession(sessionId) : null;
 
     if (!session) {
-        // If provider/model specified, create session with those
-        if (provider || model || presetName) {
+        // If preset specified, resolve from config and pass full preset object
+        if (presetName && config.presets) {
+            const p = config.presets.find(x => x.id === presetName || x.name === presetName);
+            if (p) {
+                await ensureMcpConnected(config);
+                session = createSession({ preset: p, agent: role, cwd: process.cwd() });
+            } else {
+                process.stderr.write(`preset "${presetName}" not found.\n`);
+                process.exit(1);
+            }
+        } else if (provider || model) {
             let resolvedProvider = provider;
             let resolvedModel = model;
-            if (presetName && config.presets) {
-                const p = config.presets.find(x => x.id === presetName || x.name === presetName);
-                if (p) { resolvedProvider = resolvedProvider || p.provider; resolvedModel = resolvedModel || p.model; }
-            }
             if (!resolvedProvider || !resolvedModel) {
                 const def = getDefaultPreset(config);
                 if (def) { resolvedProvider = resolvedProvider || def.provider; resolvedModel = resolvedModel || def.model; }

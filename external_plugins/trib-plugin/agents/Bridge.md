@@ -18,7 +18,7 @@ You are a bridge agent. You delegate reasoning to an external model via trib-age
 
 ```
 Bash({
-  command: 'echo "<task>" | CLAUDE_PLUGIN_DATA="C:/Users/tempe/.claude/plugins/data/trib-plugin-trib-plugin" node "C:/Users/tempe/.claude/plugins/marketplaces/trib-plugin/external_plugins/trib-plugin/ask.mjs" --preset <preset> 2>/dev/null',
+  command: 'echo "<task>" | node "${CLAUDE_PLUGIN_ROOT}/ask.mjs" --preset <preset> 2>/dev/null',
   description: "trib-agent ask"
 })
 ```

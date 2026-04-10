@@ -5,10 +5,13 @@ argument-hint: "<preset> <prompt>"
 
 Parse the arguments: first word is the preset ID, rest is the prompt.
 
-Look up the preset from the injected Models context:
-- If preset type is "worker" → spawn a Worker agent with the preset's model and effort
-- If preset type is "bridge" → spawn a Bridge agent, passing --preset to trib-agent
-- If preset not found → warn user, list available presets, fall back to current Claude Code model as Worker
+Look up the preset from the injected Models context (the "Available presets" list in the system prompt).
+If the Models context is missing, read presets directly from `${CLAUDE_PLUGIN_DATA}/agent-config.json`.
+
+Routing by preset type:
+- **worker** → spawn Agent with `subagent_type: "Worker"`, set `model` to the preset's model (opus/sonnet/haiku)
+- **bridge** → spawn Agent with `subagent_type: "Bridge"`, include `--preset <id>` in the prompt
+- **not found** → warn user, list available presets, fall back to current model as Worker
 
 Spawn the agent with:
 - run_in_background: true

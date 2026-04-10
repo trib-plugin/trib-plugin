@@ -11,7 +11,7 @@ The user's prompt IS the question to send. Pipe it via stdin using a heredoc:
 
 ```
 Bash({
-  command: 'CLAUDE_PLUGIN_DATA="C:/Users/tempe/.claude/plugins/data/trib-plugin-trib-plugin" node "C:/Users/tempe/.claude/plugins/marketplaces/trib-plugin/external_plugins/trib-plugin/ask.mjs" <<\'ASKEOF\'\n<prompt here>\nASKEOF',
+  command: 'node "${CLAUDE_PLUGIN_ROOT}/ask.mjs" <<\'ASKEOF\'\n<prompt here>\nASKEOF',
   description: "trib-agent ask"
 })
 ```
