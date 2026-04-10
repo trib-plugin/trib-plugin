@@ -10,11 +10,12 @@
  *   3. channels.md   (when channel backend configured)
  *   4. search.md     (when search-config.json has enabled)
  *   5. agent.md      (always)
- *   6. context.md    (auto-generated core memory snapshot)
- *   7. user.md       (user profile)
- *   8. bot.md        (bot persona)
- *   9. user name     (from memory-config.json user.name)
- *  10. user title    (from memory-config.json user.title)
+ *   6. models        (from agent-config.json presets)
+ *   7. context.md    (auto-generated core memory snapshot)
+ *   8. user.md       (user profile)
+ *   9. bot.md        (bot persona)
+ *  10. user name     (from memory-config.json user.name)
+ *  11. user title    (from memory-config.json user.title)
  */
 
 const fs = require('fs');
@@ -80,19 +81,32 @@ if (searchConfig.enabled) {
 const agent = readOptional(path.join(RULES_DIR, 'agent.md'));
 if (agent) parts.push(agent);
 
-// --- 6. Context (auto-generated core memory snapshot) ---
+// --- 6. Models (from agent-config.json presets) ---
+const agentConfig = readJson(path.join(DATA_DIR, 'agent-config.json'));
+if (agentConfig.presets && agentConfig.presets.length > 0) {
+  const lines = ['# Models'];
+  if (agentConfig.guide) lines.push('', agentConfig.guide);
+  lines.push('', '## Available presets');
+  for (const p of agentConfig.presets) {
+    const detail = [p.type, p.model, p.effort].filter(Boolean).join(', ');
+    lines.push(`- ${p.id} (${detail})`);
+  }
+  parts.push(lines.join('\n'));
+}
+
+// --- 7. Context (auto-generated core memory snapshot) ---
 const contextContent = readOptional(path.join(HISTORY_DIR, 'context.md'));
 if (contextContent) parts.push(contextContent);
 
-// --- 7. User profile ---
+// --- 8. User profile ---
 const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
 if (userProfileContent) parts.push(userProfileContent);
 
-// --- 8. Bot persona ---
+// --- 9. Bot persona ---
 const botContent = readOptional(path.join(HISTORY_DIR, 'bot.md'));
 if (botContent) parts.push(botContent);
 
-// --- 9-10. User name & title (from memory-config.json) ---
+// --- 10-11. User name & title (from memory-config.json) ---
 const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
 const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
 if (userName) {

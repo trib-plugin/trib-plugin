@@ -9,8 +9,10 @@ description: "This skill should be used when the user approves a plan and says '
 2. **TaskCreate** — Split plan into tasks (by scope, not by file)
 3. **Task Loop** (repeat per task)
    - TaskUpdate(in_progress)
-   - Assign Agent (Agent-a, b, c, d)
-     - Independent work → multiple Agents in one message (parallel)
+   - Assign via /assign with task's preset (from metadata or Models guide)
+     - worker preset → Worker agent (Claude)
+     - bridge preset → Bridge agent (external model)
+     - Independent work → multiple /assign in parallel
      - Dependent work → sequential
    - Agent prompt must include: goal, target file paths, constraints, completion criteria
 

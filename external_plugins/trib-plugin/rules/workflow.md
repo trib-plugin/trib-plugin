@@ -12,6 +12,9 @@ Every task starts with /plan.
 5. No push/deploy/build without explicit user request.
 6. Verify worker output with Read before reporting to user.
 
+## Skill invocation
+Each phase MUST be invoked via the Skill tool. Do NOT skip or mentally substitute any phase.
+
 ## Red Flags — STOP if you think:
 | Thought | Reality |
 |---------|---------|

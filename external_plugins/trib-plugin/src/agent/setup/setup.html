@@ -326,6 +326,17 @@
       </div>
 
       <div class="sec">
+        <div class="sec-title">Model Guide</div>
+        <div class="sec-body" style="padding:14px">
+          <textarea id="guide-text" rows="3" style="width:100%;resize:vertical;background:rgba(0,0,0,0.25);border:1px solid var(--border);border-radius:5px;color:var(--text-1);font-size:12px;font-family:'SF Mono','Cascadia Code',monospace;padding:8px 10px;line-height:1.5" placeholder="e.g. Code work: opus-max, review: gpt5.4, light tasks: sonnet-mid"></textarea>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <button class="icon-btn edit-btn" onclick="saveGuide()" style="height:30px;padding:0 14px;font-size:12px">Save Guide</button>
+            <span id="guide-status" style="font-size:11px;color:var(--text-4)"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
         <div class="sec-title">Saved Presets</div>
         <div class="sec-body" id="preset-list">
           <div class="empty">Loading...</div>
@@ -482,6 +493,10 @@ async function loadData() {
 }
 
 function renderAll() {
+  // Guide
+  const guideEl = document.getElementById('guide-text');
+  if (guideEl && config.guide != null) guideEl.value = config.guide;
+
   const c = config.providers || {};
 
   // API keys
@@ -607,6 +622,24 @@ async function doSave(data, panelId) {
   } catch {
     if (warn) warn.textContent = 'Save failed';
     if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+  }
+}
+
+// ----- Guide -----
+
+async function saveGuide() {
+  const text = document.getElementById('guide-text').value;
+  const status = document.getElementById('guide-status');
+  status.textContent = 'Saving...';
+  try {
+    await fetch('/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ guide: text }) });
+    status.style.color = 'var(--green)';
+    status.textContent = 'Saved';
+    isDirty = false;
+    setTimeout(() => { status.textContent = ''; status.style.color = 'var(--text-4)'; }, 1500);
+  } catch {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Save failed';
   }
 }
 

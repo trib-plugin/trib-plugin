@@ -181,6 +181,9 @@ function mergeConfig(existing, data) {
   const config = { ...existing };
   if (!config.providers) config.providers = {};
 
+  // Guide
+  if (data.guide !== undefined) config.guide = data.guide;
+
   // API keys
   if (data.providers) {
     for (const [name, val] of Object.entries(data.providers)) {
