@@ -179,8 +179,8 @@ try {
       let entryTs = serverTs
       const srcStat = statSync(entryTs)
       try {
-        const bundleStat = statSync(serverJs)
-        if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
+        // Always rebuild — source files beyond server.ts may have changed
+      void 0
       } catch {}
       const result = spawnSync(esbuildBin, [
         entryTs, '--bundle', '--platform=node', '--format=esm',
