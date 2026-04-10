@@ -9,6 +9,10 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
+// ── Environment (must be set before any module imports) ───────────────
+
+process.env.TRIB_UNIFIED = '1'
+
 import {
   TOOL_DEFS as CHANNELS_TOOLS,
   init as channelsInit,
@@ -16,10 +20,6 @@ import {
   start as channelsStart,
   stop as channelsStop,
 } from './src/channels/index'
-
-// ── Environment ────────────────────────────────────────────────────────
-
-process.env.TRIB_UNIFIED = '1'
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(import.meta.url))
 
@@ -146,16 +146,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   process.stderr.write(`[trib-plugin] unified server starting (v${PLUGIN_VERSION})\n`)
 
+  // Connect transport FIRST — Claude Code has a short timeout for MCP handshake
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  process.stderr.write(`[trib-plugin] MCP server connected, initializing modules...\n`)
+
   // Init modules (order matters: memory first, then agent, then channels)
   await memoryInit()
   await agentInit()
   await channelsInit(server)  // channels needs shared MCP server for notifications
-
-  // Connect transport BEFORE starting modules (prevents notification loss)
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
-
-  process.stderr.write(`[trib-plugin] MCP server connected, starting modules...\n`)
 
   // Start modules (transport already connected, notifications will work)
   await searchStart()

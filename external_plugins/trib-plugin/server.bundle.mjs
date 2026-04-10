@@ -5951,13 +5951,13 @@ server.setRequestHandler(CallToolRequestSchema2, async (request3) => {
 async function main() {
   process.stderr.write(`[trib-plugin] unified server starting (v${PLUGIN_VERSION2})
 `);
+  const transport = new StdioServerTransport2();
+  await server.connect(transport);
+  process.stderr.write(`[trib-plugin] MCP server connected, initializing modules...
+`);
   await memoryInit();
   await agentInit();
   await init(server);
-  const transport = new StdioServerTransport2();
-  await server.connect(transport);
-  process.stderr.write(`[trib-plugin] MCP server connected, starting modules...
-`);
   await searchStart();
   await memoryStart();
   await agentStart();

@@ -172,15 +172,15 @@ try {
   serverFile = prebuiltBundle
   log('using pre-built bundle')
 } catch {
-  // No pre-built bundle — build at runtime
+  // No pre-built bundle — try root bundle or build at runtime
   log('no pre-built bundle, building at runtime...')
   function buildBundle() {
     try {
       let entryTs = serverTs
       const srcStat = statSync(entryTs)
       try {
-        // Always rebuild — source files beyond server.ts may have changed
-      void 0
+        const bundleStat = statSync(serverJs)
+        if (bundleStat.mtimeMs >= srcStat.mtimeMs) return true
       } catch {}
       const result = spawnSync(esbuildBin, [
         entryTs, '--bundle', '--platform=node', '--format=esm',
