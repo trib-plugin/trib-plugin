@@ -1,11 +1,11 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { initProviders, getAllProviders } from './orchestrator/providers/registry.js';
-import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.js';
-import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset } from './orchestrator/config.js';
-import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.js';
-import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.js';
+import { initProviders, getAllProviders } from './orchestrator/providers/registry.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.mjs';
+import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset } from './orchestrator/config.mjs';
+import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.mjs';
+import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { request as httpRequest } from 'http';

@@ -4,3 +4,10 @@ node_modules/
 *.sqlite-wal
 .DS_Store
 .venv/
+
+# Plugin runtime data (never commit — per-user local state)
+external_plugins/*/.data/
+external_plugins/*/mcp.lock
+external_plugins/*/mcp-debug.log
+external_plugins/*/tools-cache.json
+external_plugins/*/.embeddings.cache.json
