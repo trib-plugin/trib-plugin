@@ -215,9 +215,8 @@ ${it.prompt}`).join("\n\n")}`;
   }
   resolveChannel(label) {
     if (!label || !this.channelsConfig) return "";
-    const entry = this.channelsConfig[label] ?? this.channelsConfig?.channels?.[label];
-    if (!entry) return label;
-    return typeof entry === "string" ? entry : entry.id ?? label;
+    const entry = this.channelsConfig?.[label];
+    return entry?.channelId ?? label;
   }
   /** Remove items from queue — after processing, dismissal, or any resolution */
   resolveItems(name, status = "done") {

@@ -697,11 +697,8 @@ ${preferredTopicText}
   // ── Helpers ─────────────────────────────────────────────────────────
   /** Resolve a channel label to its platform ID via channelsConfig, fallback to raw value */
   resolveChannel(label) {
-    const nested = this.channelsConfig?.channels?.[label]?.id;
-    if (nested) return nested;
-    const flat = this.channelsConfig?.[label];
-    if (flat?.channelId) return flat.channelId;
-    if (flat?.id) return flat.id;
+    const entry = this.channelsConfig?.[label];
+    if (entry?.channelId) return entry.channelId;
     return label;
   }
   /** Resolve prompt: try file first, fall back to inline text */

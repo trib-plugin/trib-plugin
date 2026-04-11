@@ -127,11 +127,8 @@ let mcpServer = new Server(
 );
 function resolveChannelLabel(channelsConfig, label) {
   if (!label || !channelsConfig) return label;
-  const nested = channelsConfig?.channels?.[label];
-  if (nested?.id) return nested.id;
-  const flat = channelsConfig[label];
-  if (flat?.channelId) return flat.channelId;
-  if (flat?.id) return flat.id;
+  const entry = channelsConfig[label];
+  if (entry?.channelId) return entry.channelId;
   return label;
 }
 let channelBridgeActive = false;
@@ -570,8 +567,8 @@ function bindPersistedTranscriptIfAny() {
   if (!currentStatus.channelId && channelBridgeActive) {
     const chCfg = config.channelsConfig;
     const mainLabel = config.mainChannel ?? "main";
-    const mainEntry = chCfg?.channels?.[mainLabel] ?? chCfg?.[mainLabel];
-    const mainId = mainEntry?.channelId ?? mainEntry?.id;
+    const mainEntry = chCfg?.[mainLabel];
+    const mainId = mainEntry?.channelId;
     if (mainId) {
       statusState.update((state) => {
         state.channelId = mainId;
@@ -1720,15 +1717,13 @@ function shouldDropDuplicateInbound(msg) {
   return false;
 }
 function resolveInboundRoute(chatId) {
-  const channels = config.channelsConfig?.channels ?? {};
-  const sourceEntry = Object.entries(channels).find(([, entry]) => entry.id === chatId);
-  const sourceLabel = sourceEntry?.[0];
-  const sourceMode = sourceEntry?.[1].mode ?? "interactive";
+  const main = config.channelsConfig?.main;
+  const isMain = typeof main === "object" && main !== null && main.channelId === chatId;
   return {
     targetChatId: chatId,
     sourceChatId: chatId,
-    sourceLabel,
-    sourceMode
+    sourceLabel: isMain ? "main" : undefined,
+    sourceMode: (isMain && main.mode) || "interactive"
   };
 }
 const inboundQueue = (() => {
@@ -2064,8 +2059,7 @@ if (process.env.TRIB_UNIFIED !== "1") {
     } else {
       void (async () => {
         fs.writeFileSync(greetingDone, today);
-        const mainLabel = config.channelsConfig?.main || "general";
-        const greetChannel = config.channelsConfig?.channels?.[mainLabel]?.id || "";
+        const greetChannel = config.channelsConfig?.main?.channelId || "";
         if (!greetChannel) return;
         const bot = loadBotConfig();
         const quietSchedule = bot.quiet?.schedule;

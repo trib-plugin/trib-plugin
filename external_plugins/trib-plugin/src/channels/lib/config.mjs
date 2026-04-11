@@ -19,11 +19,9 @@ const DEFAULT_CONFIG = {
   backend: "discord",
   discord: { token: "" },
   access: DEFAULT_ACCESS,
+  mainChannel: "main",
   channelsConfig: {
-    main: "general",
-    channels: {
-      general: { id: "", mode: "interactive" }
-    }
+    main: { channelId: "", mode: "interactive" }
   }
 };
 function loadConfig() {
@@ -41,23 +39,6 @@ function loadConfig() {
       }
     }
     const accessChannels = { ...raw.access?.channels ?? {} };
-    const chCfg = raw.channelsConfig;
-    if (chCfg) {
-      for (const entry of Object.values(chCfg)) {
-        const id = entry?.channelId ?? entry?.id;
-        if (typeof id === "string" && id && !(id in accessChannels)) {
-          accessChannels[id] = {};
-        }
-      }
-      if (chCfg.channels) {
-        for (const entry of Object.values(chCfg.channels)) {
-          const id = entry?.id;
-          if (typeof id === "string" && id && !(id in accessChannels)) {
-            accessChannels[id] = {};
-          }
-        }
-      }
-    }
     return {
       ...DEFAULT_CONFIG,
       ...raw,
@@ -76,7 +57,7 @@ function loadConfig() {
       writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n");
       process.stderr.write(
         `trib-plugin: default config created at ${CONFIG_FILE}
-  edit discord.token and channelsConfig.channels.general.id to connect.
+  edit discord.token and channelsConfig.main.channelId to connect.
 `
       );
       return DEFAULT_CONFIG;

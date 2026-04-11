@@ -39,6 +39,8 @@ Team config `members` persists across sessions but in-process agents die with th
 
 Do not cleanup blindly — removing an entry for a still-alive agent breaks coordination. Only remove entries known to be dead.
 
+**Session start protocol**: When `TeamCreate` fails with "already exists", read `~/.claude/teams/<team>/config.json` first, filter `members` down to only the agents living in the current session (match against `leadSessionId` and what you actually spawned this session), write the filtered list back, and **only then** call the first `Agent` spawn. This prevents stale dead-session entries from causing `worker` → `worker-N` auto-renames and keeps role names stable across sessions.
+
 ## Bridge spawn pattern
 - Treat Bridge agents as thin pipes. The Bridge runs on haiku and only forwards.
 - ALWAYS embed an explicit session id in the Bash command so the Bridge call does NOT inherit the user's active session. Naming convention: `:bridge_<role>_<shortHash>`.
@@ -55,6 +57,14 @@ Do not cleanup blindly — removing an entry for a still-alive agent breaks coor
 
 - The explicit session id keeps each Bridge call in its own room — never mixed with the user's interactive ask sessions.
 - External LLM round-trip takes 5-30s. Don't conclude "failed" on early idle notifications; wait for the SendMessage report.
+
+## Message discipline
+
+When you send a worker a **stand-down** message and then immediately receive approval for new work, do NOT just send the new task — messages can arrive out of order and the worker will treat them as contradictory. The new-task message must **explicitly retract** the stand-down, for example:
+
+> Previous stand-down retracted. Proceed with Task #N.
+
+Include the new spec in the same message. Without this retraction the worker will block on the conflict and ask for clarification, costing a full round-trip.
 
 ## Lead duties
 - Read-verify every worker output. Never execute task work directly.

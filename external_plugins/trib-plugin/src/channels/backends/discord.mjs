@@ -215,6 +215,7 @@ class DiscordBackend {
     });
     await this.client.login(this.token);
     await readyPromise;
+    this.persistAccessFromChannelsConfig();
     if (!this.isStatic) {
       this.approvalTimer = setInterval(() => this.checkApprovals(), 5e3);
     }
@@ -369,20 +370,40 @@ class DiscordBackend {
       const parsed = JSON.parse(raw);
       const access = normalizeAccess(parsed.access ?? this.initialAccess);
       if (parsed.channelsConfig) {
-        for (const [key, entry] of Object.entries(parsed.channelsConfig)) {
-          if (key === "channels" && typeof entry === "object" && entry !== null) {
-            for (const ch of Object.values(entry)) {
-              if (ch?.id && !(ch.id in access.channels)) access.channels[ch.id] = {};
+        for (const entry of Object.values(parsed.channelsConfig)) {
+          if (typeof entry === "object" && entry !== null) {
+            const id = entry.channelId;
+            if (id && !(id in access.channels)) {
+              access.channels[id] = { requireMention: false, allowFrom: [] };
             }
-          } else if (typeof entry === "object" && entry !== null) {
-            const id = entry.channelId ?? entry.id;
-            if (id && !(id in access.channels)) access.channels[id] = {};
           }
         }
       }
       return access;
     } catch {
       return this.initialAccess;
+    }
+  }
+  persistAccessFromChannelsConfig() {
+    if (this.isStatic || !this.configFile) return;
+    try {
+      const raw = readFileSync(this.configFile, "utf8");
+      const parsed = JSON.parse(raw);
+      if (!parsed.channelsConfig) return;
+      const access = normalizeAccess(parsed.access);
+      let changed = false;
+      for (const entry of Object.values(parsed.channelsConfig)) {
+        if (typeof entry === "object" && entry !== null) {
+          const id = entry.channelId;
+          if (id && !(id in access.channels)) {
+            access.channels[id] = { requireMention: false, allowFrom: [] };
+            changed = true;
+          }
+        }
+      }
+      if (changed) this.saveAccess(access);
+    } catch (err) {
+      process.stderr.write(`trib-plugin discord: persistAccessFromChannelsConfig failed: ${err}\n`);
     }
   }
   loadAccess() {
@@ -464,7 +485,7 @@ class DiscordBackend {
     const policy = access.channels[channelId];
     if (!policy) return { action: "drop" };
     const channelAllowFrom = policy.allowFrom ?? [];
-    const requireMention = policy.requireMention ?? true;
+    const requireMention = policy.requireMention ?? false;
     if (channelAllowFrom.length > 0 && !channelAllowFrom.includes(senderId)) {
       return { action: "drop" };
     }

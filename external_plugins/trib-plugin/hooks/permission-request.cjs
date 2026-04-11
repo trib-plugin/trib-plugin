@@ -20,43 +20,16 @@ const RUNTIME_ROOT = path.join(os.tmpdir(), 'trib-plugin');
 try { fs.mkdirSync(RUNTIME_ROOT, { recursive: true }); } catch {}
 const ACTIVE_INSTANCE_FILE = path.join(RUNTIME_ROOT, 'active-instance.json');
 
-// Skip when channels are not enabled in this session.
-const SESSION_SIGNAL_FILE = path.join(RUNTIME_ROOT, 'session-signal.json');
+// Fast bailout: if Discord channels aren't configured in config.json, skip
+// the permission flow entirely. Avoids a slow PowerShell Win32_Process scan
+// on Windows that used to fire on every permission request.
 try {
-  const sig = JSON.parse(fs.readFileSync(SESSION_SIGNAL_FILE, 'utf8'));
-  if (sig.channelsEnabled === false) process.exit(0);
-} catch {}
-
-// Verify this Claude Code process was actually started with --channels.
-// bridge-state.json can be stale from a previous session.
-function detectChannelFlagHook() {
-  const { execSync } = require('child_process');
-  const flagRe = /--channels\b|--dangerously-load-development-channels\b/;
-  // Walk parent PID chain — never scan all processes (false positives in multi-session).
-  let pid = process.ppid;
-  for (let depth = 0; pid && pid > 1 && depth < 6; depth++) {
-    try {
-      if (process.platform === 'win32') {
-        const out = execSync(
-          `powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").CommandLine"`,
-          { encoding: 'utf8', timeout: 5000 }
-        ).trim();
-        if (flagRe.test(out)) return true;
-        const ppidOut = execSync(
-          `powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").ParentProcessId"`,
-          { encoding: 'utf8', timeout: 5000 }
-        ).trim();
-        pid = parseInt(ppidOut, 10);
-      } else {
-        const cmdLine = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 3000 });
-        if (flagRe.test(cmdLine)) return true;
-        pid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: 'utf8', timeout: 3000 }).trim(), 10);
-      }
-    } catch { break; }
-  }
-  return false;
-}
-if (!detectChannelFlagHook()) process.exit(0);
+  const cfgPath = path.join(DATA_DIR, 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  const hasToken = !!(cfg && cfg.discord && cfg.discord.token);
+  const mainChannelId = cfg && cfg.channelsConfig && cfg.channelsConfig.main && cfg.channelsConfig.main.channelId;
+  if (!hasToken || !mainChannelId) process.exit(0);
+} catch { process.exit(0); }
 
 const POLL_INTERVAL = 2000;
 const TIMEOUT = 900000; // 15 minutes
@@ -137,9 +110,7 @@ process.stdin.on('end', async () => {
     const token = config.discord && config.discord.token;
     if (!token) process.exit(0);
     const access = config.access || null;
-    const mainLabel = config.channelsConfig && config.channelsConfig.main;
-    const channels = config.channelsConfig && config.channelsConfig.channels;
-    const channelId = mainLabel && channels && channels[mainLabel] && channels[mainLabel].id;
+    const channelId = config.channelsConfig && config.channelsConfig.main && config.channelsConfig.main.channelId;
     if (!channelId) process.exit(0);
 
     // Clean up stale pending files before creating a new request.
