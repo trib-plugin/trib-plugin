@@ -1,11 +1,22 @@
 ## Workflow
 
-Every task starts with /plan.
+Every task starts with the Plan phase.
 
-/plan → /execute → /verify → /test → /ship → /retro
+Plan phase → Execute phase → Verify phase → Test phase → Ship phase → Retro phase
+
+## Phase → skill mapping
+
+Each phase is driven by its own skill. Invoke the skill at phase entry:
+
+- Plan phase    → trib-plan
+- Execute phase → trib-execute
+- Verify phase  → trib-verify
+- Test phase    → trib-test
+- Ship phase    → trib-ship
+- Retro phase   → trib-retro
 
 ## Non-negotiable
-1. /plan before any work — always.
+1. Plan phase before any work — always.
 2. TeamCreate before TaskCreate — always.
 3. Parallel for independent work — one message, multiple Agent calls.
 4. No code changes before user approval.
@@ -13,16 +24,16 @@ Every task starts with /plan.
 6. Verify worker output with Read before reporting to user.
 
 ## Skill invocation
-Each phase MUST be invoked via the Skill tool. Do NOT skip or mentally substitute any phase.
+Each phase MUST be invoked via its skill (see mapping above). Do NOT skip or mentally substitute any phase.
 
 ## Red Flags — STOP if you think:
 | Thought | Reality |
 |---------|---------|
-| "Too simple for /plan" | Every task starts with /plan |
+| "Too simple for the Plan phase" | Every task starts with the Plan phase |
 | "Just spin up one agent quick" | Simple standalone = Agent + background. Real work = full workflow |
 | "Worker said it's done" | Not done until verified with Read |
-| "Don't need recall" | /plan includes recall. Do it |
-| "Faster without approval" | /plan → approve → /execute always |
+| "Don't need recall" | Plan phase includes recall. Do it |
+| "Faster without approval" | Plan phase → approve → Execute phase always |
 | "Shutdown means done" | TeamDelete to fully clean up |
 
 ## Agent Naming
