@@ -18,7 +18,7 @@
  *   2. memory.md     (when memory-config.json has enabled)
  *   3. channels.md   (when channel backend configured)
  *   4. search.md     (when search-config.json has enabled)
- *   5. agent.md      (always)
+ *   5. team.md       (always)
  *   6. models        (from agent-config.json presets)
  *   7. context.md    (auto-generated core memory snapshot)
  *   8. user.md       (user profile)

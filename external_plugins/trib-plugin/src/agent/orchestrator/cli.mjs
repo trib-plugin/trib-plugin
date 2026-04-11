@@ -22,6 +22,7 @@ import {
     listSessions,
     closeSession,
     clearSessionMessages,
+    findSessionByCriteria,
 } from './session/manager.mjs';
 import { createJob, completeJob } from './jobs.mjs';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
@@ -131,7 +132,8 @@ async function cmdAsk(args) {
     }
 
     // Resolve session — skip active session when --preset is explicit
-    let sessionId = explicitSession || (presetName ? null : readActiveSession());
+    // Raw provider/model args also force a fresh session — prevents sticky effort/tools from a previous session leaking into the new model call.
+    let sessionId = explicitSession || ((presetName || provider || model) ? null : readActiveSession());
     let session = sessionId ? resumeSession(sessionId) : null;
 
     if (!session) {
@@ -140,7 +142,13 @@ async function cmdAsk(args) {
             const p = config.presets.find(x => x.id === presetName || x.name === presetName);
             if (p) {
                 await ensureMcpConnected(config);
-                session = createSession({ preset: p, agent: role, cwd: process.cwd() });
+                // Reuse existing session for same owner+preset when no explicit session id
+                const sessionOwner = explicitSession?.startsWith('bridge_') ? 'bridge' : 'user';
+                if (!explicitSession) {
+                    const existing = findSessionByCriteria({ owner: sessionOwner, presetName: p.name });
+                    if (existing) session = resumeSession(existing.id);
+                }
+                if (!session) session = createSession({ preset: p, agent: role, owner: sessionOwner, cwd: process.cwd() });
             } else {
                 process.stderr.write(`preset "${presetName}" not found.\n`);
                 process.exit(1);
@@ -157,7 +165,13 @@ async function cmdAsk(args) {
                 process.exit(1);
             }
             await ensureMcpConnected(config);
-            session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, preset: 'full', cwd: process.cwd() });
+            // Reuse existing session for same owner+provider+model when no explicit session id
+            const sessionOwner = explicitSession?.startsWith('bridge_') ? 'bridge' : 'user';
+            if (!explicitSession) {
+                const existing = findSessionByCriteria({ owner: sessionOwner, provider: resolvedProvider, model: resolvedModel });
+                if (existing) session = resumeSession(existing.id);
+            }
+            if (!session) session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, owner: sessionOwner, preset: 'full', cwd: process.cwd() });
         } else {
             // Default preset
             const preset = getDefaultPreset(config);

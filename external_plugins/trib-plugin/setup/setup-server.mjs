@@ -24,6 +24,21 @@ const BOT_PATH = join(DATA_DIR, 'bot.json');
 const AGENT_DATA_DIR = DATA_DIR;
 const AGENT_CONFIG_PATH = join(AGENT_DATA_DIR, 'agent-config.json');
 
+// -- Workflow paths --
+const USER_WORKFLOW_PATH = join(DATA_DIR, 'user-workflow.json');
+const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
+
+const DEFAULT_USER_WORKFLOW = {
+  roles: [
+    { name: "worker", preset: "opus-max" },
+    { name: "debugger", preset: "GPT5.4" },
+    { name: "reviewer", preset: "GPT5.4" },
+    { name: "explorer", preset: "gpt5.4-mini" }
+  ]
+};
+
+const DEFAULT_USER_WORKFLOW_MD = "범용 작업은 worker, 디버그는 debugger, 리뷰는 reviewer, 탐색은 explorer에 맡긴다.\n";
+
 // -- Memory paths --
 const MEMORY_DATA_DIR = DATA_DIR;
 const MEMORY_CONFIG_PATH = join(MEMORY_DATA_DIR, 'memory-config.json');
@@ -64,6 +79,25 @@ function writeMemoryConfig(data) { writeJsonFile(MEMORY_CONFIG_PATH, data); }
 
 function readSearchConfig() { return readJsonFile(SEARCH_CONFIG_PATH); }
 function writeSearchConfig(data) { writeJsonFile(SEARCH_CONFIG_PATH, data); }
+
+function readUserWorkflow() {
+  if (!existsSync(USER_WORKFLOW_PATH)) return DEFAULT_USER_WORKFLOW;
+  try { return JSON.parse(readFileSync(USER_WORKFLOW_PATH, 'utf8')); }
+  catch { return DEFAULT_USER_WORKFLOW; }
+}
+function writeUserWorkflow(data) { writeJsonFile(USER_WORKFLOW_PATH, data); }
+
+function readUserWorkflowMd() {
+  if (!existsSync(USER_WORKFLOW_MD_PATH)) return DEFAULT_USER_WORKFLOW_MD;
+  try { return readFileSync(USER_WORKFLOW_MD_PATH, 'utf8'); }
+  catch { return DEFAULT_USER_WORKFLOW_MD; }
+}
+function writeUserWorkflowMd(content) {
+  mkdirSync(dirname(USER_WORKFLOW_MD_PATH), { recursive: true });
+  const tmp = USER_WORKFLOW_MD_PATH + '.tmp';
+  writeFileSync(tmp, content, 'utf8');
+  renameSync(tmp, USER_WORKFLOW_MD_PATH);
+}
 
 // -- HTTPS helpers --
 
@@ -671,7 +705,7 @@ const server = http.createServer(async (req, res) => {
     const filePath = join(SCHEDULES_DIR, name, 'prompt.md');
     if (!existsSync(filePath)) { mkdirSync(join(SCHEDULES_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
     if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
-    else { exec(`open "${filePath}"`); }
+    else { spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -727,7 +761,7 @@ const server = http.createServer(async (req, res) => {
     const filePath = join(WEBHOOKS_DIR, name, 'instructions.md');
     if (!existsSync(filePath)) { mkdirSync(join(WEBHOOKS_DIR, name), { recursive: true }); writeFileSync(filePath, '', 'utf8'); }
     if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
-    else { exec(`open "${filePath}"`); }
+    else { spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -1141,6 +1175,57 @@ const server = http.createServer(async (req, res) => {
     console.log('  Config saved: general/promptInjection');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, promptInjection: merged }));
+    return;
+  }
+
+  // ============================================================
+  // WORKFLOW MODULE ROUTES
+  // ============================================================
+
+  if (req.method === 'GET' && path === '/workflow/load') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(readUserWorkflow()));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/workflow/save') {
+    const data = await readBody(req);
+    writeUserWorkflow(data);
+    console.log('  Config saved: user-workflow');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/workflow/md') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(readUserWorkflowMd());
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/workflow/md') {
+    let body = '';
+    await new Promise((resolve, reject) => {
+      req.on('data', c => { body += c; });
+      req.on('end', resolve);
+      req.on('error', reject);
+    });
+    writeUserWorkflowMd(body);
+    console.log('  Config saved: user-workflow.md');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/workflow/file') {
+    if (!existsSync(USER_WORKFLOW_MD_PATH)) {
+      mkdirSync(dirname(USER_WORKFLOW_MD_PATH), { recursive: true });
+      writeFileSync(USER_WORKFLOW_MD_PATH, DEFAULT_USER_WORKFLOW_MD, 'utf8');
+    }
+    if (isWin) { spawn('cmd', ['/c', 'start', '', USER_WORKFLOW_MD_PATH], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
+    else { spawn('open', [USER_WORKFLOW_MD_PATH], { detached: true, stdio: 'ignore' }).unref(); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 

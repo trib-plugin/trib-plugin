@@ -1,47 +1,21 @@
 ## Workflow
 
-Every task starts with the Plan phase.
+Plan → Execute → Verify → Ship → Retro.
 
-Plan phase → Execute phase → Verify phase → Test phase → Ship phase → Retro phase
+- Plan: discuss with user, refine until both agree on the spec, wait for explicit approval.
+- Execute: implement the approved plan. Use the team for actual code/file modification work (see Team rules).
+- Verify: Read each changed file. Reload/restart affected services, exercise runtime. Issues → back to Execute.
+- Ship: git status → propose commit message → commit on approval → push on approval. Format: YYYY-MM-DD HH:MM + description, no Claude signatures.
+- Retro: self-eval. Workflow/rule proposal only if warranted.
 
-## Phase → skill mapping
-
-Each phase is driven by its own skill. Invoke the skill at phase entry:
-
-- Plan phase    → trib-plan
-- Execute phase → trib-execute
-- Verify phase  → trib-verify
-- Test phase    → trib-test
-- Ship phase    → trib-ship
-- Retro phase   → trib-retro
+The Plan→Execute→Verify→Ship→Retro cycle applies to actual work only
+(code/config changes, file modifications, commits, deployments).
+Track the current phase internally. Do not prefix responses with phase labels.
+Mention the phase in natural language only when entering a work cycle or
+transitioning between phases (e.g., "Entering Plan phase.", "Moving to Verify now.").
+For Q&A, investigation, explanation, or conversation, stay silent about phase.
 
 ## Non-negotiable
-1. Plan phase before any work — always.
-2. TeamCreate before TaskCreate — always.
-3. Parallel for independent work — one message, multiple Agent calls.
-4. No code changes before user approval.
-5. No push/deploy/build without explicit user request.
-6. Verify worker output with Read before reporting to user.
-
-## Skill invocation
-Each phase MUST be invoked via its skill (see mapping above). Do NOT skip or mentally substitute any phase.
-
-## Red Flags — STOP if you think:
-| Thought | Reality |
-|---------|---------|
-| "Too simple for the Plan phase" | Every task starts with the Plan phase |
-| "Just spin up one agent quick" | Simple standalone = Agent + background. Real work = full workflow |
-| "Worker said it's done" | Not done until verified with Read |
-| "Don't need recall" | Plan phase includes recall. Do it |
-| "Faster without approval" | Plan phase → approve → Execute phase always |
-| "Shutdown means done" | TeamDelete to fully clean up |
-
-## Agent Naming
-- Fixed names: Agent-a, Agent-b, Agent-c, Agent-d
-- Reuse for cache hits across tasks
-- New agent only when context exceeds useful scope
-
-## Simple standalone tasks
-- Agent + run_in_background: true
-- No team/task needed
-- Example: search check, exploration, test run
+1. No code changes before user approval.
+2. No build/push/deploy without explicit user request.
+3. Verify worker output with Read before reporting.

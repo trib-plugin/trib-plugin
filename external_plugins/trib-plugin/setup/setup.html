@@ -522,6 +522,11 @@
   }
   .r-link:hover { color: #fff; }
 
+  #panel-agent-providers .r-tag,
+  #panel-agent-providers .r-link {
+    margin-right: -6px;
+  }
+
   .r-validation {
     font-size: 11px; flex-shrink: 0;
     white-space: nowrap; transition: opacity 0.2s;
@@ -754,6 +759,7 @@
     <div class="cat-item" data-panel="advanced" onclick="switchCat(this)">Advanced</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Agent</div>
+    <div class="cat-item" data-panel="workflow-custom" onclick="switchCat(this)">Custom Workflow</div>
     <div class="cat-item" data-panel="agent-providers" onclick="switchCat(this)">Providers</div>
     <div class="cat-item" data-panel="agent-presets" onclick="switchCat(this)">Presets</div>
     <div class="cat-item" data-panel="agent-status" onclick="switchCat(this)">Status</div>
@@ -1424,6 +1430,34 @@
       </div>
     </div>
 
+    <!-- CUSTOM WORKFLOW -->
+    <div class="panel" id="panel-workflow-custom">
+      <div class="hdr"><h1>Custom Workflow</h1></div>
+      <div class="sec">
+        <div class="sec-desc">Define your own role→preset mapping and a free-form description. Injected into every session after the system workflow rules.</div>
+        <div class="sec-body">
+          <div style="padding:12px 14px;border-top:1px solid var(--border)">
+            <div style="display:flex;align-items:center;margin-bottom:6px">
+              <span style="font-size:11px;color:var(--text-3)">Description</span>
+              <span class="file-open" onclick="wfOpenDescription()">Open</span>
+            </div>
+            <textarea id="wf-description" class="r-input" placeholder="Free-form workflow description (markdown)." style="width:100%;height:150px;resize:vertical;font-family:inherit;padding:10px;line-height:1.5"></textarea>
+          </div>
+          <div class="r r-opt">
+            <div class="opt-body" style="width:100%">
+              <div class="opt-title">Roles</div>
+              <div id="wf-roles" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;"></div>
+              <button onclick="wfAddRole()" style="margin-top:8px;height:30px;padding:0 14px;background:rgba(139,145,240,0.15);border:1px solid var(--accent);border-radius:5px;color:var(--accent);font-size:12px;cursor:pointer;">+ Add Role</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-workflow-custom"></div>
+        <button class="save" onclick="wfSavePanel()">Save</button>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1596,6 +1630,117 @@ async function genSavePanel() {
   }
 }
 
+// ============================================================
+// CUSTOM WORKFLOW MODULE
+// ============================================================
+
+let wfConfig = { roles: [] };
+let wfMdContent = "";
+const PRESET_OPTIONS = ["opus-max","opus-mid","sonnet-high","sonnet-mid","haiku","GPT5.4","gemma","gpt5.4-mini"];
+
+async function wfLoadConfig() {
+  try {
+    const [jsonRes, mdRes] = await Promise.all([
+      fetch('/workflow/load'),
+      fetch('/workflow/md'),
+    ]);
+    const data = await jsonRes.json();
+    wfConfig.roles = Array.isArray(data.roles) ? data.roles : [];
+    wfMdContent = mdRes.ok ? await mdRes.text() : "";
+  } catch {
+    wfConfig.roles = [];
+    wfMdContent = "";
+  }
+  document.getElementById('wf-description').value = wfMdContent;
+  wfRenderRoles();
+}
+
+function wfRenderRoles() {
+  const host = document.getElementById('wf-roles');
+  host.innerHTML = '';
+  wfConfig.roles.forEach((role, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = role.name || '';
+    nameInput.placeholder = 'role name';
+    nameInput.className = 'r-input';
+    nameInput.style.cssText = 'flex:1;height:30px;';
+    nameInput.oninput = (e) => { wfConfig.roles[idx].name = e.target.value; isDirty = true; };
+    const presetSelect = document.createElement('select');
+    presetSelect.className = 'r-select md';
+    presetSelect.style.cssText = 'width:160px;height:30px;';
+    PRESET_OPTIONS.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      if (p === role.preset) opt.selected = true;
+      presetSelect.appendChild(opt);
+    });
+    presetSelect.onchange = (e) => { wfConfig.roles[idx].preset = e.target.value; isDirty = true; };
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '×';
+    delBtn.style.cssText = 'width:30px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:14px;';
+    delBtn.onclick = () => wfDeleteRole(idx);
+    row.appendChild(nameInput);
+    row.appendChild(presetSelect);
+    row.appendChild(delBtn);
+    host.appendChild(row);
+  });
+}
+
+function wfAddRole() {
+  wfConfig.roles.push({ name: '', preset: 'opus-max' });
+  isDirty = true;
+  wfRenderRoles();
+}
+
+function wfDeleteRole(idx) {
+  wfConfig.roles.splice(idx, 1);
+  isDirty = true;
+  wfRenderRoles();
+}
+
+async function wfSavePanel() {
+  const btn = document.querySelector('#panel-workflow-custom .save');
+  const warnEl = document.getElementById('warn-workflow-custom');
+  warnEl.textContent = '';
+  const mdText = document.getElementById('wf-description').value;
+  try {
+    const [r1, r2] = await Promise.all([
+      fetch('/workflow/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roles: wfConfig.roles })
+      }),
+      fetch('/workflow/md', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: mdText
+      }),
+    ]);
+    if (!r1.ok) throw new Error(await r1.text());
+    if (!r2.ok) throw new Error(await r2.text());
+    wfMdContent = mdText;
+    btn.classList.add('done');
+    btn.textContent = 'Saved';
+    setTimeout(() => { btn.classList.remove('done'); btn.textContent = 'Save'; }, 1500);
+    isDirty = false;
+  } catch (e) {
+    warnEl.textContent = 'Save failed: ' + (e.message || e);
+  }
+}
+
+async function wfOpenDescription() {
+  try {
+    await fetch('/workflow/md', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: document.getElementById('wf-description').value });
+    await fetch('/workflow/file');
+  } catch (e) {
+    alert('Open failed: ' + (e.message || e));
+  }
+}
+
 window.addEventListener('load', async () => {
   try {
     const g = await fetch('/generation').then(r => r.json());
@@ -1614,6 +1759,7 @@ window.addEventListener('load', async () => {
     loadMemoryData(),
     loadSearchConfig(),
     genLoadConfig(),
+    wfLoadConfig(),
   ]);
   results.forEach((r, i) => { if (r.status === 'rejected') console.error('[trib] loader', i, 'failed:', r.reason); });
 

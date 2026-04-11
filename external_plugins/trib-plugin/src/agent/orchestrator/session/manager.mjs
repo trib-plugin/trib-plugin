@@ -99,6 +99,7 @@ export function createSession(opts) {
         effort,
         fast,
         agent: opts.agent,
+        owner: opts.owner || 'user',
         cwd: opts.cwd,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -149,11 +150,24 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         messagesDropped,
     };
 }
+// --- find existing session by owner + preset/provider/model ---
+export function findSessionByCriteria({ owner, presetName, provider, model }) {
+    const sessions = listStoredSessions();
+    for (const s of sessions) {
+        if (owner && s.owner !== owner) continue;
+        if (presetName && s.presetName !== presetName) continue;
+        if (provider && s.provider !== provider) continue;
+        if (model && s.model !== model) continue;
+        return s;
+    }
+    return null;
+}
 // --- resume (reload tools for a stored session) ---
 export function resumeSession(sessionId, preset) {
     const session = loadSession(sessionId);
     if (!session)
         return null;
+    if (!session.owner) session.owner = 'user';
     // Refresh tools (MCP connections may have changed)
     const oldTools = session.tools || [];
     const skills = collectSkillsCached(session.cwd);
