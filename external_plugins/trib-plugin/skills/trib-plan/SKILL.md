@@ -7,7 +7,7 @@ description: "This skill should be used when the user requests work that needs p
 
 1. **Recall** — search_memories for past context (period "last", or query + "30d")
 2. **Search** — external info via search tool (batch for 2+)
-3. **Explore** — Glob/Grep/Read to assess the codebase
+3. **Explore** — Glob/Grep/Read to assess the codebase. If a file is too large for a single Read (token limit), sample its structure with Grep before making architectural assumptions. Treat "unread" as "unknown", not "absent".
 
 Run steps 1-3 silently.
 Wait for explicit user approval before execution.
