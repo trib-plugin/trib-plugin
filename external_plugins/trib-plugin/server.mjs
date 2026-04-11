@@ -16,8 +16,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, appendFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { readFileSync, appendFileSync, mkdirSync, watch as fsWatch } from 'fs'
+import { join, resolve as pathResolve } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 
@@ -135,6 +135,71 @@ setImmediate(() => {
     }
   } catch (e) {
     log(`claude_md reconcile failed: ${e && (e.stack || e.message) || e}`)
+  }
+})
+
+// ── CLAUDE.md managed block live watcher ───────────────────────────
+// After boot-time reconcile, watch the rules/config sources and rebuild
+// the managed block in-place whenever they change. Keeps the disk copy
+// of CLAUDE.md in sync so the next session start always sees the latest
+// rules, even if the user edited mid-session.
+//
+// Only active when injection.mode === 'claude_md'. In hook mode this is
+// a no-op (hook mode regenerates on every prompt anyway).
+//
+// All errors are contained: per-watcher try/catch plus an outer try/catch
+// so watcher setup failure never crashes the MCP server.
+setImmediate(() => {
+  try {
+    const cfgPath = join(PLUGIN_DATA, 'config.json')
+    let mainConfig = {}
+    try { mainConfig = JSON.parse(readFileSync(cfgPath, 'utf8')) } catch {}
+    const injection = (mainConfig && mainConfig.promptInjection) || {}
+    if (injection.mode !== 'claude_md') return
+
+    const targetPath = injection.targetPath || '~/.claude/CLAUDE.md'
+    const req = createRequire(import.meta.url)
+    const { buildInjectionContent } = req(join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'))
+    const { upsertManagedBlock, expandHome } = req(join(PLUGIN_ROOT, 'lib', 'claude-md-writer.cjs'))
+    const resolvedTarget = pathResolve(expandHome(targetPath))
+
+    let debounceTimer = null
+    const rebuild = triggerFilename => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null
+        try {
+          const content = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR: PLUGIN_DATA })
+          upsertManagedBlock(targetPath, content)
+          log(`[rules-watcher] rebuilt managed block (${content.length} chars) after ${triggerFilename}`)
+        } catch (e) {
+          log(`[rules-watcher] rebuild failed: ${e && (e.stack || e.message) || e}`)
+        }
+      }, 300)
+    }
+
+    const makeHandler = root => (_eventType, filename) => {
+      if (!filename) return
+      if (!/\.(md|json)$/i.test(filename)) return
+      const abs = pathResolve(root, filename)
+      if (abs === resolvedTarget) return
+      rebuild(filename)
+    }
+
+    const roots = [
+      join(PLUGIN_ROOT, 'rules'),
+      PLUGIN_DATA,
+    ]
+    for (const root of roots) {
+      try {
+        fsWatch(root, { recursive: true, persistent: true }, makeHandler(root))
+        log(`[rules-watcher] watching ${root}`)
+      } catch (e) {
+        log(`[rules-watcher] failed to watch ${root}: ${e && (e.stack || e.message) || e}`)
+      }
+    }
+  } catch (e) {
+    log(`[rules-watcher] setup failed: ${e && (e.stack || e.message) || e}`)
   }
 })
 
