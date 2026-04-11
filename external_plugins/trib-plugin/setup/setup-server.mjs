@@ -1105,6 +1105,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ============================================================
+  // GENERAL MODULE ROUTES
+  // ============================================================
+
+  if (req.method === 'GET' && path === '/general/config') {
+    const config = readConfig();
+    const pi = (config && typeof config.promptInjection === 'object' && config.promptInjection) || {};
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      promptInjection: {
+        mode: pi.mode === 'claude_md' ? 'claude_md' : 'hook',
+        targetPath: typeof pi.targetPath === 'string' && pi.targetPath ? pi.targetPath : '~/.claude/CLAUDE.md',
+      },
+    }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/general/save') {
+    const data = await readBody(req);
+    const existing = readConfig();
+    const next = { ...existing };
+    const prev = (existing && typeof existing.promptInjection === 'object' && existing.promptInjection) || {};
+    const merged = { ...prev };
+    if (data && (data.mode === 'hook' || data.mode === 'claude_md')) {
+      merged.mode = data.mode;
+    }
+    if (data && typeof data.targetPath === 'string' && data.targetPath.trim()) {
+      merged.targetPath = data.targetPath.trim();
+    }
+    if (!merged.mode) merged.mode = 'hook';
+    if (!merged.targetPath) merged.targetPath = '~/.claude/CLAUDE.md';
+    next.promptInjection = merged;
+    writeConfig(next);
+    console.log('  Config saved: general/promptInjection');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, promptInjection: merged }));
+    return;
+  }
+
   if (path === '/close') {
     windowOpen = false;
     res.writeHead(200);

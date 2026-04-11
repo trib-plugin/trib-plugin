@@ -19,6 +19,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { readFileSync, appendFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
+import { createRequire } from 'module'
 
 // ── Environment (required) ───────────────────────────────────────────
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
@@ -99,6 +100,43 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 // ── Transport ───────────────────────────────────────────────────────
 await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
+
+// ── CLAUDE.md managed block reconciliation ─────────────────────────
+// Runs fail-soft after the MCP handshake so the server is already
+// responsive. Any error is logged and swallowed — never crashes the
+// server or blocks tool calls.
+//
+//   mode === 'claude_md'  → upsert the managed block (strong enforcement)
+//   mode === 'hook' (default or missing) → remove any stale managed block
+//
+// This means toggling the setting back to hook mode and restarting
+// Claude Code automatically cleans up the previously written block —
+// no manual cleanup command needed.
+setImmediate(() => {
+  try {
+    const cfgPath = join(PLUGIN_DATA, 'config.json')
+    let mainConfig = {}
+    try { mainConfig = JSON.parse(readFileSync(cfgPath, 'utf8')) } catch {}
+    const injection = (mainConfig && mainConfig.promptInjection) || {}
+    const targetPath = injection.targetPath || '~/.claude/CLAUDE.md'
+    const req = createRequire(import.meta.url)
+    const { buildInjectionContent } = req(join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'))
+    const { upsertManagedBlock, removeManagedBlock, expandHome } = req(join(PLUGIN_ROOT, 'lib', 'claude-md-writer.cjs'))
+
+    if (injection.mode === 'claude_md') {
+      const content = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR: PLUGIN_DATA })
+      upsertManagedBlock(targetPath, content)
+      log(`claude_md: wrote managed block to ${expandHome(targetPath)} (${content.length} chars)`)
+    } else {
+      // Hook mode (default) — scrub any stale managed block so CLAUDE.md
+      // stays clean when the user toggles back.
+      const removed = removeManagedBlock(targetPath)
+      if (removed) log(`hook mode: removed stale managed block from ${expandHome(targetPath)}`)
+    }
+  } catch (e) {
+    log(`claude_md reconcile failed: ${e && (e.stack || e.message) || e}`)
+  }
+})
 
 // ── Eager init: channels (background workers) ────────────────────────
 setImmediate(() => {

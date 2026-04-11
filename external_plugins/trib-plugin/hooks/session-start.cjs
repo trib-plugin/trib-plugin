@@ -4,7 +4,16 @@
  * trib-plugin unified SessionStart hook
  *
  * Reads rules/*.md files and profile data, injects as additionalContext.
- * Injection order:
+ *
+ * Content is built by lib/rules-builder.cjs so that the MCP boot-time
+ * writer (claude_md mode) and this hook (hook mode) produce identical
+ * output.
+ *
+ * If config.promptInjection.mode === 'claude_md', this hook becomes a
+ * no-op — the block is written directly into CLAUDE.md by the MCP
+ * server at boot, giving the content OVERRIDE-level enforcement.
+ *
+ * Injection order (see lib/rules-builder.cjs):
  *   1. workflow.md   (always)
  *   2. memory.md     (when memory-config.json has enabled)
  *   3. channels.md   (when channel backend configured)
@@ -37,88 +46,33 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
 
-const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
-const HISTORY_DIR = path.join(DATA_DIR, 'history');
-const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
-
-function readOptional(filePath) {
-  try { return fs.readFileSync(filePath, 'utf8').trim(); } catch { return ''; }
-}
-
+// --- Mode branch: claude_md mode delegates to MCP boot-time writer ---
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
 
-// --- Config ---
-const config = readJson(CONFIG_FILE);
-const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
-const parts = [];
-
-// --- 1. Workflow (always) ---
-const workflow = readOptional(path.join(RULES_DIR, 'workflow.md'));
-if (workflow) parts.push(workflow);
-
-// --- 2. Memory (when memory-config.json has enabled) ---
-if (memoryConfig.enabled) {
-  const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
-  if (memory) parts.push(memory);
+const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
+if (mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md') {
+  // Managed block is written into CLAUDE.md by the MCP server at boot.
+  // No hook-level injection in this mode.
+  process.exit(0);
 }
 
-// --- 3. Channels (when backend configured) ---
-if (config.backend) {
-  const channels = readOptional(path.join(RULES_DIR, 'channels.md'));
-  if (channels) parts.push(channels);
+// --- Hook mode: build content and emit as additionalContext ---
+let buildInjectionContent;
+try {
+  ({ buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs')));
+} catch {
+  // Builder not available — exit quietly rather than breaking the session.
+  process.exit(0);
 }
 
-// --- 4. Search (when search-config.json has enabled) ---
-const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
-if (searchConfig.enabled) {
-  const search = readOptional(path.join(RULES_DIR, 'search.md'));
-  if (search) parts.push(search);
-}
-
-// --- 5. Agent (always) ---
-const agent = readOptional(path.join(RULES_DIR, 'agent.md'));
-if (agent) parts.push(agent);
-
-// --- 6. Models (from agent-config.json presets) ---
-const agentConfig = readJson(path.join(DATA_DIR, 'agent-config.json'));
-if (agentConfig.presets && agentConfig.presets.length > 0) {
-  const lines = ['# Models'];
-  if (agentConfig.guide) lines.push('', agentConfig.guide);
-  lines.push('', '## Available presets');
-  for (const p of agentConfig.presets) {
-    const detail = [p.type, p.model, p.effort].filter(Boolean).join(', ');
-    lines.push(`- ${p.id} (${detail})`);
-  }
-  parts.push(lines.join('\n'));
-}
-
-// --- 7. Context (auto-generated core memory snapshot) ---
-const contextContent = readOptional(path.join(HISTORY_DIR, 'context.md'));
-if (contextContent) parts.push(contextContent);
-
-// --- 8. User profile ---
-const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
-if (userProfileContent) parts.push(userProfileContent);
-
-// --- 9. Bot persona ---
-const botContent = readOptional(path.join(HISTORY_DIR, 'bot.md'));
-if (botContent) parts.push(botContent);
-
-// --- 10-11. User name & title (from memory-config.json) ---
-const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
-const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
-if (userName) {
-  parts.push(userTitle ? `User: ${userName} (${userTitle})` : `User: ${userName}`);
-}
-
-// --- Output ---
-if (parts.length > 0) {
+const additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR });
+if (additionalContext) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: parts.join('\n\n')
-    }
+      additionalContext,
+    },
   }));
 }
