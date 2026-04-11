@@ -125,6 +125,10 @@ export class OpenAICompatProvider {
     async _doSend(messages, model, tools, sendOpts) {
         const useModel = model || this.defaultModel;
         const opts = sendOpts || {};
+        const isReasoningModel = opts.effort || /^(gpt-5|o[13])/i.test(useModel);
+        if (this.name === 'openai' && isReasoningModel && tools?.length) {
+            return await this._sendViaResponsesAPI(messages, useModel, tools, opts);
+        }
         const params = {
             model: useModel,
             messages: toOpenAIMessages(messages),
@@ -153,6 +157,84 @@ export class OpenAICompatProvider {
             usage: response.usage ? {
                 inputTokens: response.usage.prompt_tokens || 0,
                 outputTokens: response.usage.completion_tokens || 0,
+            } : undefined,
+        };
+    }
+    async _sendViaResponsesAPI(messages, model, tools, opts) {
+        const systemMsgs = messages.filter((m) => m.role === 'system');
+        const instructions = systemMsgs.map((m) => m.content).join('\n\n') || 'You are a helpful assistant.';
+        const input = [];
+        for (const m of messages) {
+            if (m.role === 'system')
+                continue;
+            if (m.role === 'tool') {
+                input.push({
+                    type: 'function_call_output',
+                    call_id: m.toolCallId || '',
+                    output: m.content,
+                });
+                continue;
+            }
+            if (m.role === 'assistant' && m.toolCalls?.length) {
+                if (m.content) {
+                    input.push({ role: 'assistant', content: m.content });
+                }
+                for (const tc of m.toolCalls) {
+                    input.push({
+                        type: 'function_call',
+                        call_id: tc.id,
+                        name: tc.name,
+                        arguments: JSON.stringify(tc.arguments),
+                    });
+                }
+                continue;
+            }
+            input.push({
+                role: m.role === 'assistant' ? 'assistant' : 'user',
+                content: m.content,
+            });
+        }
+        const toolsFlat = tools?.map((t) => ({
+            type: 'function',
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema,
+        }));
+        const body = {
+            model,
+            instructions,
+            input,
+            reasoning: { effort: opts.effort || 'medium' },
+        };
+        if (toolsFlat?.length)
+            body.tools = toolsFlat;
+        if (opts.fast === true)
+            body.service_tier = 'priority';
+        const response = await this.client.responses.create(body);
+        let content = '';
+        const toolCalls = [];
+        for (const item of response.output || []) {
+            if (item.type === 'message') {
+                for (const c of item.content || []) {
+                    if (c.type === 'output_text')
+                        content += c.text || '';
+                }
+            }
+            else if (item.type === 'function_call') {
+                toolCalls.push({
+                    id: item.call_id,
+                    name: item.name,
+                    arguments: JSON.parse(item.arguments || '{}'),
+                });
+            }
+        }
+        return {
+            content,
+            model: response.model,
+            toolCalls: toolCalls.length ? toolCalls : undefined,
+            usage: response.usage ? {
+                inputTokens: response.usage.input_tokens || 0,
+                outputTokens: response.usage.output_tokens || 0,
             } : undefined,
         };
     }
