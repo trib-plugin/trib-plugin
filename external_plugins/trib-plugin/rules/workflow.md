@@ -2,11 +2,11 @@
 
 Plan → Execute → Verify → Ship → Retro.
 
-- Plan: discuss with user, refine until both agree on the spec, wait for explicit approval.
-- Execute: implement the approved plan. Use the team or execute directly as appropriate.
-- Verify: Read each changed file. Reload/restart affected services, exercise runtime. Issues → back to Execute.
-- Ship: git status → propose commit message → commit on approval → push on approval → Retro. Format: YYYY-MM-DD HH:MM + description, no Claude signatures.
-- Retro: self-eval. Workflow/rule proposal only if warranted.
+- Plan: discuss with user, refine until both agree on the spec, wait for explicit approval. → Approval received → Execute.
+- Execute: implement the approved plan. Use the team or execute directly as appropriate. → Implementation complete → Verify.
+- Verify: Read each changed file. Reload/restart affected services, exercise runtime. → Issues found → Execute. → No issues → Ship.
+- Ship: git status → propose commit message → commit on approval → push on approval. Format: YYYY-MM-DD HH:MM + description, no Claude signatures. → Push complete → Retro.
+- Retro: self-eval. Workflow/rule proposal only if warranted. Repeated patterns discovered → propose skill creation.
 
 The Plan→Execute→Verify→Ship→Retro cycle applies to actual work only
 (code/config changes, file modifications, commits, deployments).
