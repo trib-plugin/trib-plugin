@@ -6,6 +6,7 @@ import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from 
 const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
 const INTRA_OP_THREADS = 4
 const INTER_OP_THREADS = 1
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000
 let _ortPatched = false
 
 function patchOrtThreads() {
@@ -34,6 +35,7 @@ let _tokenizer = null
 let _model = null
 let _loading = null
 let _device = 'cpu'
+let _idleTimer = null
 const _scoreCache = new Map()
 const SCORE_CACHE_LIMIT = 2000
 const MAX_QUERY_CHARS = 512
@@ -46,6 +48,22 @@ export function getRerankerModelId() {
 }
 
 export function getRerankerDevice() { return _device }
+
+function resetIdleTimer() {
+  if (_idleTimer) clearTimeout(_idleTimer)
+  _idleTimer = setTimeout(async () => {
+    if (_model) {
+      try { await _model.dispose() } catch {}
+      _tokenizer = null
+      _model = null
+      _loading = null
+      _device = 'cpu'
+      _scoreCache.clear()
+      process.stderr.write('[reranker] idle timeout — model disposed\n')
+    }
+    _idleTimer = null
+  }, IDLE_TIMEOUT_MS)
+}
 
 function normalizeRerankText(value, maxChars) {
   return String(value ?? '')
@@ -87,24 +105,21 @@ async function ensureModel() {
     hfEnv.cacheDir = MODEL_CACHE_DIR
     _tokenizer = await AutoTokenizer.from_pretrained(modelId)
 
-    // Try GPU (DirectML on Windows, CUDA if available), fall back to CPU
+    // Try GPU (DirectML on Windows), fall back to CPU
     const preferGpu = (process.env.TRIB_MEMORY_RERANKER_DEVICE || 'auto') !== 'cpu'
     if (preferGpu) {
       try {
-        hfEnv.backends.onnx = hfEnv.backends.onnx || {}
-        hfEnv.backends.onnx.executionProviders = [{ name: 'dml' }, { name: 'cpu' }]
-        _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4' })
+        _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4', device: 'dml' })
         _device = 'dml'
         process.stderr.write(`[reranker] loaded ${modelId} on DirectML (GPU)\n`)
       } catch (gpuErr) {
         process.stderr.write(`[reranker] DML failed (${gpuErr.message?.slice(0, 80)}), falling back to CPU\n`)
-        hfEnv.backends.onnx.executionProviders = [{ name: 'cpu' }]
-        _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4' })
+        _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4', device: 'cpu' })
         _device = 'cpu'
         process.stderr.write(`[reranker] loaded ${modelId} on CPU\n`)
       }
     } else {
-      _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4' })
+      _model = await AutoModelForSequenceClassification.from_pretrained(modelId, { dtype: 'q4', device: 'cpu' })
       _device = 'cpu'
       process.stderr.write(`[reranker] loaded ${modelId} on CPU (forced)\n`)
     }
@@ -122,6 +137,7 @@ async function scoreOne(queryText, docText) {
 
 export async function warmupReranker() {
   await ensureModel()
+  resetIdleTimer()
 }
 
 export async function rerank(query, items, topK) {
@@ -136,6 +152,7 @@ export async function rerank(query, items, topK) {
   if (entries.length === 0) return []
 
   await ensureModel()
+  resetIdleTimer()
 
   const scored = []
   for (const entry of entries) {
@@ -155,6 +172,7 @@ export async function rerank(query, items, topK) {
 }
 
 export async function disposeReranker() {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
   if (_model) {
     try { await _model.dispose() } catch {}
   }

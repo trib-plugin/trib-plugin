@@ -13,10 +13,13 @@ const DEFAULT_DTYPE = 'q4'
 const INTRA_OP_THREADS = 2
 const INTER_OP_THREADS = 1
 const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000
 
 let extractorPromise = null
 let cachedDims = null
 let configuredDtype = DEFAULT_DTYPE
+let _device = 'cpu'
+let _idleTimer = null
 let ortPatched = false
 const queryEmbeddingCache = new Map()
 const QUERY_EMBEDDING_CACHE_LIMIT = 1000
@@ -39,6 +42,7 @@ function getCachedEmbedding(key) {
 }
 
 export function configureEmbedding(config = {}) {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
   if (config.dtype != null) {
     const dt = String(config.dtype).trim().toLowerCase()
     configuredDtype = ['fp32', 'fp16', 'q8', 'q4'].includes(dt) ? dt : DEFAULT_DTYPE
@@ -50,6 +54,20 @@ export function configureEmbedding(config = {}) {
 
 export function clearEmbeddingCache() {
   queryEmbeddingCache.clear()
+}
+
+function resetIdleTimer() {
+  if (_idleTimer) clearTimeout(_idleTimer)
+  _idleTimer = setTimeout(() => {
+    if (extractorPromise) {
+      extractorPromise.then(ext => { try { ext.dispose() } catch {} }).catch(() => {})
+      extractorPromise = null
+      cachedDims = null
+      _device = 'cpu'
+      process.stderr.write('[embed] idle timeout — model disposed\n')
+    }
+    _idleTimer = null
+  }, IDLE_TIMEOUT_MS)
 }
 
 function patchOrtThreads() {
@@ -88,8 +106,22 @@ async function loadExtractor() {
         opts.dtype = configuredDtype
       }
       const startMs = Date.now()
-      const extractor = await pipeline('feature-extraction', MODEL_ID, opts)
-      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} threads=${INTRA_OP_THREADS} in ${Date.now() - startMs}ms\n`)
+      let extractor
+      const preferGpu = (process.env.TRIB_MEMORY_EMBED_DEVICE || 'auto') !== 'cpu'
+      if (preferGpu) {
+        try {
+          extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'dml' })
+          _device = 'dml'
+        } catch (gpuErr) {
+          process.stderr.write(`[embed] DML failed (${gpuErr.message?.slice(0, 80)}), falling back to CPU\n`)
+          extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'cpu' })
+          _device = 'cpu'
+        }
+      } else {
+        extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'cpu' })
+        _device = 'cpu'
+      }
+      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} device=${_device} threads=${INTRA_OP_THREADS} in ${Date.now() - startMs}ms\n`)
       return extractor
     })()
   }
@@ -104,6 +136,8 @@ export function getEmbeddingDims() {
   return cachedDims || DEFAULT_DIMS
 }
 
+export function getEmbeddingDevice() { return _device }
+
 export function consumeProviderSwitchEvent() {
   return null
 }
@@ -112,12 +146,14 @@ export async function warmupEmbeddingProvider() {
   const extractor = await loadExtractor()
   await extractor('warmup', { pooling: 'mean', normalize: true })
   cachedDims = DEFAULT_DIMS
+  resetIdleTimer()
   return true
 }
 
 export async function embedText(text) {
   const clean = String(text ?? '').trim()
   if (!clean) return []
+  resetIdleTimer()
   const cacheKey = `${MODEL_ID}\n${clean}`
   const cached = getCachedEmbedding(cacheKey)
   if (cached) return [...cached]
