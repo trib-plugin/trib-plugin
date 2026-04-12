@@ -6,14 +6,14 @@ Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check 
 ## Setup
 - TaskCreate recommended for progress tracking.
 - Spawn: `run_in_background: true`, `team_name: "main"`, `name: <role>`.
-- Determine `subagent_type` from preset type in Models section (worker → Worker, bridge → Bridge).
-- Do NOT use built-in Explore or Plan subagent types. Use the explorer role from User Workflow instead.
+- `subagent_type` MUST be one of: "trib-plugin:Worker", "trib-plugin:Bridge", "trib-plugin:ask-forwarder".
+- NEVER pass subagent_type="Explore" or subagent_type="Plan". ABSOLUTELY FORBIDDEN — no exceptions.
 - Agent names and presets come from User Workflow / Models sections.
 
 ## Lead direct execution
-- Agent delegation is the default. Always prioritize Team and Workflow rules.
+- Agent delegation is always mandatory. Team and Workflow rules must be strictly followed at all times.
 - For simple tasks the lead must handle directly, get explicit approval for that specific task before executing.
-- Do NOT use built-in Explore or Plan subagent types.
+- subagent_type="Explore" and subagent_type="Plan" are BANNED. Violation = broken rule.
 
 ## Reuse vs respawn
 - Default: reuse via SendMessage.

@@ -24,3 +24,4 @@ For Q&A, explanation, or conversation, stay silent about phase.
 1. No code changes before user approval.
 2. No build/push/deploy without explicit user request.
 3. When using workers, verify output with Read before reporting.
+4. NEVER use subagent_type="Explore" or subagent_type="Plan". No exceptions.
