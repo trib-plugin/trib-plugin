@@ -46,6 +46,48 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
 
+// --- Ensure team exists (reuse or create) ---
+try {
+  const os = require('os');
+  const TEAMS_ROOT = path.join(os.homedir(), '.claude', 'teams');
+  const TASKS_ROOT = path.join(os.homedir(), '.claude', 'tasks');
+  const TEAM_NAME = 'main';
+  const teamDir = path.join(TEAMS_ROOT, TEAM_NAME);
+  const tasksDir = path.join(TASKS_ROOT, TEAM_NAME);
+  const configPath = path.join(teamDir, 'config.json');
+  const sessionId = _event.session_id || _event.sessionId || '';
+
+  fs.mkdirSync(teamDir, { recursive: true });
+  fs.mkdirSync(tasksDir, { recursive: true });
+
+  if (fs.existsSync(configPath)) {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (config.leadSessionId !== sessionId && sessionId) {
+      config.leadSessionId = sessionId;
+      config.members = (config.members || []).filter(m => m.agentType === 'team-lead');
+      if (config.members[0]) config.members[0].cwd = _event.cwd || process.cwd();
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    }
+  } else {
+    fs.writeFileSync(configPath, JSON.stringify({
+      name: TEAM_NAME,
+      description: 'Default reusable team',
+      createdAt: Date.now(),
+      leadAgentId: `team-lead@${TEAM_NAME}`,
+      leadSessionId: sessionId,
+      members: [{
+        agentId: `team-lead@${TEAM_NAME}`,
+        name: 'team-lead',
+        agentType: 'team-lead',
+        joinedAt: Date.now(),
+        tmuxPaneId: '',
+        cwd: _event.cwd || process.cwd(),
+        subscriptions: [],
+      }],
+    }, null, 2));
+  }
+} catch {}
+
 // --- Mode branch: claude_md mode delegates to MCP boot-time writer ---
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
