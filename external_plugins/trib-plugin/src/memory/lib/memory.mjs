@@ -1421,7 +1421,7 @@ export class MemoryStore {
         const chunkRows = this.db.prepare(`
           SELECT mc.id, mc.content, mc.topic FROM memory_chunks mc
           JOIN classifications c ON c.id = mc.classification_id
-          WHERE c.status = 'active' AND c.day_key IN (${placeholders})
+          WHERE mc.status = 'active' AND c.status = 'active' AND c.day_key IN (${placeholders})
         `).all(...options.dayKeys)
         for (const row of chunkRows) {
           candidates.push({
@@ -1438,7 +1438,7 @@ export class MemoryStore {
         const coreRows = this.db.prepare(`
           SELECT cm.id, cm.topic, cm.element, cm.importance FROM core_memory cm
           JOIN classifications c ON c.id = cm.classification_id
-          WHERE c.status = 'active' AND c.day_key IN (${placeholders})
+          WHERE cm.status IN ('active', 'pending') AND c.status = 'active' AND c.day_key IN (${placeholders})
         `).all(...options.dayKeys)
         for (const row of coreRows) {
           candidates.push({
