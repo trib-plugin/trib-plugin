@@ -10,7 +10,7 @@ import { cpus } from 'os'
 const MODEL_ID = 'Xenova/bge-m3'
 const DEFAULT_DIMS = 1024
 const DEFAULT_DTYPE = 'q8'
-const INTRA_OP_THREADS = 4
+const INTRA_OP_THREADS = 2
 const INTER_OP_THREADS = 1
 const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
 
