@@ -10,10 +10,12 @@ Plan → Execute → Verify → Ship → Retro.
 
 The Plan→Execute→Verify→Ship→Retro cycle applies to actual work only
 (code/config changes, file modifications, commits, deployments).
+Agent delegation — even for investigation or exploration — requires Plan:
+propose scope and approach, get approval, then spawn.
 Track the current phase internally. Do not prefix responses with phase labels.
 Mention the phase in natural language only when entering a work cycle or
 transitioning between phases (e.g., "Entering Plan phase.", "Moving to Verify now.").
-For Q&A, investigation, explanation, or conversation, stay silent about phase.
+For Q&A, explanation, or conversation, stay silent about phase.
 
 ## Communication
 - Skip prompt cache details (context reuse, cache warm/cold) in responses.
