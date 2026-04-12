@@ -1364,9 +1364,62 @@ export class MemoryStore {
     return items
   }
 
+  /**
+   * Unified embedding entry point.
+   *
+   * options.targetIds   — Map<entityType, Set<id>>: embed only these (cycle1 path)
+   * options.dayKeys     — string[]: embed items within these day_keys (flush/rebuild)
+   * (neither)           — full scan with perTypeLimit (cycle2 fallback)
+   *
+   * options.contextMap  — Map<key, contextText>: LLM-generated context prefixes
+   * options.perTypeLimit — max items per type for full-scan mode
+   * options.throttleMs  — delay between embeddings (default 200ms)
+   */
   async ensureEmbeddings(options = {}) {
-    const candidates = this.getEmbeddableItems(options)
     const contextMap = options.contextMap instanceof Map ? options.contextMap : new Map()
+    const throttleMs = Number(options.throttleMs ?? 200)
+
+    // Resolve candidates based on targeting mode
+    let candidates
+    if (options.targetIds instanceof Map && options.targetIds.size > 0) {
+      // Targeted: embed specific IDs only (cycle1 inline)
+      candidates = []
+      for (const [entityType, ids] of options.targetIds) {
+        for (const id of ids) {
+          const row = entityType === 'classification'
+            ? this.db.prepare('SELECT id, classification, topic, element, importance, state FROM classifications WHERE id = ?').get(id)
+            : entityType === 'core_memory'
+              ? this.db.prepare('SELECT id, topic, element, importance FROM core_memory WHERE id = ?').get(id)
+              : null
+          if (!row) continue
+          candidates.push({
+            key: embeddingItemKey(entityType, row.id),
+            entityType,
+            entityId: row.id,
+            subtype: row.classification || row.importance || 'fact',
+            content: [row.element, row.topic, row.importance, row.state].filter(Boolean).join(' | '),
+          })
+        }
+      }
+    } else if (Array.isArray(options.dayKeys) && options.dayKeys.length > 0) {
+      // Day-scoped: embed classifications within date range (flush/rebuild)
+      const placeholders = options.dayKeys.map(() => '?').join(',')
+      const rows = this.db.prepare(`
+        SELECT id, classification, topic, element, importance, state
+        FROM classifications WHERE status = 'active' AND day_key IN (${placeholders})
+        ORDER BY updated_at DESC
+      `).all(...options.dayKeys)
+      candidates = rows.map(row => ({
+        key: embeddingItemKey('classification', row.id),
+        entityType: 'classification',
+        entityId: row.id,
+        subtype: row.classification,
+        content: [row.element, row.topic, row.importance, row.state].filter(Boolean).join(' | '),
+      }))
+    } else {
+      // Full scan fallback (cycle2)
+      candidates = this.getEmbeddableItems(options)
+    }
 
     // Check config: when embedding.contextualize === false, use raw content without metadata prefixes
     let contextualizeLocal = true
@@ -1404,6 +1457,7 @@ export class MemoryStore {
       if (existingHash === contentHash) continue
       const vector = await embedText(embedInput)
       if (!Array.isArray(vector) || vector.length === 0) continue
+      if (throttleMs > 0) await new Promise(r => setTimeout(r, throttleMs))
       const activeModel = getEmbeddingModelId()
       this.upsertVectorStmt.run(
         item.entityType,

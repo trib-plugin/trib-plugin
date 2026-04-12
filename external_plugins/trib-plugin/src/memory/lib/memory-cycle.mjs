@@ -417,7 +417,11 @@ async function refreshEmbeddings(ws, options = {}) {
     process.stderr.write('[memory-cycle] contextualize disabled by config (embedding.contextualize=false), embedding raw content\n')
   }
 
-  const updated = await store.ensureEmbeddings({ perTypeLimit, contextMap })
+  const embedOpts = { perTypeLimit, contextMap }
+  if (Array.isArray(options.dayKeys) && options.dayKeys.length > 0) {
+    embedOpts.dayKeys = options.dayKeys
+  }
+  const updated = await store.ensureEmbeddings(embedOpts)
   process.stderr.write(`[memory-cycle] embeddings refreshed: ${updated}\n`)
 }
 
@@ -549,7 +553,7 @@ export async function summarizeOnly(ws) {
   if (pendingDays.length > 0) {
     const provider = resolveCycleProvider(mainConfig, 'cycle2')
     await consolidateRecent(pendingDays, ws, { provider })
-    await refreshEmbeddings(ws, { kind: 'cycle2' })
+    await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys: pendingDays })
   }
   store.syncHistoryFromFiles()
 }
@@ -566,7 +570,7 @@ async function memoryFlushImpl(ws, options = {}) {
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
   consolidateOpts.provider = options.provider ?? resolveCycleProvider(readMainConfig(), 'cycle2')
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
-  await refreshEmbeddings(ws)
+  await refreshEmbeddings(ws, { dayKeys: targets })
 }
 
 export async function memoryFlush(ws, options = {}) {
@@ -584,7 +588,7 @@ async function rebuildAllImpl(ws) {
   const provider = resolveCycleProvider(mainConfig, 'cycle2')
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
   store.syncHistoryFromFiles()
-  await refreshEmbeddings(ws, { kind: 'cycle2' })
+  await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
   process.stderr.write(`[memory-cycle] rebuilt ${dayKeys.length} day(s).\n`)
 }
 
@@ -666,7 +670,8 @@ async function rebuildClassificationsImpl(ws, options = {}) {
 
   // Final embedding pass with high limit to cover all new chunks
   if (totalExtracted > 0) {
-    await refreshEmbeddings(ws, { store, kind: 'cycle1', perTypeLimit: Math.min(128, Math.max(64, totalClassifications)) })
+    const rebuildDayKeys = [...new Set(allCandidates.map(c => c.day_key).filter(Boolean))]
+    await refreshEmbeddings(ws, { store, kind: 'cycle1', dayKeys: rebuildDayKeys })
   }
 
   store.writeRecentFile()
@@ -691,7 +696,7 @@ async function rebuildRecentImpl(ws, options = {}) {
   const mergedOptions = options.provider ? options : { ...options, provider: resolveCycleProvider(mainConfig, 'cycle2') }
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
-  await refreshEmbeddings(ws, { kind: 'cycle2' })
+  await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
   process.stderr.write(`[memory-cycle] rebuilt recent ${dayKeys.length} day(s).\n`)
 }
 
@@ -708,7 +713,7 @@ async function pruneToRecentImpl(ws, options = {}) {
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.pruneConsolidatedMemoryOutsideDays(dayKeys)
-  await refreshEmbeddings(ws, { kind: 'cycle2' })
+  await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
   process.stderr.write(`[memory-cycle] pruned to ${dayKeys.join(', ')}.\n`)
 }
 
@@ -1063,42 +1068,22 @@ async function runCycle1Impl(ws, config, options = {}) {
     }
   }
 
-  // Inline embedding: embed newly created + element-changed classifications
-  // Capped at 64 items to prevent CPU spikes
+  // Inline embedding: only embed classifications created/changed in THIS cycle
   if (totalExtracted > 0) {
-    const EMBED_LIMIT = 64
-    const embeddableItems = store.getEmbeddableItems({ perTypeLimit: EMBED_LIMIT })
-      .filter(item => item.entityType === 'classification' || item.entityType === 'chunk')
-    const lookupModel = getEmbeddingModelId()
-    let embeddedCount = 0
-    for (const item of embeddableItems) {
-      if (embeddedCount >= EMBED_LIMIT) break
-      const embedInput = cleanMemoryText(item.content ?? '')
-      if (!embedInput) continue
-      const contentHash = hashEmbeddingInput(embedInput)
-      const existing = store.getVectorStmt.get(item.entityType, item.entityId, lookupModel)
-      const forceRefresh = item.entityType === 'classification' && changedClassificationIds.has(item.entityId)
-      if (!forceRefresh && existing?.content_hash === contentHash) continue
-      const vector = await embedText(embedInput)
-      if (!Array.isArray(vector) || vector.length === 0) continue
-      const activeModel = getEmbeddingModelId()
-      store.upsertVectorStmt.run(
-        item.entityType,
-        item.entityId,
-        activeModel,
-        vector.length,
-        JSON.stringify(vector),
-        contentHash,
-      )
-      store._syncToVecTable(item.entityType, item.entityId, vector)
-      store.noteVectorWrite(activeModel, vector.length)
-      embeddedCount += 1
-      // no delay — embedding is fast (~14ms/item)
+    const targetIds = new Map()
+    const clsIds = new Set(changedClassificationIds)
+    for (const result of results) {
+      if (!result) continue
+      for (const row of result.classificationRows) {
+        const epId = Number(row.episode_id)
+        if (!epId) continue
+        const cls = store.db.prepare('SELECT id FROM classifications WHERE episode_id = ?').get(epId)
+        if (cls) clsIds.add(cls.id)
+      }
     }
-    if (changedClassificationIds.size > 0) {
-      process.stderr.write(`[cycle1] element-changed classifications refreshed: ${changedClassificationIds.size}\n`)
-    }
-    process.stderr.write(`[cycle1] inline embeddings: ${embeddedCount} items\n`)
+    targetIds.set('classification', clsIds)
+    const embeddedCount = await store.ensureEmbeddings({ targetIds })
+    process.stderr.write(`[cycle1] inline embeddings: ${embeddedCount}/${clsIds.size} classifications\n`)
   }
 
   // NOTE: cycle1 must NEVER access core_memory — that is cycle2's exclusive domain
