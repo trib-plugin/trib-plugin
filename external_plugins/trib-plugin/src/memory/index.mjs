@@ -439,21 +439,13 @@ function _initTranscriptWatcher() {
 }
 
 function _runStartupMigrations() {
-  // Purge legacy consolidated candidates + VACUUM
+  // Drop legacy memory_candidates table + clean up episode vectors
   try {
-    const legacyResult = store.db.prepare("DELETE FROM memory_candidates WHERE status='consolidated'").run()
-    const deleted = Number(legacyResult.changes ?? 0)
-    if (deleted > 0) {
-      process.stderr.write(`[migration] purged ${deleted} legacy consolidated candidates\n`)
-      try {
-        store.db.exec('VACUUM')
-        process.stderr.write(`[migration] VACUUM complete\n`)
-      } catch (ve) {
-        process.stderr.write(`[migration] VACUUM skipped: ${ve.message}\n`)
-      }
-    }
+    store.db.exec('DROP TABLE IF EXISTS memory_candidates')
+    store.db.prepare("DELETE FROM memory_vectors WHERE entity_type = 'episode'").run()
+    process.stderr.write(`[migration] memory_candidates table dropped, episode vectors cleaned\n`)
   } catch (e) {
-    process.stderr.write(`[migration] error: ${e.message}\n`)
+    process.stderr.write(`[migration] cleanup error: ${e.message}\n`)
   }
 
   // Chunk sync
@@ -696,9 +688,7 @@ function handleTagQuery(tag, limit = 20) {
 function handleStats() {
   const episodes = store.db.prepare('SELECT COUNT(*) as c FROM episodes').get().c
   const classifications = store.db.prepare('SELECT COUNT(*) as c FROM classifications').get().c
-  // Only pending candidates exist now — processed candidates are DELETEd,
-  // not marked consolidated.
-  const pending = store.db.prepare("SELECT COUNT(*) as c FROM memory_candidates WHERE status='pending'").get().c
+  const pending = store.db.prepare("SELECT COUNT(*) as c FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'").get().c
   const tags = store.db.prepare(`
     SELECT importance, COUNT(*) as c FROM classifications
     WHERE importance IS NOT NULL AND importance != ''
@@ -725,7 +715,7 @@ function handleStats() {
     `episodes: ${episodes}`,
     `classifications: ${classifications} (${tags.map(t => `${t.importance}:${t.c}`).join(', ')})`,
     `core_memory: ${coreStats}`,
-    `candidates: pending=${pending}`,
+    `unclassified: ${pending}`,
     `pending_embeds: ${embeds}`,
     `last_cycle1: ${lastCycle}`,
   ]
@@ -821,12 +811,11 @@ async function handleCycle(args) {
   }
   if (action === 'backfill') {
     const backfillLimit = Math.max(1, Math.min(Number(args.limit ?? 100), 500))
-    // Find episodes with no candidate entry
+    // Find unclassified episodes
     const uncovered = store.db.prepare(`
       SELECT e.id, e.ts, e.day_key, e.role, e.content
       FROM episodes e
-      LEFT JOIN memory_candidates mc ON mc.episode_id = e.id
-      WHERE mc.id IS NULL
+      WHERE e.classified = 0
         AND e.kind IN ('message', 'turn')
         AND e.role IN ('user', 'assistant')
         AND LENGTH(e.content) >= 10
@@ -837,24 +826,12 @@ async function handleCycle(args) {
     `).all(backfillLimit)
 
     if (uncovered.length === 0) {
-      return { text: 'Backfill: no uncovered episodes found.' }
-    }
-
-    // Create pending candidates
-    let created = 0
-    for (const ep of uncovered) {
-      try {
-        store.db.prepare(`
-          INSERT OR IGNORE INTO memory_candidates (episode_id, ts, day_key, role, content, score, status)
-          VALUES (?, ?, ?, ?, ?, 0, 'pending')
-        `).run(ep.id, ep.ts, ep.day_key, ep.role, ep.content)
-        created++
-      } catch {}
+      return { text: 'Backfill: no unclassified episodes found.' }
     }
 
     // Run cycle1 with force to process them
     const c1result = await runCycle1(ws, config, { force: true })
-    return { text: `Backfill: ${created} candidates created from ${uncovered.length} episodes. Cycle1: ${JSON.stringify(c1result)}` }
+    return { text: `Backfill: ${uncovered.length} unclassified episodes. Cycle1: ${JSON.stringify(c1result)}` }
   }
   if (action === 'remember') {
     const topic = String(args.topic ?? '').trim()
@@ -910,7 +887,7 @@ const TOOL_DEFS = [
     name: 'memory_cycle',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.',
+    description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (classify old episodes then run cycle1), status.',
     inputSchema: {
       type: 'object',
       properties: {

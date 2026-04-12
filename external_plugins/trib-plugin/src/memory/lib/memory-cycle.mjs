@@ -373,7 +373,7 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
     }
     process.stderr.write(`[memory-cycle] consolidated ${dayKey}: candidates=${candidates.length}, mode=classification-only, classifications=${fallbackRows.length}\n`)
   }
-  store.markCandidateIdsConsolidated(candidates.map(item => item.id))
+  store.markEpisodesClassified(candidates.map(item => item.episode_id ?? item.id))
 }
 
 export async function consolidateRecent(dayKeys, ws, options = {}) {
@@ -892,8 +892,8 @@ async function runCycle1Impl(ws, config, options = {}) {
   if (Array.isArray(options._preSplitCandidates) && options._preSplitCandidates.length > 0) {
     allCandidates = options._preSplitCandidates
   } else {
-    // pending candidates를 최근 maxDays 범위에서 가져옴
-    // getCandidatesForDate는 이미 status='pending'만 반환
+    // Unclassified episodes from recent maxDays
+    // getCandidatesForDate delegates to getUnclassifiedEpisodesForDate
     const pendingDays = store.getPendingCandidateDays(maxDays, 1)
     if (pendingDays.length === 0) {
       writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
@@ -1047,16 +1047,9 @@ async function runCycle1Impl(ws, config, options = {}) {
         }
       }
 
-      const processedIds = candidates.map(c => c.id).filter(id => id != null)
-      if (processedIds.length > 0) {
-        // Processed candidates are now DELETEd instead of marked consolidated.
-        // classifications (if any) + core_memory retain the distilled value;
-        // the raw candidate row is dead data after processing.
-        const placeholders = processedIds.map(() => '?').join(',')
-        store.db.prepare(`
-          DELETE FROM memory_candidates
-          WHERE id IN (${placeholders}) AND status = 'pending'
-        `).run(...processedIds)
+      const processedEpisodeIds = candidates.map(c => c.episode_id ?? c.id).filter(id => id != null)
+      if (processedEpisodeIds.length > 0) {
+        store.markEpisodesClassified(processedEpisodeIds)
       }
 
       totalExtracted += candidates.length

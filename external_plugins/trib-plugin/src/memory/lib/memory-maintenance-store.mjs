@@ -1,6 +1,4 @@
 import { getEmbeddingDims } from './embedding-provider.mjs'
-import { cleanMemoryText } from './memory-extraction.mjs'
-import { insertCandidateUnits } from './memory-text-utils.mjs'
 
 export function getEpisodesSince(store, timestamp) {
   const ts = typeof timestamp === 'number'
@@ -18,30 +16,28 @@ export function countEpisodes(store) {
   return store.db.prepare(`SELECT count(*) AS n FROM episodes`).get().n
 }
 
-export function getCandidatesForDate(store, dayKey) {
+export function getUnclassifiedEpisodesForDate(store, dayKey) {
   return store.db.prepare(`
-    SELECT mc.id, mc.episode_id, mc.ts, mc.role, mc.content, mc.score
-    FROM memory_candidates mc
-    JOIN episodes e ON e.id = mc.episode_id
-    WHERE mc.day_key = ?
-      AND mc.status = 'pending'
+    SELECT e.id, e.id AS episode_id, e.ts, e.role, e.content, 0 AS score
+    FROM episodes e
+    WHERE e.day_key = ?
+      AND e.classified = 0
       AND e.role IN ('user', 'assistant')
       AND e.kind = 'message'
-    ORDER BY mc.score DESC, mc.ts ASC
+    ORDER BY e.ts ASC
   `).all(dayKey)
 }
 
-export function getPendingCandidateDays(store, limit = 7, minCount = 1) {
+export function getUnclassifiedEpisodeDays(store, limit = 7, minCount = 1) {
   return store.db.prepare(`
-    SELECT mc.day_key, count(*) AS n
-    FROM memory_candidates mc
-    JOIN episodes e ON e.id = mc.episode_id
-    WHERE mc.status = 'pending'
-      AND e.role IN ('user', 'assistant')
-      AND e.kind = 'message'
-    GROUP BY mc.day_key
+    SELECT day_key, count(*) AS n
+    FROM episodes
+    WHERE classified = 0
+      AND role IN ('user', 'assistant')
+      AND kind = 'message'
+    GROUP BY day_key
     HAVING count(*) >= ?
-    ORDER BY mc.day_key DESC
+    ORDER BY day_key DESC
     LIMIT ?
   `).all(minCount, limit)
 }
@@ -75,58 +71,29 @@ export function vacuumDatabase(store) {
   }
 }
 
-export function getRecentCandidateDays(store, limit = 7) {
-  return store.db.prepare(`
-    SELECT mc.day_key, count(*) AS n
-    FROM memory_candidates mc
-    JOIN episodes e ON e.id = mc.episode_id
-    WHERE e.role = 'user'
-      AND e.kind = 'message'
-    GROUP BY mc.day_key
-    ORDER BY mc.day_key DESC
-    LIMIT ?
-  `).all(limit)
-}
-
 export function countPendingCandidates(store, dayKey = null) {
   if (dayKey) {
     return store.db.prepare(`
       SELECT count(*) AS n
-      FROM memory_candidates mc
-      JOIN episodes e ON e.id = mc.episode_id
-      WHERE mc.status = 'pending'
-        AND mc.day_key = ?
-        AND e.role = 'user'
-        AND e.kind = 'message'
+      FROM episodes
+      WHERE classified = 0
+        AND day_key = ?
+        AND role IN ('user', 'assistant')
+        AND kind = 'message'
     `).get(dayKey).n
   }
   return store.db.prepare(`
     SELECT count(*) AS n
-    FROM memory_candidates mc
-    JOIN episodes e ON e.id = mc.episode_id
-    WHERE mc.status = 'pending'
-      AND e.role = 'user'
-      AND e.kind = 'message'
+    FROM episodes
+    WHERE classified = 0
+      AND role IN ('user', 'assistant')
+      AND kind = 'message'
   `).get().n
 }
 
-export function rebuildCandidates(store) {
-  store.clearCandidatesStmt.run()
-  const rows = store.db.prepare(`
-    SELECT id, ts, day_key, role, kind, content
-    FROM episodes
-    ORDER BY ts, id
-  `).all()
-  let created = 0
-  for (const row of rows) {
-    const clean = cleanMemoryText(row.content)
-    if (!clean) continue
-    const shouldCandidate = (row.role === 'user' || row.role === 'assistant') && row.kind === 'message'
-    if (shouldCandidate) {
-      created += insertCandidateUnits(store.insertCandidateStmt, row.id, row.ts, row.day_key, row.role, clean)
-    }
-  }
-  return created
+export function resetClassifiedFlag(store) {
+  store.db.prepare(`UPDATE episodes SET classified = 0`).run()
+  return store.db.prepare(`SELECT count(*) AS n FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'`).get().n
 }
 
 export function resetConsolidatedMemory(store) {
@@ -136,7 +103,7 @@ export function resetConsolidatedMemory(store) {
   if (store.vecEnabled) {
     try { store.db.exec('DELETE FROM vec_memory') } catch {}
   }
-  store.db.prepare(`UPDATE memory_candidates SET status = 'pending'`).run()
+  store.db.prepare(`UPDATE episodes SET classified = 0`).run()
 }
 
 export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
@@ -171,8 +138,8 @@ export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
   }
 
   store.db.prepare(`
-    UPDATE memory_candidates
-    SET status = 'pending'
+    UPDATE episodes
+    SET classified = 0
     WHERE day_key IN (${placeholders})
   `).run(...keys)
 }
@@ -210,24 +177,15 @@ export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
   }
 }
 
-// Processed candidates are DELETEd, not marked consolidated. The distilled
-// value lives in classifications/core_memory; the raw candidate row is dead.
-export function markCandidateIdsConsolidated(store, candidateIds = []) {
-  const ids = [...new Set(candidateIds.map(id => Number(id)).filter(Number.isFinite))]
+// Mark episodes as classified after cycle1 processing.
+// The distilled value lives in classifications/core_memory.
+export function markEpisodesClassified(store, episodeIds = []) {
+  const ids = [...new Set(episodeIds.map(id => Number(id)).filter(Number.isFinite))]
   if (ids.length === 0) return 0
   const placeholders = ids.map(() => '?').join(', ')
-  const stmt = store.db.prepare(`
-    DELETE FROM memory_candidates
-    WHERE status = 'pending'
-      AND id IN (${placeholders})
-  `)
-  const result = stmt.run(...ids)
+  const result = store.db.prepare(`
+    UPDATE episodes SET classified = 1
+    WHERE id IN (${placeholders})
+  `).run(...ids)
   return Number(result.changes ?? 0)
-}
-
-export function markCandidatesConsolidated(store, dayKey) {
-  return Number(store.db.prepare(`
-    DELETE FROM memory_candidates
-    WHERE day_key = ? AND status = 'pending'
-  `).run(dayKey).changes ?? 0)
 }

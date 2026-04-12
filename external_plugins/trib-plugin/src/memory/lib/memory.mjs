@@ -21,7 +21,6 @@ import {
   firstTextContent,
   generateQueryVariants,
   getShortTokensForLike,
-  insertCandidateUnits,
   looksLowSignal,
   shortTokenMatchScore,
   tokenizeMemoryText,
@@ -41,15 +40,13 @@ import {
 import {
   countEpisodes as countEpisodesImpl,
   countPendingCandidates as countPendingCandidatesImpl,
-  getCandidatesForDate as getCandidatesForDateImpl,
   getDecayRows as getDecayRowsImpl,
   getEpisodesSince as getEpisodesSinceImpl,
-  getPendingCandidateDays as getPendingCandidateDaysImpl,
-  getRecentCandidateDays as getRecentCandidateDaysImpl,
-  markCandidateIdsConsolidated as markCandidateIdsConsolidatedImpl,
-  markCandidatesConsolidated as markCandidatesConsolidatedImpl,
+  getUnclassifiedEpisodeDays as getUnclassifiedEpisodeDaysImpl,
+  getUnclassifiedEpisodesForDate as getUnclassifiedEpisodesForDateImpl,
+  markEpisodesClassified as markEpisodesClassifiedImpl,
   pruneConsolidatedMemoryOutsideDays as pruneConsolidatedMemoryOutsideDaysImpl,
-  rebuildCandidates as rebuildCandidatesImpl,
+  resetClassifiedFlag as resetClassifiedFlagImpl,
   resetConsolidatedMemory as resetConsolidatedMemoryImpl,
   resetConsolidatedMemoryForDays as resetConsolidatedMemoryForDaysImpl,
   resetEmbeddingIndex as resetEmbeddingIndexImpl,
@@ -166,6 +163,11 @@ export class MemoryStore {
     this._loadVecExtension()
     this._openReadDb()
     this.init()
+    // Load persisted transcript offsets after init (needs meta table)
+    try {
+      const raw = this.getMetaValue('transcript_offsets')
+      if (raw) Object.entries(JSON.parse(raw)).forEach(([k, v]) => this._transcriptOffsets.set(k, v))
+    } catch {}
     this.syncEmbeddingMetadata()
   }
 
@@ -241,7 +243,6 @@ export class MemoryStore {
   resetDerivedMemoryForEmbeddingChange(options = {}) {
     const preservedEpisodes = Number(this.countEpisodes() ?? 0)
     this.db.exec(`
-      DELETE FROM memory_candidates;
       DELETE FROM classifications;
       DELETE FROM classifications_fts;
       DELETE FROM documents;
@@ -249,6 +250,8 @@ export class MemoryStore {
       DELETE FROM pending_embeds;
       DELETE FROM memory_meta;
     `)
+    // Reset classified flag so episodes get re-processed
+    try { this.db.exec(`UPDATE episodes SET classified = 0`) } catch {}
 
     if (this.vecEnabled) {
       try {
@@ -262,13 +265,11 @@ export class MemoryStore {
     }
 
     this.clearHistoryOutputs()
-    const rebuiltCandidates = this.rebuildCandidates()
     this.writeContextFile()
     this.syncEmbeddingMetadata({ reason: 'switch_embedding_model' })
 
     return {
       preservedEpisodes,
-      rebuiltCandidates,
       historyCleared: true,
       targetModel: options.newModel ?? getEmbeddingModelId(),
     }
@@ -320,6 +321,7 @@ export class MemoryStore {
         kind TEXT NOT NULL,
         content TEXT NOT NULL,
         source_ref TEXT UNIQUE,
+        classified INTEGER DEFAULT 0,
         created_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
@@ -330,20 +332,6 @@ export class MemoryStore {
 
       CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts
         USING fts5(content, tokenize='trigram');
-
-      CREATE TABLE IF NOT EXISTS memory_candidates (
-        id INTEGER PRIMARY KEY,
-        episode_id INTEGER NOT NULL,
-        ts TEXT NOT NULL,
-        day_key TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        score REAL NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        FOREIGN KEY(episode_id) REFERENCES episodes(id) ON DELETE CASCADE
-      );
-      CREATE INDEX IF NOT EXISTS idx_candidates_day ON memory_candidates(day_key, status, score DESC);
 
       CREATE TABLE IF NOT EXISTS documents (
         id INTEGER PRIMARY KEY,
@@ -386,6 +374,15 @@ export class MemoryStore {
     try {
       this.db.exec(`ALTER TABLE classifications ADD COLUMN chunks TEXT DEFAULT '[]'`)
     } catch { /* already exists */ }
+
+    // classified column migration for episodes
+    try {
+      this.db.exec(`ALTER TABLE episodes ADD COLUMN classified INTEGER DEFAULT 0`)
+    } catch { /* already exists */ }
+    // Mark episodes that already have classifications as classified
+    try {
+      this.db.exec(`UPDATE episodes SET classified = 1 WHERE id IN (SELECT DISTINCT episode_id FROM classifications)`)
+    } catch {}
 
     this.db.exec(`
 
@@ -494,19 +491,24 @@ export class MemoryStore {
         DROP TABLE IF EXISTS tasks;
         DROP TABLE IF EXISTS facts;
         DROP TABLE IF EXISTS profiles;
+        DROP TABLE IF EXISTS memory_candidates;
         PRAGMA foreign_keys = ON;
       `)
       this.db.prepare(`
         DELETE FROM memory_vectors
-        WHERE entity_type NOT IN ('classification', 'episode')
+        WHERE entity_type NOT IN ('classification', 'chunk', 'core_memory')
       `).run()
       this.db.prepare(`
         DELETE FROM pending_embeds
-        WHERE entity_type NOT IN ('classification', 'episode')
+        WHERE entity_type NOT IN ('classification', 'chunk', 'core_memory')
       `).run()
     } catch (error) {
       logIgnoredError('legacy schema cleanup', error)
     }
+
+    // Drop legacy memory_candidates table and clean up episode vectors
+    try { this.db.exec(`DROP TABLE IF EXISTS memory_candidates`) } catch {}
+    try { this.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'episode'`).run() } catch {}
 
     try {
       this.db.exec(`ALTER TABLE memory_vectors ADD COLUMN content_hash TEXT;`)
@@ -564,10 +566,6 @@ export class MemoryStore {
     this.getEpisodeBySourceStmt = this.db.prepare(`
       SELECT id FROM episodes WHERE source_ref = ?
     `)
-    this.insertCandidateStmt = this.db.prepare(`
-      INSERT INTO memory_candidates (episode_id, ts, day_key, role, content, score)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `)
     this.upsertClassificationStmt = this.db.prepare(`
       INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, importance, chunks, confidence, status, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch())
@@ -600,7 +598,6 @@ export class MemoryStore {
           last_retrieved_at = ?
       WHERE id = ?
     `)
-    this.clearCandidatesStmt = this.db.prepare(`DELETE FROM memory_candidates`)
     this.clearClassificationsStmt = this.db.prepare(`DELETE FROM classifications`)
     this.clearClassificationsFtsStmt = this.db.prepare(`DELETE FROM classifications_fts`)
     this.clearVectorsStmt = this.db.prepare(`DELETE FROM memory_vectors`)
@@ -642,16 +639,6 @@ export class MemoryStore {
       WHERE mv.entity_type = 'classification'
         AND mv.model = ?
         AND c.status = 'active'
-    `)
-    this.listDenseEpisodeRowsStmt = this.db.prepare(`
-      SELECT 'episode' AS type, e.role AS subtype, e.id AS entity_id, e.content AS content,
-             e.created_at AS updated_at, 0 AS retrieval_count,
-             e.source_ref AS source_ref, e.ts AS source_ts, e.kind AS source_kind, e.backend AS source_backend, mv.vector_json AS vector_json
-      FROM memory_vectors mv
-      JOIN episodes e ON e.id = mv.entity_id
-      WHERE mv.entity_type = 'episode'
-        AND mv.model = ?
-        AND e.kind IN (${RECALL_EPISODE_KIND_SQL})
     `)
     this.listDenseChunkRowsStmt = this.db.prepare(`
       SELECT 'chunk' AS type, 'chunk' AS subtype, mc.id AS entity_id, mc.content AS content,
@@ -783,33 +770,10 @@ export class MemoryStore {
           this.insertEpisodeFtsStmt.run(finalEpisodeId, clean)
         } catch { /* duplicate rowid import */ }
       }
-      const shouldCandidate =
-        (entry.role === 'user' && episodeKind === 'message') ||
-        (entry.role === 'assistant' && episodeKind === 'message')
-      if (shouldCandidate) {
-        insertCandidateUnits(this.insertCandidateStmt, finalEpisodeId, ts, dayKey, entry.role, clean)
-      }
 
       // Embedding handled by cycle1 after classification
     }
     return finalEpisodeId ?? null
-  }
-
-  _embedEpisodeAsync(episodeId, content) {
-    const lookupModel = getEmbeddingModelId()
-    const contentHash = hashEmbeddingInput(content)
-    const existing = this.getVectorStmt.get('episode', episodeId, lookupModel)
-    if (existing?.content_hash === contentHash) return
-    const task = async () => {
-      const vector = await embedText(content.slice(0, 768))
-      if (!Array.isArray(vector) || vector.length === 0) return
-      const activeModel = getEmbeddingModelId()
-      this.upsertVectorStmt.run('episode', episodeId, activeModel, vector.length, JSON.stringify(vector), contentHash)
-      this._syncToVecTable('episode', episodeId, vector)
-      this.noteVectorWrite(activeModel, vector.length)
-    }
-    if (!this._embedQueue) this._embedQueue = Promise.resolve()
-    this._embedQueue = this._embedQueue.then(task).catch(() => {})
   }
 
   async processPendingEmbeds() {
@@ -843,7 +807,7 @@ export class MemoryStore {
       for (const row of this.db.prepare('SELECT entity_type, COUNT(*) AS n FROM memory_vectors GROUP BY entity_type').all())
         h.counts.vectors_by_type[row.entity_type] = Number(row.n)
     } catch {}
-    try { h.pending_candidates = Number(this.db.prepare("SELECT COUNT(*) AS n FROM memory_candidates WHERE status='pending'").get()?.n ?? 0) } catch {}
+    try { h.pending_candidates = Number(this.db.prepare("SELECT COUNT(*) AS n FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'").get()?.n ?? 0) } catch {}
     if (h.reindex_required) h.status = 'degraded'
     if (h.vec_enabled && !h.vec_ready) h.status = 'degraded'
     return h
@@ -902,6 +866,11 @@ export class MemoryStore {
     }
     prev.lineIndex = index
     this._transcriptOffsets.set(transcriptPath, prev)
+    // Persist transcript offsets to DB
+    try {
+      const obj = Object.fromEntries(this._transcriptOffsets)
+      this.setMetaValue('transcript_offsets', JSON.stringify(obj))
+    } catch {}
     return count
   }
 
@@ -952,12 +921,20 @@ export class MemoryStore {
     return countEpisodesImpl(this)
   }
 
-  getCandidatesForDate(dayKey) {
-    return getCandidatesForDateImpl(this, dayKey)
+  getUnclassifiedEpisodesForDate(dayKey) {
+    return getUnclassifiedEpisodesForDateImpl(this, dayKey)
   }
 
+  getUnclassifiedEpisodeDays(limit = 7, minCount = 1) {
+    return getUnclassifiedEpisodeDaysImpl(this, limit, minCount)
+  }
+
+  // Aliases for backward compatibility in cycle code
+  getCandidatesForDate(dayKey) {
+    return this.getUnclassifiedEpisodesForDate(dayKey)
+  }
   getPendingCandidateDays(limit = 7, minCount = 1) {
-    return getPendingCandidateDaysImpl(this, limit, minCount)
+    return this.getUnclassifiedEpisodeDays(limit, minCount)
   }
 
   getDecayRows(kind = 'fact') {
@@ -973,15 +950,15 @@ export class MemoryStore {
   }
 
   getRecentCandidateDays(limit = 7) {
-    return getRecentCandidateDaysImpl(this, limit)
+    return this.getUnclassifiedEpisodeDays(limit)
   }
 
   countPendingCandidates(dayKey = null) {
     return countPendingCandidatesImpl(this, dayKey)
   }
 
-  rebuildCandidates() {
-    return rebuildCandidatesImpl(this)
+  resetClassifiedFlag() {
+    return resetClassifiedFlagImpl(this)
   }
 
   resetConsolidatedMemory() {
@@ -996,12 +973,12 @@ export class MemoryStore {
     return pruneConsolidatedMemoryOutsideDaysImpl(this, dayKeys)
   }
 
-  markCandidateIdsConsolidated(candidateIds = []) {
-    return markCandidateIdsConsolidatedImpl(this, candidateIds)
+  markEpisodesClassified(episodeIds = []) {
+    return markEpisodesClassifiedImpl(this, episodeIds)
   }
 
-  markCandidatesConsolidated(dayKey) {
-    return markCandidatesConsolidatedImpl(this, dayKey)
+  markCandidateIdsConsolidated(candidateIds = []) {
+    return this.markEpisodesClassified(candidateIds)
   }
 
   upsertDocument(kind, docKey, content) {
@@ -1343,36 +1320,6 @@ export class MemoryStore {
         entityId: row.id,
         subtype: row.classification,
         content: [row.element, row.topic, row.importance, row.state].filter(Boolean).join(' | '),
-      })
-    }
-
-    const episodeLimit = Math.max(8, Math.floor(perTypeLimit / 2))
-    const maxAgeDays = options.maxAgeDays ?? null
-    const ageFilter = maxAgeDays ? `AND ts >= datetime('now', '-${Number(maxAgeDays)} days')` : ''
-    const episodeRows = this.db.prepare(`
-      SELECT id, role AS subtype, day_key AS ref, content
-      FROM episodes
-      WHERE kind IN (${RECALL_EPISODE_KIND_SQL})
-        AND LENGTH(content) BETWEEN 10 AND 1500
-        AND content NOT LIKE 'You are consolidating%'
-        AND content NOT LIKE 'You are improving%'
-        AND content NOT LIKE 'Answer using live%'
-        AND content NOT LIKE 'Use the ai_search%'
-        AND content NOT LIKE 'Say only%'
-        ${ageFilter}
-      ORDER BY ts DESC, id DESC
-      LIMIT ?
-    `).all(episodeLimit)
-    for (const row of episodeRows) {
-      const cls = this.db.prepare('SELECT element FROM classifications WHERE episode_id = ?').get(row.id)
-      const prefix = cls?.element ? cls.element + ' | ' : ''
-      items.push({
-        key: embeddingItemKey('episode', row.id),
-        entityType: 'episode',
-        entityId: row.id,
-        subtype: row.subtype,
-        ref: row.ref,
-        content: prefix + row.content,
       })
     }
 
@@ -1941,7 +1888,7 @@ export class MemoryStore {
         const results = []
         for (const knn of knnRows) {
           const { entityType, entityId } = this._vecRowToEntity(knn.rowid)
-          if (entityType !== 'classification' && entityType !== 'episode' && entityType !== 'chunk') continue
+          if (entityType !== 'classification' && entityType !== 'chunk') continue
           const meta = this._getEntityMeta(entityType, entityId, model, {})
           if (!meta) continue
           const similarity = 1 - knn.distance  // L2 distance → approximate similarity
@@ -1969,7 +1916,6 @@ export class MemoryStore {
     try { chunkRows = this.listDenseChunkRowsStmt.all(model) } catch { /* memory_chunks table may not exist */ }
     const rows = [
       ...this.listDenseClassificationRowsStmt.all(model),
-      ...this.listDenseEpisodeRowsStmt.all(model),
       ...chunkRows,
     ]
 

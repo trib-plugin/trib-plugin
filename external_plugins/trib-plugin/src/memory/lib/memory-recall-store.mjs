@@ -113,13 +113,15 @@ export async function getEpisodeRecallRows(store, options = {}) {
       ).all(queryLimit * 5)
       for (const knn of knnRows) {
         const { entityType, entityId } = store._vecRowToEntity(knn.rowid)
-        if (entityType !== 'episode') continue
+        if (entityType !== 'classification') continue
+        const cls = store.db.prepare(`SELECT episode_id FROM classifications WHERE id = ? AND status = 'active'`).get(entityId)
+        if (!cls?.episode_id) continue
         const ep = store.db.prepare(`
           SELECT id, ts, day_key, role, kind, content, source_ref, backend AS source_backend
           FROM episodes
           WHERE id = ? AND day_key >= ? AND day_key <= ?
             AND kind IN (${includeTranscripts ? DEBUG_RECALL_EPISODE_KIND_SQL : RECALL_EPISODE_KIND_SQL})
-        `).get(entityId, startDate, endDate)
+        `).get(cls.episode_id, startDate, endDate)
         if (ep) episodes.push({ ...ep, similarity: 1 - knn.distance })
       }
     } catch {}
