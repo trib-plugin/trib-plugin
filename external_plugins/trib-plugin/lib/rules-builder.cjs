@@ -82,9 +82,15 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const wfLines = ['## User Workflow', ''];
   if (wfDescription) wfLines.push(wfDescription, '');
   if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
+    const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
+    const typeMap = {};
+    if (Array.isArray(agentCfg.presets)) {
+      for (const p of agentCfg.presets) typeMap[p.id] = p.type || 'worker';
+    }
     wfLines.push('Roles:');
     for (const role of userWorkflow.roles) {
-      wfLines.push(`- ${role.name} → ${role.preset}`);
+      const label = (typeMap[role.preset] || 'worker') === 'bridge' ? 'Bridge' : 'Worker';
+      wfLines.push(`- ${role.name} → ${role.preset} (${label})`);
     }
   }
   parts.push(wfLines.join('\n'));

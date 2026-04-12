@@ -181,6 +181,9 @@ setImmediate(() => {
     const makeHandler = root => (_eventType, filename) => {
       if (!filename) return
       if (!/\.(md|json)$/i.test(filename)) return
+      // Skip transient data files that change frequently
+      if (/^history[/\\]/i.test(filename)) return
+      if (/^cycle-state\.json$/i.test(filename)) return
       const abs = pathResolve(root, filename)
       if (abs === resolvedTarget) return
       rebuild(filename)
@@ -203,8 +206,22 @@ setImmediate(() => {
   }
 })
 
-// ── Eager init: channels (background workers) ────────────────────────
-setImmediate(() => {
+// ── Eager init: memory + channels ──────────────────────────────────
+// Memory HTTP must be ready before channels starts sending episodes.
+setImmediate(async () => {
+  try {
+    await loadModule('memory')
+    // Flush episodes that were buffered while memory was previously unavailable
+    try {
+      const { flushBufferedEpisodes } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/channels/lib/memory-client.mjs')).href)
+      const result = await flushBufferedEpisodes()
+      if (result.flushed > 0) log(`flushed ${result.flushed} buffered episodes`)
+    } catch (e) {
+      log(`buffer flush failed: ${e.message}`)
+    }
+  } catch (e) {
+    log(`memory init failed: ${e.stack || e.message}`)
+  }
   loadModule('channels').catch(e => {
     log(`channels init failed: ${e.stack || e.message}`)
     throw e

@@ -15,6 +15,9 @@ Mention the phase in natural language only when entering a work cycle or
 transitioning between phases (e.g., "Entering Plan phase.", "Moving to Verify now.").
 For Q&A, investigation, explanation, or conversation, stay silent about phase.
 
+## Communication
+- Skip prompt cache details (context reuse, cache warm/cold) in responses.
+
 ## Non-negotiable
 1. No code changes before user approval.
 2. No build/push/deploy without explicit user request.

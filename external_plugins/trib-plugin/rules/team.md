@@ -1,6 +1,8 @@
 # Team
 
-Use ONE fixed team name (e.g., main) for the entire project lifecycle. TeamCreate happens once on first use; afterwards just add tasks.
+Each session creates its own team: `main-<random4hex>` (e.g., `main-a3f7`).
+Agents are in-process and die with the session, so a fresh team avoids stale-member conflicts.
+Generate the suffix once at session start and reuse it for all Agent spawns in that session.
 
 Real coding/file-modification work runs through this team. Trivial single-step lookups (file search, function search, quick test) can use a one-off background Agent without joining the team.
 
@@ -33,14 +35,6 @@ For **large-scope tasks**, spawn up to **3 workers in parallel** (`worker`, `wor
 
 Do not spawn more than 3 concurrent workers — lead context pressure and coordination overhead outweigh the speedup beyond that point.
 
-## Stale member cleanup
-
-Team config `members` persists across sessions but in-process agents die with their session. If a naming conflict appears (e.g., auto-rename to `worker-2` when unintended), the lead can manually edit `~/.claude/teams/<team>/config.json` to remove stale entries.
-
-Do not cleanup blindly — removing an entry for a still-alive agent breaks coordination. Only remove entries known to be dead.
-
-**Session start protocol**: When `TeamCreate` fails with "already exists", read `~/.claude/teams/<team>/config.json` first, filter `members` down to only the agents living in the current session (match against `leadSessionId` and what you actually spawned this session), write the filtered list back, and **only then** call the first `Agent` spawn. This prevents stale dead-session entries from causing `worker` → `worker-N` auto-renames and keeps role names stable across sessions.
-
 ## Bridge spawn pattern
 - Treat Bridge agents as thin pipes. The Bridge runs on haiku and only forwards.
 - ALWAYS embed an explicit session id in the Bash command so the Bridge call does NOT inherit the user's active session. Naming convention: `:bridge_<role>_<shortHash>`.
@@ -69,6 +63,6 @@ Include the new spec in the same message. Without this retraction the worker wil
 ## Lead duties
 - Read-verify every worker output. Never execute task work directly.
 
-No TeamDelete in routine retro — keep the team alive across sessions for continuity. Only delete when user explicitly winds the project down.
+Old session teams are disposable. No manual cleanup required — they can be periodically pruned from `~/.claude/teams/`.
 
 Quick questions: /ask (ask-forwarder).
