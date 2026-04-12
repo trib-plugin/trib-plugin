@@ -19,11 +19,4 @@ Up to 3 (`worker`, `worker-2`, `worker-3`). More than 3 is counterproductive.
 Thin pipe on haiku, forwards to external LLM. Embed explicit session id `:bridge_<role>_<hash>`.
 Absolute marketplace path (no `${CLAUDE_PLUGIN_ROOT}`). Wait for SendMessage report (5-30s).
 
-## Message discipline
-After stand-down, new task must explicitly retract: "Previous stand-down retracted. Proceed with Task #N."
-
-## Lead duties
-- When using workers: Read-verify every output before reporting.
-- Small tasks (≤5 files): lead may execute directly.
-
 Quick questions: /ask (ask-forwarder).
