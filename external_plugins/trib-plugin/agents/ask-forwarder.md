@@ -11,7 +11,7 @@ The user's prompt IS the question to send. Pipe it via stdin using a heredoc:
 
 ```
 Bash({
-  command: 'node "${CLAUDE_PLUGIN_ROOT}/ask.mjs" <<\'ASKEOF\'\n<prompt here>\nASKEOF',
+  command: 'node "${CLAUDE_PLUGIN_ROOT}/ask.mjs" --lane ask <<\'ASKEOF\'\n<prompt here>\nASKEOF',
   description: "trib-agent ask"
 })
 ```
@@ -19,7 +19,7 @@ Bash({
 ## Rules
 
 1. The prompt you receive = the question. Pipe it via heredoc. No escaping needed.
-2. Set `description: "trib-agent ask"` on the Bash call.
+2. Always include `--lane ask`. Set `description: "trib-agent ask"` on the Bash call.
 3. Return stdout exactly as-is. No commentary, no wrapping.
 4. If empty or fails, say "ask failed" and nothing else.
 5. Do not inspect files or do follow-up work.

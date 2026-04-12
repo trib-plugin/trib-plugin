@@ -27,10 +27,10 @@ function readState() {
 function writeState(state) {
     writeFileSync(stateFilePath(), JSON.stringify(state, null, 2));
 }
-export function createJob(sessionId, prompt, context) {
+export function createJob(sessionId, prompt, context, { scopeKey, lane } = {}) {
     const jobId = `job_${Date.now()}`;
     const now = new Date().toISOString();
-    const index = { jobId, sessionId, status: 'running', startedAt: now };
+    const index = { jobId, sessionId, status: 'running', startedAt: now, lane: lane || null };
     const state = readState();
     state.push(index);
     writeState(state);
@@ -38,6 +38,8 @@ export function createJob(sessionId, prompt, context) {
         jobId,
         sessionId,
         status: 'running',
+        scopeKey: scopeKey || null,
+        lane: lane || null,
         request: { prompt, context },
         startedAt: now,
     };

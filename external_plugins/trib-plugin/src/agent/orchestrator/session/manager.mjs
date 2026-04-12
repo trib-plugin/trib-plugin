@@ -100,6 +100,8 @@ export function createSession(opts) {
         fast,
         agent: opts.agent,
         owner: opts.owner || 'user',
+        scopeKey: opts.scopeKey || null,
+        lane: opts.lane || 'ask',
         cwd: opts.cwd,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -150,17 +152,11 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         messagesDropped,
     };
 }
-// --- find existing session by owner + preset/provider/model ---
-export function findSessionByCriteria({ owner, presetName, provider, model }) {
+// --- find existing session by scopeKey (lane-isolated) ---
+export function findSessionByScopeKey(scopeKey) {
+    if (!scopeKey) return null;
     const sessions = listStoredSessions();
-    for (const s of sessions) {
-        if (owner && s.owner !== owner) continue;
-        if (presetName && s.presetName !== presetName) continue;
-        if (provider && s.provider !== provider) continue;
-        if (model && s.model !== model) continue;
-        return s;
-    }
-    return null;
+    return sessions.find(s => s.scopeKey === scopeKey) || null;
 }
 // --- resume (reload tools for a stored session) ---
 export function resumeSession(sessionId, preset) {

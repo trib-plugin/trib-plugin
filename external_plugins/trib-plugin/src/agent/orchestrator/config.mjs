@@ -240,6 +240,23 @@ export function removePreset(config, name) {
     saveConfig(config);
     return true;
 }
+// --- Lane-scoped runtime spec ---
+// Converts a preset + execution context into a scopeKey for session isolation.
+//   ask lane:    "ask:<presetName>"         — user-facing, reusable per preset
+//   bridge lane: "bridge:<agentId>:<presetName>" — per bridge agent instance
+export function resolveRuntimeSpec(preset, ctx) {
+    const lane = ctx.lane || 'ask';
+    const presetName = preset.name || preset.id;
+    let scopeKey;
+    if (lane === 'bridge') {
+        if (!ctx.agentId) throw new Error('bridge lane requires agentId');
+        scopeKey = `bridge:${ctx.agentId}:${presetName}`;
+    } else {
+        scopeKey = `ask:${presetName}`;
+    }
+    return { lane, scopeKey, reuse: true, preset };
+}
+
 export function setDefaultPreset(config, key) {
     const preset = getPreset(config, key);
     if (!preset)

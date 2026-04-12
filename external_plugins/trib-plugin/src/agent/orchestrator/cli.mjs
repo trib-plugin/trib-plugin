@@ -13,7 +13,7 @@
  * Active session pointer: pluginData/active-session.txt
  */
 import { initProviders, getAllProviders, getProvider } from './providers/registry.mjs';
-import { loadConfig, listPresets, getPreset, getDefaultPreset, setDefaultPreset, getPluginData } from './config.mjs';
+import { loadConfig, listPresets, getPreset, getDefaultPreset, setDefaultPreset, getPluginData, resolveRuntimeSpec } from './config.mjs';
 import { connectMcpServers } from './mcp/client.mjs';
 import {
     createSession,
@@ -22,7 +22,7 @@ import {
     listSessions,
     closeSession,
     clearSessionMessages,
-    findSessionByCriteria,
+    findSessionByScopeKey,
 } from './session/manager.mjs';
 import { createJob, completeJob } from './jobs.mjs';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
@@ -74,9 +74,10 @@ async function ensureMcpConnected(config) {
 // --- Subcommands ---
 
 async function cmdAsk(args) {
-    // Parse flags: [--bg] [--provider X] [--model Y] [--preset Z] [--role R]
-    //              [--context "text"] [:sessionId] <prompt>
+    // Parse flags: [--bg] [--lane X] [--scope Y] [--provider X] [--model Y]
+    //              [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>
     let isBackground = false;
+    let lane = null, scope = null;
     let provider = null, model = null, presetName = null, role = null;
     let context = null, explicitSession = null;
     const positional = [];
@@ -84,6 +85,8 @@ async function cmdAsk(args) {
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (a === '--bg' || a === '--background') { isBackground = true; continue; }
+        if (a === '--lane' && args[i + 1]) { lane = args[++i]; continue; }
+        if (a === '--scope' && args[i + 1]) { scope = args[++i]; continue; }
         if (a === '--provider' && args[i + 1]) { provider = args[++i]; continue; }
         if (a === '--model' && args[i + 1]) { model = args[++i]; continue; }
         if (a === '--preset' && args[i + 1]) { presetName = args[++i]; continue; }
@@ -110,8 +113,10 @@ async function cmdAsk(args) {
 
     // Background spawn (detach + return jobId)
     if (isBackground) {
-        const jobId = createJob(explicitSession || readActiveSession() || '', prompt, context);
+        const jobId = createJob(explicitSession || readActiveSession() || '', prompt, context, { lane, scopeKey: scope });
         const childArgs = ['ask'];
+        if (lane) childArgs.push('--lane', lane);
+        if (scope) childArgs.push('--scope', scope);
         if (provider) childArgs.push('--provider', provider);
         if (model) childArgs.push('--model', model);
         if (presetName) childArgs.push('--preset', presetName);
@@ -131,25 +136,21 @@ async function cmdAsk(args) {
         process.exit(0);
     }
 
-    // Resolve session — skip active session when --preset is explicit
-    // Raw provider/model args also force a fresh session — prevents sticky effort/tools from a previous session leaking into the new model call.
-    let sessionId = explicitSession || ((presetName || provider || model) ? null : readActiveSession());
-    let session = sessionId ? resumeSession(sessionId) : null;
+    // === Lane-based session resolution ===
+    let session = null;
+
+    // Explicit session ID always wins (backwards compat)
+    if (explicitSession) {
+        session = resumeSession(explicitSession);
+        if (session) await ensureMcpConnected(config);
+    }
 
     if (!session) {
-        // If preset specified, resolve from config and pass full preset object
-        if (presetName && config.presets) {
-            const p = config.presets.find(x => x.id === presetName || x.name === presetName);
-            if (p) {
-                await ensureMcpConnected(config);
-                // Reuse existing session for same owner+preset when no explicit session id
-                const sessionOwner = explicitSession?.startsWith('bridge_') ? 'bridge' : 'user';
-                if (!explicitSession) {
-                    const existing = findSessionByCriteria({ owner: sessionOwner, presetName: p.name });
-                    if (existing) session = resumeSession(existing.id);
-                }
-                if (!session) session = createSession({ preset: p, agent: role, owner: sessionOwner, cwd: process.cwd() });
-            } else {
+        // Resolve preset object
+        let preset = null;
+        if (presetName) {
+            preset = config.presets.find(x => x.id === presetName || x.name === presetName);
+            if (!preset) {
                 process.stderr.write(`preset "${presetName}" not found.\n`);
                 process.exit(1);
             }
@@ -164,28 +165,55 @@ async function cmdAsk(args) {
                 process.stderr.write('provider and model required.\n');
                 process.exit(1);
             }
-            await ensureMcpConnected(config);
-            // Reuse existing session for same owner+provider+model when no explicit session id
-            const sessionOwner = explicitSession?.startsWith('bridge_') ? 'bridge' : 'user';
-            if (!explicitSession) {
-                const existing = findSessionByCriteria({ owner: sessionOwner, provider: resolvedProvider, model: resolvedModel });
-                if (existing) session = resumeSession(existing.id);
-            }
-            if (!session) session = createSession({ provider: resolvedProvider, model: resolvedModel, agent: role, owner: sessionOwner, preset: 'full', cwd: process.cwd() });
+            preset = { name: `${resolvedProvider}/${resolvedModel}`, provider: resolvedProvider, model: resolvedModel, type: 'bridge', tools: 'full' };
         } else {
-            // Default preset
-            const preset = getDefaultPreset(config);
-            if (!preset) {
-                process.stderr.write('No active session and no default preset configured.\n');
-                process.stderr.write('Run /trib-agent:config to create a preset, then /trib-agent:new.\n');
-                process.exit(1);
+            // No --preset/--provider/--model: try active session (ask lane only), then default preset
+            if (!lane || lane === 'ask') {
+                const activeId = readActiveSession();
+                if (activeId) session = resumeSession(activeId);
             }
-            await ensureMcpConnected(config);
-            session = createSession({ preset, cwd: process.cwd() });
+            if (!session) {
+                preset = getDefaultPreset(config);
+                if (!preset) {
+                    process.stderr.write('No active session and no default preset configured.\n');
+                    process.stderr.write('Run /trib-agent:config to create a preset, then /trib-agent:new.\n');
+                    process.exit(1);
+                }
+            }
         }
-        writeActiveSession(session.id);
-    } else {
-        await ensureMcpConnected(config);
+
+        if (!session && preset) {
+            await ensureMcpConnected(config);
+
+            // Determine effective lane: explicit --lane, or auto-detect from --scope
+            const effectiveLane = lane || (scope ? 'bridge' : 'ask');
+            const runtimeSpec = resolveRuntimeSpec(preset, {
+                lane: effectiveLane,
+                agentId: scope || undefined,
+            });
+
+            // Find existing session by scopeKey
+            const existing = findSessionByScopeKey(runtimeSpec.scopeKey);
+            if (existing) session = resumeSession(existing.id);
+
+            if (!session) {
+                session = createSession({
+                    preset,
+                    agent: role,
+                    owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+                    scopeKey: runtimeSpec.scopeKey,
+                    lane: runtimeSpec.lane,
+                    cwd: process.cwd(),
+                });
+            }
+
+            // Only update active pointer for ask lane
+            if (effectiveLane === 'ask') {
+                writeActiveSession(session.id);
+            }
+        } else if (session) {
+            await ensureMcpConnected(config);
+        }
     }
 
     try {
