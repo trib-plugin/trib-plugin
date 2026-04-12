@@ -1,67 +1,29 @@
 # Team
 
-Team name is `main` (fixed). SessionStart hook auto-ensures the team exists and claims lead for the current session.
-Do NOT call TeamCreate or TeamDelete manually — the hook handles it.
-Spawn errors: never retry. If spawn fails, check `~/.claude/teams/main/config.json` and report to user.
-
-Real coding/file-modification work runs through this team. Trivial single-step lookups (file search, function search, quick test) can use a one-off background Agent without joining the team.
-
-## Naming
-
-Agent names come from the **User Workflow** section (auto-injected from `user-workflow.json`). Use the role name defined in User Workflow as the agent name — e.g., if `worker` is defined, spawn with `name: "worker"`. The Models section lists available presets; User Workflow maps each role to a preset.
+Team name is `main` (fixed). SessionStart hook auto-ensures the team exists.
+Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check config and report.
 
 ## Setup
-- TaskCreate (one meaningful unit each).
-- Spawn sub-agent via Agent tool: `subagent_type` Worker (opus/sonnet/haiku) or Bridge (external preset). Use `run_in_background: true`, `team_name: "main"`, `name: <role-from-user-workflow>`.
-- Do NOT use built-in Explore or Plan subagent types — always Worker/Bridge.
-- Pick presets from the Models section in the system prompt (auto-injected from agent-config.json). See User Workflow below for role→preset mapping.
+- TaskCreate per meaningful unit.
+- Spawn: `subagent_type` Worker or Bridge, `run_in_background: true`, `team_name: "main"`, `name: <role>`.
+- Do NOT use built-in Explore or Plan subagent types.
+- Agent names and presets come from User Workflow / Models sections.
 
 ## Reuse vs respawn
-
-Default is **reuse** — SendMessage to the existing agent by name. This keeps prompt cache warm and avoids spawn overhead.
-
-Reuse when:
-- The next task is related to the previous one (shared context helps).
-- Accumulated history is useful for the new task.
-
-Respawn when:
-- The task is completely unrelated to previous work.
-- Context pollution is visibly hurting output quality.
-- Lead needs a guaranteed clean slate.
+Default: **reuse** via SendMessage. Respawn only when context pollution hurts quality or task is completely unrelated.
 
 ## Parallel workers
+Up to 3 (`worker`, `worker-2`, `worker-3`). More than 3 is counterproductive.
 
-For **large-scope tasks**, spawn up to **3 workers in parallel** (`worker`, `worker-2`, `worker-3`) and distribute sub-tasks across them. For normal scope, one worker is enough.
-
-Do not spawn more than 3 concurrent workers — lead context pressure and coordination overhead outweigh the speedup beyond that point.
-
-## Bridge spawn pattern
-- Treat Bridge agents as thin pipes. The Bridge runs on haiku and only forwards.
-- ALWAYS embed an explicit session id in the Bash command so the Bridge call does NOT inherit the user's active session. Naming convention: `:bridge_<role>_<shortHash>`.
-- Use absolute marketplace path; do NOT use ${CLAUDE_PLUGIN_ROOT} (sub-agent Bash context lacks plugin env vars).
-- spawn prompt template (text the lead sends to the Bridge agent):
-
-    Run this exact Bash command and return stdout verbatim:
-
-    cd "C:/Users/tempe/.claude/plugins/marketplaces/trib-plugin/external_plugins/trib-plugin" && node ask.mjs :bridge_<role>_<shortHash> --preset <name> <<'TASKEOF'
-    <task body for the external model>
-    TASKEOF
-
-    Set description to "trib-agent ask". Then SendMessage the stdout to lead.
-
-- The explicit session id keeps each Bridge call in its own room — never mixed with the user's interactive ask sessions.
-- External LLM round-trip takes 5-30s. Don't conclude "failed" on early idle notifications; wait for the SendMessage report.
+## Bridge pattern
+Thin pipe on haiku, forwards to external LLM. Embed explicit session id `:bridge_<role>_<hash>`.
+Absolute marketplace path (no `${CLAUDE_PLUGIN_ROOT}`). Wait for SendMessage report (5-30s).
 
 ## Message discipline
-
-When you send a worker a **stand-down** message and then immediately receive approval for new work, do NOT just send the new task — messages can arrive out of order and the worker will treat them as contradictory. The new-task message must **explicitly retract** the stand-down, for example:
-
-> Previous stand-down retracted. Proceed with Task #N.
-
-Include the new spec in the same message. Without this retraction the worker will block on the conflict and ask for clarification, costing a full round-trip.
+After stand-down, new task must explicitly retract: "Previous stand-down retracted. Proceed with Task #N."
 
 ## Lead duties
-- Read-verify every worker output. Never execute task work directly.
-- Small single-purpose tasks (≤5 files): lead may execute directly instead of spawning a team.
+- When using workers: Read-verify every output before reporting.
+- Small tasks (≤5 files): lead may execute directly.
 
 Quick questions: /ask (ask-forwarder).

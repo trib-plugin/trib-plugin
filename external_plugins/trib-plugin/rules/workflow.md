@@ -3,7 +3,7 @@
 Plan → Execute → Verify → Ship → Retro.
 
 - Plan: discuss with user, refine until both agree on the spec, wait for explicit approval.
-- Execute: implement the approved plan. Use the team for actual code/file modification work (see Team rules).
+- Execute: implement the approved plan. Use the team for large/parallel work; lead may execute small tasks directly (see Team rules).
 - Verify: Read each changed file. Reload/restart affected services, exercise runtime. Issues → back to Execute.
 - Ship: git status → propose commit message → commit on approval → push on approval → Retro. Format: YYYY-MM-DD HH:MM + description, no Claude signatures.
 - Retro: self-eval. Workflow/rule proposal only if warranted.
@@ -21,4 +21,4 @@ For Q&A, investigation, explanation, or conversation, stay silent about phase.
 ## Non-negotiable
 1. No code changes before user approval.
 2. No build/push/deploy without explicit user request.
-3. Verify worker output with Read before reporting.
+3. When using workers, verify output with Read before reporting.
