@@ -1,8 +1,8 @@
 # Team
 
-Each session creates its own team: `main-<random4hex>` (e.g., `main-a3f7`).
-Agents are in-process and die with the session, so a fresh team avoids stale-member conflicts.
-Generate the suffix once at session start and reuse it for all Agent spawns in that session.
+Team name is `main` (fixed). SessionStart hook auto-ensures the team exists and claims lead for the current session.
+Do NOT call TeamCreate or TeamDelete manually — the hook handles it.
+Spawn errors: never retry. If spawn fails, check `~/.claude/teams/main/config.json` and report to user.
 
 Real coding/file-modification work runs through this team. Trivial single-step lookups (file search, function search, quick test) can use a one-off background Agent without joining the team.
 
@@ -12,7 +12,7 @@ Agent names come from the **User Workflow** section (auto-injected from `user-wo
 
 ## Setup
 - TaskCreate (one meaningful unit each).
-- Spawn sub-agent via Agent tool: `subagent_type` Worker (opus/sonnet/haiku) or Bridge (external preset). Use `run_in_background: true`, `team_name: <current>`, `name: <role-from-user-workflow>`.
+- Spawn sub-agent via Agent tool: `subagent_type` Worker (opus/sonnet/haiku) or Bridge (external preset). Use `run_in_background: true`, `team_name: "main"`, `name: <role-from-user-workflow>`.
 - Do NOT use built-in Explore or Plan subagent types — always Worker/Bridge.
 - Pick presets from the Models section in the system prompt (auto-injected from agent-config.json). See User Workflow below for role→preset mapping.
 
@@ -62,7 +62,6 @@ Include the new spec in the same message. Without this retraction the worker wil
 
 ## Lead duties
 - Read-verify every worker output. Never execute task work directly.
-
-Old session teams are disposable. No manual cleanup required — they can be periodically pruned from `~/.claude/teams/`.
+- Small single-purpose tasks (≤5 files): lead may execute directly instead of spawning a team.
 
 Quick questions: /ask (ask-forwarder).
