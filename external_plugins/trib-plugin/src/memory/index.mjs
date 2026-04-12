@@ -475,8 +475,9 @@ async function _initRuntime() {
   _runStartupMigrations()
   _startCycles()
   _initialized = true
-  // Background warmup: preload embedding model so first cycle1 doesn't spike
+  // Background warmup: preload models so first cycle doesn't spike
   store.warmupEmbeddings().catch(() => {})
+  import('./lib/reranker.mjs').then(m => m.warmupReranker()).catch(() => {})
 }
 
 // ══════════════════════════════════════════════════════════════════════

@@ -120,6 +120,10 @@ async function scoreOne(queryText, docText) {
   return output.logits.data[0]
 }
 
+export async function warmupReranker() {
+  await ensureModel()
+}
+
 export async function rerank(query, items, topK) {
   const limit = Math.min(Number(topK ?? 5), items.length)
   if (limit === 0) return []
