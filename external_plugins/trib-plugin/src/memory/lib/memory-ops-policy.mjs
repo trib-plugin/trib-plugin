@@ -155,16 +155,16 @@ export function shouldRunCycleCatchUp(kind, policy, state = {}) {
   if (mode === 'off') return false
 
   const due = Boolean(state.due)
-  const pendingCandidates = Number(state.pendingCandidates ?? 0)
+  const unclassified = Number(state.unclassifiedEpisodes ?? state.pendingCandidates ?? 0)
   const pendingEmbeds = Number(state.pendingEmbeds ?? 0)
   const missingLastRun = !state.lastRunAt
 
   if (kind === 'cycle2') {
-    if (mode === 'full') return due || pendingCandidates > 0 || missingLastRun
-    return config?.requireDue !== false ? due : (due || pendingCandidates > 0 || missingLastRun)
+    if (mode === 'full') return due || unclassified > 0 || missingLastRun
+    return config?.requireDue !== false ? due : (due || unclassified > 0 || missingLastRun)
   }
 
-  if (mode === 'full') return due || pendingCandidates > 0 || pendingEmbeds > 0 || missingLastRun
+  if (mode === 'full') return due || unclassified > 0 || pendingEmbeds > 0 || missingLastRun
   if (config?.requireDue === true) return due
-  return due || pendingCandidates >= Number(config?.minPendingCandidates ?? 0) || (missingLastRun && (pendingCandidates > 0 || pendingEmbeds > 0))
+  return due || unclassified >= Number(config?.minPendingCandidates ?? 0) || (missingLastRun && (unclassified > 0 || pendingEmbeds > 0))
 }

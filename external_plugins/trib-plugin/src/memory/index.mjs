@@ -238,9 +238,9 @@ async function _initStore() {
   WORKSPACE_PATH = process.env.TRIB_MEMORY_WORKSPACE || process.cwd()
 }
 
-function getPendingCandidateCount() {
+function getUnclassifiedEpisodeCount() {
   try {
-    return store.getPendingCandidateDays(100, 1).reduce((sum, item) => sum + Number(item?.n ?? 0), 0)
+    return store.getUnclassifiedEpisodeDays(100, 1).reduce((sum, item) => sum + Number(item?.n ?? 0), 0)
   } catch {
     return 0
   }
@@ -291,7 +291,7 @@ async function checkCycles(options = {}) {
   const startup = options.startup === true
   const now = Date.now()
   const last = getCycleLastRun()
-  const pendingCandidates = getPendingCandidateCount()
+  const unclassifiedEpisodes = getUnclassifiedEpisodeCount()
   const pendingEmbeds = getPendingEmbedCount()
   const cycle1Due = now - last.cycle1 >= cycle1Ms
   const cycle2Due = now - last.cycle2 >= cycle2Ms
@@ -301,7 +301,7 @@ async function checkCycles(options = {}) {
       ? shouldRunCycleCatchUp('cycle1', opsPolicy, {
           due: cycle1Due,
           lastRunAt: last.cycle1 || null,
-          pendingCandidates,
+          unclassifiedEpisodes,
           pendingEmbeds,
         })
       : cycle1Due
@@ -321,7 +321,7 @@ async function checkCycles(options = {}) {
       ? shouldRunCycleCatchUp('cycle2', opsPolicy, {
           due: cycle2Due,
           lastRunAt: last.cycle2 || null,
-          pendingCandidates,
+          unclassifiedEpisodes,
         })
       : cycle2Due
   ) {
@@ -1197,7 +1197,7 @@ export async function init() {
   process.stderr.write('[memory-service] init() complete (unified mode)\n')
   try {
     const h = store.getHealthStatus()
-    process.stderr.write(`[memory] health=${h.status} vec=${h.vec_enabled ? (h.vec_ready ? 'ready' : 'not-ready') : 'off'} embed=${h.embedding.model_id || 'n/a'}:${h.embedding.dims || '?'}d reranker=${h.reranker.model_id || 'n/a'}@${h.reranker.device || '?'} reindex=${h.reindex_required ? 'yes' : 'no'} episodes=${h.counts.episodes} vectors=${h.counts.vectors_total} pending=${h.pending_candidates}\n`)
+    process.stderr.write(`[memory] health=${h.status} vec=${h.vec_enabled ? (h.vec_ready ? 'ready' : 'not-ready') : 'off'} embed=${h.embedding.model_id || 'n/a'}:${h.embedding.dims || '?'}d reranker=${h.reranker.model_id || 'n/a'}@${h.reranker.device || '?'} reindex=${h.reindex_required ? 'yes' : 'no'} episodes=${h.counts.episodes} vectors=${h.counts.vectors_total} unclassified=${h.unclassified_episodes}\n`)
   } catch {}
 }
 

@@ -235,7 +235,7 @@ export class MemoryStore {
     process.stderr.write(`[memory] switching embedding model: ${oldModel} → ${newModel}\n`)
     const reset = this.resetDerivedMemoryForEmbeddingChange({ newModel })
     process.stderr.write(
-      `[memory] embedding model changed; cleared derived memory and rebuilt ${reset.rebuiltCandidates} candidates for ${newModel}\n`,
+      `[memory] embedding model changed; cleared derived memory and reset classified flag for ${newModel}\n`,
     )
     return { changed: true, oldModel, newModel, reset }
   }
@@ -791,7 +791,7 @@ export class MemoryStore {
       reranker: { model_id: null, device: null },
       reindex_required: false,
       counts: { episodes: 0, classifications_active: 0, chunks_active: 0, vectors_total: 0, vectors_by_type: {} },
-      pending_candidates: 0,
+      unclassified_episodes: 0,
     }
     try { h.embedding.model_id = getEmbeddingModelId() } catch {}
     try { h.embedding.dims = getEmbeddingDims() } catch {}
@@ -807,7 +807,7 @@ export class MemoryStore {
       for (const row of this.db.prepare('SELECT entity_type, COUNT(*) AS n FROM memory_vectors GROUP BY entity_type').all())
         h.counts.vectors_by_type[row.entity_type] = Number(row.n)
     } catch {}
-    try { h.pending_candidates = Number(this.db.prepare("SELECT COUNT(*) AS n FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'").get()?.n ?? 0) } catch {}
+    try { h.unclassified_episodes = Number(this.db.prepare("SELECT COUNT(*) AS n FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'").get()?.n ?? 0) } catch {}
     if (h.reindex_required) h.status = 'degraded'
     if (h.vec_enabled && !h.vec_ready) h.status = 'degraded'
     return h
