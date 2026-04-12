@@ -217,25 +217,28 @@ async function cmdAsk(args) {
     }
 
     try {
+        const t0 = Date.now();
         const result = await askSession(session.id, prompt, context, (iteration, calls) => {
             const names = calls.map(c => c.name).join(', ');
             process.stderr.write(`  tool #${iteration}: ${names}\n`);
         }, process.cwd());
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         const inTok = fmtTokens(result.usage?.inputTokens);
         const outTok = fmtTokens(result.usage?.outputTokens);
         const loopNote = result.iterations > 1
             ? ` · ${result.iterations} loops, ${result.toolCallsTotal} calls` : '';
-        const output = `${result.content}\n\n\`${session.model} · ${inTok} in · ${outTok} out${loopNote}\`\n`;
+        const content = result.content || '';
+        const output = `${content}\n\n\`${session.model} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}\`\n`;
         process.stdout.write(output);
         const jobId = process.env.ORCHESTRATOR_JOB_ID;
-        if (jobId) completeJob(jobId, output);
+        if (jobId) completeJob(jobId, content);
         process.exit(0);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const output = `**FAILED** ${msg}\n\n\`${session.model}\`\n`;
         process.stdout.write(output);
         const jobId = process.env.ORCHESTRATOR_JOB_ID;
-        if (jobId) completeJob(jobId, output, true);
+        if (jobId) completeJob(jobId, `**FAILED** ${msg}`, true);
         process.exit(1);
     }
 }
