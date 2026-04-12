@@ -1006,9 +1006,11 @@ async function runCycle1Impl(ws, config, options = {}) {
   }
 
   // LLM 호출은 병렬, DB 쓰기는 결과 모아서 순차
+  const allResults = []
   for (let i = 0; i < batches.length; i += concurrency) {
     const chunk = batches.slice(i, i + concurrency)
     const results = await Promise.all(chunk.map((batch, idx) => processSingleBatch(batch, i + idx)))
+    allResults.push(...results)
 
     // NOTE: cycle1 must NEVER write to core_memory table — that is cycle2's responsibility
     const ts = new Date().toISOString()
@@ -1072,7 +1074,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   if (totalExtracted > 0) {
     const targetIds = new Map()
     const clsIds = new Set(changedClassificationIds)
-    for (const result of results) {
+    for (const result of allResults) {
       if (!result) continue
       for (const row of result.classificationRows) {
         const epId = Number(row.episode_id)

@@ -86,7 +86,9 @@ try {
       }],
     }, null, 2));
   }
-} catch {}
+} catch (e) {
+  process.stderr.write(`[ensure-team] error: ${e.message}\n`)
+}
 
 // --- Mode branch: claude_md mode delegates to MCP boot-time writer ---
 function readJson(filePath) {

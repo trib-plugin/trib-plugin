@@ -1416,6 +1416,40 @@ export class MemoryStore {
         subtype: row.classification,
         content: [row.element, row.topic, row.importance, row.state].filter(Boolean).join(' | '),
       }))
+      // Also get chunks for the same days
+      try {
+        const chunkRows = this.db.prepare(`
+          SELECT mc.id, mc.content, mc.topic FROM memory_chunks mc
+          JOIN classifications c ON c.id = mc.classification_id
+          WHERE c.status = 'active' AND c.day_key IN (${placeholders})
+        `).all(...options.dayKeys)
+        for (const row of chunkRows) {
+          candidates.push({
+            key: embeddingItemKey('chunk', row.id),
+            entityType: 'chunk',
+            entityId: row.id,
+            subtype: 'chunk',
+            content: row.topic ? `${row.topic} | ${row.content}` : row.content,
+          })
+        }
+      } catch {}
+      // Also get core_memory for the same days
+      try {
+        const coreRows = this.db.prepare(`
+          SELECT cm.id, cm.topic, cm.element, cm.importance FROM core_memory cm
+          JOIN classifications c ON c.id = cm.classification_id
+          WHERE c.status = 'active' AND c.day_key IN (${placeholders})
+        `).all(...options.dayKeys)
+        for (const row of coreRows) {
+          candidates.push({
+            key: embeddingItemKey('core_memory', row.id),
+            entityType: 'core_memory',
+            entityId: row.id,
+            subtype: row.importance || 'fact',
+            content: [row.element, row.topic, row.importance].filter(Boolean).join(' | '),
+          })
+        }
+      } catch {}
     } else {
       // Full scan fallback (cycle2)
       candidates = this.getEmbeddableItems(options)
@@ -1432,10 +1466,23 @@ export class MemoryStore {
     const lookupModel = getEmbeddingModelId()
     const existingHashes = new Map()
     try {
-      const rows = this.db.prepare(
-        `SELECT entity_type, entity_id, content_hash FROM memory_vectors WHERE model = ?`
-      ).all(lookupModel)
-      for (const r of rows) {
+      let hashRows
+      if (options.targetIds instanceof Map && options.targetIds.size > 0) {
+        // Only load hashes for targeted entities
+        hashRows = []
+        for (const [entityType, ids] of options.targetIds) {
+          if (ids.size === 0) continue
+          const ph = [...ids].map(() => '?').join(',')
+          hashRows.push(...this.db.prepare(
+            `SELECT entity_type, entity_id, content_hash FROM memory_vectors WHERE model = ? AND entity_type = ? AND entity_id IN (${ph})`
+          ).all(lookupModel, entityType, ...ids))
+        }
+      } else {
+        hashRows = this.db.prepare(
+          `SELECT entity_type, entity_id, content_hash FROM memory_vectors WHERE model = ?`
+        ).all(lookupModel)
+      }
+      for (const r of hashRows) {
         existingHashes.set(`${r.entity_type}:${r.entity_id}`, r.content_hash)
       }
     } catch {}
