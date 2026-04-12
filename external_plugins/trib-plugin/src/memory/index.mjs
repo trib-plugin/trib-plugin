@@ -475,6 +475,8 @@ async function _initRuntime() {
   _runStartupMigrations()
   _startCycles()
   _initialized = true
+  // Background warmup: preload embedding model so first cycle1 doesn't spike
+  store.warmupEmbeddings().catch(() => {})
 }
 
 // ══════════════════════════════════════════════════════════════════════
