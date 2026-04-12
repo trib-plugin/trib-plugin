@@ -178,15 +178,23 @@ setImmediate(() => {
       }, 300)
     }
 
-    const makeHandler = root => (_eventType, filename) => {
-      if (!filename) return
-      if (!/\.(md|json)$/i.test(filename)) return
-      // Skip transient data files that change frequently
-      if (/^history[/\\]/i.test(filename)) return
-      if (/^cycle-state\.json$/i.test(filename)) return
-      const abs = pathResolve(root, filename)
-      if (abs === resolvedTarget) return
-      rebuild(filename)
+    const DATA_ALLOWLIST = new Set([
+      'config.json', 'memory-config.json', 'search-config.json',
+      'agent-config.json', 'user-workflow.json', 'user-workflow.md',
+      'history/context.md', 'history/user.md', 'history/bot.md',
+    ])
+
+    const makeHandler = root => {
+      const isDataDir = pathResolve(root) === pathResolve(PLUGIN_DATA)
+      return (_eventType, filename) => {
+        if (!filename) return
+        if (!/\.(md|json)$/i.test(filename)) return
+        const norm = filename.replace(/\\/g, '/')
+        if (isDataDir && !DATA_ALLOWLIST.has(norm)) return
+        const abs = pathResolve(root, filename)
+        if (abs === resolvedTarget) return
+        rebuild(filename)
+      }
     }
 
     const roots = [
