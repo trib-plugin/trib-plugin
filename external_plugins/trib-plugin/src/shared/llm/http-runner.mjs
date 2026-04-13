@@ -41,7 +41,8 @@ export async function runHTTP(prompt, options = {}) {
   const isAnthropic = provider === 'anthropic' || /claude|anthropic/i.test(model || '')
 
   if (isAnthropic) {
-    const endpoint = baseUrl ? `${baseUrl}/v1/messages` : 'https://api.anthropic.com/v1/messages'
+    const base = baseUrl ? baseUrl.replace(/\/v1\/?$/, '') : 'https://api.anthropic.com'
+    const endpoint = `${base}/v1/messages`
     const payload = JSON.stringify({
       model,
       max_tokens: 8192,

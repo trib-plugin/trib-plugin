@@ -105,5 +105,8 @@ export async function callLLM(prompt, presetOrId, options = {}) {
 export function resolveMaintenancePreset(task, agentConfig) {
   const cfg = agentConfig || loadAgentConfig()
   const maint = cfg?.maintenance || {}
-  return maint[task] || maint.defaultPreset || 'sonnet-mid'
+  const presetId = maint[task] || maint.defaultPreset || 'sonnet-mid'
+  const presets = cfg?.presets || []
+  if (presets.some(p => p.id === presetId || p.name === presetId)) return presetId
+  return { id: '_fallback', type: 'native', model: 'sonnet', effort: 'medium' }
 }
