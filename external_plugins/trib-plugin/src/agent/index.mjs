@@ -353,10 +353,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         if (!prompt) return fail('prompt, file, or ref is required');
 
-        const SCOPE_PRESETS = { reviewer: 'GPT5.4', debugger: 'GPT5.4', explorer: 'gpt5.4-mini' };
-        const presetName = args.preset || (args.scope && SCOPE_PRESETS[args.scope]) || null;
-
         const config = loadConfig();
+        const scopePresets = config.scopes || {};
+        const presetName = args.preset || (args.scope && scopePresets[args.scope]) || null;
+
         let preset = null;
         if (presetName) {
           preset = config.presets?.find(x => x.id === presetName || x.name === presetName);
@@ -555,10 +555,10 @@ export async function handleToolCall(name, args, opts = {}) {
         }
         if (!prompt) return fail('prompt, file, or ref is required');
 
-        const SCOPE_PRESETS = { reviewer: 'GPT5.4', debugger: 'GPT5.4', explorer: 'gpt5.4-mini' };
-        const presetName = args.preset || (args.scope && SCOPE_PRESETS[args.scope]) || null;
-
         const config = loadConfig();
+        const scopePresets = config.scopes || {};
+        const presetName = args.preset || (args.scope && scopePresets[args.scope]) || null;
+
         let preset = null;
         if (presetName) {
           preset = config.presets?.find(x => x.id === presetName || x.name === presetName);

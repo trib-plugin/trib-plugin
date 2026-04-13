@@ -124,13 +124,14 @@ export function loadConfig() {
                 providers: { ...defaults.providers, ...raw.providers },
                 mcpServers: raw.mcpServers || {},
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
+                scopes: raw.scopes && typeof raw.scopes === 'object' ? raw.scopes : {},
                 default: raw.default || null,
             };
         }
         catch { /* fall through */ }
     }
     const defaults = buildDefaultConfig();
-    return { ...defaults, mcpServers: {}, presets: [], default: null };
+    return { ...defaults, mcpServers: {}, presets: [], scopes: {}, default: null };
 }
 /**
  * Atomically save config.json. Caller passes the full config object.
@@ -160,6 +161,7 @@ export function saveConfig(config) {
         providers: persistedProviders,
         mcpServers: config.mcpServers || {},
         presets: Array.isArray(config.presets) ? config.presets : [],
+        scopes: config.scopes && typeof config.scopes === 'object' ? config.scopes : {},
         default: config.default || null,
     };
     const tmp = path + '.tmp';
