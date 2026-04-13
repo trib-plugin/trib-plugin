@@ -2900,7 +2900,7 @@ function memRenderCoreMemory(items) {
       <input class="r-input" value="${escapeAttr(item.topic)}" style="flex:1;font-weight:600" data-cm-id="${item.id}" data-cm-f="topic">
       <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="memDeleteCoreMemory(${item.id})">Delete</span>
     </div>
-    <textarea class="r-input" style="height:50px;resize:vertical;font-size:11px" data-cm-id="${item.id}" data-cm-f="element">${escapeHtml(item.element)}</textarea>
+    <textarea class="r-input" style="height:120px;resize:vertical;font-size:11px;line-height:1.5" data-cm-id="${item.id}" data-cm-f="element">${escapeHtml(item.element)}</textarea>
   </div>`).join('');
 }
 
@@ -2918,7 +2918,7 @@ function memAddCoreMemory() {
       <input class="r-input" placeholder="Topic" style="flex:1;font-weight:600" data-cm-f="topic" data-cm-new="1">
       <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="this.closest('.r').remove();isDirty=true">Delete</span>
     </div>
-    <textarea class="r-input" style="height:50px;resize:vertical;font-size:11px" placeholder="Memory content..." data-cm-f="element" data-cm-new="1"></textarea>
+    <textarea class="r-input" style="height:120px;resize:vertical;font-size:11px;line-height:1.5" placeholder="Memory content..." data-cm-f="element" data-cm-new="1"></textarea>
   `;
   list.appendChild(div);
   isDirty=true;
