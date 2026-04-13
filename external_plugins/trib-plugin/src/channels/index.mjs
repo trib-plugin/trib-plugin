@@ -445,6 +445,44 @@ async function startOwnerHttpServer() {
           res.end(JSON.stringify({ ok: true }));
           return;
         }
+        case "/ask": {
+          if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
+          const askFile = body.file;
+          const askPrompt = body.prompt;
+          const askRef = body.ref;
+          const askScope = body.scope || "ask";
+          const askPreset = body.preset;
+          const askContext = body.context;
+          let finalPrompt = askPrompt;
+          if (!finalPrompt && askFile) {
+            try { finalPrompt = fs.readFileSync(askFile, "utf-8").trim(); } catch (e) {
+              res.writeHead(400); res.end(JSON.stringify({ error: `Cannot read file: ${e.message}` })); return;
+            }
+          }
+          if (!finalPrompt && !askRef) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt, file, or ref required" })); return; }
+          try {
+            const agentMod = await import(pathToFileURL(path.join(path.dirname(import.meta.url.replace("file:///", "").replace(/\//g, path.sep)), "..", "agent", "index.mjs")).href);
+            if (agentMod.init) await agentMod.init();
+            const toolArgs = {};
+            if (finalPrompt) toolArgs.prompt = finalPrompt;
+            if (askRef) toolArgs.ref = askRef;
+            if (askScope) toolArgs.scope = askScope;
+            if (askPreset) toolArgs.preset = askPreset;
+            if (askContext) toolArgs.context = askContext;
+            const notifyFn = text => {
+              void mcpServer.notification({
+                method: "notifications/claude/channel",
+                params: { content: text, meta: { user: "trib-agent", user_id: "system", ts: new Date().toISOString() } }
+              }).catch(() => {});
+            };
+            const result = await agentMod.handleToolCall("ask", toolArgs, { notifyFn });
+            res.writeHead(200);
+            res.end(JSON.stringify(result));
+          } catch (e) {
+            res.writeHead(500); res.end(JSON.stringify({ error: e.message })); return;
+          }
+          return;
+        }
         case "/bridge/activate": {
           channelBridgeActive = Boolean(body.active);
           writeBridgeState(channelBridgeActive);

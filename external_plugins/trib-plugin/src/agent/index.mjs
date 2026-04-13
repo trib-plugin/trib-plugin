@@ -2,8 +2,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initProviders, getAllProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession } from './orchestrator/session/manager.mjs';
-import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset } from './orchestrator/config.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey } from './orchestrator/session/manager.mjs';
+import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { writeFileSync, mkdirSync, readFileSync } from 'fs';
@@ -90,6 +90,23 @@ function buildInstructions() {
 seedDefaults();
 
 const INSTRUCTIONS = buildInstructions();
+
+// --- Prompt store (file-backed, shared with bin/ask CLI) ---
+const _promptStorePath = join(getPluginData(), 'prompt-store.json');
+let _promptSeq = 0;
+
+function _psLoad() {
+  try { return JSON.parse(readFileSync(_promptStorePath, 'utf-8')); } catch { return {}; }
+}
+function _psSave(store) {
+  writeFileSync(_promptStorePath, JSON.stringify(store) + '\n', 'utf-8');
+}
+const _promptStore = {
+  get(key) { return _psLoad()[key] ?? null; },
+  set(key, val) { const s = _psLoad(); s[key] = val; _psSave(s); },
+  delete(key) { const s = _psLoad(); delete s[key]; _psSave(s); },
+  has(key) { return key in _psLoad(); },
+};
 
 const server = new Server(
   { name: 'trib-agent', version: PLUGIN_VERSION },
@@ -181,6 +198,35 @@ const TOOLS = [
         name: { type: 'string', description: 'Workflow name (e.g., "code-review")' },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'set_prompt',
+    title: 'Store Prompt',
+    description: 'Store a long prompt and get a short reference key. Use with ask tool\'s ref parameter.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The prompt content to store' },
+        file: { type: 'string', description: 'Read content from this file path instead of content param' },
+        key: { type: 'string', description: 'Optional custom key. Auto-generated if omitted.' },
+      },
+    },
+  },
+  {
+    name: 'ask',
+    title: 'Ask External Model',
+    description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Use ref instead of prompt to reference a stored prompt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'The prompt to send (or use ref/file instead)' },
+        ref: { type: 'string', description: 'Reference key from prompt store' },
+        file: { type: 'string', description: 'Read prompt from this file path' },
+        scope: { type: 'string', description: 'Agent scope: reviewer, debugger, explorer, etc.' },
+        preset: { type: 'string', description: 'Override preset name (e.g., GPT5.4, gpt5.4-mini)' },
+        context: { type: 'string', description: 'Additional context to prepend' },
+      },
     },
   },
 ];
@@ -344,6 +390,89 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const workflow = getWorkflow(args.name);
         if (!workflow) return fail('workflow not found');
         return ok(workflow);
+      }
+
+      case 'set_prompt': {
+        let content = args.content;
+        if (!content && args.file) {
+          try { content = readFileSync(args.file, 'utf-8'); }
+          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+        }
+        if (!content) return fail('content or file is required');
+        const key = args.key || `p${++_promptSeq}`;
+        _promptStore.set(key, content);
+        return ok(`Stored as '${key}' (${content.length} chars)`);
+      }
+
+      case 'ask': {
+        let prompt = args.prompt;
+        if (!prompt && args.file) {
+          try { prompt = readFileSync(args.file, 'utf-8'); }
+          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+        }
+        if (!prompt && args.ref) {
+          prompt = _promptStore.get(args.ref);
+          if (!prompt) return fail(`ref "${args.ref}" not found in prompt store`);
+          _promptStore.delete(args.ref);
+        }
+        if (!prompt) return fail('prompt, file, or ref is required');
+
+        const SCOPE_PRESETS = { reviewer: 'GPT5.4', debugger: 'GPT5.4', explorer: 'gpt5.4-mini' };
+        const presetName = args.preset || (args.scope && SCOPE_PRESETS[args.scope]) || null;
+
+        const config = loadConfig();
+        let preset = null;
+        if (presetName) {
+          preset = config.presets?.find(x => x.id === presetName || x.name === presetName);
+          if (!preset) return fail(`preset "${presetName}" not found`);
+        } else {
+          preset = getDefaultPreset(config);
+          if (!preset) return fail('No preset specified and no default configured');
+        }
+
+        const scope = args.scope || 'ask';
+        const effectiveLane = scope === 'ask' ? 'ask' : 'bridge';
+        const runtimeSpec = resolveRuntimeSpec(preset, {
+          lane: effectiveLane,
+          agentId: effectiveLane === 'bridge' ? scope : undefined,
+        });
+
+        let session = null;
+        const existing = findSessionByScopeKey(runtimeSpec.scopeKey);
+        if (existing) session = resumeSession(existing.id);
+
+        if (!session) {
+          session = createSession({
+            preset,
+            owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+            scopeKey: runtimeSpec.scopeKey,
+            lane: runtimeSpec.lane,
+            cwd: process.cwd(),
+          });
+        }
+
+        const jobId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const scopeLabel = args.scope || 'default';
+        const modelLabel = preset.model || preset.name;
+
+        (async () => {
+          try {
+            const t0 = Date.now();
+            const result = await askSession(session.id, prompt, args.context || null, () => {}, process.cwd());
+            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+            const inTok = fmtTokens(result.usage?.inputTokens);
+            const outTok = fmtTokens(result.usage?.outputTokens);
+            const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
+            const content = result.content || '(empty response)';
+            const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
+            notify(`[${scopeLabel}] ${content}\n\n${footer}`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            notify(`[${scopeLabel}] ❌ ${msg}\n\n${modelLabel}`);
+          }
+        })();
+
+        return ok(`${jobId} · ${scopeLabel} · ${modelLabel}`);
       }
 
       default:
@@ -528,6 +657,91 @@ export async function handleToolCall(name, args, opts = {}) {
         const workflow = getWorkflow(args.name);
         if (!workflow) return fail('workflow not found');
         return ok(workflow);
+      }
+
+      case 'set_prompt': {
+        let content = args.content;
+        if (!content && args.file) {
+          try { content = readFileSync(args.file, 'utf-8'); }
+          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+        }
+        if (!content) return fail('content or file is required');
+        const key = args.key || `p${++_promptSeq}`;
+        _promptStore.set(key, content);
+        return ok(`Stored as '${key}' (${content.length} chars)`);
+      }
+
+      case 'ask': {
+        let prompt = args.prompt;
+        if (!prompt && args.file) {
+          try { prompt = readFileSync(args.file, 'utf-8'); }
+          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+        }
+        if (!prompt && args.ref) {
+          prompt = _promptStore.get(args.ref);
+          if (!prompt) return fail(`ref "${args.ref}" not found in prompt store`);
+          _promptStore.delete(args.ref);
+        }
+        if (!prompt) return fail('prompt, file, or ref is required');
+
+        const SCOPE_PRESETS = { reviewer: 'GPT5.4', debugger: 'GPT5.4', explorer: 'gpt5.4-mini' };
+        const presetName = args.preset || (args.scope && SCOPE_PRESETS[args.scope]) || null;
+
+        const config = loadConfig();
+        let preset = null;
+        if (presetName) {
+          preset = config.presets?.find(x => x.id === presetName || x.name === presetName);
+          if (!preset) return fail(`preset "${presetName}" not found`);
+        } else {
+          preset = getDefaultPreset(config);
+          if (!preset) return fail('No preset specified and no default configured');
+        }
+
+        const scope = args.scope || 'ask';
+        const effectiveLane = scope === 'ask' ? 'ask' : 'bridge';
+        const runtimeSpec = resolveRuntimeSpec(preset, {
+          lane: effectiveLane,
+          agentId: effectiveLane === 'bridge' ? scope : undefined,
+        });
+
+        let session = null;
+        const existing = findSessionByScopeKey(runtimeSpec.scopeKey);
+        if (existing) session = resumeSession(existing.id);
+
+        if (!session) {
+          session = createSession({
+            preset,
+            owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+            scopeKey: runtimeSpec.scopeKey,
+            lane: runtimeSpec.lane,
+            cwd: process.cwd(),
+          });
+        }
+
+        const jobId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const scopeLabel = args.scope || 'default';
+        const modelLabel = preset.model || preset.name;
+
+        (async () => {
+          try {
+            const t0 = Date.now();
+            const result = await askSession(session.id, prompt, args.context || null, () => {}, process.cwd());
+            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+            const inTok = fmtTokens(result.usage?.inputTokens);
+            const outTok = fmtTokens(result.usage?.outputTokens);
+            const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
+            const askContent = result.content || '(empty response)';
+            const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
+            const notifyFn = _notifyFn || ((text) => notify(text));
+            notifyFn(`[${scopeLabel}] ${askContent}\n\n${footer}`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const notifyFn = _notifyFn || ((text) => notify(text));
+            notifyFn(`[${scopeLabel}] ❌ ${msg}\n\n${modelLabel}`);
+          }
+        })();
+
+        return ok(`${jobId} · ${scopeLabel} · ${modelLabel}`);
       }
 
       default:
