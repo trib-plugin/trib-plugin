@@ -33,6 +33,28 @@ mkdirSync(PLUGIN_DATA, { recursive: true })
 globalThis.__tribFastEntry = true
 process.env.TRIB_UNIFIED = '1'
 
+// ── Unified config sync ────────────────────────────────────────────
+// trib-config.json is the single source. On boot, split into individual
+// files so each module can read its own file without changes.
+try {
+  const tribCfgPath = join(PLUGIN_DATA, 'trib-config.json')
+  const SECTION_FILES = { channels: 'config.json', agent: 'agent-config.json', memory: 'memory-config.json', search: 'search-config.json' }
+  let tribCfg
+  try { tribCfg = JSON.parse(readFileSync(tribCfgPath, 'utf8')) } catch { tribCfg = null }
+  if (tribCfg) {
+    for (const [section, file] of Object.entries(SECTION_FILES)) {
+      if (tribCfg[section]) writeFileSync(join(PLUGIN_DATA, file), JSON.stringify(tribCfg[section], null, 2) + '\n')
+    }
+  } else {
+    // First run: merge individual files into trib-config.json
+    const merged = {}
+    for (const [section, file] of Object.entries(SECTION_FILES)) {
+      try { merged[section] = JSON.parse(readFileSync(join(PLUGIN_DATA, file), 'utf8')) } catch {}
+    }
+    if (Object.keys(merged).length > 0) writeFileSync(tribCfgPath, JSON.stringify(merged, null, 2) + '\n')
+  }
+} catch (e) { log(`config sync: ${e.message}`) }
+
 // ── Static manifest ─────────────────────────────────────────────────
 const TOOL_DEFS = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'tools.json'), 'utf8'))
 const TOOL_MODULE = Object.fromEntries(TOOL_DEFS.map(t => [t.name, t.module]))
@@ -180,7 +202,7 @@ setImmediate(() => {
     }
 
     const DATA_ALLOWLIST = new Set([
-      'config.json', 'memory-config.json', 'search-config.json',
+      'trib-config.json', 'config.json', 'memory-config.json', 'search-config.json',
       'agent-config.json', 'user-workflow.json', 'user-workflow.md',
       'history/context.md', 'history/user.md', 'history/bot.md', 'history/session-recap.md',
     ])

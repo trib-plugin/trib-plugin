@@ -44,6 +44,21 @@ const MEMORY_DB_PATH = join(MEMORY_DATA_DIR, 'memory.sqlite');
 const SEARCH_DATA_DIR = DATA_DIR;
 const SEARCH_CONFIG_PATH = join(SEARCH_DATA_DIR, 'search-config.json');
 
+// -- Unified config sync --
+const TRIB_CONFIG_PATH = join(DATA_DIR, 'trib-config.json');
+const SECTION_FILES = { channels: CONFIG_PATH, agent: AGENT_CONFIG_PATH, memory: MEMORY_CONFIG_PATH, search: SEARCH_CONFIG_PATH };
+
+function syncToTribConfig() {
+  try {
+    const merged = {};
+    const SECTION_NAMES = { channels: 'config.json', agent: 'agent-config.json', memory: 'memory-config.json', search: 'search-config.json' };
+    for (const [section, filePath] of Object.entries(SECTION_FILES)) {
+      try { merged[section] = JSON.parse(readFileSync(filePath, 'utf8')); } catch {}
+    }
+    writeJsonFile(TRIB_CONFIG_PATH, merged);
+  } catch {}
+}
+
 const PORT = 3458;
 const APP_WIDTH = 950;
 const APP_HEIGHT = 900;
@@ -64,16 +79,16 @@ function writeJsonFile(path, data) {
 }
 
 function readConfig() { return readJsonFile(CONFIG_PATH); }
-function writeConfig(data) { writeJsonFile(CONFIG_PATH, data); }
+function writeConfig(data) { writeJsonFile(CONFIG_PATH, data); syncToTribConfig(); }
 
 function readAgentConfig() { return readJsonFile(AGENT_CONFIG_PATH); }
-function writeAgentConfig(data) { writeJsonFile(AGENT_CONFIG_PATH, data); }
+function writeAgentConfig(data) { writeJsonFile(AGENT_CONFIG_PATH, data); syncToTribConfig(); }
 
 function readMemoryConfig() { return readJsonFile(MEMORY_CONFIG_PATH); }
-function writeMemoryConfig(data) { writeJsonFile(MEMORY_CONFIG_PATH, data); }
+function writeMemoryConfig(data) { writeJsonFile(MEMORY_CONFIG_PATH, data); syncToTribConfig(); }
 
 function readSearchConfig() { return readJsonFile(SEARCH_CONFIG_PATH); }
-function writeSearchConfig(data) { writeJsonFile(SEARCH_CONFIG_PATH, data); }
+function writeSearchConfig(data) { writeJsonFile(SEARCH_CONFIG_PATH, data); syncToTribConfig(); }
 
 function readUserWorkflow() {
   if (!existsSync(USER_WORKFLOW_PATH)) return DEFAULT_USER_WORKFLOW;
