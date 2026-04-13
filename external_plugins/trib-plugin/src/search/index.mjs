@@ -9,7 +9,6 @@ import fs from 'fs'
 import path from 'path'
 import {
   ensureDataDir,
-  getAiProfile,
   getFirecrawlApiKey,
   getRequestTimeoutMs,
   getRawSearchMaxResults,
@@ -202,12 +201,9 @@ function buildRuntimeEnv(config) {
     ...(getRawProviderApiKey(config, 'github')
       ? { GITHUB_TOKEN: getRawProviderApiKey(config, 'github') }
       : {}),
-    ...(() => {
-      const grokKey = getRawProviderApiKey(config, 'xai') || getAiProfile(config, 'grok')?.apiKey
-      return grokKey
-        ? { XAI_API_KEY: process.env.XAI_API_KEY || grokKey, GROK_API_KEY: process.env.GROK_API_KEY || grokKey }
-        : {}
-    })(),
+    ...(getRawProviderApiKey(config, 'xai')
+      ? { XAI_API_KEY: process.env.XAI_API_KEY || getRawProviderApiKey(config, 'xai'), GROK_API_KEY: process.env.GROK_API_KEY || getRawProviderApiKey(config, 'xai') }
+      : {}),
   }
 }
 

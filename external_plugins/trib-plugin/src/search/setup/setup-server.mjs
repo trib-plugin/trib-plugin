@@ -203,25 +203,6 @@ function mergeConfig(existing, data) {
     config.rawSearch.credentials[id].apiKey = key;
   }
 
-  if (!config.aiSearch) config.aiSearch = {};
-  if (!config.aiSearch.profiles) config.aiSearch.profiles = {};
-
-  if (data.aiPriority?.length) {
-    // Filter out grok from saved priority
-    config.aiSearch.priority = data.aiPriority;
-  }
-
-  if (data.aiModels) {
-    for (const [id, modelCfg] of Object.entries(data.aiModels)) {
-      if (!config.aiSearch.profiles[id]) config.aiSearch.profiles[id] = {};
-      const profile = config.aiSearch.profiles[id];
-      if (modelCfg.model) profile.model = modelCfg.model;
-      if (modelCfg.xSearchEnabled !== undefined) profile.xSearchEnabled = modelCfg.xSearchEnabled;
-      if (modelCfg.effort !== undefined) profile.effort = modelCfg.effort;
-      if (modelCfg.fastMode !== undefined) profile.fastMode = modelCfg.fastMode;
-    }
-  }
-
   if (data.github !== undefined) {
     if (!config.rawSearch.credentials.github) config.rawSearch.credentials.github = {};
     config.rawSearch.credentials.github.token = data.github;
@@ -230,8 +211,6 @@ function mergeConfig(existing, data) {
   if (data.mode) config.defaultMode = data.mode;
   if (data.maxResults) config.rawSearch.maxResults = data.maxResults;
   if (data.requestTimeoutMs) config.requestTimeoutMs = data.requestTimeoutMs;
-  if (data.aiTimeoutMs) config.aiSearch.timeoutMs = data.aiTimeoutMs;
-
   if (data.crawl) {
     config.crawl = { ...config.crawl, ...data.crawl };
   }

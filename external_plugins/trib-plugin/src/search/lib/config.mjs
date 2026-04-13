@@ -43,34 +43,6 @@ export const DEFAULT_CONFIG = {
       },
     },
   },
-  aiSearch: {
-    priority: ['codex', 'claude', 'grok', 'gemini'],
-    timeoutMs: 60000,
-    profiles: {
-      grok: {
-        connection: 'api',
-        apiKey: '',
-        model: 'grok-4.20-0309-reasoning',
-        xSearchEnabled: true,
-      },
-      gemini: {
-        connection: 'cli',
-        model: 'gemini-2.5-pro',
-      },
-      claude: {
-        connection: 'cli',
-        model: 'sonnet',
-        effort: 'medium',
-        fastMode: false,
-      },
-      codex: {
-        connection: 'cli',
-        model: 'gpt-5.4',
-        effort: 'xhigh',
-        fastMode: true,
-      },
-    },
-  },
   requestTimeoutMs: 15000,
   crawl: {
     maxPages: 10,
@@ -109,7 +81,7 @@ export function writeJson(filePath, value) {
 
 function normalizeLegacyConfig(config) {
   if (!config) return DEFAULT_CONFIG
-  if (config.rawSearch || config.aiSearch || config.siteRules) {
+  if (config.rawSearch || config.siteRules) {
     return config
   }
 
@@ -152,33 +124,6 @@ function normalizeLegacyConfig(config) {
         },
       },
     },
-    aiSearch: {
-      priority:
-        config.aiPriority ||
-        (config.aiDefaultProvider
-          ? [config.aiDefaultProvider, ...DEFAULT_CONFIG.aiSearch.priority.filter(item => item !== config.aiDefaultProvider)]
-          : DEFAULT_CONFIG.aiSearch.priority),
-      timeoutMs: config.aiTimeoutMs || DEFAULT_CONFIG.aiSearch.timeoutMs,
-      profiles: {
-        grok: {
-          ...DEFAULT_CONFIG.aiSearch.profiles.grok,
-          apiKey: config.grokApiKey || DEFAULT_CONFIG.aiSearch.profiles.grok.apiKey,
-          model: config.aiModels?.grok || DEFAULT_CONFIG.aiSearch.profiles.grok.model,
-        },
-        gemini: {
-          ...DEFAULT_CONFIG.aiSearch.profiles.gemini,
-          model: config.aiModels?.gemini || DEFAULT_CONFIG.aiSearch.profiles.gemini.model,
-        },
-        claude: {
-          ...DEFAULT_CONFIG.aiSearch.profiles.claude,
-          model: config.aiModels?.claude || DEFAULT_CONFIG.aiSearch.profiles.claude.model,
-        },
-        codex: {
-          ...DEFAULT_CONFIG.aiSearch.profiles.codex,
-          model: config.aiModels?.codex || DEFAULT_CONFIG.aiSearch.profiles.codex.model,
-        },
-      },
-    },
     requestTimeoutMs: config.requestTimeoutMs || DEFAULT_CONFIG.requestTimeoutMs,
     crawl: {
       ...DEFAULT_CONFIG.crawl,
@@ -212,14 +157,6 @@ export function loadConfig() {
       credentials: {
         ...DEFAULT_CONFIG.rawSearch.credentials,
         ...(resolved?.rawSearch?.credentials || {}),
-      },
-    },
-    aiSearch: {
-      ...DEFAULT_CONFIG.aiSearch,
-      ...(resolved?.aiSearch || {}),
-      profiles: {
-        ...DEFAULT_CONFIG.aiSearch.profiles,
-        ...(resolved?.aiSearch?.profiles || {}),
       },
     },
     crawl: {
@@ -273,35 +210,12 @@ export function getRawProviderCredentialSource(config, provider, env = process.e
   return null
 }
 
-export function getAiDefaultProvider(config) {
-  const priority = config.aiSearch?.priority || DEFAULT_CONFIG.aiSearch.priority
-  return Array.isArray(priority) && priority.length > 0
-    ? priority[0]
-    : DEFAULT_CONFIG.aiSearch.priority[0]
-}
-
-export function getAiSearchPriority(config) {
-  return config.aiSearch?.priority || DEFAULT_CONFIG.aiSearch.priority
-}
-
-export function getAiTimeoutMs(config) {
-  return config.aiSearch?.timeoutMs || DEFAULT_CONFIG.aiSearch.timeoutMs
-}
-
-export function getAiProfile(config, provider) {
-  return config.aiSearch?.profiles?.[provider] || DEFAULT_CONFIG.aiSearch.profiles?.[provider] || {}
-}
-
 export function getSiteRule(config, site) {
   return config.siteRules?.[site] || null
 }
 
 export function getRequestTimeoutMs(config) {
   return config.requestTimeoutMs || DEFAULT_CONFIG.requestTimeoutMs
-}
-
-export function getGrokApiKey(config) {
-  return getAiProfile(config, 'grok').apiKey || ''
 }
 
 export function getFirecrawlApiKey(config) {
