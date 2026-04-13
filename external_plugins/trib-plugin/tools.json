@@ -936,5 +936,33 @@
       ]
     },
     "module": "agent"
+  },
+  {
+    "name": "ask",
+    "title": "Ask External Model",
+    "description": "Send a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope maps to preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The prompt to send"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Agent scope: reviewer, debugger, explorer"
+        },
+        "preset": {
+          "type": "string",
+          "description": "Override preset name"
+        },
+        "context": {
+          "type": "string",
+          "description": "Additional context"
+        }
+      },
+      "required": ["prompt"]
+    },
+    "module": "agent"
   }
 ]
