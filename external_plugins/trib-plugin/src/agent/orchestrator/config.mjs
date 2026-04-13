@@ -231,34 +231,6 @@ export function getDefaultPreset(config) {
 export function listPresets(config) {
     return Array.isArray(config?.presets) ? config.presets : [];
 }
-export function upsertPreset(config, preset) {
-    const normalized = normalizePreset(preset);
-    if (!normalized)
-        throw new Error('invalid preset (name, provider, model required)');
-    if (!Array.isArray(config.presets))
-        config.presets = [];
-    const idx = config.presets.findIndex(p => p && presetKey(p) === normalized.name);
-    if (idx >= 0)
-        config.presets[idx] = normalized;
-    else
-        config.presets.push(normalized);
-    if (!config.default)
-        config.default = normalized.name;
-    saveConfig(config);
-    return normalized;
-}
-export function removePreset(config, name) {
-    if (!Array.isArray(config.presets))
-        return false;
-    const before = config.presets.length;
-    config.presets = config.presets.filter(p => p && presetKey(p) !== name);
-    if (config.presets.length === before)
-        return false;
-    if (config.default === name)
-        config.default = presetKey(config.presets[0]) || null;
-    saveConfig(config);
-    return true;
-}
 // --- Lane-scoped runtime spec ---
 // Converts a preset + execution context into a scopeKey for session isolation.
 //   bridge lane: "bridge:<presetName>"      — user-facing, reusable per preset

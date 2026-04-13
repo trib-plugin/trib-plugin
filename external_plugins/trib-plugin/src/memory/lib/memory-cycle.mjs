@@ -551,19 +551,6 @@ async function deduplicateClassifications(store, options = {}) {
   return { merged: merged.length, checked: rows.length, removed: [...removed], details: dryRun ? merged : undefined }
 }
 
-export async function summarizeOnly(ws) {
-  const store = getStore()
-  const mainConfig = readMainConfig()
-  store.backfillProject(ws, { limit: resolveCycleBackfillLimit(mainConfig, 120) })
-  const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort().reverse()
-  if (pendingDays.length > 0) {
-    const preset = resolveMaintenancePreset('cycle2')
-    await consolidateRecent(pendingDays, ws, { preset })
-    await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys: pendingDays })
-  }
-  store.syncHistoryFromFiles()
-}
-
 async function memoryFlushImpl(ws, options = {}) {
   const store = getStore()
   const maxDays = Math.max(1, Number(options.maxDays ?? MEMORY_FLUSH_DEFAULT_MAX_DAYS))
@@ -581,25 +568,6 @@ async function memoryFlushImpl(ws, options = {}) {
 
 export async function memoryFlush(ws, options = {}) {
   return enqueueCycleWrite('cycle2', () => memoryFlushImpl(ws, options))
-}
-
-async function rebuildAllImpl(ws) {
-  const store = getStore()
-  const mainConfig = readMainConfig()
-  store.backfillProject(ws, { limit: Math.max(resolveCycleBackfillLimit(mainConfig, 120), 400) })
-  store.syncHistoryFromFiles()
-  store.resetConsolidatedMemory()
-  const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort().reverse()
-  if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  const preset = resolveMaintenancePreset('cycle2')
-  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, preset })
-  store.syncHistoryFromFiles()
-  await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
-  process.stderr.write(`[memory-cycle] rebuilt ${dayKeys.length} day(s).\n`)
-}
-
-export async function rebuildAll(ws) {
-  return enqueueCycleWrite('cycle2', () => rebuildAllImpl(ws))
 }
 
 // ── Rebuild mode: concurrent batch cycle1 + embedding pairs ──
@@ -725,39 +693,6 @@ async function pruneToRecentImpl(ws, options = {}) {
 
 export async function pruneToRecent(ws, options = {}) {
   return enqueueCycleWrite('cycle2', () => pruneToRecentImpl(ws, options))
-}
-
-let _flushLock = false
-
-export async function autoFlush(ws) {
-  if (_flushLock) return { flushed: false, reason: 'locked' }
-  const store = getStore()
-  const config = readCycleConfig()
-  const mainConfig = readMainConfig()
-  const cycle1MaxPending = Number(mainConfig?.cycle1?.maxPending ?? mainConfig?.cycle2?.maxCandidates ?? 0)
-  const now = Date.now()
-  const lastFlushAt = config.lastFlushAt ?? 0
-  const pending = store.getPendingCandidateDays(100, 1)
-  const totalPending = pending.reduce((sum, d) => sum + d.n, 0)
-  if (totalPending === 0) return { flushed: false, candidates: 0 }
-
-  const elapsed = now - lastFlushAt
-  // Check worker1 maxPending threshold (auto-trigger regardless of interval)
-  const exceedsMaxCandidates = cycle1MaxPending > 0 && totalPending >= cycle1MaxPending
-  if (!exceedsMaxCandidates && totalPending < AUTO_FLUSH_THRESHOLD && elapsed < AUTO_FLUSH_INTERVAL_MS) {
-    return { flushed: false, candidates: totalPending }
-  }
-
-  _flushLock = true
-  try {
-    const reason = exceedsMaxCandidates ? `maxPending(${cycle1MaxPending})` : 'threshold'
-    process.stderr.write(`[auto-flush] triggered: ${totalPending} pending, ${Math.round(elapsed / 60000)}min elapsed, reason=${reason}\n`)
-    await runCycle1(ws, mainConfig, { skipWaterfall: true, trigger: reason })
-    writeCycleConfig({ ...readCycleConfig(), lastFlushAt: now })
-    return { flushed: true, candidates: totalPending }
-  } finally {
-    _flushLock = false
-  }
 }
 
 export function getCycleStatus() {

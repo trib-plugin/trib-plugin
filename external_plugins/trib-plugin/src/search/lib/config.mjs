@@ -13,8 +13,6 @@ export const DATA_DIR = fs.existsSync(SEARCH_DATA_DIR) ? SEARCH_DATA_DIR
 export const CONFIG_PATH = path.join(DATA_DIR, 'search-config.json')
 export const USAGE_PATH = path.join(DATA_DIR, 'usage.local.json')
 export const CACHE_PATH = path.join(DATA_DIR, 'cache.local.json')
-export const CLI_HOME_DIR = path.join(DATA_DIR, 'cli-home')
-
 export const DEFAULT_CONFIG = {
   rawSearch: {
     priority: ['serper', 'brave', 'perplexity', 'firecrawl', 'tavily', 'xai'],
@@ -63,7 +61,6 @@ export function ensureDir(dirPath) {
 
 export function ensureDataDir() {
   ensureDir(DATA_DIR)
-  ensureDir(CLI_HOME_DIR)
 }
 
 export function readJson(filePath, fallback) {
