@@ -57,13 +57,9 @@ function injectViaHttp(content, { type, instruction } = {}) {
 
 function buildInstructions() {
   const lines = [
-    'CRITICAL: invoke `workflow` skill before ANY task execution — no exceptions.',
-    'Enforcement: TeamCreate before Worker/Reviewer. Independent agents in parallel (one message, multiple Agent calls). bypassPermissions and run_in_background on every Agent call.',
-    'Lead uses tools directly for fast ops. Delegate slow/parallel work to background agents.',
-    '',
-    'Orchestrator MCP tools: `create_session`, `list_sessions`, `close_session`, `list_models`, `get_workflows`, `get_workflow`.',
-    'Delegation to external models: use the `delegate` skill/agent (routes through cli.js delegate).',
-    'Sessions auto-inject CLAUDE.md, agent rules, skills, and register builtin+MCP tools.',
+    'External model delegation: use MCP `bridge` tool. Session-based, parallel, scope maps to preset.',
+    'Native Claude agents: use Agent tool with trib-plugin:Worker.',
+    'Orchestrator MCP tools: `bridge`, `create_session`, `list_sessions`, `close_session`, `list_models`.',
   ];
 
   // Dynamic workflow list injection

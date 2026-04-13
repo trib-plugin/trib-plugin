@@ -445,12 +445,13 @@ async function startOwnerHttpServer() {
           res.end(JSON.stringify({ ok: true }));
           return;
         }
-        case "/ask": {
+        case "/ask":
+        case "/bridge": {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
           const askFile = body.file;
           const askPrompt = body.prompt;
           const askRef = body.ref;
-          const askScope = body.scope || "ask";
+          const askScope = body.scope || "default";
           const askPreset = body.preset;
           const askContext = body.context;
           let finalPrompt = askPrompt;
