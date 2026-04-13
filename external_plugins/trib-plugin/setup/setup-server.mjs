@@ -836,6 +836,39 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // -- Agent maintenance presets --
+  if (req.method === 'GET' && path === '/agent/maintenance') {
+    const cfg = readAgentConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ maintenance: cfg.maintenance || {} }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/agent/maintenance') {
+    const data = await readBody(req);
+    const cfg = readAgentConfig();
+    const validIds = new Set((cfg.presets || []).map(p => p.id));
+    const invalid = Object.entries(data)
+      .filter(([k, v]) => k !== 'defaultPreset' && v && !validIds.has(v))
+      .map(([k, v]) => `${k}: ${v}`);
+    if (invalid.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `Unknown preset(s): ${invalid.join(', ')}` }));
+      return;
+    }
+    if (data.defaultPreset && !validIds.has(data.defaultPreset)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `Unknown default preset: ${data.defaultPreset}` }));
+      return;
+    }
+    cfg.maintenance = { ...(cfg.maintenance || {}), ...data };
+    writeAgentConfig(cfg);
+    console.log('  Maintenance presets saved');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   if (req.method === 'GET' && path === '/agent/models') {
     const provider = url.searchParams.get('provider');
     if (!provider) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'provider required' })); return; }

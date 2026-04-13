@@ -763,6 +763,7 @@
     <div class="cat-item" data-panel="agent-providers" onclick="switchCat(this)">Providers</div>
     <div class="cat-item" data-panel="agent-presets" onclick="switchCat(this)">Presets</div>
     <div class="cat-item" data-panel="agent-status" onclick="switchCat(this)">Status</div>
+    <div class="cat-item" data-panel="agent-maintenance" onclick="switchCat(this)">Maintenance</div>
     <div class="cat-item" data-panel="agent-learning" onclick="switchCat(this)">Learning</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Memory</div>
@@ -1112,6 +1113,30 @@
       <div class="sec">
         <div class="sec-title">Provider Status</div>
         <div class="sec-body" id="ag-status-sec"></div>
+      </div>
+    </div>
+
+    <!-- AGENT MAINTENANCE -->
+    <div class="panel" id="panel-agent-maintenance">
+      <div class="hdr"><h1>Maintenance Presets</h1></div>
+      <div class="sec">
+        <div class="sec-title">Task Presets</div>
+        <div class="sec-desc">Assign which model preset handles each background maintenance task.</div>
+        <div class="sec-body" id="ag-maint-tasks"></div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Default Preset</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name">Fallback</span>
+            <select class="r-select" id="ag-maint-default" style="width:200px;flex:0 0 200px"></select>
+            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Used when a task has no explicit preset</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-ag-maint"></div>
+        <button class="save" onclick="saveAgMaintenance()">Save</button>
       </div>
     </div>
 
@@ -2540,6 +2565,7 @@ async function loadAgentData() {
   agAuth = r.auth || {};
   agRenderAll();
   await agLoadPresets();
+  await loadAgMaintenance();
 }
 
 function agRenderAll() {
@@ -3178,6 +3204,72 @@ async function saveMemUserModel() {
       }),
     });
   } catch {}
+}
+
+// -- Agent Maintenance --
+const AG_MAINT_TASKS = [
+  { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
+  { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (daily)' },
+  { id: 'cycle3', label: 'Cycle 3', desc: 'Trajectory analysis (periodic)' },
+  { id: 'sessionRecap', label: 'Session Recap', desc: 'Previous session summary at boot' },
+  { id: 'statePacket', label: 'State Packet', desc: 'Structured state extraction' },
+  { id: 'reason', label: 'Reason', desc: 'Memory-based reasoning synthesis' },
+];
+let agMaintenance = {};
+
+async function loadAgMaintenance() {
+  try {
+    const r = await fetch('/agent/maintenance').then(r => r.json());
+    agMaintenance = r.maintenance || {};
+  } catch { agMaintenance = {}; }
+  renderAgMaintenance();
+}
+
+function renderAgMaintenance() {
+  const container = document.getElementById('ag-maint-tasks');
+  if (!container) return;
+  container.innerHTML = '';
+  for (const task of AG_MAINT_TASKS) {
+    const current = agMaintenance[task.id] || '';
+    container.innerHTML += `<div class="r">
+      <span class="r-name">${task.label}</span>
+      <select class="r-select" id="ag-maint-${task.id}" style="width:200px;flex:0 0 200px">
+        <option value="">(Default)</option>
+        ${agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === current ? ' selected' : ''}>${p.name || p.id}</option>`).join('')}
+      </select>
+      <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">${task.desc}</span>
+    </div>`;
+  }
+  const defEl = document.getElementById('ag-maint-default');
+  if (!defEl) return;
+  const defVal = agMaintenance.defaultPreset || '';
+  defEl.innerHTML = `<option value="">(sonnet-mid)</option>` +
+    agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === defVal ? ' selected' : ''}>${p.name || p.id}</option>`).join('');
+}
+
+async function saveAgMaintenance() {
+  const warn = document.getElementById('warn-ag-maint');
+  warn.textContent = '';
+  const data = {};
+  for (const task of AG_MAINT_TASKS) {
+    const v = document.getElementById('ag-maint-' + task.id)?.value;
+    if (v) data[task.id] = v;
+  }
+  const defV = document.getElementById('ag-maint-default')?.value;
+  if (defV) data.defaultPreset = defV;
+  try {
+    const r = await fetch('/agent/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(r => r.json());
+    if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; }
+    const btn = document.querySelector('#panel-agent-maintenance .save');
+    btn.classList.add('done'); btn.textContent = 'Saved';
+    setTimeout(() => { btn.classList.remove('done'); btn.textContent = 'Save'; }, 1500);
+  } catch {
+    warn.textContent = 'Save failed';
+  }
 }
 </script>
 
