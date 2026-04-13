@@ -281,7 +281,7 @@ class WebhookServer {
   async delegateAnalysis(name, prompt, model, channel, exec) {
     const presetId = model || 'sonnet-mid';
     try {
-      const result = await callLLM(prompt, presetId, { mode: 'light', timeout: 120000 });
+      const result = await callLLM(prompt, presetId, { mode: 'active', timeout: 120000 });
       if (!result) {
         logWebhook(`${name}: delegate returned empty`);
         return;

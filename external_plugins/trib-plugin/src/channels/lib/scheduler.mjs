@@ -523,7 +523,7 @@ ${scriptResult}
     if (this.running.has(schedule.name)) return;
     this.running.add(schedule.name);
     const presetId = schedule.model || schedule.preset || this.proactive?.model || 'sonnet-mid';
-    callLLM(prompt, presetId, { mode: 'light', timeout: 120000 })
+    callLLM(prompt, presetId, { mode: 'active', timeout: 120000 })
       .then((result) => {
         this.running.delete(schedule.name);
         if (result && this.sendFn) {
@@ -600,7 +600,7 @@ ${preferredTopicText}
     logSchedule("proactive: firing LLM\n");
     const presetId = this.proactive?.model || 'sonnet-mid';
     try {
-      const raw = await callLLM(task, presetId, { mode: 'light', timeout: 90000 });
+      const raw = await callLLM(task, presetId, { mode: 'active', timeout: 90000 });
       let result;
       try {
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
