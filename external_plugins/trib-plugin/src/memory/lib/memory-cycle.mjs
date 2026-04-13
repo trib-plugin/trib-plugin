@@ -9,7 +9,7 @@ import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
 import { classifyCandidateConcept } from './memory-extraction.mjs'
 import { embedText, configureEmbedding, getEmbeddingModelId } from './embedding-provider.mjs'
-import { callLLM } from '../../shared/llm/index.mjs'
+import { callLLM, resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { cosineSimilarity as cosineSimilarityShared, hashEmbeddingInput } from './memory-vector-utils.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
@@ -824,10 +824,16 @@ function buildCycle1ClassificationRows(candidates = []) {
 }
 
 export function resolveCyclePreset(config, cycleKey) {
-  // 1. New preset field
+  // 1. agent-config maintenance section (single source of truth)
+  try {
+    const agentCfg = JSON.parse(readFileSync(
+      join(PLUGIN_DATA_DIR, 'agent-config.json'), 'utf8'))
+    if (agentCfg?.maintenance) return resolveMaintenancePreset(cycleKey, agentCfg)
+  } catch {}
+  // 2. memory-config preset field (legacy fallback)
   const presetId = config?.[cycleKey]?.preset
   if (presetId) return presetId
-  // 2. Legacy provider field (backward compat: { connection: 'cli', model: 'sonnet' } → build inline preset)
+  // 3. Legacy provider field (backward compat)
   const legacyProvider = config?.[cycleKey]?.provider
   if (legacyProvider?.connection) {
     const connMap = { cli: 'native', codex: 'bridge', api: 'bridge', ollama: 'bridge' }

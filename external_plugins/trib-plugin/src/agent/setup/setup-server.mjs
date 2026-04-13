@@ -23,7 +23,7 @@ function resolveDataDir() {
     return join(home, '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
 }
 const pluginDataDir = resolveDataDir();
-const CONFIG_PATH = join(pluginDataDir, 'config.json');
+const CONFIG_PATH = join(pluginDataDir, 'agent-config.json');
 const PORT = 3459;
 const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');
 
@@ -426,6 +426,39 @@ const server = http.createServer(async (req, res) => {
     const models = await listProviderModels(provider, cfg);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, provider, models }));
+    return;
+  }
+
+  // -- Maintenance presets --
+  if (req.method === 'GET' && path === '/maintenance') {
+    const cfg = readConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ maintenance: cfg.maintenance || {} }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/maintenance') {
+    const data = await readBody(req);
+    const cfg = readConfig();
+    const validIds = new Set((cfg.presets || []).map(p => p.id));
+    const invalid = Object.entries(data)
+      .filter(([k, v]) => k !== 'defaultPreset' && v && !validIds.has(v))
+      .map(([k, v]) => `${k}: ${v}`);
+    if (invalid.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `Unknown preset(s): ${invalid.join(', ')}` }));
+      return;
+    }
+    if (data.defaultPreset && !validIds.has(data.defaultPreset)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `Unknown default preset: ${data.defaultPreset}` }));
+      return;
+    }
+    cfg.maintenance = { ...(cfg.maintenance || {}), ...data };
+    writeConfig(cfg);
+    console.log('  Maintenance presets saved');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 

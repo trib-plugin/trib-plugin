@@ -288,6 +288,7 @@
   <div class="cat-bar">
     <div class="cat-item active" data-panel="providers" onclick="switchCat(this)">Providers</div>
     <div class="cat-item" data-panel="presets" onclick="switchCat(this)">Presets</div>
+    <div class="cat-item" data-panel="maintenance" onclick="switchCat(this)">Maintenance</div>
     <div class="cat-item" data-panel="status" onclick="switchCat(this)">Status</div>
   </div>
 
@@ -390,6 +391,29 @@
       <div class="warn-msg" id="warn-presets"></div>
     </div>
 
+    <!-- MAINTENANCE -->
+    <div class="panel" id="panel-maintenance">
+      <div class="hdr"><h1>Maintenance</h1></div>
+      <div class="sec">
+        <div class="sec-title">Task Presets</div>
+        <div class="sec-body" id="maint-tasks"></div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">Default Preset</div>
+        <div class="sec-body">
+          <div class="r">
+            <span class="r-name">Fallback</span>
+            <select class="r-select" id="maint-default" style="width:200px;flex:0 0 200px"></select>
+            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Used when a task has no explicit preset</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-maint"></div>
+        <button class="save" onclick="saveMaintenance()">Save</button>
+      </div>
+    </div>
+
     <!-- STATUS -->
     <div class="panel" id="panel-status">
       <div class="hdr"><h1>Status</h1></div>
@@ -463,6 +487,7 @@ window.addEventListener('load', async () => {
   try { window.resizeTo(720, 820); window.moveTo((screen.availWidth-720)/2,(screen.availHeight-820)/2); } catch{}
   await loadData();
   await loadPresets();
+  await loadMaintenance();
 });
 
 function switchCat(el) {
@@ -855,6 +880,75 @@ async function deletePreset(id) {
     document.getElementById('warn-presets').textContent = 'Delete failed';
   }
 }
+
+// -- Maintenance --
+
+const MAINT_TASKS = [
+  { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
+  { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (daily)' },
+  { id: 'cycle3', label: 'Cycle 3', desc: 'Trajectory analysis (periodic)' },
+  { id: 'sessionRecap', label: 'Session Recap', desc: 'Previous session summary at boot' },
+  { id: 'statePacket', label: 'State Packet', desc: 'Structured state extraction' },
+  { id: 'reason', label: 'Reason', desc: 'Memory-based reasoning synthesis' },
+];
+
+let maintenance = {};
+
+async function loadMaintenance() {
+  try {
+    const r = await fetch('/maintenance').then(r => r.json());
+    maintenance = r.maintenance || {};
+  } catch { maintenance = {}; }
+  renderMaintenance();
+}
+
+function renderMaintenance() {
+  const container = document.getElementById('maint-tasks');
+  container.innerHTML = '';
+  for (const task of MAINT_TASKS) {
+    const current = maintenance[task.id] || '';
+    container.innerHTML += `<div class="r">
+      <span class="r-name">${task.label}</span>
+      <select class="r-select" id="maint-${task.id}" style="width:200px;flex:0 0 200px">
+        <option value="">(Default)</option>
+        ${presets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === current ? ' selected' : ''}>${p.name || p.id}</option>`).join('')}
+      </select>
+      <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">${task.desc}</span>
+    </div>`;
+  }
+  // Default preset dropdown
+  const defEl = document.getElementById('maint-default');
+  const defVal = maintenance.defaultPreset || '';
+  defEl.innerHTML = `<option value="">(sonnet-mid)</option>` +
+    presets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === defVal ? ' selected' : ''}>${p.name || p.id}</option>`).join('');
+}
+
+async function saveMaintenance() {
+  const warn = document.getElementById('warn-maint');
+  warn.textContent = '';
+  const data = {};
+  for (const task of MAINT_TASKS) {
+    const v = document.getElementById('maint-' + task.id)?.value;
+    if (v) data[task.id] = v;
+  }
+  const defV = document.getElementById('maint-default')?.value;
+  if (defV) data.defaultPreset = defV;
+  try {
+    await fetch('/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    isDirty = false;
+    const btn = document.querySelector('#panel-maintenance .save');
+    btn.classList.add('done'); btn.textContent = 'Saved';
+    setTimeout(() => { btn.classList.remove('done'); btn.textContent = 'Save'; }, 1500);
+  } catch {
+    warn.textContent = 'Save failed';
+  }
+}
+
+// loadMaintenance is called from the main load handler after loadPresets
 </script>
 </body>
 </html>
