@@ -77,9 +77,10 @@ export function deleteSession(id) {
         return false;
     }
 }
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes idle
 
-export function listStoredSessions() {
+export function listStoredSessions(ttlMs) {
+    const maxAge = ttlMs || DEFAULT_SESSION_TTL_MS;
     const dir = getStoreDir();
     if (!existsSync(dir))
         return [];
@@ -89,8 +90,7 @@ export function listStoredSessions() {
     for (const f of files) {
         try {
             const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
-            if (now - (session.updatedAt || session.createdAt || 0) > SESSION_TTL_MS) {
-                // Auto-cleanup expired session
+            if (now - (session.updatedAt || session.createdAt || 0) > maxAge) {
                 try { unlinkSync(join(dir, f)); } catch { /* ignore */ }
                 continue;
             }
