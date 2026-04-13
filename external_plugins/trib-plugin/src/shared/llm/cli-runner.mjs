@@ -52,6 +52,8 @@ export async function runClaude(prompt, options = {}) {
 
   if (mode === 'maintenance') {
     args.push('--setting-sources=', '--tools=')
+  } else if (mode === 'light') {
+    args.push('--setting-sources=')  // strip settings/CLAUDE.md, keep tools
   }
   if (systemPrompt) args.push('--system-prompt', systemPrompt)
   if (effort) args.push('--effort', effort)
