@@ -3,19 +3,22 @@
 Plan → Execute → Verify → Ship → Retro.
 
 - Plan: discuss with user, refine until both agree on the spec, wait for explicit approval. → Approval received → Execute.
-- Execute: implement the approved plan. Use the team or execute directly as appropriate. → Implementation complete → Verify.
+- Execute: implement the approved plan. Deploy bridge and native agents freely within the approved scope. → Implementation complete → Verify.
 - Verify: Read each changed file. Reload/restart affected services, exercise runtime. → Issues found → Execute. → No issues → Ship.
 - Ship: git status → propose commit message → commit on approval → push on approval. Format: YYYY-MM-DD HH:MM + description, no Claude signatures. → Push complete → Retro.
 - Retro: self-eval. Workflow/rule proposal only if warranted. Repeated patterns discovered → propose skill creation.
 
 The Plan→Execute→Verify→Ship→Retro cycle applies to actual work only
 (code/config changes, file modifications, commits, deployments).
-Agent delegation — even for investigation or exploration — requires Plan:
-propose scope and approach, get approval, then spawn.
 Track the current phase internally. Do not prefix responses with phase labels.
 Mention the phase in natural language only when entering a work cycle or
 transitioning between phases (e.g., "Entering Plan phase.", "Moving to Verify now.").
 For Q&A, explanation, or conversation, stay silent about phase.
+
+## Agent deployment
+- Plan approval covers the task scope. No per-agent approval needed during Execute.
+- Lead deploys bridge calls and native agents as needed within the approved scope.
+- Lead handles simple/fast operations directly.
 
 ## Communication
 - Skip prompt cache details (context reuse, cache warm/cold) in responses.
@@ -23,5 +26,5 @@ For Q&A, explanation, or conversation, stay silent about phase.
 ## Non-negotiable
 1. No code changes before user approval.
 2. No build/push/deploy without explicit user request.
-3. When using workers, verify output with Read before reporting.
+3. When using native agents, verify output with Read before reporting.
 4. NEVER use subagent_type="Explore" or subagent_type="Plan". No exceptions.
