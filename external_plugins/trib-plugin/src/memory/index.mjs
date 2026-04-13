@@ -46,7 +46,7 @@ import {
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding, embedText } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
-import { callLLM } from './lib/llm-provider.mjs'
+import { callLLM } from '../shared/llm/index.mjs'
 import {
   sleepCycle,
   memoryFlush,
@@ -57,7 +57,7 @@ import {
   runCycle1,
   readMainConfig,
   parseInterval,
-  resolveCycleProvider,
+  resolveCyclePreset,
 } from './lib/memory-cycle.mjs'
 import { localNow } from './lib/memory-text-utils.mjs'
 import {
@@ -787,22 +787,8 @@ async function handleReason(query, options = {}) {
   // 4. Call LLM (use explicit preset override if provided, otherwise cycle2 default)
   try {
     const config = readMainConfig()
-    let provider
-    if (options.preset) {
-      // Merge agent-config presets into config so resolveCycleProvider can resolve the preset ID
-      let presets = config.presets
-      if (!Array.isArray(presets)) {
-        try {
-          const agentCfg = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'agent-config.json'), 'utf8'))
-          presets = agentCfg.presets
-        } catch {}
-      }
-      if (Array.isArray(presets)) {
-        provider = resolveCycleProvider({ ...config, presets, _override: { preset: options.preset } }, '_override')
-      }
-    }
-    if (!provider) provider = resolveCycleProvider(config, 'cycle2')
-    const answer = await callLLM(prompt, provider, { timeout: 60000 })
+    const presetId = options.preset || resolveCyclePreset(config, 'cycle2')
+    const answer = await callLLM(prompt, presetId, { mode: 'maintenance', timeout: 60000 })
     return { text: answer }
   } catch (e) {
     return { text: `[reason] LLM call failed: ${e.message}\n\nFallback search results:\n${searchResult.text}` }

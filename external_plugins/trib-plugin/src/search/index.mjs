@@ -9,10 +9,8 @@ import fs from 'fs'
 import path from 'path'
 import {
   ensureDataDir,
-  getAiSearchPriority,
   getAiProfile,
   getFirecrawlApiKey,
-  getAiTimeoutMs,
   getRequestTimeoutMs,
   getRawSearchMaxResults,
   getRawProviderCredentialSource,
@@ -54,11 +52,6 @@ import {
   RAW_PROVIDER_CAPABILITIES,
   runRawSearch,
 } from './lib/providers.mjs'
-import {
-  AI_PROVIDER_CAPABILITIES,
-  getAvailableAiProviders,
-  runAiSearch,
-} from './lib/ai-providers.mjs'
 import { crawlSite, getScrapeCapabilities, mapSite, scrapeUrls } from './lib/web-tools.mjs'
 import { formatResponse } from './lib/formatter.mjs'
 import { handleSetup } from './lib/setup-handler.mjs'
@@ -184,10 +177,6 @@ function getSearchCacheTtlMs(type = 'web') {
   }
 }
 
-function getAiSearchCacheTtlMs(site) {
-  return site === 'x.com' ? 10 * 60 * 1000 : 20 * 60 * 1000
-}
-
 function getScrapeCacheTtlMs(isXRoute = false) {
   return isXRoute ? 10 * 60 * 1000 : 60 * 60 * 1000
 }
@@ -222,131 +211,6 @@ function buildRuntimeEnv(config) {
   }
 }
 
-async function executeAiSearch({ query, site, timeoutMs, config, usageState }) {
-  const cacheState = loadCacheState()
-  const aiAvailable = await getAvailableAiProviders(config)
-  const aiPriority = getAiSearchPriority(config)
-
-  // Use priority chain for auto-selection
-  const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
-
-  if (!aiCandidates.length) {
-    return {
-      success: false,
-      error: 'No AI search provider is available.',
-      availableProviders: aiAvailable,
-      aiFailures: [],
-    }
-  }
-
-  // Check cache (provider-independent: query+site based)
-  const aiSearchCacheKey = buildCacheKey('ai_search', {
-    query,
-    site: site || null,
-  })
-  const cachedAiSearch = getCachedEntry(cacheState, aiSearchCacheKey)
-  if (cachedAiSearch) {
-    return {
-      success: true,
-      cached: true,
-      payload: cachedAiSearch.payload,
-      cacheMeta: buildCacheMeta(cachedAiSearch, true),
-    }
-  }
-
-  // Try AI providers in priority order
-  const aiFailures = []
-  for (const candidate of aiCandidates) {
-    const profile = getAiProfile(config, candidate)
-    const resolvedModel = profile.model || null
-    try {
-      const response = await runAiSearch({
-        query,
-        provider: candidate,
-        site,
-        model: resolvedModel,
-        profile,
-        timeoutMs: timeoutMs || getAiTimeoutMs(config),
-      })
-      noteProviderSuccess(usageState, candidate, {
-        lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-      })
-      const cachedEntry = setCachedEntry(
-        cacheState,
-        aiSearchCacheKey,
-        {
-          tool: 'ai_search',
-          site: site || null,
-          provider: candidate,
-          model: resolvedModel,
-          response,
-        },
-        getAiSearchCacheTtlMs(site),
-      )
-      return {
-        success: true,
-        cached: false,
-        provider: candidate,
-        model: resolvedModel,
-        response,
-        aiFailures: aiFailures.length ? aiFailures : undefined,
-        cacheMeta: buildCacheMeta(cachedEntry, false),
-      }
-    } catch (error) {
-      aiFailures.push({
-        provider: candidate,
-        error: error instanceof Error ? error.message : String(error),
-      })
-      noteProviderFailure(usageState, candidate, error instanceof Error ? error.message : String(error), 60000)
-    }
-  }
-
-  // Cross-fallback: all AI providers failed → try raw search
-  const runtimeEnv = buildRuntimeEnv(config)
-  const rawAvailable = getAvailableRawProviders(runtimeEnv)
-  const rawProviders = rankProviders(
-    getRawSearchPriority(config).filter(p => rawAvailable.includes(p)),
-    usageState,
-    site,
-  )
-
-  if (rawProviders.length) {
-    try {
-      const rawResponse = await runRawSearch({
-        keywords: query,
-        providers: rawProviders,
-        site,
-        type: 'web',
-        maxResults: getRawSearchMaxResults(config),
-      })
-
-      noteProviderSuccess(usageState, rawResponse.usedProvider, {
-        lastCostUsdTicks: rawResponse.usage?.cost_in_usd_ticks || null,
-      })
-      for (const failure of rawResponse.failures || []) {
-        noteProviderFailure(usageState, failure.provider, failure.error, 60000)
-      }
-
-      return {
-        success: true,
-        cached: false,
-        fallbackSource: 'search',
-        fallbackProvider: rawResponse.usedProvider || rawProviders[0],
-        aiFailures,
-        response: rawResponse,
-      }
-    } catch {
-      // Raw fallback also failed
-    }
-  }
-
-  return {
-    success: false,
-    error: `All AI providers failed: ${aiFailures.map(f => `${f.provider}: ${f.error}`).join(' | ')}`,
-    aiFailures,
-  }
-}
-
 function normalizeCacheUrl(url) {
   try {
     return new URL(url).toString()
@@ -360,7 +224,6 @@ async function writeStartupSnapshot() {
   const usageState = loadUsageState()
   const runtimeEnv = buildRuntimeEnv(config)
   const rawProviders = getAvailableRawProviders(runtimeEnv)
-  const aiProviders = await getAvailableAiProviders(config)
   const scrapeCapabilities = getScrapeCapabilities()
 
   for (const provider of rawProviders) {
@@ -377,21 +240,6 @@ async function writeStartupSnapshot() {
       source: getRawProviderCredentialSource(config, provider, process.env) || 'env',
       usageSupport: RAW_PROVIDER_CAPABILITIES[provider]?.usageSupport || null,
       ...(usagePatch || {}),
-    })
-  }
-
-  for (const provider of aiProviders) {
-    updateProviderState(usageState, provider, {
-      available: true,
-      connection:
-        provider === 'grok' && getAiProfile(config, 'grok').apiKey
-          ? 'api'
-          : 'cli',
-      source:
-        provider === 'grok' && getAiProfile(config, 'grok').apiKey
-          ? 'config'
-          : 'binary',
-      usageSupport: AI_PROVIDER_CAPABILITIES[provider]?.usageSupport || null,
     })
   }
 
@@ -477,33 +325,7 @@ async function _searchCore(args, { config, usageState, cacheState }) {
   )
 
   if (!providers.length) {
-    const aiPriority = getAiSearchPriority(config)
-    const aiAvailable = await getAvailableAiProviders(config)
-    const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
-    if (aiCandidates.length > 0) {
-      const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
-      const aiFallbackFailures = []
-      for (const aiProvider of aiCandidates) {
-        try {
-          const aiProfile = getAiProfile(config, aiProvider)
-          const aiModel = aiProfile.model || null
-          const aiResponse = await runAiSearch({
-            query: args.site ? `${query} site:${args.site}` : query,
-            provider: aiProvider, site: args.site, model: aiModel, profile: aiProfile,
-            timeoutMs: getAiTimeoutMs(config),
-          })
-          noteProviderSuccess(usageState, aiProvider, { lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null })
-          return {
-            tool: 'search', fallbackSource: 'ai_search', fallbackProvider: aiProvider,
-            fallbackModel: aiModel, rawFailures: [], aiFallbackFailures, response: aiResponse,
-          }
-        } catch (aiError) {
-          aiFallbackFailures.push({ provider: aiProvider, error: aiError instanceof Error ? aiError.message : String(aiError) })
-          noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
-        }
-      }
-    }
-    const err = new Error('No search provider available. Configure a rawSearch key or install a CLI (codex, claude, gemini).')
+    const err = new Error('No search provider available. Configure a rawSearch key.')
     err.details = { availableProviders: available }
     throw err
   }
@@ -548,47 +370,6 @@ async function _searchCore(args, { config, usageState, cacheState }) {
   } catch (error) {
     for (const provider of providers) {
       noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
-    }
-
-    if (!siteRule) {
-      const aiPriority = getAiSearchPriority(config)
-      const aiAvailable = await getAvailableAiProviders(config)
-      const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
-      const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
-      const aiFallbackFailures = []
-
-      for (const aiProvider of aiCandidates) {
-        try {
-          const aiProfile = getAiProfile(config, aiProvider)
-          const aiModel = aiProfile.model || null
-          const aiResponse = await runAiSearch({
-            query: args.site ? `${query} site:${args.site}` : query,
-            provider: aiProvider,
-            site: args.site,
-            model: aiModel,
-            profile: aiProfile,
-            timeoutMs: getAiTimeoutMs(config),
-          })
-          noteProviderSuccess(usageState, aiProvider, {
-            lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null,
-          })
-          return {
-            tool: 'search',
-            fallbackSource: 'ai_search',
-            fallbackProvider: aiProvider,
-            fallbackModel: aiModel,
-            rawFailures: providers.map(p => ({ provider: p })),
-            aiFallbackFailures,
-            response: aiResponse,
-          }
-        } catch (aiError) {
-          aiFallbackFailures.push({
-            provider: aiProvider,
-            error: aiError instanceof Error ? aiError.message : String(aiError),
-          })
-          noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
-        }
-      }
     }
 
     const err = error instanceof Error ? error : new Error(String(error))

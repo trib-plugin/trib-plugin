@@ -6,7 +6,7 @@
  * inherit prior context without carrying the full conversation history.
  */
 
-import { callLLM } from '../../../memory/lib/llm-provider.mjs';
+import { callLLM } from '../../../shared/llm/index.mjs';
 import { loadConfig, getPluginData } from '../config.mjs';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -19,43 +19,6 @@ const MAX_CONTENT_PER_MESSAGE = 600;
 const PACKET_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const PACKET_DIR = join(getPluginData(), 'state-packets');
 
-// ── Provider resolution ──────────────────────────────────────────────
-
-const PROVIDER_MAP = {
-  openai: { connection: 'api', apiProvider: 'openai' },
-  'openai-oauth': { connection: 'codex' },
-  anthropic: { connection: 'api', apiProvider: 'anthropic' },
-  gemini: { connection: 'api', apiProvider: 'gemini' },
-  groq: { connection: 'api', apiProvider: 'groq' },
-  ollama: { connection: 'ollama' },
-  copilot: { connection: 'codex' },
-};
-
-const ENV_KEY_MAP = {
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  gemini: 'GEMINI_API_KEY',
-  groq: 'GROQ_API_KEY',
-};
-
-function resolveProvider() {
-  const config = loadConfig();
-  if (Array.isArray(config.presets)) {
-    for (const preset of config.presets) {
-      if (!preset?.provider || !preset?.model) continue;
-      const base = PROVIDER_MAP[preset.provider];
-      if (!base) continue;
-      const mapped = { ...base, model: preset.model };
-      if (base.connection === 'api') {
-        const envKey = ENV_KEY_MAP[preset.provider];
-        const apiKey = (envKey && process.env[envKey]) || config.providers?.[preset.provider]?.apiKey;
-        if (apiKey) mapped.apiKey = apiKey;
-      }
-      return mapped;
-    }
-  }
-  return { connection: 'api', model: 'gpt-5.4-mini', apiProvider: 'openai' };
-}
 
 // ── Prompt ────────────────────────────────────────────────────────────
 
@@ -124,11 +87,11 @@ export async function extractStatePacket(messages, options = {}) {
 
   const prepared = prepareMessages(messages);
   const prompt = EXTRACTION_PROMPT.replace('{{MESSAGES}}', prepared);
-  const provider = options.provider || resolveProvider();
+  const presetId = options.preset || 'sonnet-mid';
   const timeout = options.timeout || 60000;
 
   try {
-    const raw = await callLLM(prompt, provider, { timeout });
+    const raw = await callLLM(prompt, presetId, { mode: 'maintenance', timeout });
     return parsePacket(raw);
   } catch (e) {
     process.stderr.write(`[state-packet] extraction failed: ${e.message}\n`);

@@ -4,9 +4,8 @@ import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { DATA_DIR, PLUGIN_ROOT } from "./config.mjs";
 import { appendFileSync } from "fs";
-import { spawn } from "child_process";
-import { spawnClaudeP, runScript as execScript, ensureNopluginDir } from "./executor.mjs";
-const DELEGATE_CLI = join(PLUGIN_ROOT, "scripts", "delegate-cli.mjs");
+import { runScript as execScript, ensureNopluginDir } from "./executor.mjs";
+import { callLLM } from '../../shared/llm/index.mjs';
 const SCHEDULE_LOG = join(DATA_DIR, "schedule.log");
 function logSchedule(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -523,54 +522,21 @@ ${scriptResult}
     }
     if (this.running.has(schedule.name)) return;
     this.running.add(schedule.name);
-    if (existsSync(DELEGATE_CLI)) {
-      const args = [DELEGATE_CLI];
-      if (this.proactive?.model) args.push("--preset", this.proactive.model);
-      args.push(prompt);
-      const child = spawn("node", args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        timeout: 12e4,
-        env: { ...process.env }
-      });
-      let stdout = "";
-      child.stdout.on("data", (d) => {
-        stdout += d;
-      });
-      child.on("close", (code) => {
-        this.running.delete(schedule.name);
-        let result = "";
-        try {
-          const parsed = JSON.parse(stdout);
-          result = parsed.content || stdout.trim();
-        } catch {
-          result = stdout.trim();
-        }
-        if (result && this.sendFn) {
-          this.sendFn(channelId, result).catch(
-            (err) => process.stderr.write(`trib-plugin scheduler: ${schedule.name} relay failed: ${err}
-`)
-          );
-        }
-        logSchedule(`${schedule.name} delegate done (${code})
-`);
-      });
-      child.on("error", () => {
-        this.running.delete(schedule.name);
-      });
-    } else {
-      spawnClaudeP(schedule.name, prompt, (result, code) => {
+    const presetId = schedule.model || schedule.preset || this.proactive?.model || 'sonnet-mid';
+    callLLM(prompt, presetId, { mode: 'active', timeout: 120000 })
+      .then((result) => {
         this.running.delete(schedule.name);
         if (result && this.sendFn) {
           this.sendFn(channelId, result).catch(
-            (err) => process.stderr.write(`trib-plugin scheduler: ${schedule.name} relay failed: ${err}
-`)
+            (err) => process.stderr.write(`trib-plugin scheduler: ${schedule.name} relay failed: ${err}\n`)
           );
         }
-        logSchedule(`${schedule.name} claude-p done (${code})
-`);
+        logSchedule(`${schedule.name} done\n`);
+      })
+      .catch((err) => {
+        this.running.delete(schedule.name);
+        logSchedule(`${schedule.name} LLM error: ${err.message}\n`);
       });
-    }
   }
   // ── Script execution (delegates to shared executor) ────────────────
   runScript(scriptName) {
@@ -592,10 +558,6 @@ ${scriptResult}
     this.proactiveDbUpdater = dbUpdater;
   }
   async fireProactiveTick(preferredTopic) {
-    if (!existsSync(DELEGATE_CLI)) {
-      logSchedule("proactive: delegate-cli not found, skipping\n");
-      return;
-    }
     const data = await this.proactiveDataFetcher?.() ?? { memory: "", sources: [] };
     const now = /* @__PURE__ */ new Date();
     const timeInfo = `${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")} (${["\uC77C", "\uC6D4", "\uD654", "\uC218", "\uBAA9", "\uAE08", "\uD1A0"][now.getDay()]}\uC694\uC77C)`;
@@ -635,52 +597,33 @@ ${preferredTopicText}
   },
   "log": "brief internal note about what you decided and why"
 }`;
-    logSchedule("proactive: firing delegate-cli\n");
-    const model = this.proactive?.model ?? "";
-    const args = [DELEGATE_CLI];
-    if (model) args.push("--preset", model);
-    args.push(task);
-    const child = spawn("node", args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      timeout: 9e4,
-      env: { ...process.env }
-    });
-    let stdout = "";
-    child.stdout.on("data", (d) => {
-      stdout += d;
-    });
-    child.on("close", (_code) => {
+    logSchedule("proactive: firing LLM\n");
+    const presetId = this.proactive?.model || 'sonnet-mid';
+    try {
+      const raw = await callLLM(task, presetId, { mode: 'active', timeout: 90000 });
       let result;
       try {
-        const outer = JSON.parse(stdout);
-        const content = outer.content || stdout;
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
         result = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
       } catch {
-        logSchedule(`proactive: failed to parse response
-`);
+        logSchedule("proactive: failed to parse response\n");
         return;
       }
       if (!result) return;
       if (result.log) {
         const logPath = join(DATA_DIR, "proactive.log");
         try {
-          appendFileSync(logPath, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${result.log}
-`);
-        } catch {
-        }
+          appendFileSync(logPath, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${result.log}\n`);
+        } catch {}
       }
       if (result.sourceUpdates) {
         this.proactiveDbUpdater?.(result.sourceUpdates);
       }
       if (result.action !== "talk" || !result.message) {
-        logSchedule(`proactive: skip (${result.log || "no reason"})
-`);
+        logSchedule(`proactive: skip (${result.log || "no reason"})\n`);
         return;
       }
-      logSchedule(`proactive: "${result.sourcePicked}" \u2192 inject
-`);
+      logSchedule(`proactive: "${result.sourcePicked}" \u2192 inject\n`);
       this.proactiveLastFire = Date.now();
       this.proactiveFiredToday++;
       if (this.injectFn) {
@@ -688,11 +631,9 @@ ${preferredTopicText}
           instruction: result.message
         });
       }
-    });
-    child.on("error", (err) => {
-      logSchedule(`proactive: delegate error: ${err.message}
-`);
-    });
+    } catch (err) {
+      logSchedule(`proactive: LLM error: ${err.message}\n`);
+    }
   }
   // ── Helpers ─────────────────────────────────────────────────────────
   /** Resolve a channel label to its platform ID via channelsConfig, fallback to raw value */

@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "child_process";
 import { DATA_DIR, PLUGIN_ROOT } from "./config.mjs";
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from "fs";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
-const DELEGATE_CLI = join(PLUGIN_ROOT, "scripts", "delegate-cli.mjs");
+import { callLLM } from '../../shared/llm/index.mjs';
 const WEBHOOK_LOG = join(DATA_DIR, "webhook.log");
 function logWebhook(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -277,45 +277,22 @@ class WebhookServer {
     this.config = config;
     if (options.autoStart !== false && config.enabled) this.start();
   }
-  // ── Delegate analysis via trib-agent ────────────────────────────────
-  delegateAnalysis(name, prompt, model, channel, exec) {
-    const args = [];
-    if (model) args.push("--preset", model);
-    args.push(prompt);
-    const child = spawn("node", [DELEGATE_CLI, ...args], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      timeout: 12e4,
-      env: { ...process.env }
-    });
-    let stdout = "";
-    let stderr = "";
-    if (child.stdout) child.stdout.on("data", (d) => {
-      stdout += d;
-    });
-    if (child.stderr) child.stderr.on("data", (d) => {
-      stderr += d;
-    });
-    child.on("close", (code) => {
-      let result = "";
-      try {
-        const parsed = JSON.parse(stdout);
-        result = parsed.content || stdout.trim();
-      } catch {
-        result = stdout.trim();
-      }
+  // ── Delegate analysis via unified LLM runner ────────────────────────
+  async delegateAnalysis(name, prompt, model, channel, exec) {
+    const presetId = model || 'sonnet-mid';
+    try {
+      const result = await callLLM(prompt, presetId, { mode: 'active', timeout: 120000 });
       if (!result) {
-        logWebhook(`${name}: delegate returned empty (code=${code}, stderr=${stderr.slice(0, 200)})`);
+        logWebhook(`${name}: delegate returned empty`);
         return;
       }
-      logWebhook(`${name}: delegate done (${model}, ${result.length} chars)`);
+      logWebhook(`${name}: delegate done (${presetId}, ${result.length} chars)`);
       if (this.eventPipeline) {
         this.eventPipeline.enqueueDirect(name, result, channel, exec);
       }
-    });
-    child.on("error", (err) => {
-      logWebhook(`${name}: delegate spawn error: ${err.message}`);
-    });
+    } catch (err) {
+      logWebhook(`${name}: delegate error: ${err.message}`);
+    }
   }
   // ── Webhook handler ───────────────────────────────────────────────
   handleWebhook(name, body, headers, res) {
@@ -349,7 +326,7 @@ ${payload}`;
         const fullPrompt = `${instructions}
 
 ${payloadContent}`;
-        if (analyze && existsSync(DELEGATE_CLI)) {
+        if (analyze) {
           this.delegateAnalysis(name, fullPrompt, model, channel, exec);
           logWebhook(`${name}: folder-based \u2192 delegate (${model})`);
           res.writeHead(200, { "Content-Type": "application/json" });

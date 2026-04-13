@@ -12,9 +12,7 @@ function icon(key) {
 
 function statusBlock(config) {
   const c = config.rawSearch?.credentials || {}
-  const a = config.aiSearch?.profiles || {}
   const providers = ['serper', 'brave', 'perplexity', 'tavily', 'firecrawl', 'xai', 'github']
-  const aiProviders = ['grok', 'firecrawl']
 
   const lines = [
     '',
@@ -30,13 +28,6 @@ function statusBlock(config) {
     lines.push(`    ${icon(key)} ${p.padEnd(12)}${mask(key)}`)
   }
   lines.push('')
-  lines.push('  AI Search')
-  lines.push('  ────────────────────────────────────────')
-  for (const p of aiProviders) {
-    const key = a[p]?.apiKey
-    lines.push(`    ${icon(key)} ${p.padEnd(12)}${mask(key)}`)
-  }
-  lines.push('')
   lines.push('  Options')
   lines.push('  ────────────────────────────────────────')
   lines.push(`    priority    ${(config.rawSearch?.priority || []).join(' > ')}`)
@@ -48,9 +39,7 @@ function statusBlock(config) {
 
 function sectionHeader(config) {
   const c = config.rawSearch?.credentials || {}
-  const a = config.aiSearch?.profiles || {}
   const total = Object.values(c).filter(x => x?.apiKey).length
-    + Object.values(a).filter(x => x?.apiKey).length
   return [
     '  ╭───────────────────────────────────────╮',
     '  │  trib-search setup                    │',
@@ -103,7 +92,7 @@ export async function handleSetup(server) {
         section: {
           type: 'string',
           title: 'Section',
-          enum: ['search-keys', 'ai-keys', 'options', 'status'],
+          enum: ['search-keys', 'options', 'status'],
         },
       },
       required: ['section'],
@@ -147,29 +136,6 @@ export async function handleSetup(server) {
       applyKeys(config, 'rawSearch', result.content)
       save(config)
       return { content: [{ type: 'text', text: '  ✓ Search keys saved.\n' + statusBlock(loadConfig()) }] }
-    }
-    return { content: [{ type: 'text', text: '  ⏎ Cancelled.' }] }
-  }
-
-  if (section === 'ai-keys') {
-    const a = config.aiSearch?.profiles || {}
-    const result = await server.elicitInput({
-      message: keysHeader('AI Search Keys', [
-        ['grok', a.grok?.apiKey], ['firecrawl', a.firecrawl?.apiKey],
-      ]),
-      requestedSchema: {
-        type: 'object',
-        properties: {
-          grok: { type: 'string', title: 'Grok / xAI' },
-          firecrawl: { type: 'string', title: 'Firecrawl' },
-        },
-      },
-    })
-
-    if (result.action === 'accept' && result.content) {
-      applyKeys(config, 'aiSearch', result.content)
-      save(config)
-      return { content: [{ type: 'text', text: '  ✓ AI keys saved.\n' + statusBlock(loadConfig()) }] }
     }
     return { content: [{ type: 'text', text: '  ⏎ Cancelled.' }] }
   }

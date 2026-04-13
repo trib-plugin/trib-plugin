@@ -9,7 +9,7 @@ import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
 import { classifyCandidateConcept } from './memory-extraction.mjs'
 import { embedText, configureEmbedding, getEmbeddingModelId } from './embedding-provider.mjs'
-import { callLLM } from './llm-provider.mjs'
+import { callLLM } from '../../shared/llm/index.mjs'
 import { cosineSimilarity as cosineSimilarityShared, hashEmbeddingInput } from './memory-vector-utils.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
@@ -268,7 +268,7 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
     return await options.llm({
       prompt,
       ws,
-      provider: options.provider ?? null,
+      preset: options.preset ?? null,
       timeout: options.timeout ?? null,
       mode: options.mode ?? 'cycle',
       batchIndex: options.batchIndex ?? 0,
@@ -276,8 +276,8 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
       candidates: options.candidates ?? [],
     })
   }
-  const provider = options.provider || resolveCycleProvider(readMainConfig(), 'cycle1')
-  return await callLLM(prompt, provider, { timeout: options.timeout ?? 180000, cwd: ws })
+  const preset = options.preset || resolveCyclePreset(readMainConfig(), 'cycle1')
+  return await callLLM(prompt, preset, { mode: 'maintenance', timeout: options.timeout ?? 180000 })
 }
 
 // ── Public API ──
@@ -300,13 +300,13 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
         return lines.join('\n')
       }).join('\n\n')
       const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidatesText)
-      const provider = options.provider || resolveCycleProvider(readMainConfig(), 'cycle2')
+      const preset = options.preset || resolveCyclePreset(readMainConfig(), 'cycle2')
       const raw = await resolveCycleLlmOutput(prompt, _ws, {
         ...options,
         mode: 'consolidate',
         dayKey,
         candidates,
-        provider,
+        preset,
         timeout: options.timeout ?? 180000,
       })
       const parsed = extractJsonObject(raw)
@@ -385,7 +385,7 @@ async function refreshEmbeddings(ws, options = {}) {
   const store = options.store ?? getStore()
   const mainConfig = readMainConfig()
   const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
-  const contextualizeProvider = resolveCycleProvider(mainConfig, 'cycle2')
+  const contextualizePreset = resolveCyclePreset(mainConfig, 'cycle2')
   const kind = options.kind ?? 'cycle2'
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit
@@ -402,7 +402,7 @@ async function refreshEmbeddings(ws, options = {}) {
         try {
           const raw = await resolveCycleLlmOutput(template.replace('{{ITEMS}}', itemsText), ws, {
             mode: 'contextualize',
-            provider: contextualizeProvider,
+            preset: contextualizePreset,
             timeout: 180000,
             candidates: items,
           })
@@ -557,8 +557,8 @@ export async function summarizeOnly(ws) {
   store.backfillProject(ws, { limit: resolveCycleBackfillLimit(mainConfig, 120) })
   const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort().reverse()
   if (pendingDays.length > 0) {
-    const provider = resolveCycleProvider(mainConfig, 'cycle2')
-    await consolidateRecent(pendingDays, ws, { provider })
+    const preset = resolveCyclePreset(mainConfig, 'cycle2')
+    await consolidateRecent(pendingDays, ws, { preset })
     await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys: pendingDays })
   }
   store.syncHistoryFromFiles()
@@ -574,7 +574,7 @@ async function memoryFlushImpl(ws, options = {}) {
   if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
   const targets = pendingDays.map(d => d.day_key).sort().reverse().slice(0, maxDays)
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
-  consolidateOpts.provider = options.provider ?? resolveCycleProvider(readMainConfig(), 'cycle2')
+  consolidateOpts.preset = options.preset ?? resolveCyclePreset(readMainConfig(), 'cycle2')
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws, { dayKeys: targets })
 }
@@ -591,8 +591,8 @@ async function rebuildAllImpl(ws) {
   store.resetConsolidatedMemory()
   const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  const provider = resolveCycleProvider(mainConfig, 'cycle2')
-  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, provider })
+  const preset = resolveCyclePreset(mainConfig, 'cycle2')
+  for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, preset })
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
   process.stderr.write(`[memory-cycle] rebuilt ${dayKeys.length} day(s).\n`)
@@ -699,7 +699,7 @@ async function rebuildRecentImpl(ws, options = {}) {
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.resetConsolidatedMemoryForDays(dayKeys)
-  const mergedOptions = options.provider ? options : { ...options, provider: resolveCycleProvider(mainConfig, 'cycle2') }
+  const mergedOptions = options.preset ? options : { ...options, preset: resolveCyclePreset(mainConfig, 'cycle2') }
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
@@ -777,9 +777,9 @@ export function getCycleStatus() {
       cycle1: {
         interval: memoryConfig.cycle1?.interval ?? '5m',
         maxPending: memoryConfig.cycle1?.maxPending ?? null,
-        provider: resolveCycleProvider(memoryConfig, 'cycle1'),
+        preset: resolveCyclePreset(memoryConfig, 'cycle1'),
       },
-      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, provider: resolveCycleProvider(memoryConfig, 'cycle2') },
+      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, preset: resolveCyclePreset(memoryConfig, 'cycle2') },
     },
   }
 }
@@ -823,63 +823,27 @@ function buildCycle1ClassificationRows(candidates = []) {
   }).join('\n')
 }
 
-const FALLBACK_CYCLE_PROVIDER = { connection: 'cli', model: 'sonnet', effort: 'medium' }
-
-// Map preset format { provider, model, effort, fast } to llm-provider format { connection, model, effort, fast }
-function presetToProvider(preset) {
-  if (!preset || typeof preset !== 'object') return null
-  // Already in provider format (has connection field)
-  if (preset.connection) return preset
-  const map = { native: 'cli', codex: 'codex', 'openai-oauth': 'codex', ollama: 'ollama', lmstudio: 'ollama', openai: 'api', anthropic: 'api' }
-  const connection = map[preset.provider] ?? preset.provider
-  if (!connection) return null
-  const out = { connection, model: preset.model }
-  if (preset.effort) out.effort = preset.effort
-  if (preset.fast) out.fast = true
-  if (preset.baseUrl) out.baseUrl = preset.baseUrl
-  if (preset.apiKey) out.apiKey = preset.apiKey
-  if (preset.provider === 'anthropic') out.apiProvider = 'anthropic'
-  return out
-}
-
-// Resolve API key for api-based providers from trib-agent config or env vars
-function resolveApiKey(provider) {
-  const ENV_MAP = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' }
-  const envKey = ENV_MAP[provider]
-  if (envKey && process.env[envKey]) return process.env[envKey]
-  // Try reading from trib-agent config file (no HTTP dependency)
-  try {
-    const agentConfigPath = join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin', 'agent-config.json')
-    const agentConfig = JSON.parse(readFileSync(agentConfigPath, 'utf8'))
-    return agentConfig?.providers?.[provider]?.apiKey || null
-  } catch { return null }
-}
-
-function injectApiKey(mapped, preset) {
-  if (mapped.connection === 'api' && !mapped.apiKey) {
-    const key = resolveApiKey(preset?.provider)
-    if (key) mapped.apiKey = key
-  }
-  return mapped
-}
-
-export function resolveCycleProvider(config, cycleKey) {
-  // 1. Explicit cycle-level provider (already in connection format)
-  const cycleProvider = config?.[cycleKey]?.provider
-  if (cycleProvider?.connection) return cycleProvider
-  // 2. Cycle-level preset reference → resolve from presets list
+export function resolveCyclePreset(config, cycleKey) {
+  // 1. New preset field
   const presetId = config?.[cycleKey]?.preset
-  if (presetId && Array.isArray(config?.presets)) {
-    const preset = config.presets.find(p => p.id === presetId)
-    const mapped = presetToProvider(preset)
-    if (mapped) return injectApiKey(mapped, preset)
+  if (presetId) return presetId
+  // 2. Legacy provider field (backward compat: { connection: 'cli', model: 'sonnet' } → build inline preset)
+  const legacyProvider = config?.[cycleKey]?.provider
+  if (legacyProvider?.connection) {
+    const connMap = { cli: 'native', codex: 'bridge', api: 'bridge', ollama: 'bridge' }
+    const provMap = { cli: undefined, codex: 'openai-oauth', api: legacyProvider.apiProvider || 'openai', ollama: 'ollama' }
+    return {
+      id: `legacy-${cycleKey}`,
+      type: connMap[legacyProvider.connection] || 'native',
+      provider: provMap[legacyProvider.connection],
+      model: legacyProvider.model || 'sonnet',
+      effort: legacyProvider.effort,
+      fast: legacyProvider.fast,
+      apiKey: legacyProvider.apiKey,
+      baseUrl: legacyProvider.baseUrl,
+    }
   }
-  // 3. Default preset (first in list)
-  if (Array.isArray(config?.presets) && config.presets.length > 0) {
-    const mapped = presetToProvider(config.presets[0])
-    if (mapped) return mapped
-  }
-  return FALLBACK_CYCLE_PROVIDER
+  return 'sonnet-mid'
 }
 
 
@@ -895,7 +859,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   const cycle1Config = config?.cycle1 ?? {}
   const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config.batchSize ?? BATCH_SIZE))
   const maxDays = force ? 9999 : Math.max(1, Number(options.maxAgeDays ?? cycle1Config.maxDays ?? 7))
-  const provider = resolveCycleProvider(config, 'cycle1')
+  const preset = resolveCyclePreset(config, 'cycle1')
   const timeout = config?.cycle1?.timeout || 300000
 
   // Support pre-split candidates from rebuildClassifications
@@ -948,7 +912,7 @@ async function runCycle1Impl(ws, config, options = {}) {
         mode: 'cycle1',
         batchIndex,
         candidates,
-        provider,
+        preset,
         timeout,
       })
     } catch (e) {
@@ -1140,7 +1104,7 @@ async function runCycle1Impl(ws, config, options = {}) {
  */
 async function coreMemoryPromote(store, ws, config) {
   const cycle2Config = config?.cycle2 ?? {}
-  const provider = resolveCycleProvider(config, 'cycle2')
+  const preset = resolveCyclePreset(config, 'cycle2')
   const ACTIVE_CAP = 50
   const CHUNK_BATCH_SIZE = 50
 
@@ -1298,7 +1262,7 @@ async function coreMemoryPromote(store, ws, config) {
 
     try {
       const raw = await resolveCycleLlmOutput(phase1Prompt, ws, {
-        mode: 'core-promote', provider, timeout: 180000,
+        mode: 'core-promote', preset, timeout: 180000,
       })
       const parsed = extractJsonObject(raw)
       if (parsed?.actions && Array.isArray(parsed.actions)) {
@@ -1344,7 +1308,7 @@ async function coreMemoryPromote(store, ws, config) {
 
     try {
       const raw = await resolveCycleLlmOutput(phase2Prompt, ws, {
-        mode: 'core-promote', provider, timeout: 180000,
+        mode: 'core-promote', preset, timeout: 180000,
       })
       const parsed = extractJsonObject(raw)
       if (parsed?.actions && Array.isArray(parsed.actions)) {
@@ -1379,7 +1343,7 @@ async function coreMemoryPromote(store, ws, config) {
 
     try {
       const raw = await resolveCycleLlmOutput(phase3Prompt, ws, {
-        mode: 'core-promote', provider, timeout: 180000,
+        mode: 'core-promote', preset, timeout: 180000,
       })
       const parsed = extractJsonObject(raw)
       if (parsed?.actions && Array.isArray(parsed.actions)) {
