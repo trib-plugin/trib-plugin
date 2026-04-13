@@ -141,12 +141,26 @@ export function loadConfig() {
                 mcpServers: raw.mcpServers || {},
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
                 default: raw.default || null,
+                // New feature config with defaults
+                trajectory: { enabled: true, ...raw.trajectory },
+                statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...raw.statePacket },
+                skillSuggest: { autoDetect: false, ...raw.skillSuggest },
+                cycle3: { enabled: false, interval: '30m', ...raw.cycle3 },
             };
         }
         catch { /* fall through */ }
     }
     const defaults = buildDefaultConfig();
-    return { ...defaults, mcpServers: {}, presets: [], default: null };
+    return {
+        ...defaults,
+        mcpServers: {},
+        presets: [],
+        default: null,
+        trajectory: { enabled: true },
+        statePacket: { enabled: true, threshold: 20, ttlMinutes: 30 },
+        skillSuggest: { autoDetect: false },
+        cycle3: { enabled: false, interval: '30m' },
+    };
 }
 /**
  * Atomically save config.json. Caller passes the full config object.
@@ -177,6 +191,10 @@ export function saveConfig(config) {
         mcpServers: config.mcpServers || {},
         presets: Array.isArray(config.presets) ? config.presets : [],
         default: config.default || null,
+        trajectory: config.trajectory || {},
+        statePacket: config.statePacket || {},
+        skillSuggest: config.skillSuggest || {},
+        cycle3: config.cycle3 || {},
     };
     const tmp = path + '.tmp';
     writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');

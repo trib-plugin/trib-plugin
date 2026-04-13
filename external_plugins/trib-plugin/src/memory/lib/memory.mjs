@@ -448,6 +448,18 @@ export class MemoryStore {
       CREATE INDEX IF NOT EXISTS idx_core_memory_status ON core_memory(status, final_score DESC);
       CREATE INDEX IF NOT EXISTS idx_core_memory_cls ON core_memory(classification_id);
 
+      CREATE TABLE IF NOT EXISTS user_model (
+        id INTEGER PRIMARY KEY,
+        category TEXT NOT NULL CHECK(category IN ('preference', 'style', 'habit', 'constraint')),
+        hypothesis TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        source_episode_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'decayed')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_model_status ON user_model(status, confidence DESC);
+
       CREATE TABLE IF NOT EXISTS proactive_sources (
         id INTEGER PRIMARY KEY,
         category TEXT NOT NULL,
@@ -1118,6 +1130,17 @@ export class MemoryStore {
       })
       parts.push(`## Core Memory\n${lines.join('\n')}`)
     }
+
+    // User Model: structured hypotheses about the user
+    try {
+      const userModel = this.getUserModel(0.5)
+      if (userModel.length > 0) {
+        const lines = userModel.map(m =>
+          `- [${m.category}] ${m.hypothesis} (confidence: ${m.confidence.toFixed(2)})`
+        )
+        parts.push(`## User Model\n${lines.join('\n')}`)
+      }
+    } catch {}
 
     return parts.join('\n\n').trim()
   }
@@ -2124,6 +2147,58 @@ export class MemoryStore {
         }
       } catch { /* core_memory table may not exist yet */ }
     }
+  }
+
+  // ── User Model ──────────────────────────────────────────────────────
+
+  upsertUserModel(category, hypothesis, confidence, sourceEpisodeId) {
+    const now = localNow()
+    // Check for existing similar entry (same category, overlapping hypothesis)
+    const existing = this.db.prepare(
+      `SELECT id, hypothesis, confidence FROM user_model
+       WHERE category = ? AND status = 'active'`
+    ).all(category)
+    for (const row of existing) {
+      // Simple substring overlap check for similarity
+      const existLower = row.hypothesis.toLowerCase()
+      const newLower = hypothesis.toLowerCase()
+      if (existLower.includes(newLower.slice(0, 30)) || newLower.includes(existLower.slice(0, 30))) {
+        this.db.prepare(
+          `UPDATE user_model SET hypothesis = ?, confidence = ?, source_episode_id = ?, updated_at = ? WHERE id = ?`
+        ).run(hypothesis, confidence, sourceEpisodeId ?? null, now, row.id)
+        return row.id
+      }
+    }
+    // Insert new entry
+    this.db.prepare(
+      `INSERT INTO user_model (category, hypothesis, confidence, source_episode_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`
+    ).run(category, hypothesis, confidence, sourceEpisodeId ?? null, now, now)
+    return this.db.prepare('SELECT last_insert_rowid() as id').get().id
+  }
+
+  getUserModel(minConfidence = 0.5) {
+    return this.db.prepare(
+      `SELECT category, hypothesis, confidence, updated_at AS updatedAt
+       FROM user_model
+       WHERE status = 'active' AND confidence >= ?
+       ORDER BY confidence DESC`
+    ).all(minConfidence)
+  }
+
+  decayUserModel(days = 30) {
+    const cutoff = toLocalTs(new Date(Date.now() - days * 86400000).toISOString())
+    // Reduce confidence by 0.1 for stale entries
+    this.db.prepare(
+      `UPDATE user_model SET confidence = confidence - 0.1, updated_at = ?
+       WHERE status = 'active' AND updated_at < ?`
+    ).run(localNow(), cutoff)
+    // Mark entries below threshold as decayed
+    const result = this.db.prepare(
+      `UPDATE user_model SET status = 'decayed'
+       WHERE status = 'active' AND confidence < 0.3`
+    ).run()
+    return result.changes
   }
 
 }

@@ -460,7 +460,13 @@ async function sleepCycleImpl(ws) {
     process.stderr.write(`[memory-cycle2] core-promote error: ${e.message}\n`)
   }
 
-  // 3. Refresh context.md from core_memory
+  // 3. User model decay — reduce confidence on stale hypotheses
+  const decayConfig = readMainConfig()
+  if (decayConfig.userModel?.enabled !== false) {
+    try { store.decayUserModel(decayConfig.userModel?.decayDays || 30) } catch {}
+  }
+
+  // 4. Refresh context.md from core_memory
   try {
     store.writeContextFile()
     process.stderr.write('[memory-cycle2] context.md refreshed.\n')
@@ -857,7 +863,7 @@ function injectApiKey(mapped, preset) {
   return mapped
 }
 
-function resolveCycleProvider(config, cycleKey) {
+export function resolveCycleProvider(config, cycleKey) {
   // 1. Explicit cycle-level provider (already in connection format)
   const cycleProvider = config?.[cycleKey]?.provider
   if (cycleProvider?.connection) return cycleProvider
@@ -1030,6 +1036,18 @@ async function runCycle1Impl(ws, config, options = {}) {
       }
 
       store.upsertClassifications(classificationRows, ts, null)
+
+      // Update user model for preference/constraint classifications
+      const umConfig = readMainConfig()
+      if (umConfig.userModel?.enabled !== false) {
+        for (const row of classificationRows) {
+          if (['preference', 'constraint'].includes(row.importance)) {
+            try {
+              store.upsertUserModel(row.importance, row.element, row.confidence ?? 0.6, row.episode_id)
+            } catch {}
+          }
+        }
+      }
 
       // Save chunks to memory_chunks table + FTS
       for (const row of classificationRows) {

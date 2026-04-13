@@ -860,6 +860,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // -- Agent learning config --
+
+  if (req.method === 'GET' && path === '/agent/learning') {
+    const cfg = readAgentConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      trajectory: { enabled: true, ...cfg.trajectory },
+      statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...cfg.statePacket },
+      skillSuggest: { autoDetect: false, ...cfg.skillSuggest },
+      cycle3: { enabled: false, interval: '30m', ...cfg.cycle3 },
+    }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/agent/learning') {
+    const data = await readBody(req);
+    const existing = readAgentConfig();
+    if (data.trajectory) existing.trajectory = { ...(existing.trajectory || {}), ...data.trajectory };
+    if (data.statePacket) existing.statePacket = { ...(existing.statePacket || {}), ...data.statePacket };
+    if (data.skillSuggest) existing.skillSuggest = { ...(existing.skillSuggest || {}), ...data.skillSuggest };
+    if (data.cycle3) existing.cycle3 = { ...(existing.cycle3 || {}), ...data.cycle3 };
+    writeAgentConfig(existing);
+    console.log('  Config saved: agent learning');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // ============================================================
   // MEMORY MODULE ROUTES
   // ============================================================
@@ -877,6 +905,24 @@ const server = http.createServer(async (req, res) => {
     const merged = mergeMemoryConfig(existing, data);
     writeMemoryConfig(merged);
     console.log('  Config saved: memory');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/memory/user-model') {
+    const cfg = readMemoryConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ enabled: true, decayDays: 30, ...cfg.userModel }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/memory/user-model') {
+    const data = await readBody(req);
+    const existing = readMemoryConfig();
+    existing.userModel = { ...(existing.userModel || {}), ...data };
+    writeMemoryConfig(existing);
+    console.log('  Config saved: memory user-model');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

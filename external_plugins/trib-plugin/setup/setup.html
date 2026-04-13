@@ -763,6 +763,7 @@
     <div class="cat-item" data-panel="agent-providers" onclick="switchCat(this)">Providers</div>
     <div class="cat-item" data-panel="agent-presets" onclick="switchCat(this)">Presets</div>
     <div class="cat-item" data-panel="agent-status" onclick="switchCat(this)">Status</div>
+    <div class="cat-item" data-panel="agent-learning" onclick="switchCat(this)">Learning</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Memory</div>
     <div class="cat-item" data-panel="mem-settings" onclick="switchCat(this)">Settings</div>
@@ -1106,6 +1107,83 @@
       </div>
     </div>
 
+    <!-- AGENT LEARNING -->
+    <div class="panel" id="panel-agent-learning">
+      <div class="hdr"><h1>Agent Learning</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">Trajectory Recording</div>
+        <div class="sec-desc">Record execution metadata for every bridge call. Enables pattern analysis and skill suggestions.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="traj-enabled" checked onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">State Packet Extraction</div>
+        <div class="sec-desc">Auto-extract structured session state (goal, progress, decisions) for session handoff.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="sp-enabled" checked onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Message Threshold</span>
+            <input class="r-input" id="sp-threshold" type="number" value="20" min="5" max="100" style="flex:1" onchange="saveLearningConfig()">
+          </div>
+          <div class="r">
+            <span class="r-name-wide">TTL (minutes)</span>
+            <input class="r-input" id="sp-ttl" type="number" value="30" min="5" max="1440" style="flex:1" onchange="saveLearningConfig()">
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Cycle 3 — Agent Learning Cycle</div>
+        <div class="sec-desc">Periodic trajectory analysis and skill pattern detection.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="c3-enabled" onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Interval</span>
+            <select class="r-select" id="c3-interval" onchange="saveLearningConfig()">
+              <option value="15m">15 min</option>
+              <option value="30m" selected>30 min</option>
+              <option value="1h">1 hour</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Auto Skill Detection</div>
+        <div class="sec-desc">Automatically detect repeating patterns and suggest skill creation.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="skill-auto" onchange="saveLearningConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ============ MEMORY MODULE ============ -->
 
     <!-- MEMORY SETTINGS -->
@@ -1178,6 +1256,23 @@
               </select>
               <button class="save" id="mem-btn-backfill" onclick="memRunBackfill()" style="width:auto;height:34px;padding:0 16px;margin-left:8px;font-size:12px">Run</button>
             </div>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-title">User Model</div>
+        <div class="sec-desc">Build structured user profile from conversation patterns. Includes confidence decay.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="um-enabled" checked onchange="saveMemUserModel()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Decay Period (days)</span>
+            <input class="r-input" id="um-decay" type="number" value="30" min="7" max="365" style="flex:1" onchange="saveMemUserModel()">
           </div>
         </div>
       </div>
@@ -1760,6 +1855,8 @@ window.addEventListener('load', async () => {
     loadSearchConfig(),
     genLoadConfig(),
     wfLoadConfig(),
+    loadLearningConfig(),
+    loadMemUserModel(),
   ]);
   results.forEach((r, i) => { if (r.status === 'rejected') console.error('[trib] loader', i, 'failed:', r.reason); });
 
@@ -3045,6 +3142,70 @@ async function srSavePanel() {
     isDirty = false;
     if (btn) { btn.textContent = '\u2713 Saved'; btn.classList.add('done'); setTimeout(() => { btn.textContent = 'Save'; btn.classList.remove('done'); btn.disabled = false; }, 1500); }
   } catch (e) { console.error('[trib] save error:', e); warnEl.textContent = 'Save failed: ' + (e?.message || e); if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
+}
+
+// ============================================================
+// AGENT LEARNING CONFIG
+// ============================================================
+async function loadLearningConfig() {
+  try {
+    const res = await fetch('/agent/learning');
+    const data = await res.json();
+    document.getElementById('traj-enabled').checked = data.trajectory?.enabled !== false;
+    document.getElementById('sp-enabled').checked = data.statePacket?.enabled !== false;
+    document.getElementById('sp-threshold').value = data.statePacket?.threshold || 20;
+    document.getElementById('sp-ttl').value = data.statePacket?.ttlMinutes || 30;
+    document.getElementById('c3-enabled').checked = data.cycle3?.enabled === true;
+    document.getElementById('c3-interval').value = data.cycle3?.interval || '30m';
+    document.getElementById('skill-auto').checked = data.skillSuggest?.autoDetect === true;
+  } catch {}
+}
+
+async function saveLearningConfig() {
+  try {
+    await fetch('/agent/learning', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trajectory: { enabled: document.getElementById('traj-enabled').checked },
+        statePacket: {
+          enabled: document.getElementById('sp-enabled').checked,
+          threshold: parseInt(document.getElementById('sp-threshold').value) || 20,
+          ttlMinutes: parseInt(document.getElementById('sp-ttl').value) || 30,
+        },
+        cycle3: {
+          enabled: document.getElementById('c3-enabled').checked,
+          interval: document.getElementById('c3-interval').value,
+        },
+        skillSuggest: { autoDetect: document.getElementById('skill-auto').checked },
+      }),
+    });
+  } catch {}
+}
+
+// ============================================================
+// MEMORY USER MODEL CONFIG
+// ============================================================
+async function loadMemUserModel() {
+  try {
+    const res = await fetch('/memory/user-model');
+    const data = await res.json();
+    document.getElementById('um-enabled').checked = data.enabled !== false;
+    document.getElementById('um-decay').value = data.decayDays || 30;
+  } catch {}
+}
+
+async function saveMemUserModel() {
+  try {
+    await fetch('/memory/user-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: document.getElementById('um-enabled').checked,
+        decayDays: parseInt(document.getElementById('um-decay').value) || 30,
+      }),
+    });
+  } catch {}
 }
 </script>
 

@@ -938,6 +938,22 @@
     "module": "agent"
   },
   {
+    "name": "skill_suggest",
+    "description": "Analyze trajectory data and suggest skills from repeating patterns. Returns a report of skill candidates.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "annotations": {
+      "title": "Skill Suggest",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "module": "agent"
+  },
+  {
     "name": "bridge",
     "title": "Bridge to External Model",
     "description": "Bridge a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope maps to a configured preset.",

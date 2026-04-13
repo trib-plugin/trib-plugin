@@ -5,6 +5,8 @@ import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
 import { collectSkillsCached, buildSkillToolDef, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions } from './store.mjs';
+import { extractAndSave, restoreStatePacket } from './state-packet.mjs';
+import { loadConfig } from '../config.mjs';
 let _mcpToolsCache = null;
 let _mcpToolsCacheTime = 0;
 const MCP_CACHE_TTL = 60000; // 1 minute
@@ -167,6 +169,11 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             session.totalOutputTokens += result.usage.outputTokens;
         }
         saveSession(session);
+        // Async state packet extraction — best-effort, never blocks response
+        const spCfg = loadConfig();
+        if (spCfg.statePacket?.enabled !== false && session.scopeKey && session.messages.filter(m => m.role !== 'system').length > (spCfg.statePacket?.threshold || 20)) {
+            extractAndSave(session).catch(() => {});
+        }
         return {
             ...result,
             trimmed: messagesDropped > 0,
@@ -187,7 +194,9 @@ export function findOrCreateSession(scopeKey, createFn) {
     if (!scopeKey) return createFn();
     // Synchronous lock: if another call is creating for this scope, wait
     const existing = findSessionByScopeKey(scopeKey);
-    if (existing) return existing;
+    if (existing) {
+        return existing;
+    }
     // Check again with lock to prevent race
     if (_scopeCreateLocks.has(scopeKey)) {
         // Another create just happened, re-check
@@ -208,6 +217,8 @@ export function resumeSession(sessionId, preset) {
     if (!session)
         return null;
     if (!session.owner) session.owner = 'user';
+    // Inject state packet if available (scope-keyed, after system messages)
+    restoreStatePacket(session);
     // Refresh tools (MCP connections may have changed)
     const oldTools = session.tools || [];
     const skills = collectSkillsCached(session.cwd);

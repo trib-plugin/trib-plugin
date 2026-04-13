@@ -46,6 +46,7 @@ import {
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding, embedText } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
+import { callLLM } from './lib/llm-provider.mjs'
 import {
   sleepCycle,
   memoryFlush,
@@ -56,6 +57,7 @@ import {
   runCycle1,
   readMainConfig,
   parseInterval,
+  resolveCycleProvider,
 } from './lib/memory-cycle.mjs'
 import { localNow } from './lib/memory-text-utils.mjs'
 import {
@@ -199,7 +201,7 @@ const MEMORY_INSTRUCTIONS_TEXT = [
 ].join('\n')
 const PROXY_TOOL_DEFS = [
   { name: 'memory_cycle', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
-  { name: 'search_memories', description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
+  { name: 'search_memories', description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['search', 'reason'] } }, required: [] } },
 ]
 
 // ── Module-level state (initialized by init() or standalone startup) ──
@@ -719,6 +721,12 @@ async function handleRecall(args) {
   const explicitSort = args.sort != null ? String(args.sort) : null
   const offset = Math.max(0, Number(args.offset ?? 0))
   const limit = Math.max(1, Number(args.limit ?? 20))
+  const mode = String(args.mode ?? 'search')
+
+  // Dialectic / reason mode: synthesize an answer from stored knowledge
+  if (mode === 'reason' && query) {
+    return handleReason(query, { period, limit: 20 })
+  }
 
   // Shortcut queries
   if (query === 'stats') return handleStats()
@@ -744,6 +752,47 @@ async function handleRecall(args) {
 
   // Browse mode (handleRead) — no query
   return handleRead({ offset, limit, sort, temporal: temporal ?? { mode: 'last' } })
+}
+
+async function handleReason(query, options = {}) {
+  // 1. Normal search to get relevant memories (with temporal scope if period given)
+  const temporal = options.period ? parsePeriod(options.period, true) : null
+  const searchTemporal = temporal
+    ? (temporal.mode === 'last' ? null : { start: temporal.start, end: temporal.end, exact: temporal.exact })
+    : null
+  const searchResult = await handleGrep(query, { sort: 'importance', offset: 0, limit: options.limit ?? 20, temporal: searchTemporal })
+
+  // 2. Load user model
+  let userModelLines = []
+  try {
+    const userModel = store.getUserModel(0.5)
+    userModelLines = userModel.map(m => `- [${m.category}] ${m.hypothesis} (confidence: ${m.confidence.toFixed(2)})`)
+  } catch {}
+
+  // 3. Compose prompt
+  const prompt = [
+    'Based on the following stored knowledge about the user, answer this question.',
+    '',
+    `Question: ${query}`,
+    '',
+    'Core Memories:',
+    searchResult.text || '(none)',
+    '',
+    ...(userModelLines.length > 0
+      ? ['User Model:', ...userModelLines, '']
+      : []),
+    'Synthesize a concise answer. If the knowledge is insufficient, say so. Include confidence level (high/medium/low).',
+  ].join('\n')
+
+  // 4. Call LLM
+  try {
+    const config = readMainConfig()
+    const provider = resolveCycleProvider(config, 'cycle2')
+    const answer = await callLLM(prompt, provider, { timeout: 60000 })
+    return { text: answer }
+  } catch (e) {
+    return { text: `[reason] LLM call failed: ${e.message}\n\nFallback search results:\n${searchResult.text}` }
+  }
 }
 
 // ── Cycle handler ────────────────────────────────────────────────────
@@ -906,6 +955,7 @@ const TOOL_DEFS = [
         sort: { type: 'string', enum: ['date', 'importance'], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
         limit: { type: 'number', default: 30, description: 'Max results to return.' },
         offset: { type: 'number', default: 0, description: 'Skip N results for pagination.' },
+        mode: { type: 'string', enum: ['search', 'reason'], description: 'search: normal retrieval. reason: synthesize an answer from stored knowledge using LLM.' },
       },
       required: [],
     },

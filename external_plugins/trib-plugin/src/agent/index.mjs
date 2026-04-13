@@ -6,6 +6,8 @@ import { createSession, askSession, listSessions, closeSession, resumeSession, f
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
+import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
+import { startCycle3, stopCycle3 } from './orchestrator/cycle3.mjs';
 import { writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -195,6 +197,11 @@ const TOOLS = [
     },
   },
   {
+    name: 'skill_suggest',
+    description: 'Analyze trajectory data and suggest skills from repeating patterns. Returns a report of skill candidates.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'bridge',
     title: 'Ask External Model',
     description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Use ref instead of prompt to reference a stored prompt.',
@@ -234,7 +241,9 @@ export async function init() {
   const config = loadConfig();
   await initProviders(config.providers);
   seedDefaults();
+  initTrajectoryStore(getPluginData());
   if (config.mcpServers) await connectMcpServers(config.mcpServers);
+  startCycle3();
 }
 
 /**
@@ -360,6 +369,17 @@ export async function handleToolCall(name, args, opts = {}) {
         return ok(`Stored as '${key}' (${content.length} chars)`);
       }
 
+      case 'skill_suggest': {
+        let db = null;
+        try {
+          const { getTrajectoryDb } = await import('./orchestrator/trajectory.mjs');
+          db = getTrajectoryDb();
+        } catch { /* trajectory module not available yet */ }
+        const { getSkillSuggestionReport } = await import('./orchestrator/skill-suggest.mjs');
+        const report = db ? getSkillSuggestionReport(db) : 'Trajectory store not initialized.';
+        return ok(report);
+      }
+
       case 'bridge': {
         let prompt = args.prompt;
         if (!prompt && args.file) {
@@ -416,9 +436,13 @@ export async function handleToolCall(name, args, opts = {}) {
         const emit = notifyFn;
 
         (async () => {
+          const t0 = Date.now();
+          let completed = true;
+          let errorMessage = null;
+          let result = null;
+          const toolCallLog = [];
           try {
-            const t0 = Date.now();
-            const result = await askSession(session.id, prompt, args.context || null, () => {}, process.cwd());
+            result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, process.cwd());
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             const inTok = fmtTokens(result.usage?.inputTokens);
             const outTok = fmtTokens(result.usage?.outputTokens);
@@ -427,8 +451,29 @@ export async function handleToolCall(name, args, opts = {}) {
             const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
             emit(`[${scopeLabel}] ${content}\n\n${footer}`);
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            emit(`[${scopeLabel}] ❌ ${msg}\n\n${modelLabel}`);
+            completed = false;
+            errorMessage = err instanceof Error ? err.message : String(err);
+            emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
+          } finally {
+            try {
+              const cfg = loadConfig();
+              if (cfg.trajectory?.enabled !== false) {
+                recordTrajectory({
+                  session_id: session.id,
+                  scope: scopeLabel,
+                  preset: presetName || preset.name,
+                  model: modelLabel,
+                  agent_type: 'bridge',
+                  tool_calls_json: JSON.stringify(toolCallLog),
+                  iterations: result?.iterations || 1,
+                  tokens_in: result?.usage?.inputTokens || 0,
+                  tokens_out: result?.usage?.outputTokens || 0,
+                  duration_ms: Date.now() - t0,
+                  completed: completed ? 1 : 0,
+                  error_message: errorMessage,
+                });
+              }
+            } catch {}
           }
         })();
 
@@ -444,7 +489,7 @@ export async function handleToolCall(name, args, opts = {}) {
 }
 
 export async function start() { /* noop — standalone mode uses main() */ }
-export async function stop() { await disconnectAll(); }
+export async function stop() { stopCycle3(); await disconnectAll(); }
 
 // --- Init providers + MCP clients, then start (standalone) ---
 
@@ -453,6 +498,7 @@ if (process.env.TRIB_UNIFIED !== '1') {
     // loadConfig handles legacy mcp-tools.json migration into config.json automatically
     const config = loadConfig();
     await initProviders(config.providers);
+    initTrajectoryStore(getPluginData());
 
     // MCP tool servers come from config.mcpServers (config.json)
     if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
