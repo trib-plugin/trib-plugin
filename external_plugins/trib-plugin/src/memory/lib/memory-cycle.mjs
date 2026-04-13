@@ -824,32 +824,7 @@ function buildCycle1ClassificationRows(candidates = []) {
 }
 
 export function resolveCyclePreset(config, cycleKey) {
-  // 1. agent-config maintenance section (single source of truth)
-  try {
-    const agentCfg = JSON.parse(readFileSync(
-      join(PLUGIN_DATA_DIR, 'agent-config.json'), 'utf8'))
-    if (agentCfg?.maintenance) return resolveMaintenancePreset(cycleKey, agentCfg)
-  } catch {}
-  // 2. memory-config preset field (legacy fallback)
-  const presetId = config?.[cycleKey]?.preset
-  if (presetId) return presetId
-  // 3. Legacy provider field (backward compat)
-  const legacyProvider = config?.[cycleKey]?.provider
-  if (legacyProvider?.connection) {
-    const connMap = { cli: 'native', codex: 'bridge', api: 'bridge', ollama: 'bridge' }
-    const provMap = { cli: undefined, codex: 'openai-oauth', api: legacyProvider.apiProvider || 'openai', ollama: 'ollama' }
-    return {
-      id: `legacy-${cycleKey}`,
-      type: connMap[legacyProvider.connection] || 'native',
-      provider: provMap[legacyProvider.connection],
-      model: legacyProvider.model || 'sonnet',
-      effort: legacyProvider.effort,
-      fast: legacyProvider.fast,
-      apiKey: legacyProvider.apiKey,
-      baseUrl: legacyProvider.baseUrl,
-    }
-  }
-  return 'sonnet-mid'
+  return resolveMaintenancePreset(cycleKey)
 }
 
 

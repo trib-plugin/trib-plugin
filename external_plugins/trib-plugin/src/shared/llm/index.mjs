@@ -32,12 +32,7 @@ function loadAgentConfig() {
 
 function findPreset(presetId, agentConfig) {
   const presets = agentConfig?.presets || []
-  const lower = presetId.toLowerCase()
-  return presets.find(p => p.id === presetId)
-    || presets.find(p => p.name === presetId)
-    || presets.find(p => p.id?.toLowerCase() === lower)
-    || presets.find(p => p.name?.toLowerCase() === lower)
-    || null
+  return presets.find(p => p.id === presetId) || presets.find(p => p.name === presetId) || null
 }
 
 function resolveApiKey(providerKey, agentConfig) {
