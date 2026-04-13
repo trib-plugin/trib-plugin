@@ -22,13 +22,22 @@ const ENV_KEY_MAP = {
 }
 
 function loadAgentConfig() {
-  try { return JSON.parse(readFileSync(AGENT_CONFIG_PATH, 'utf8')) }
-  catch { return {} }
+  try {
+    return JSON.parse(readFileSync(AGENT_CONFIG_PATH, 'utf8'))
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error(`[llm] agent-config parse error: ${e.message}`)
+    return {}
+  }
 }
 
 function findPreset(presetId, agentConfig) {
   const presets = agentConfig?.presets || []
-  return presets.find(p => p.id === presetId) || presets.find(p => p.name === presetId) || null
+  const lower = presetId.toLowerCase()
+  return presets.find(p => p.id === presetId)
+    || presets.find(p => p.name === presetId)
+    || presets.find(p => p.id?.toLowerCase() === lower)
+    || presets.find(p => p.name?.toLowerCase() === lower)
+    || null
 }
 
 function resolveApiKey(providerKey, agentConfig) {
@@ -61,16 +70,25 @@ export async function callLLM(prompt, presetOrId, options = {}) {
     return runClaude(prompt, { model, mode, timeout, systemPrompt, effort: preset.effort })
   }
 
+  // Bridge — must have provider
+  if (!providerKey) throw new Error(`Preset "${preset.id || preset.name}" has no provider`)
+
   // Bridge — route by provider
   switch (providerKey) {
     case 'openai-oauth':
     case 'copilot':
       return runCodex(prompt, { model, mode, timeout, effort: preset.effort, fast: preset.fast })
 
-    case 'ollama':
-    case 'lmstudio': {
-      const baseUrl = preset.baseUrl || agentConfig?.providers?.[providerKey]?.baseURL || 'http://localhost:11434'
+    case 'ollama': {
+      const rawUrl = preset.baseUrl || agentConfig?.providers?.ollama?.baseURL || 'http://localhost:11434'
+      const baseUrl = rawUrl.replace(/\/v1\/?$/, '')
       return runOllamaHTTP(prompt, { model, timeout, baseUrl })
+    }
+
+    case 'lmstudio': {
+      const apiKey = preset.apiKey || 'lm-studio'
+      const baseUrl = preset.baseUrl || agentConfig?.providers?.lmstudio?.baseURL || 'http://localhost:1234/v1'
+      return runHTTP(prompt, { model, timeout, apiKey, baseUrl, provider: 'lmstudio', systemPrompt })
     }
 
     case 'gemini':

@@ -51,7 +51,7 @@ export async function runClaude(prompt, options = {}) {
   const args = ['-p', '--model', model, '--output-format', 'json', '--no-session-persistence']
 
   if (mode === 'maintenance') {
-    args.push('--setting-sources', '', '--tools', '')
+    args.push('--setting-sources=', '--tools=')
   }
   if (systemPrompt) args.push('--system-prompt', systemPrompt)
   if (effort) args.push('--effort', effort)
@@ -96,30 +96,30 @@ export async function runCodex(prompt, options = {}) {
       }
     } catch {}
   }
+  if (!lastText) throw new Error('Codex returned no agent_message')
   return lastText
 }
 
 /**
  * Run Gemini CLI.
- * maintenance mode: no extensions for isolation
- * active mode: normal
+ * Note: Gemini CLI isolation flags TBD — auth not configured yet.
  */
 export async function runGemini(prompt, options = {}) {
-  const { model = 'gemini-2.5-flash', mode = 'maintenance', timeout = 180000 } = options
+  const { model = 'gemini-2.5-flash', timeout = 180000 } = options
 
   const args = ['-p', prompt, '-o', 'json', '-m', model]
-
-  // maintenance isolation: disable extensions when supported
-  // Note: Gemini CLI extension isolation flags may need adjustment once auth is configured
 
   const { stdout } = await spawnPromise('gemini', args, null, { timeout })
 
   try {
     const parsed = JSON.parse(stdout)
     if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error))
-    return parsed.response || parsed.text || parsed.result || stdout.trim()
+    const text = parsed.response || parsed.text || parsed.result || ''
+    if (!text) throw new Error('Gemini returned empty response')
+    return text
   } catch (e) {
     if (e.message && !e.message.includes('Unexpected')) throw e
+    if (!stdout.trim()) throw new Error('Gemini returned empty output')
     return stdout.trim()
   }
 }

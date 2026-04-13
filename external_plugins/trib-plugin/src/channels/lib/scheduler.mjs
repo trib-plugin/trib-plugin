@@ -550,7 +550,7 @@ ${scriptResult}
       });
     });
   }
-  // ── Fire proactive (delegate-cli autonomous) ────────────────────────
+  // ── Fire proactive ─────────────────────────────────────────────────
   proactiveDataFetcher = null;
   proactiveDbUpdater = null;
   setProactiveHandlers(dataFetcher, dbUpdater) {

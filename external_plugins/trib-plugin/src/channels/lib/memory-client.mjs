@@ -194,7 +194,7 @@ export async function getProactiveContext() {
 }
 
 /**
- * Apply source updates from delegate-cli (add/remove/score changes).
+ * Apply source updates (add/remove/score changes).
  * @param {object} updates - { add: [], remove: [], scores: {} }
  */
 export async function applyProactiveUpdates(updates) {
