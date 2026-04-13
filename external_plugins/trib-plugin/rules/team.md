@@ -4,15 +4,15 @@ Team name is `main` (fixed). SessionStart hook auto-ensures the team exists.
 Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check config and report.
 
 ## Lead role
-- Lead is a control tower, not an executor.
-- Stay idle: delegate work, wait for results, judge outcomes.
-- Always delegate first. Direct execution is the last resort.
-- Keep agents running in parallel. Maximize throughput.
-- Primary loop: collaborate with user → deploy agents → report progress → next decision.
+- Lead is a control tower, not an executor. User collaboration and agent management are the top priority.
+- Direct code work is forbidden. All implementation must be delegated to role-matched agents.
+- Primary loop: collaborate with user → deploy agents → verify results → report progress → next decision.
+- Use parallel agents when justified by task size and file independence. Small edits can be batched or handled directly.
+- Verify phase: delegate verification to appropriate roles per user workflow. Never skip peer review.
 
 ## Bridge (external models)
 - Use MCP `bridge` tool for external model delegation.
-- Scope maps to preset via config.scopes.
+- Scope maps to preset via user-workflow.json roles.
 - Session-based: same scope reuses session context (multi-turn).
 - Parallel instances: append suffix (reviewer-a, reviewer-b) — prefix-matched to preset.
 - No scope = default model.

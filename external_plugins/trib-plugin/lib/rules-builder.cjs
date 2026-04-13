@@ -70,11 +70,11 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
     const typeMap = {};
     if (Array.isArray(agentCfg.presets)) {
-      for (const p of agentCfg.presets) typeMap[p.id] = p.type || 'worker';
+      for (const p of agentCfg.presets) typeMap[p.id] = p.type || 'native';
     }
     wfLines.push('Roles:');
     for (const role of userWorkflow.roles) {
-      const label = (typeMap[role.preset] || 'worker') === 'bridge' ? 'Bridge' : 'Worker';
+      const label = (typeMap[role.preset] || 'native') === 'bridge' ? 'Bridge' : 'Native';
       wfLines.push(`- ${role.name} → ${role.preset} (${label})`);
     }
   }

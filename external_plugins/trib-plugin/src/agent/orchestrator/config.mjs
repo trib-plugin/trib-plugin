@@ -119,6 +119,22 @@ export function loadConfig() {
             if (raw.agent && raw.agent.providers) {
                 raw = raw.agent;
             }
+            const userWorkflowPath = join(getPluginData(), 'user-workflow.json');
+            if (!existsSync(userWorkflowPath)) {
+                const defaultRoles = [
+                    { name: 'worker', preset: 'opus-max' },
+                    { name: 'debugger', preset: 'GPT5.4' },
+                    { name: 'reviewer', preset: 'GPT5.4' },
+                    { name: 'explorer', preset: 'gpt5.4-mini' },
+                    { name: 'tester', preset: 'gpt5.4-mini' },
+                ];
+                try {
+                    mkdirSync(dirname(userWorkflowPath), { recursive: true });
+                    const tmp = userWorkflowPath + '.tmp';
+                    writeFileSync(tmp, JSON.stringify({ roles: defaultRoles }, null, 2) + '\n', 'utf-8');
+                    renameSync(tmp, userWorkflowPath);
+                } catch {}
+            }
             const defaults = buildDefaultConfig();
             return {
                 providers: { ...defaults.providers, ...raw.providers },
@@ -160,7 +176,6 @@ export function saveConfig(config) {
         providers: persistedProviders,
         mcpServers: config.mcpServers || {},
         presets: Array.isArray(config.presets) ? config.presets : [],
-        scopes: config.scopes && typeof config.scopes === 'object' ? config.scopes : {},
         default: config.default || null,
     };
     const tmp = path + '.tmp';
@@ -169,20 +184,20 @@ export function saveConfig(config) {
 }
 // --- Preset helpers ---
 // preset shape: { id, name, type, provider?, model, effort?, fast?, tools? }
-// type: "worker" (Claude Code native) or "bridge" (external model via bridge tool)
-// worker presets have no provider (spawned via Agent tool with model param)
+// type: "native" (Claude Code native) or "bridge" (external model via bridge tool)
+// native presets have no provider (spawned via Agent tool with model param)
 function presetKey(p) { return p?.name || p?.id || ''; }
 function normalizePreset(preset) {
     if (!preset || typeof preset !== 'object')
         return null;
     const id = String(preset.id || preset.name || '').trim();
     const name = String(preset.name || preset.id || '').trim();
-    const type = preset.type === 'worker' ? 'worker' : 'bridge';
+    const type = preset.type === 'native' ? 'native' : 'bridge';
     const model = String(preset.model || '').trim();
     if (!name || !model)
         return null;
     const out = { id, name, type, model };
-    // provider is required for bridge, optional for worker
+    // provider is required for bridge, optional for native
     const provider = String(preset.provider || '').trim();
     if (provider) out.provider = provider;
     if (type === 'bridge' && !provider) return null;

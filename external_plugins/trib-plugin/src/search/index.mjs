@@ -414,6 +414,292 @@ async function writeStartupSnapshot() {
   })
 }
 
+// ── Core action implementations (shared by individual and batch handlers) ──
+
+async function _searchCore(args, { config, usageState, cacheState }) {
+  const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
+  if (isGithubReadType) {
+    const response = await runRawSearch({
+      ...args,
+      keywords: args.keywords || '',
+      providers: ['github'],
+      maxResults: args.maxResults || getRawSearchMaxResults(config),
+    })
+    return { tool: 'search', provider: 'github', github_type: args.github_type, response }
+  }
+
+  if (!args.github_type && !args.site && args.keywords) {
+    const queryLower = (Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords).toLowerCase()
+    const autoGithubType = inferGithubType(queryLower)
+    if (autoGithubType) {
+      try {
+        const response = await runRawSearch({
+          ...args,
+          providers: ['github'],
+          github_type: autoGithubType,
+          maxResults: args.maxResults || getRawSearchMaxResults(config),
+        })
+        return { tool: 'search', provider: 'github', github_type: autoGithubType, autoRouted: true, response }
+      } catch {
+        // GitHub auto-route failed, fall through to normal search
+      }
+    }
+  }
+
+  const siteRule = args.site ? getSiteRule(config, args.site) : null
+  if (siteRule?.search === 'xai.x_search') {
+    try {
+      const response = await runRawSearch({
+        keywords: Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords,
+        providers: ['xai'],
+        site: args.site,
+        type: 'web',
+        maxResults: args.maxResults || getRawSearchMaxResults(config),
+      })
+      noteProviderSuccess(usageState, 'xai', {
+        lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
+      })
+      return { tool: 'search', site: 'x.com', provider: 'xai', response }
+    } catch (error) {
+      noteProviderFailure(usageState, 'xai', error instanceof Error ? error.message : String(error), 60000)
+      const err = error instanceof Error ? error : new Error(String(error))
+      err.details = { tool: 'search', site: 'x.com', provider: 'xai' }
+      throw err
+    }
+  }
+
+  const runtimeEnv = buildRuntimeEnv(config)
+  const available = getAvailableRawProviders(runtimeEnv)
+  const providers = rankProviders(
+    getRawSearchPriority(config).filter(provider => available.includes(provider)),
+    usageState,
+    args.site,
+  )
+
+  if (!providers.length) {
+    const aiPriority = getAiSearchPriority(config)
+    const aiAvailable = await getAvailableAiProviders(config)
+    const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
+    if (aiCandidates.length > 0) {
+      const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
+      const aiFallbackFailures = []
+      for (const aiProvider of aiCandidates) {
+        try {
+          const aiProfile = getAiProfile(config, aiProvider)
+          const aiModel = aiProfile.model || null
+          const aiResponse = await runAiSearch({
+            query: args.site ? `${query} site:${args.site}` : query,
+            provider: aiProvider, site: args.site, model: aiModel, profile: aiProfile,
+            timeoutMs: getAiTimeoutMs(config),
+          })
+          noteProviderSuccess(usageState, aiProvider, { lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null })
+          return {
+            tool: 'search', fallbackSource: 'ai_search', fallbackProvider: aiProvider,
+            fallbackModel: aiModel, rawFailures: [], aiFallbackFailures, response: aiResponse,
+          }
+        } catch (aiError) {
+          aiFallbackFailures.push({ provider: aiProvider, error: aiError instanceof Error ? aiError.message : String(aiError) })
+          noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
+        }
+      }
+    }
+    const err = new Error('No search provider available. Configure a rawSearch key or install a CLI (codex, claude, gemini).')
+    err.details = { availableProviders: available }
+    throw err
+  }
+
+  const searchCacheKey = buildCacheKey('search', {
+    keywords: Array.isArray(args.keywords) ? [...args.keywords] : args.keywords,
+    providers,
+    site: args.site || null,
+    type: args.type || 'web',
+    github_type: args.github_type || null,
+    maxResults: args.maxResults || getRawSearchMaxResults(config),
+  })
+  const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
+  if (cachedSearch) {
+    return { ...cachedSearch.payload, cache: buildCacheMeta(cachedSearch, true) }
+  }
+
+  try {
+    const response = await runRawSearch({
+      ...args,
+      providers,
+      maxResults: args.maxResults || getRawSearchMaxResults(config),
+    })
+
+    noteProviderSuccess(usageState, response.usedProvider, {
+      lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
+    })
+    for (const failure of response.failures || []) {
+      noteProviderFailure(usageState, failure.provider, failure.error, 60000)
+    }
+    if (args.site) {
+      rememberPreferredRawProviders(usageState, args.site, [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
+    }
+
+    const cachedEntry = setCachedEntry(
+      cacheState,
+      searchCacheKey,
+      { tool: 'search', providers, response },
+      getSearchCacheTtlMs(args.type || 'web'),
+    )
+    return { tool: 'search', providers, response, cache: buildCacheMeta(cachedEntry, false) }
+  } catch (error) {
+    for (const provider of providers) {
+      noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
+    }
+
+    if (!siteRule) {
+      const aiPriority = getAiSearchPriority(config)
+      const aiAvailable = await getAvailableAiProviders(config)
+      const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
+      const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
+      const aiFallbackFailures = []
+
+      for (const aiProvider of aiCandidates) {
+        try {
+          const aiProfile = getAiProfile(config, aiProvider)
+          const aiModel = aiProfile.model || null
+          const aiResponse = await runAiSearch({
+            query: args.site ? `${query} site:${args.site}` : query,
+            provider: aiProvider,
+            site: args.site,
+            model: aiModel,
+            profile: aiProfile,
+            timeoutMs: getAiTimeoutMs(config),
+          })
+          noteProviderSuccess(usageState, aiProvider, {
+            lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null,
+          })
+          return {
+            tool: 'search',
+            fallbackSource: 'ai_search',
+            fallbackProvider: aiProvider,
+            fallbackModel: aiModel,
+            rawFailures: providers.map(p => ({ provider: p })),
+            aiFallbackFailures,
+            response: aiResponse,
+          }
+        } catch (aiError) {
+          aiFallbackFailures.push({
+            provider: aiProvider,
+            error: aiError instanceof Error ? aiError.message : String(aiError),
+          })
+          noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
+        }
+      }
+    }
+
+    const err = error instanceof Error ? error : new Error(String(error))
+    err.details = { tool: 'search', providers }
+    throw err
+  }
+}
+
+async function _scrapeCore(args, { config, usageState, cacheState, timeoutMs }) {
+  const normalizedUrls = args.urls.map(u => normalizeCacheUrl(u))
+
+  if (args.urls.length === 1) {
+    const host = new URL(args.urls[0]).host
+    const siteRule = getSiteRule(config, host)
+    if (siteRule?.scrape === 'xai.x_search') {
+      try {
+        const xScrapeCacheKey = buildCacheKey('scrape:x', { url: normalizedUrls[0] })
+        const cachedXRoute = getCachedEntry(cacheState, xScrapeCacheKey)
+        if (cachedXRoute) {
+          return { ...cachedXRoute.payload, cache: buildCacheMeta(cachedXRoute, true) }
+        }
+        const response = await runRawSearch({
+          keywords: `Summarize the X post at ${args.urls[0]} and include the link.`,
+          providers: ['xai'],
+          site: 'x.com',
+          type: 'web',
+          maxResults: 3,
+        })
+        noteProviderSuccess(usageState, 'xai', {
+          lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
+        })
+        const cachedEntry = setCachedEntry(
+          cacheState,
+          xScrapeCacheKey,
+          { tool: 'scrape', url: args.urls[0], provider: 'xai', response },
+          getScrapeCacheTtlMs(true),
+        )
+        return { tool: 'scrape', url: args.urls[0], provider: 'xai', response, cache: buildCacheMeta(cachedEntry, false) }
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        err.details = { tool: 'scrape', url: args.urls[0], provider: 'xai' }
+        throw err
+      }
+    }
+  }
+
+  const pageByUrl = new Map()
+  const cacheByUrl = new Map()
+  const missingUrls = []
+
+  for (let index = 0; index < args.urls.length; index += 1) {
+    const url = args.urls[index]
+    const normalizedUrl = normalizedUrls[index]
+    const scrapeCacheKey = buildCacheKey('scrape:url', { url: normalizedUrl })
+    const cachedPage = getCachedEntry(cacheState, scrapeCacheKey)
+    if (cachedPage) {
+      pageByUrl.set(normalizedUrl, cachedPage.payload.page)
+      cacheByUrl.set(normalizedUrl, buildCacheMeta(cachedPage, true))
+      continue
+    }
+    missingUrls.push({ url, normalizedUrl, scrapeCacheKey })
+  }
+
+  if (missingUrls.length > 0) {
+    const fetchedPages = await scrapeUrls(
+      missingUrls.map(item => item.url),
+      timeoutMs,
+      usageState,
+    )
+
+    fetchedPages.forEach((page, index) => {
+      const target = missingUrls[index]
+      if (page.error) {
+        pageByUrl.set(target.normalizedUrl, page)
+        return
+      }
+      const cachedEntry = setCachedEntry(
+        cacheState,
+        target.scrapeCacheKey,
+        { page },
+        getScrapeCacheTtlMs(false),
+      )
+      pageByUrl.set(target.normalizedUrl, page)
+      cacheByUrl.set(target.normalizedUrl, buildCacheMeta(cachedEntry, false))
+    })
+  }
+
+  const pages = normalizedUrls.map(normalizedUrl => ({
+    ...pageByUrl.get(normalizedUrl),
+    cache: cacheByUrl.get(normalizedUrl) || null,
+  }))
+  updateProviderState(usageState, 'firecrawl', {
+    lastUsedAt: new Date().toISOString(),
+    lastSuccessAt: new Date().toISOString(),
+  })
+  return { tool: 'scrape', pages }
+}
+
+async function _mapCore(args, { timeoutMs }) {
+  const links = await mapSite(
+    args.url,
+    {
+      limit: args.limit || 50,
+      sameDomainOnly: args.sameDomainOnly ?? true,
+      search: args.search,
+    },
+    timeoutMs,
+  )
+  return { tool: 'map', links }
+}
+
 const toolDefinitions = [
   {
     name: 'search',
@@ -499,238 +785,14 @@ async function handleToolCall(name, rawArgs) {
         }
         throw e
       }
-      // GitHub read types: route directly to github provider
-      const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
-      if (isGithubReadType) {
-        try {
-          const response = await runRawSearch({
-            ...args,
-            keywords: args.keywords || '',
-            providers: ['github'],
-            maxResults: args.maxResults || getRawSearchMaxResults(config),
-          })
-          saveUsageState(usageState)
-          return formattedText('search', {
-            tool: 'search',
-            provider: 'github',
-            github_type: args.github_type,
-            response,
-          })
-        } catch (error) {
-          return { ...jsonText({
-            error: error instanceof Error ? error.message : String(error),
-            tool: 'search',
-            github_type: args.github_type,
-          }), isError: true }
-        }
-      }
-
-      // Auto-route to GitHub when query implies code/repo/issue intent
-      if (!args.github_type && !args.site && args.keywords) {
-        const queryLower = (Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords).toLowerCase()
-        const autoGithubType = inferGithubType(queryLower)
-        if (autoGithubType) {
-          try {
-            const response = await runRawSearch({
-              ...args,
-              providers: ['github'],
-              github_type: autoGithubType,
-              maxResults: args.maxResults || getRawSearchMaxResults(config),
-            })
-            saveUsageState(usageState)
-            return formattedText('search', {
-              tool: 'search',
-              provider: 'github',
-              github_type: autoGithubType,
-              autoRouted: true,
-              response,
-            })
-          } catch {
-            // GitHub auto-route failed, fall through to normal search
-          }
-        }
-      }
-
-      const siteRule = args.site ? getSiteRule(config, args.site) : null
-      if (siteRule?.search === 'xai.x_search') {
-        try {
-          const response = await runRawSearch({
-            keywords: Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords,
-            providers: ['xai'],
-            site: args.site,
-            type: 'web',
-            maxResults: args.maxResults || getRawSearchMaxResults(config),
-          })
-          noteProviderSuccess(usageState, 'xai', {
-            lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-          })
-          saveUsageState(usageState)
-          return formattedText('search', {
-            tool: 'search',
-            site: 'x.com',
-            provider: 'xai',
-            response,
-          })
-        } catch (error) {
-          noteProviderFailure(usageState, 'xai', error instanceof Error ? error.message : String(error), 60000)
-          saveUsageState(usageState)
-          return { ...jsonText({
-            tool: 'search',
-            site: 'x.com',
-            provider: 'xai',
-            error: error instanceof Error ? error.message : String(error),
-          }), isError: true }
-        }
-      }
-      const runtimeEnv = buildRuntimeEnv(config)
-      const available = getAvailableRawProviders(runtimeEnv)
-      const providers = rankProviders(
-        getRawSearchPriority(config).filter(provider => available.includes(provider)),
-        usageState,
-        args.site,
-      )
-
-      if (!providers.length) {
-        // No raw providers → fall back to AI search
-        const aiPriority = getAiSearchPriority(config)
-        const aiAvailable = await getAvailableAiProviders(config)
-        const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
-        if (aiCandidates.length > 0) {
-          const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
-          const aiFallbackFailures = []
-          for (const aiProvider of aiCandidates) {
-            try {
-              const aiProfile = getAiProfile(config, aiProvider)
-              const aiModel = aiProfile.model || null
-              const aiResponse = await runAiSearch({
-                query: args.site ? `${query} site:${args.site}` : query,
-                provider: aiProvider, site: args.site, model: aiModel, profile: aiProfile,
-                timeoutMs: getAiTimeoutMs(config),
-              })
-              noteProviderSuccess(usageState, aiProvider, { lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null })
-              saveUsageState(usageState)
-              return formattedText('search', {
-                tool: 'search', fallbackSource: 'ai_search', fallbackProvider: aiProvider,
-                fallbackModel: aiModel, rawFailures: [], aiFallbackFailures, response: aiResponse,
-              })
-            } catch (aiError) {
-              aiFallbackFailures.push({ provider: aiProvider, error: aiError instanceof Error ? aiError.message : String(aiError) })
-              noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
-            }
-          }
-          saveUsageState(usageState)
-        }
-        return { ...jsonText({
-          error: 'No search provider available. Configure a rawSearch key or install a CLI (codex, claude, gemini).',
-          availableProviders: available,
-        }), isError: true }
-      }
-
-      const searchCacheKey = buildCacheKey('search', {
-        keywords: Array.isArray(args.keywords) ? [...args.keywords] : args.keywords,
-        providers,
-        site: args.site || null,
-        type: args.type || 'web',
-        github_type: args.github_type || null,
-        maxResults: args.maxResults || getRawSearchMaxResults(config),
-      })
-      const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
-      if (cachedSearch) {
-        return formattedText('search', {
-          ...cachedSearch.payload,
-          cache: buildCacheMeta(cachedSearch, true),
-        })
-      }
-
       try {
-        const response = await runRawSearch({
-          ...args,
-          providers,
-          maxResults: args.maxResults || getRawSearchMaxResults(config),
-        })
-
-        noteProviderSuccess(usageState, response.usedProvider, {
-          lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-        })
-        for (const failure of response.failures || []) {
-          noteProviderFailure(usageState, failure.provider, failure.error, 60000)
-        }
-        if (args.site) {
-          rememberPreferredRawProviders(usageState, args.site, [response.usedProvider, ...providers.filter(item => item !== response.usedProvider)])
-        }
-
+        const result = await _searchCore(args, { config, usageState, cacheState })
         saveUsageState(usageState)
-        const cachedEntry = setCachedEntry(
-          cacheState,
-          searchCacheKey,
-          {
-            tool: 'search',
-            providers,
-            response,
-          },
-          getSearchCacheTtlMs(args.type || 'web'),
-        )
-        return formattedText('search', {
-          tool: 'search',
-          providers,
-          response,
-          cache: buildCacheMeta(cachedEntry, false),
-        })
+        return formattedText('search', result)
       } catch (error) {
-        for (const provider of providers) {
-          noteProviderFailure(usageState, provider, error instanceof Error ? error.message : String(error), 60000)
-        }
         saveUsageState(usageState)
-
-        // Cross-fallback: raw search failed → try AI providers
-        if (!siteRule) {
-          const aiPriority = getAiSearchPriority(config)
-          const aiAvailable = await getAvailableAiProviders(config)
-          const aiCandidates = aiPriority.filter(p => aiAvailable.includes(p))
-          const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
-          const aiFallbackFailures = []
-
-          for (const aiProvider of aiCandidates) {
-            try {
-              const aiProfile = getAiProfile(config, aiProvider)
-              const aiModel = aiProfile.model || null
-              const aiResponse = await runAiSearch({
-                query: args.site ? `${query} site:${args.site}` : query,
-                provider: aiProvider,
-                site: args.site,
-                model: aiModel,
-                profile: aiProfile,
-                timeoutMs: getAiTimeoutMs(config),
-              })
-              noteProviderSuccess(usageState, aiProvider, {
-                lastCostUsdTicks: aiResponse.usage?.cost_in_usd_ticks || null,
-              })
-              saveUsageState(usageState)
-              return formattedText('search', {
-                tool: 'search',
-                fallbackSource: 'ai_search',
-                fallbackProvider: aiProvider,
-                fallbackModel: aiModel,
-                rawFailures: providers.map(p => ({ provider: p })),
-                aiFallbackFailures,
-                response: aiResponse,
-              })
-            } catch (aiError) {
-              aiFallbackFailures.push({
-                provider: aiProvider,
-                error: aiError instanceof Error ? aiError.message : String(aiError),
-              })
-              noteProviderFailure(usageState, aiProvider, aiError instanceof Error ? aiError.message : String(aiError), 60000)
-            }
-          }
-          saveUsageState(usageState)
-        }
-
-        return { ...jsonText({
-          tool: 'search',
-          error: error instanceof Error ? error.message : String(error),
-          providers,
-        }), isError: true }
+        const details = error.details || { tool: 'search' }
+        return { ...jsonText({ ...details, error: error instanceof Error ? error.message : String(error) }), isError: true }
       }
     }
 
@@ -744,121 +806,14 @@ async function handleToolCall(name, rawArgs) {
         }
         throw e
       }
-      const normalizedUrls = args.urls.map(url => normalizeCacheUrl(url))
-
-      if (args.urls.length === 1) {
-        const host = new URL(args.urls[0]).host
-        const siteRule = getSiteRule(config, host)
-        if (siteRule?.scrape === 'xai.x_search') {
-          try {
-            const xScrapeCacheKey = buildCacheKey('scrape:x', {
-              url: normalizedUrls[0],
-            })
-            const cachedXRoute = getCachedEntry(cacheState, xScrapeCacheKey)
-            if (cachedXRoute) {
-              return formattedText('scrape', {
-                ...cachedXRoute.payload,
-                cache: buildCacheMeta(cachedXRoute, true),
-              })
-            }
-            const response = await runRawSearch({
-              keywords: `Summarize the X post at ${args.urls[0]} and include the link.`,
-              providers: ['xai'],
-              site: 'x.com',
-              type: 'web',
-              maxResults: 3,
-            })
-            noteProviderSuccess(usageState, 'xai', {
-              lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-            })
-            saveUsageState(usageState)
-            const cachedEntry = setCachedEntry(
-              cacheState,
-              xScrapeCacheKey,
-              {
-                tool: 'scrape',
-                url: args.urls[0],
-                provider: 'xai',
-                response,
-              },
-              getScrapeCacheTtlMs(true),
-            )
-            return formattedText('scrape', {
-              tool: 'scrape',
-              url: args.urls[0],
-              provider: 'xai',
-              response,
-              cache: buildCacheMeta(cachedEntry, false),
-            })
-          } catch (error) {
-            return { ...jsonText({
-              tool: 'scrape',
-              url: args.urls[0],
-              provider: 'xai',
-              error: error instanceof Error ? error.message : String(error),
-            }), isError: true }
-          }
-        }
+      try {
+        const result = await _scrapeCore(args, { config, usageState, cacheState, timeoutMs })
+        saveUsageState(usageState)
+        return formattedText('scrape', result)
+      } catch (error) {
+        saveUsageState(usageState)
+        return { ...jsonText({ tool: 'scrape', error: error instanceof Error ? error.message : String(error) }), isError: true }
       }
-
-      const pageByUrl = new Map()
-      const cacheByUrl = new Map()
-      const missingUrls = []
-
-      for (let index = 0; index < args.urls.length; index += 1) {
-        const url = args.urls[index]
-        const normalizedUrl = normalizedUrls[index]
-        const scrapeCacheKey = buildCacheKey('scrape:url', {
-          url: normalizedUrl,
-        })
-        const cachedPage = getCachedEntry(cacheState, scrapeCacheKey)
-        if (cachedPage) {
-          pageByUrl.set(normalizedUrl, cachedPage.payload.page)
-          cacheByUrl.set(normalizedUrl, buildCacheMeta(cachedPage, true))
-          continue
-        }
-        missingUrls.push({ url, normalizedUrl, scrapeCacheKey })
-      }
-
-      if (missingUrls.length > 0) {
-        const fetchedPages = await scrapeUrls(
-          missingUrls.map(item => item.url),
-          timeoutMs,
-          usageState,
-        )
-
-        fetchedPages.forEach((page, index) => {
-          const target = missingUrls[index]
-          if (page.error) {
-            pageByUrl.set(target.normalizedUrl, page)
-            return
-          }
-          const cachedEntry = setCachedEntry(
-            cacheState,
-            target.scrapeCacheKey,
-            {
-              page,
-            },
-            getScrapeCacheTtlMs(false),
-          )
-          pageByUrl.set(target.normalizedUrl, page)
-          cacheByUrl.set(target.normalizedUrl, buildCacheMeta(cachedEntry, false))
-        })
-      }
-
-      const pages = normalizedUrls.map(normalizedUrl => ({
-        ...pageByUrl.get(normalizedUrl),
-        cache: cacheByUrl.get(normalizedUrl) || null,
-      }))
-      updateProviderState(usageState, 'firecrawl', {
-        lastUsedAt: new Date().toISOString(),
-        lastSuccessAt: new Date().toISOString(),
-      })
-      saveUsageState(usageState)
-      return formattedText('scrape', {
-        tool: 'scrape',
-        pages,
-      })
     }
 
     case 'firecrawl_map': {
@@ -872,25 +827,10 @@ async function handleToolCall(name, rawArgs) {
         throw e
       }
       try {
-        const links = await mapSite(
-          args.url,
-          {
-            limit: args.limit || 50,
-            sameDomainOnly: args.sameDomainOnly ?? true,
-            search: args.search,
-          },
-          timeoutMs,
-        )
-        return formattedText('map', {
-          tool: 'map',
-          links,
-        })
+        const result = await _mapCore(args, { timeoutMs })
+        return formattedText('map', result)
       } catch (error) {
-        return { ...jsonText({
-          tool: 'map',
-          url: args.url,
-          error: error instanceof Error ? error.message : String(error),
-        }), isError: true }
+        return { ...jsonText({ tool: 'map', url: args.url, error: error instanceof Error ? error.message : String(error) }), isError: true }
       }
     }
 
@@ -941,148 +881,23 @@ async function handleToolCall(name, rawArgs) {
         throw e
       }
 
-      const runtimeEnv = buildRuntimeEnv(config)
+      const ctx = { config, usageState, cacheState, timeoutMs }
 
       const batchPromises = args.batch.map(async (item, idx) => {
         try {
           switch (item.action) {
             case 'search': {
-              const siteRule = item.site ? getSiteRule(config, item.site) : null
-              if (siteRule?.search === 'xai.x_search') {
-                const response = await runRawSearch({
-                  keywords: Array.isArray(item.keywords) ? item.keywords.join(' ') : item.keywords,
-                  providers: ['xai'],
-                  site: item.site,
-                  type: 'web',
-                  maxResults: item.maxResults || getRawSearchMaxResults(config),
-                })
-                noteProviderSuccess(usageState, 'xai', {
-                  lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-                })
-                return { index: idx + 1, action: 'search', provider: 'xai', type: 'web', status: 'success', response }
-              }
-
-              const available = getAvailableRawProviders(runtimeEnv)
-              const providers = rankProviders(
-                getRawSearchPriority(config).filter(p => available.includes(p)),
-                usageState,
-                item.site,
-              )
-
-              if (!providers.length) {
-                return { index: idx + 1, action: 'search', status: 'error', error: 'No raw search provider available' }
-              }
-
-              const searchCacheKey = buildCacheKey('search', {
-                keywords: Array.isArray(item.keywords) ? [...item.keywords] : item.keywords,
-                providers,
-                site: item.site || null,
-                type: item.type || 'web',
-                github_type: item.github_type || null,
-                maxResults: item.maxResults || getRawSearchMaxResults(config),
-              })
-              const cachedSearch = getCachedEntry(cacheState, searchCacheKey)
-              if (cachedSearch) {
-                return { index: idx + 1, action: 'search', status: 'success', ...cachedSearch.payload, cache: buildCacheMeta(cachedSearch, true) }
-              }
-
-              const response = await runRawSearch({
-                ...item,
-                providers,
-                maxResults: item.maxResults || getRawSearchMaxResults(config),
-              })
-
-              noteProviderSuccess(usageState, response.usedProvider, {
-                lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-              })
-              for (const failure of response.failures || []) {
-                noteProviderFailure(usageState, failure.provider, failure.error, 60000)
-              }
-
-              setCachedEntry(cacheState, searchCacheKey, { tool: 'search', providers, response }, getSearchCacheTtlMs(item.type || 'web'))
-              return { index: idx + 1, action: 'search', providers, status: 'success', response }
+              const result = await _searchCore(item, ctx)
+              return { index: idx + 1, action: 'search', status: 'success', ...result }
             }
-
             case 'firecrawl_scrape': {
-              const normalizedUrls = item.urls.map(u => normalizeCacheUrl(u))
-
-              if (item.urls.length === 1) {
-                const host = new URL(item.urls[0]).host
-                const siteRule = getSiteRule(config, host)
-                if (siteRule?.scrape === 'xai.x_search') {
-                  const xCacheKey = buildCacheKey('scrape:x', { url: normalizedUrls[0] })
-                  const cachedX = getCachedEntry(cacheState, xCacheKey)
-                  if (cachedX) {
-                    return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', ...cachedX.payload, cache: buildCacheMeta(cachedX, true) }
-                  }
-                  const response = await runRawSearch({
-                    keywords: `Summarize the X post at ${item.urls[0]} and include the link.`,
-                    providers: ['xai'],
-                    site: 'x.com',
-                    type: 'web',
-                    maxResults: 3,
-                  })
-                  noteProviderSuccess(usageState, 'xai', { lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null })
-                  setCachedEntry(cacheState, xCacheKey, { tool: 'scrape', url: item.urls[0], provider: 'xai', response }, getScrapeCacheTtlMs(true))
-                  return { index: idx + 1, action: 'firecrawl_scrape', provider: 'xai', status: 'success', response }
-                }
-              }
-
-              const pageByUrl = new Map()
-              const cacheByUrl = new Map()
-              const missingUrls = []
-
-              for (let i = 0; i < item.urls.length; i += 1) {
-                const url = item.urls[i]
-                const normalizedUrl = normalizedUrls[i]
-                const scrapeCacheKey = buildCacheKey('scrape:url', { url: normalizedUrl })
-                const cachedPage = getCachedEntry(cacheState, scrapeCacheKey)
-                if (cachedPage) {
-                  pageByUrl.set(normalizedUrl, cachedPage.payload.page)
-                  cacheByUrl.set(normalizedUrl, buildCacheMeta(cachedPage, true))
-                  continue
-                }
-                missingUrls.push({ url, normalizedUrl, scrapeCacheKey })
-              }
-
-              if (missingUrls.length > 0) {
-                const fetchedPages = await scrapeUrls(
-                  missingUrls.map(m => m.url),
-                  timeoutMs,
-                  usageState,
-                )
-                fetchedPages.forEach((page, i) => {
-                  const target = missingUrls[i]
-                  if (page.error) {
-                    pageByUrl.set(target.normalizedUrl, page)
-                    return
-                  }
-                  const cachedEntry = setCachedEntry(cacheState, target.scrapeCacheKey, { page }, getScrapeCacheTtlMs(false))
-                  pageByUrl.set(target.normalizedUrl, page)
-                  cacheByUrl.set(target.normalizedUrl, buildCacheMeta(cachedEntry, false))
-                })
-              }
-
-              const pages = normalizedUrls.map(nu => ({
-                ...pageByUrl.get(nu),
-                cache: cacheByUrl.get(nu) || null,
-              }))
-              return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', pages }
+              const result = await _scrapeCore(item, ctx)
+              return { index: idx + 1, action: 'firecrawl_scrape', status: 'success', ...result }
             }
-
             case 'firecrawl_map': {
-              const links = await mapSite(
-                item.url,
-                {
-                  limit: item.limit || 50,
-                  sameDomainOnly: item.sameDomainOnly ?? true,
-                  search: item.search,
-                },
-                timeoutMs,
-              )
-              return { index: idx + 1, action: 'firecrawl_map', status: 'success', links }
+              const result = await _mapCore(item, ctx)
+              return { index: idx + 1, action: 'firecrawl_map', status: 'success', ...result }
             }
-
             default:
               return { index: idx + 1, action: item.action, status: 'error', error: `Unknown action: ${item.action}` }
           }

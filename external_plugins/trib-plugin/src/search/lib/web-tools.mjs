@@ -63,6 +63,65 @@ function normalizeUrl(url) {
   return parsed.toString()
 }
 
+function assertPrivateIpv4(hostname) {
+  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!ipv4Match) return
+  const [, a, b] = ipv4Match.map(Number)
+  if (a === 127 || a === 10 || a === 0 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)) {
+    throw new Error(`Blocked request to private address: ${hostname}`)
+  }
+}
+
+function assertPublicUrl(url) {
+  const parsed = new URL(url)
+
+  // Block dangerous protocols
+  const blockedProtocols = ['file:', 'ftp:', 'data:', 'javascript:']
+  if (blockedProtocols.includes(parsed.protocol)) {
+    throw new Error(`Blocked non-HTTP protocol: ${parsed.protocol}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Blocked non-HTTP protocol: ${parsed.protocol}`)
+  }
+
+  const hostname = parsed.hostname.toLowerCase()
+
+  // Localhost
+  if (hostname === 'localhost') {
+    throw new Error(`Blocked request to private address: ${hostname}`)
+  }
+
+  // IPv4 private/reserved ranges
+  assertPrivateIpv4(hostname)
+
+  // Strip brackets for IPv6 analysis (URL parser stores IPv6 without brackets in .hostname)
+  const bare = hostname.startsWith('[') ? hostname.slice(1, -1) : hostname
+
+  // IPv6 loopback
+  if (bare === '::1') {
+    throw new Error(`Blocked request to private address: ${hostname}`)
+  }
+
+  // IPv4-mapped IPv6 — ::ffff:a.b.c.d
+  const mappedMatch = bare.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i)
+  if (mappedMatch) {
+    assertPrivateIpv4(mappedMatch[1])
+  }
+
+  // IPv6 private (fc00::/7 — starts with fc or fd)
+  if (/^f[cd]/i.test(bare)) {
+    throw new Error(`Blocked request to private address: ${hostname}`)
+  }
+
+  // IPv6 link-local (fe80::/10 — starts with fe8, fe9, fea, feb)
+  if (/^fe[89ab]/i.test(bare)) {
+    throw new Error(`Blocked request to private address: ${hostname}`)
+  }
+}
+
 function withTimeout(controller, timeoutMs) {
   return setTimeout(() => controller.abort(), timeoutMs)
 }
@@ -337,6 +396,7 @@ export async function scrapeUrl(url, timeoutMs, usageState) {
 }
 
 export async function scrapeUrls(urls, timeoutMs, usageState) {
+  for (const url of urls) assertPublicUrl(url)
   const settled = await Promise.allSettled(urls.map(url => scrapeUrl(url, timeoutMs, usageState)))
   return settled.map((result, index) => {
     if (result.status === 'fulfilled') {
@@ -350,6 +410,7 @@ export async function scrapeUrls(urls, timeoutMs, usageState) {
 }
 
 export async function mapSite(url, { limit = 50, sameDomainOnly = true, search }, timeoutMs) {
+  assertPublicUrl(url)
   const options = { limit, sameDomainOnly, search }
   try {
     const links = await mapWithHttp(url, options, timeoutMs)
@@ -369,6 +430,7 @@ export async function crawlSite(
   timeoutMs,
   usageState,
 ) {
+  assertPublicUrl(startUrl)
   const visited = new Set()
   const queue = [{ url: normalizeUrl(startUrl), depth: 0 }]
   const pages = []
@@ -416,6 +478,11 @@ export async function crawlSite(
 
     for (const link of links) {
       if (!visited.has(link.url)) {
+        try {
+          assertPublicUrl(link.url)
+        } catch {
+          continue
+        }
         queue.push({
           url: link.url,
           depth: current.depth + 1,

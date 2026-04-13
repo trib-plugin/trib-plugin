@@ -33,11 +33,12 @@ const DEFAULT_USER_WORKFLOW = {
     { name: "worker", preset: "opus-max" },
     { name: "debugger", preset: "GPT5.4" },
     { name: "reviewer", preset: "GPT5.4" },
-    { name: "explorer", preset: "gpt5.4-mini" }
+    { name: "explorer", preset: "gpt5.4-mini" },
+    { name: "tester", preset: "gpt5.4-mini" }
   ]
 };
 
-const DEFAULT_USER_WORKFLOW_MD = "범용 작업은 worker, 디버그는 debugger, 리뷰는 reviewer, 탐색은 explorer에 맡긴다.\n";
+const DEFAULT_USER_WORKFLOW_MD = "Delegate tasks to worker, exploration to explorer, debugging to debugger, testing to tester, and final review to reviewer.\nVerify phase: code changes go to reviewer, runtime changes go to tester.\n";
 
 // -- Memory paths --
 const MEMORY_DATA_DIR = DATA_DIR;
