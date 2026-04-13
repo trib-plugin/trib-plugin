@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * SessionStart hook — clear the active orchestrator session pointer.
- * Each Claude Code session starts fresh; users opt back in via /trib-agent:resume
- * or /trib-agent:new (or simply call /trib-agent:ask to auto-create).
+ * Each Claude Code session starts fresh; users opt back in via /trib-plugin:resume
+ * or /trib-plugin:new (or simply call /trib-plugin:ask to auto-create).
  *
  * Stored sessions on disk are NOT deleted — only the pointer is cleared.
  */
@@ -18,7 +18,7 @@ function resolveDataDir() {
         const marketplace = basename(join(root, '..', '..'));
         return join(homedir(), '.claude', 'plugins', 'data', `${pluginName}-${marketplace}`);
     }
-    return join(homedir(), '.claude', 'plugins', 'data', 'trib-agent-trib-plugin');
+    return join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
 }
 
 try {

@@ -16,9 +16,15 @@ transitioning between phases (e.g., "Entering Plan phase.", "Moving to Verify no
 For Q&A, explanation, or conversation, stay silent about phase.
 
 ## Agent deployment
-- Plan approval covers the task scope. No per-agent approval needed during Execute.
-- Lead deploys bridge calls and native agents as needed within the approved scope.
-- Lead handles simple/fast operations directly.
+- All workflow phases (Plan→Execute→Verify→Ship→Retro) must be followed. No exceptions.
+- Within Execute phase: agent allocation is free. No per-agent approval needed.
+- Lead chooses bridge/native agents and deploys as needed within the approved scope.
+
+## Progress reporting
+- When running parallel agents (bridge or native), report status on each update.
+- Format: which agents completed, which are in progress, what each is doing.
+- Example: "a,c completed. b is processing session trim logic."
+- Keep the user aware of overall progress without waiting for all to finish.
 
 ## Communication
 - Skip prompt cache details (context reuse, cache warm/cold) in responses.

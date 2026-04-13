@@ -329,7 +329,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (create candidates for old episodes then run cycle1), status.",
+    "description": "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (process unclassified episodes then run cycle1), status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -959,6 +959,14 @@
         "context": {
           "type": "string",
           "description": "Additional context"
+        },
+        "ref": {
+          "type": "string",
+          "description": "Reference key from prompt store"
+        },
+        "file": {
+          "type": "string",
+          "description": "Read prompt from this file path"
         }
       },
       "required": ["prompt"]

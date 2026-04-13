@@ -447,28 +447,28 @@ async function startOwnerHttpServer() {
         }
         case "/bridge": {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
-          const askFile = body.file;
-          const askPrompt = body.prompt;
-          const askRef = body.ref;
-          const askScope = body.scope || "default";
-          const askPreset = body.preset;
-          const askContext = body.context;
-          let finalPrompt = askPrompt;
-          if (!finalPrompt && askFile) {
-            try { finalPrompt = fs.readFileSync(askFile, "utf-8").trim(); } catch (e) {
+          const bridgeFile = body.file;
+          const bridgePrompt = body.prompt;
+          const bridgeRef = body.ref;
+          const bridgeScope = body.scope || "default";
+          const bridgePreset = body.preset;
+          const bridgeContext = body.context;
+          let bridgePromptFinal = bridgePrompt;
+          if (!bridgePromptFinal && bridgeFile) {
+            try { bridgePromptFinal = fs.readFileSync(bridgeFile, "utf-8").trim(); } catch (e) {
               res.writeHead(400); res.end(JSON.stringify({ error: `Cannot read file: ${e.message}` })); return;
             }
           }
-          if (!finalPrompt && !askRef) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt, file, or ref required" })); return; }
+          if (!bridgePromptFinal && !bridgeRef) { res.writeHead(400); res.end(JSON.stringify({ error: "prompt, file, or ref required" })); return; }
           try {
             const agentMod = await import(pathToFileURL(path.join(path.dirname(import.meta.url.replace("file:///", "").replace(/\//g, path.sep)), "..", "agent", "index.mjs")).href);
             if (agentMod.init) await agentMod.init();
             const toolArgs = {};
-            if (finalPrompt) toolArgs.prompt = finalPrompt;
-            if (askRef) toolArgs.ref = askRef;
-            if (askScope) toolArgs.scope = askScope;
-            if (askPreset) toolArgs.preset = askPreset;
-            if (askContext) toolArgs.context = askContext;
+            if (bridgePromptFinal) toolArgs.prompt = bridgePromptFinal;
+            if (bridgeRef) toolArgs.ref = bridgeRef;
+            if (bridgeScope) toolArgs.scope = bridgeScope;
+            if (bridgePreset) toolArgs.preset = bridgePreset;
+            if (bridgeContext) toolArgs.context = bridgeContext;
             const notifyFn = text => {
               void mcpServer.notification({
                 method: "notifications/claude/channel",

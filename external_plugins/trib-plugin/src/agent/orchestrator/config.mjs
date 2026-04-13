@@ -124,14 +124,13 @@ export function loadConfig() {
                 providers: { ...defaults.providers, ...raw.providers },
                 mcpServers: raw.mcpServers || {},
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
-                scopes: raw.scopes && typeof raw.scopes === 'object' ? raw.scopes : {},
                 default: raw.default || null,
             };
         }
         catch { /* fall through */ }
     }
     const defaults = buildDefaultConfig();
-    return { ...defaults, mcpServers: {}, presets: [], scopes: {}, default: null };
+    return { ...defaults, mcpServers: {}, presets: [], default: null };
 }
 /**
  * Atomically save config.json. Caller passes the full config object.

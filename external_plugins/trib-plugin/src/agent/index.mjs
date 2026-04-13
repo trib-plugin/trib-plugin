@@ -1,14 +1,13 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { initProviders, getAllProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey } from './orchestrator/session/manager.mjs';
-import { loadConfig, getPluginData, listPresets, getPreset, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
-import { connectMcpServers, disconnectAll, executeMcpTool } from './orchestrator/mcp/client.mjs';
+import { initProviders } from './orchestrator/providers/registry.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession } from './orchestrator/session/manager.mjs';
+import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
+import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
-import { writeFileSync, mkdirSync, readFileSync } from 'fs';
+import { writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
-import { request as httpRequest } from 'http';
 import { fileURLToPath } from 'url';
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(import.meta.url));
@@ -17,42 +16,15 @@ function readPluginVersion() {
   try {
     const manifestPath = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json');
     return JSON.parse(readFileSync(manifestPath, 'utf8')).version || '0.0.1';
-  } catch { return '0.0.1'; }
+  } catch {
+    return '0.0.1';
+  }
 }
+
 const PLUGIN_VERSION = readPluginVersion();
 
-function injectViaChannels(content, { type, instruction } = {}) {
-  // Try direct HTTP endpoint first (no MCP session overhead, survives reconnects)
-  injectViaHttp(content, { type, instruction }).catch(() => {
-    // Fallback to MCP tool call — preserve type/instruction
-    const toolArgs = { content, source: 'trib-agent' };
-    if (type) toolArgs.type = type;
-    if (instruction) toolArgs.instruction = instruction;
-    executeMcpTool('mcp__trib-plugin__inject', toolArgs)
-      .catch(() => { notify(content); });
-  });
-}
-
-function injectViaHttp(content, { type, instruction } = {}) {
-  return new Promise((resolve, reject) => {
-    try {
-      const tmpDir = process.env.TEMP || process.env.TMP || '/tmp';
-      const portFile = join(tmpDir, 'trib-plugin', 'active-instance.json');
-      const instance = JSON.parse(readFileSync(portFile, 'utf8'));
-      if (!instance.httpPort) { reject(new Error('no httpPort')); return; }
-      const body = { content, source: 'trib-agent' };
-      if (type) body.type = type;
-      if (instruction) body.instruction = instruction;
-      const payload = JSON.stringify(body);
-      const req = httpRequest({
-        hostname: '127.0.0.1', port: instance.httpPort, path: '/inject',
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-        timeout: 5000,
-      }, (res) => { res.resume(); res.statusCode === 200 ? resolve() : reject(new Error(`${res.statusCode}`)); });
-      req.on('error', reject);
-      req.end(payload);
-    } catch (e) { reject(e); }
-  });
+function getServerElicitFn() {
+  return typeof server.elicitInput === 'function' ? (opts) => server.elicitInput(opts) : null;
 }
 
 function buildInstructions() {
@@ -62,7 +34,6 @@ function buildInstructions() {
     'Orchestrator MCP tools: `bridge`, `create_session`, `list_sessions`, `close_session`, `list_models`.',
   ];
 
-  // Dynamic workflow list injection
   try {
     const workflows = listWorkflows();
     lines.push('');
@@ -82,7 +53,7 @@ function buildInstructions() {
   return lines.join('\n');
 }
 
-// Seed default workflows into user data dir if none exist yet
+// Seed default workflows into user data dir if none exist yet.
 seedDefaults();
 
 const INSTRUCTIONS = buildInstructions();
@@ -92,16 +63,34 @@ const _promptStorePath = join(getPluginData(), 'prompt-store.json');
 let _promptSeq = 0;
 
 function _psLoad() {
-  try { return JSON.parse(readFileSync(_promptStorePath, 'utf-8')); } catch { return {}; }
+  try {
+    return JSON.parse(readFileSync(_promptStorePath, 'utf-8'));
+  } catch {
+    return {};
+  }
 }
+
 function _psSave(store) {
   writeFileSync(_promptStorePath, JSON.stringify(store) + '\n', 'utf-8');
 }
+
 const _promptStore = {
-  get(key) { return _psLoad()[key] ?? null; },
-  set(key, val) { const s = _psLoad(); s[key] = val; _psSave(s); },
-  delete(key) { const s = _psLoad(); delete s[key]; _psSave(s); },
-  has(key) { return key in _psLoad(); },
+  get(key) {
+    return _psLoad()[key] ?? null;
+  },
+  set(key, val) {
+    const store = _psLoad();
+    store[key] = val;
+    _psSave(store);
+  },
+  delete(key) {
+    const store = _psLoad();
+    delete store[key];
+    _psSave(store);
+  },
+  has(key) {
+    return key in _psLoad();
+  },
 };
 
 const server = new Server(
@@ -120,11 +109,7 @@ function fail(err) {
   return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
 }
 
-/** @type {((text: string) => void) | null} */
-let _notifyFn = null;
-
 function notify(text) {
-  if (_notifyFn) { _notifyFn(text); return; }
   server.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -134,7 +119,7 @@ function notify(text) {
   }).catch(() => {});
 }
 
-// Format token counts in Claude Code style: <1000 as-is, >=1000 as "9.9k"
+// Format token counts in Claude Code style: <1000 as-is, >=1000 as "9.9k".
 function fmtTokens(n) {
   if (typeof n !== 'number') return String(n ?? '?');
   if (n < 1000) return String(n);
@@ -233,26 +218,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name;
-  const args = (req.params.arguments ?? {});
+  const args = req.params.arguments ?? {};
 
   try {
     switch (name) {
       case 'create_session': {
         const session = createSession(args);
         return ok({
-          sessionId: session.id, provider: session.provider, model: session.model,
-          contextWindow: session.contextWindow, toolsAvailable: session.tools.length,
-          toolNames: session.tools.map(t => t.name),
+          sessionId: session.id,
+          provider: session.provider,
+          model: session.model,
+          contextWindow: session.contextWindow,
+          toolsAvailable: session.tools.length,
+          toolNames: session.tools.map((t) => t.name),
         });
       }
 
       case 'list_sessions': {
         const sessions = listSessions();
         if (sessions.length === 0) return ok('No active sessions.');
-        return ok(sessions.map(s => ({
-          id: s.id, provider: s.provider, model: s.model,
-          messages: s.messages.length, tools: s.tools.length,
-          inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
+        return ok(sessions.map((s) => ({
+          id: s.id,
+          provider: s.provider,
+          model: s.model,
+          messages: s.messages.length,
+          tools: s.tools.length,
+          inputTokens: s.totalInputTokens,
+          outputTokens: s.totalOutputTokens,
           scope: s.scopeKey || null,
           createdAt: new Date(s.createdAt).toISOString(),
         })));
@@ -275,8 +267,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           if (p.fast) parts.push('fast');
           return { const: String(i), title: parts.join(' · ') };
         });
-        const currentIdx = current ? presets.findIndex(p => p.name === current.name) : 0;
-        const elicitFn = typeof server !== 'undefined' && server.elicitInput ? (o) => server.elicitInput(o) : (typeof elicit === 'function' ? elicit : null);
+        const currentIdx = current ? presets.findIndex((p) => p.name === current.name) : 0;
+        const elicitFn = getServerElicitFn();
         if (elicitFn) {
           try {
             const result = await elicitFn({
@@ -300,7 +292,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               }
             }
             return ok('');
-          } catch { /* fall through */ }
+          } catch {
+            // Fall through to plain listing.
+          }
         }
         const lines = presets.map((p, i) => {
           const parts = [p.name, p.model];
@@ -327,8 +321,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'set_prompt': {
         let content = args.content;
         if (!content && args.file) {
-          try { content = readFileSync(args.file, 'utf-8'); }
-          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+          try {
+            content = readFileSync(args.file, 'utf-8');
+          } catch (e) {
+            return fail(`Cannot read file: ${e.message}`);
+          }
         }
         if (!content) return fail('content or file is required');
         const key = args.key || `p${++_promptSeq}`;
@@ -339,8 +336,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'bridge': {
         let prompt = args.prompt;
         if (!prompt && args.file) {
-          try { prompt = readFileSync(args.file, 'utf-8'); }
-          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+          try {
+            prompt = readFileSync(args.file, 'utf-8');
+          } catch (e) {
+            return fail(`Cannot read file: ${e.message}`);
+          }
         }
         if (!prompt && args.ref) {
           prompt = _promptStore.get(args.ref);
@@ -350,14 +350,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!prompt) return fail('prompt, file, or ref is required');
 
         const config = loadConfig();
-        const scopePresets = config.scopes || {};
+        // Load role→preset mapping from user-workflow.json
+        const wfPath = join(getPluginData(), 'user-workflow.json');
+        let rolePresets = {};
+        try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
         // Resolve scope → preset: exact match first, then prefix ("reviewer-a" → "reviewer")
-        const resolvedPreset = args.scope && (scopePresets[args.scope] || scopePresets[Object.keys(scopePresets).find(k => args.scope.startsWith(k + '-')) || '']);
+        const resolvedPreset = args.scope && (rolePresets[args.scope] || rolePresets[Object.keys(rolePresets).find((k) => args.scope.startsWith(k + '-')) || '']);
         const presetName = args.preset || resolvedPreset || null;
 
         let preset = null;
         if (presetName) {
-          preset = config.presets?.find(x => x.id === presetName || x.name === presetName);
+          preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
           if (!preset) return fail(`preset "${presetName}" not found`);
         } else {
           preset = getDefaultPreset(config);
@@ -371,21 +374,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           agentId: effectiveLane === 'bridge' ? scope : undefined,
         });
 
-        let session = null;
-        const existing = findSessionByScopeKey(runtimeSpec.scopeKey);
-        if (existing) session = resumeSession(existing.id);
+        const found = findOrCreateSession(runtimeSpec.scopeKey, () => createSession({
+          preset,
+          owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+          scopeKey: runtimeSpec.scopeKey,
+          lane: runtimeSpec.lane,
+          cwd: process.cwd(),
+        }));
+        let session = found.id ? resumeSession(found.id) || found : found;
 
-        if (!session) {
-          session = createSession({
-            preset,
-            owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
-            scopeKey: runtimeSpec.scopeKey,
-            lane: runtimeSpec.lane,
-            cwd: process.cwd(),
-          });
-        }
-
-        const jobId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const scopeLabel = args.scope || 'default';
         const modelLabel = preset.model || preset.name;
 
@@ -436,27 +434,34 @@ export async function init() {
  * @param {{ notifyFn?: (text: string) => void, elicitFn?: (opts: object) => Promise<object> }} [opts]
  */
 export async function handleToolCall(name, args, opts = {}) {
-  if (opts.notifyFn) _notifyFn = opts.notifyFn;
-  const elicit = opts.elicitFn || null;
+  const notifyFn = typeof opts.notifyFn === 'function' ? opts.notifyFn : notify;
+  const elicit = typeof opts.elicitFn === 'function' ? opts.elicitFn : null;
 
   try {
     switch (name) {
       case 'create_session': {
         const session = createSession(args);
         return ok({
-          sessionId: session.id, provider: session.provider, model: session.model,
-          contextWindow: session.contextWindow, toolsAvailable: session.tools.length,
-          toolNames: session.tools.map(t => t.name),
+          sessionId: session.id,
+          provider: session.provider,
+          model: session.model,
+          contextWindow: session.contextWindow,
+          toolsAvailable: session.tools.length,
+          toolNames: session.tools.map((t) => t.name),
         });
       }
 
       case 'list_sessions': {
         const sessions = listSessions();
         if (sessions.length === 0) return ok('No active sessions.');
-        return ok(sessions.map(s => ({
-          id: s.id, provider: s.provider, model: s.model,
-          messages: s.messages.length, tools: s.tools.length,
-          inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
+        return ok(sessions.map((s) => ({
+          id: s.id,
+          provider: s.provider,
+          model: s.model,
+          messages: s.messages.length,
+          tools: s.tools.length,
+          inputTokens: s.totalInputTokens,
+          outputTokens: s.totalOutputTokens,
           scope: s.scopeKey || null,
           createdAt: new Date(s.createdAt).toISOString(),
         })));
@@ -479,8 +484,8 @@ export async function handleToolCall(name, args, opts = {}) {
           if (p.fast) parts.push('fast');
           return { const: String(i), title: parts.join(' · ') };
         });
-        const currentIdx = current ? presets.findIndex(p => p.name === current.name) : 0;
-        const elicitFn = typeof server !== 'undefined' && server.elicitInput ? (o) => server.elicitInput(o) : (typeof elicit === 'function' ? elicit : null);
+        const currentIdx = current ? presets.findIndex((p) => p.name === current.name) : 0;
+        const elicitFn = elicit || getServerElicitFn();
         if (elicitFn) {
           try {
             const result = await elicitFn({
@@ -504,7 +509,9 @@ export async function handleToolCall(name, args, opts = {}) {
               }
             }
             return ok('');
-          } catch { /* fall through */ }
+          } catch {
+            // Fall through to plain listing.
+          }
         }
         const lines = presets.map((p, i) => {
           const parts = [p.name, p.model];
@@ -531,8 +538,11 @@ export async function handleToolCall(name, args, opts = {}) {
       case 'set_prompt': {
         let content = args.content;
         if (!content && args.file) {
-          try { content = readFileSync(args.file, 'utf-8'); }
-          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+          try {
+            content = readFileSync(args.file, 'utf-8');
+          } catch (e) {
+            return fail(`Cannot read file: ${e.message}`);
+          }
         }
         if (!content) return fail('content or file is required');
         const key = args.key || `p${++_promptSeq}`;
@@ -543,8 +553,11 @@ export async function handleToolCall(name, args, opts = {}) {
       case 'bridge': {
         let prompt = args.prompt;
         if (!prompt && args.file) {
-          try { prompt = readFileSync(args.file, 'utf-8'); }
-          catch (e) { return fail(`Cannot read file: ${e.message}`); }
+          try {
+            prompt = readFileSync(args.file, 'utf-8');
+          } catch (e) {
+            return fail(`Cannot read file: ${e.message}`);
+          }
         }
         if (!prompt && args.ref) {
           prompt = _promptStore.get(args.ref);
@@ -554,14 +567,17 @@ export async function handleToolCall(name, args, opts = {}) {
         if (!prompt) return fail('prompt, file, or ref is required');
 
         const config = loadConfig();
-        const scopePresets = config.scopes || {};
+        // Load role→preset mapping from user-workflow.json
+        const wfPath = join(getPluginData(), 'user-workflow.json');
+        let rolePresets = {};
+        try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
         // Resolve scope → preset: exact match first, then prefix ("reviewer-a" → "reviewer")
-        const resolvedPreset = args.scope && (scopePresets[args.scope] || scopePresets[Object.keys(scopePresets).find(k => args.scope.startsWith(k + '-')) || '']);
+        const resolvedPreset = args.scope && (rolePresets[args.scope] || rolePresets[Object.keys(rolePresets).find((k) => args.scope.startsWith(k + '-')) || '']);
         const presetName = args.preset || resolvedPreset || null;
 
         let preset = null;
         if (presetName) {
-          preset = config.presets?.find(x => x.id === presetName || x.name === presetName);
+          preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
           if (!preset) return fail(`preset "${presetName}" not found`);
         } else {
           preset = getDefaultPreset(config);
@@ -575,23 +591,19 @@ export async function handleToolCall(name, args, opts = {}) {
           agentId: effectiveLane === 'bridge' ? scope : undefined,
         });
 
-        let session = null;
-        const existing = findSessionByScopeKey(runtimeSpec.scopeKey);
-        if (existing) session = resumeSession(existing.id);
+        const found = findOrCreateSession(runtimeSpec.scopeKey, () => createSession({
+          preset,
+          owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+          scopeKey: runtimeSpec.scopeKey,
+          lane: runtimeSpec.lane,
+          cwd: process.cwd(),
+        }));
+        let session = found.id ? resumeSession(found.id) || found : found;
 
-        if (!session) {
-          session = createSession({
-            preset,
-            owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
-            scopeKey: runtimeSpec.scopeKey,
-            lane: runtimeSpec.lane,
-            cwd: process.cwd(),
-          });
-        }
-
-        const jobId = `ask_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const scopeLabel = args.scope || 'default';
         const modelLabel = preset.model || preset.name;
+        const emit = notifyFn;
 
         (async () => {
           try {
@@ -601,14 +613,12 @@ export async function handleToolCall(name, args, opts = {}) {
             const inTok = fmtTokens(result.usage?.inputTokens);
             const outTok = fmtTokens(result.usage?.outputTokens);
             const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
-            const askContent = result.content || '(empty response)';
+            const content = result.content || '(empty response)';
             const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
-            const notifyFn = _notifyFn || ((text) => notify(text));
-            notifyFn(`[${scopeLabel}] ${askContent}\n\n${footer}`);
+            emit(`[${scopeLabel}] ${content}\n\n${footer}`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            const notifyFn = _notifyFn || ((text) => notify(text));
-            notifyFn(`[${scopeLabel}] ❌ ${msg}\n\n${modelLabel}`);
+            emit(`[${scopeLabel}] ❌ ${msg}\n\n${modelLabel}`);
           }
         })();
 
@@ -643,10 +653,15 @@ if (process.env.TRIB_UNIFIED !== '1') {
     const transport = new StdioServerTransport();
     await server.connect(transport);
 
-    process.on('SIGINT', async () => { await disconnectAll(); process.exit(0); });
+    process.on('SIGINT', async () => {
+      await disconnectAll();
+      process.exit(0);
+    });
 
     // Block until the MCP connection closes (stdin EOF).
-    await new Promise((resolve) => { server.onclose = resolve });
+    await new Promise((resolve) => {
+      server.onclose = resolve;
+    });
   }
 
   main().catch((err) => {

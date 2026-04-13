@@ -104,6 +104,10 @@ process.stdin.on('end', async () => {
   try {
     const data = JSON.parse(input);
 
+    // bypassPermissions → let it through without interruption
+    const mode = data.permissionMode || data.permission_mode || data.mode;
+    if (mode === 'bypassPermissions') process.exit(0);
+
     const configPath = path.join(DATA_DIR, 'config.json');
     if (!fs.existsSync(configPath)) process.exit(0);
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -149,20 +153,16 @@ process.stdin.on('end', async () => {
     const messageId = msgResult.id;
 
     if (!messageId) {
-      // If Discord delivery fails, fall back to the terminal flow.
+      // Discord delivery failed → fall back to terminal
       process.exit(0);
     }
 
-    // Create the pending marker for the matching result poll.
     fs.writeFileSync(pendingFile, JSON.stringify({ uuid: uuid, messageId: messageId, channelId: channelId, toolName: toolName, createdAt: Date.now() }));
 
-    // File-based signal for terminal resolution (works on Windows where SIGTERM handler may not run)
     const resolvedFile = path.join(RUNTIME_ROOT, `perm-${instanceId}-${uuid}.resolved`);
 
-    // SIGTERM handler — PC에서 직접 승인 시 Claude Code가 훅 프로세스를 kill
-    // Discord 메시지에서 버튼 제거 + 상태 업데이트
+    // SIGTERM handler — terminal approval kills this process, clean up Discord
     process.on('SIGTERM', async () => {
-      // Write resolved signal FIRST (for Windows where SIGTERM handler may not complete)
       try { fs.writeFileSync(resolvedFile, String(Date.now())); } catch {}
       try { fs.unlinkSync(pendingFile); } catch {}
       try { fs.unlinkSync(resultFile); } catch {}
@@ -176,36 +176,29 @@ process.stdin.on('end', async () => {
       process.exit(0);
     });
 
-    // Poll for the decision result file.
+    // Poll for Discord decision
     const startTime = Date.now();
-
     const STOP_FLAG = path.join(RUNTIME_ROOT, `stop-${instanceId}.flag`);
 
     while (Date.now() - startTime < TIMEOUT) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL));
 
-      // Pending file deleted externally — exit gracefully
-      if (!fs.existsSync(pendingFile)) {
-        process.exit(0);
-      }
+      if (!fs.existsSync(pendingFile)) process.exit(0);
 
-      // Abort immediately when the stop flag is written.
+      // Stop flag — immediate abort
       try {
         if (fs.existsSync(STOP_FLAG)) {
           const ts = parseInt(fs.readFileSync(STOP_FLAG, 'utf8').trim(), 10);
           if (Date.now() - ts < 30000) {
             fs.unlinkSync(STOP_FLAG);
-            // Clean up runtime markers.
             try { fs.unlinkSync(pendingFile); } catch {}
             try { fs.unlinkSync(resultFile); } catch {}
-            // Update the Discord message to show the interruption.
             if (messageId) {
               await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
                 content: content + '\n\n⛔ Operation interrupted.',
                 components: []
               });
             }
-            // Return a deny + interrupt decision to the hook caller.
             process.stdout.write(JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: 'PermissionRequest',
@@ -217,9 +210,8 @@ process.stdin.on('end', async () => {
         }
       } catch {}
 
-      // Check if permission was resolved from terminal (Windows file-based signal)
+      // Terminal resolved via file signal (Windows support)
       if (fs.existsSync(resolvedFile)) {
-        // Clean up Discord message
         if (messageId) {
           await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
             content: content + '\n\n↩️ Resolved from terminal.',
@@ -232,59 +224,41 @@ process.stdin.on('end', async () => {
         process.exit(0);
       }
 
+      // Discord decision received
       if (fs.existsSync(resultFile)) {
         let decision;
         try {
           const result = fs.readFileSync(resultFile, 'utf8').trim();
-          if (DEBUG) process.stderr.write('[perm-hook] result file content: "' + result + '"\n');
-
           if (result === 'allow') {
             decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } };
           } else if (result === 'session') {
-            // Reuse permission suggestions when available; otherwise allow the full tool for the session.
             const perms = permSuggestions.length > 0
               ? permSuggestions.map(s => ({ ...s, destination: 'session' }))
               : [{ type: 'addRules', rules: [{ toolName: toolName }], behavior: 'allow', destination: 'session' }];
-            decision = {
-              hookSpecificOutput: {
-                hookEventName: 'PermissionRequest',
-                decision: {
-                  behavior: 'allow',
-                  updatedPermissions: perms
-                }
-              }
-            };
+            decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedPermissions: perms } } };
           } else {
             decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Denied from Discord' } } };
           }
         } catch {
           decision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Failed to read result' } } };
         }
-
-        // Clean up runtime markers.
         try { fs.unlinkSync(pendingFile); } catch {}
         try { fs.unlinkSync(resultFile); } catch {}
-
-        if (DEBUG) process.stderr.write('[perm-hook] decision: ' + JSON.stringify(decision) + '\n');
         process.stdout.write(JSON.stringify(decision));
         process.exit(0);
       }
     }
 
-    // Timeout — update the Discord message and deny the request.
+    // Timeout — deny
     if (messageId) {
       await discordApi('PATCH', '/api/v10/channels/' + channelId + '/messages/' + messageId, token, {
-        content: content + '\n\n\u26A0\uFE0F Auto-denied due to timeout.',
+        content: content + '\n\n⚠️ Auto-denied due to timeout.',
         components: []
       });
     }
-
-    // Clean up runtime markers.
     try { fs.unlinkSync(pendingFile); } catch {}
     try { fs.unlinkSync(resultFile); } catch {}
-
-    const denyDecision = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Timeout' } } };
-    process.stdout.write(JSON.stringify(denyDecision));
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Timeout' } } }));
     process.exit(0);
   } catch {
     // Fail closed and let Claude fall back to terminal approval.

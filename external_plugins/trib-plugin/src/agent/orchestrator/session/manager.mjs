@@ -29,7 +29,7 @@ function resolveToolPreset(preset, skills) {
             return [...BUILTIN_TOOLS, ...mcp, ...(skillTool ? [skillTool] : [])];
     }
 }
-let nextId = 1;
+let nextId = Date.now();
 const CONTEXT_WINDOWS = {
     'gpt-4o': 128000, 'gpt-4.1': 1000000, 'gpt-4.1-mini': 1000000, 'o4-mini': 200000,
     'gpt-5.4-mini': 1000000, 'gpt-5.4': 1000000, 'gpt-5.4-nano': 1000000, 'gpt-5.4-pro': 1000000,
@@ -111,52 +111,96 @@ export function createSession(opts) {
     saveSession(session);
     return session;
 }
-export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride) {
-    const session = loadSession(sessionId);
-    if (!session)
-        throw new Error(`Session "${sessionId}" not found`);
-    const provider = getProvider(session.provider);
-    if (!provider)
-        throw new Error(`Provider "${session.provider}" not available`);
-    if (context) {
-        session.messages.push({ role: 'user', content: `Additional context:\n\n${context}` });
-        session.messages.push({ role: 'assistant', content: 'Noted.' });
+// Per-session mutex: queues concurrent askSession calls to prevent message loss
+const _sessionLocks = new Map();
+function acquireSessionLock(sessionId) {
+    let entry = _sessionLocks.get(sessionId);
+    if (!entry) {
+        entry = { promise: Promise.resolve(), count: 0 };
+        _sessionLocks.set(sessionId, entry);
     }
-    const beforeCount = session.messages.length + 1;
-    const budget = Math.floor(session.contextWindow * 0.8);
-    const promptTokenEstimate = prompt.length * 0.5; // conservative for CJK
-    if (promptTokenEstimate > budget * 0.7) {
-        process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${budget} budget)\n`);
-    }
-    const outgoing = trimMessages([...session.messages, { role: 'user', content: prompt }], budget);
-    const messagesDropped = beforeCount - outgoing.length;
-    const effectiveCwd = cwdOverride || session.cwd;
-    const result = await agentLoop(provider, outgoing, session.model, session.tools, onToolCall, effectiveCwd, {
-        effort: session.effort || null,
-        fast: session.fast === true,
+    entry.count++;
+    const prev = entry.promise;
+    let release;
+    entry.promise = new Promise(r => { release = r; });
+    return prev.then(() => () => {
+        entry.count--;
+        if (entry.count === 0) _sessionLocks.delete(sessionId);
+        release();
     });
-    // Update and save
-    session.messages = outgoing;
-    if (result.content) {
-        session.messages.push({ role: 'assistant', content: result.content });
-    }
-    session.updatedAt = Date.now();
-    if (result.usage) {
-        session.totalInputTokens += result.usage.inputTokens;
-        session.totalOutputTokens += result.usage.outputTokens;
-    }
-    saveSession(session);
-    return {
-        ...result,
-        trimmed: messagesDropped > 0,
-        messagesDropped,
-    };
 }
-// --- find existing session by scopeKey (lane-isolated) ---
+
+export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride) {
+    const unlock = await acquireSessionLock(sessionId);
+    try {
+        const session = loadSession(sessionId);
+        if (!session)
+            throw new Error(`Session "${sessionId}" not found`);
+        const provider = getProvider(session.provider);
+        if (!provider)
+            throw new Error(`Provider "${session.provider}" not available`);
+        if (context) {
+            session.messages.push({ role: 'user', content: `Additional context:\n\n${context}` });
+            session.messages.push({ role: 'assistant', content: 'Noted.' });
+        }
+        const beforeCount = session.messages.length + 1;
+        const budget = Math.floor(session.contextWindow * 0.8);
+        const promptTokenEstimate = prompt.length * 0.5; // conservative for CJK
+        if (promptTokenEstimate > budget * 0.7) {
+            process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${budget} budget)\n`);
+        }
+        const outgoing = trimMessages([...session.messages, { role: 'user', content: prompt }], budget);
+        const messagesDropped = beforeCount - outgoing.length;
+        const effectiveCwd = cwdOverride || session.cwd;
+        const result = await agentLoop(provider, outgoing, session.model, session.tools, onToolCall, effectiveCwd, {
+            effort: session.effort || null,
+            fast: session.fast === true,
+        });
+        // Update and save
+        session.messages = outgoing;
+        if (result.content) {
+            session.messages.push({ role: 'assistant', content: result.content });
+        }
+        session.updatedAt = Date.now();
+        if (result.usage) {
+            session.totalInputTokens += result.usage.inputTokens;
+            session.totalOutputTokens += result.usage.outputTokens;
+        }
+        saveSession(session);
+        return {
+            ...result,
+            trimmed: messagesDropped > 0,
+            messagesDropped,
+        };
+    } finally {
+        unlock();
+    }
+}
+// --- find or create session by scopeKey (atomic, prevents duplicate creation) ---
+const _scopeCreateLocks = new Map();
 export function findSessionByScopeKey(scopeKey) {
     if (!scopeKey) return null;
     const sessions = listStoredSessions();
     return sessions.find(s => s.scopeKey === scopeKey) || null;
+}
+export function findOrCreateSession(scopeKey, createFn) {
+    if (!scopeKey) return createFn();
+    // Synchronous lock: if another call is creating for this scope, wait
+    const existing = findSessionByScopeKey(scopeKey);
+    if (existing) return existing;
+    // Check again with lock to prevent race
+    if (_scopeCreateLocks.has(scopeKey)) {
+        // Another create just happened, re-check
+        const retry = findSessionByScopeKey(scopeKey);
+        if (retry) return retry;
+    }
+    _scopeCreateLocks.set(scopeKey, true);
+    try {
+        const session = createFn();
+        return session;
+    } finally {
+        _scopeCreateLocks.delete(scopeKey);
+    }
 }
 // --- resume (reload tools for a stored session) ---
 export function resumeSession(sessionId, preset) {

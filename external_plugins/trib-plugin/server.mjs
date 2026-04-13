@@ -7,10 +7,11 @@
  * which records the owning module for every tool.
  *
  * Module lifecycle:
+ *   • memory — eager init right after the MCP handshake completes,
+ *     because channels depends on it for episode delivery.
  *   • channels — eager init (runs background workers: Discord gateway,
- *     scheduler, webhook, event pipeline). Started right after the
- *     MCP handshake completes.
- *   • memory / search / agent — lazy init on first CallTool.
+ *     scheduler, webhook, event pipeline). Started after memory is ready.
+ *   • search / agent — lazy init on first CallTool.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'

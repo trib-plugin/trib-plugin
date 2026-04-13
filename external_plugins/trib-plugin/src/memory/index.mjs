@@ -45,7 +45,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding, embedText } from './lib/embedding-provider.mjs'
-import { cosineSimilarity } from './lib/memory-vector-utils.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
 import {
   sleepCycle,
@@ -61,7 +60,6 @@ import {
 import { localNow } from './lib/memory-text-utils.mjs'
 import {
   readMemoryOpsPolicy,
-  readMemoryFeatureFlags,
   buildStartupBackfillOptions,
   shouldRunCycleCatchUp,
 } from './lib/memory-ops-policy.mjs'
@@ -195,9 +193,9 @@ function releaseLock() {
 
 // Forward-declared constants used by proxy mode (full defs below)
 const MEMORY_INSTRUCTIONS_TEXT = [
-  'CRITICAL: invoke `recall` skill at session start and before any reference to prior context.',
-  'Order: recall (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip recall when past context may apply.',
-  'When in doubt, recall first — cost is near zero, missing context is expensive.',
+  'CRITICAL: invoke the `search_memories` tool at session start and before any reference to prior context.',
+  'Order: search_memories (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip search_memories when past context may apply.',
+  'When in doubt, call search_memories first — cost is near zero, missing context is expensive.',
 ].join('\n')
 const PROXY_TOOL_DEFS = [
   { name: 'memory_cycle', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
@@ -208,7 +206,6 @@ const PROXY_TOOL_DEFS = [
 let store = null
 let mainConfig = null
 let opsPolicy = null
-let featureFlags = null
 let WORKSPACE_PATH = null
 let serverStartedAt = null
 let _rebuildLock = false
@@ -221,7 +218,6 @@ let _initialized = false
 async function _initStore() {
   mainConfig = readMainConfig()
   opsPolicy = readMemoryOpsPolicy(mainConfig)
-  featureFlags = readMemoryFeatureFlags(mainConfig)
   const embeddingConfig = mainConfig?.embedding
   if (embeddingConfig?.provider || embeddingConfig?.ollamaModel || embeddingConfig?.dtype) {
     configureEmbedding({
@@ -244,10 +240,6 @@ function getUnclassifiedEpisodeCount() {
   } catch {
     return 0
   }
-}
-
-function getPendingEmbedCount() {
-  return 0
 }
 
 function _runStartupBackfill() {
@@ -292,7 +284,6 @@ async function checkCycles(options = {}) {
   const now = Date.now()
   const last = getCycleLastRun()
   const unclassifiedEpisodes = getUnclassifiedEpisodeCount()
-  const pendingEmbeds = getPendingEmbedCount()
   const cycle1Due = now - last.cycle1 >= cycle1Ms
   const cycle2Due = now - last.cycle2 >= cycle2Ms
 
@@ -302,7 +293,6 @@ async function checkCycles(options = {}) {
           due: cycle1Due,
           lastRunAt: last.cycle1 || null,
           unclassifiedEpisodes,
-          pendingEmbeds,
         })
       : cycle1Due
   ) {
@@ -697,7 +687,6 @@ function handleStats() {
     WHERE importance IS NOT NULL AND importance != ''
     GROUP BY importance ORDER BY c DESC
   `).all()
-  const embeds = store.db.prepare('SELECT COUNT(*) as c FROM pending_embeds').get().c
   const lastCycle = (() => {
     try {
       const state = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'memory-cycle.json'), 'utf8'))
@@ -719,7 +708,6 @@ function handleStats() {
     `classifications: ${classifications} (${tags.map(t => `${t.importance}:${t.c}`).join(', ')})`,
     `core_memory: ${coreStats}`,
     `unclassified: ${pending}`,
-    `pending_embeds: ${embeds}`,
     `last_cycle1: ${lastCycle}`,
   ]
   return { text: lines.join('\n') }
@@ -986,10 +974,17 @@ function readBody(req) {
     const chunks = []
     req.on('data', c => chunks.push(c))
     req.on('end', () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-      } catch {
+      const raw = Buffer.concat(chunks).toString('utf8').trim()
+      if (!raw) {
         resolve({})
+        return
+      }
+      try {
+        resolve(JSON.parse(raw))
+      } catch (error) {
+        const parseError = new Error(`invalid JSON body: ${error instanceof Error ? error.message : String(error)}`)
+        parseError.statusCode = 400
+        reject(parseError)
       }
     })
     req.on('error', reject)
@@ -1042,35 +1037,31 @@ const httpServer = http.createServer(async (req, res) => {
 
   // POST /proactive/updates — apply source add/remove/score changes
   if (req.method === 'POST' && req.url === '/proactive/updates') {
-    let body = ''
-    req.on('data', chunk => { body += chunk })
-    req.on('end', () => {
-      try {
-        const updates = JSON.parse(body)
-        if (Array.isArray(updates.add)) {
-          for (const s of updates.add) {
-            store.addProactiveSource(s.category, s.topic, s.query || '')
-          }
+    try {
+      const updates = await readBody(req)
+      if (Array.isArray(updates.add)) {
+        for (const s of updates.add) {
+          store.addProactiveSource(s.category, s.topic, s.query || '')
         }
-        if (Array.isArray(updates.remove)) {
-          const sources = store.getProactiveSources('active')
-          for (const topic of updates.remove) {
-            const found = sources.find(s => s.topic === topic)
-            if (found && !found.pinned) store.removeProactiveSource(found.id)
-          }
-        }
-        if (updates.scores && typeof updates.scores === 'object') {
-          const sources = store.getProactiveSources('active')
-          for (const [topic, delta] of Object.entries(updates.scores)) {
-            const found = sources.find(s => s.topic === topic)
-            if (found) store.updateProactiveScore(found.id, delta > 0)
-          }
-        }
-        sendJson(res, { ok: true })
-      } catch (e) {
-        sendError(res, e.message)
       }
-    })
+      if (Array.isArray(updates.remove)) {
+        const sources = store.getProactiveSources('active')
+        for (const topic of updates.remove) {
+          const found = sources.find(s => s.topic === topic)
+          if (found && !found.pinned) store.removeProactiveSource(found.id)
+        }
+      }
+      if (updates.scores && typeof updates.scores === 'object') {
+        const sources = store.getProactiveSources('active')
+        for (const [topic, delta] of Object.entries(updates.scores)) {
+          const found = sources.find(s => s.topic === topic)
+          if (found) store.updateProactiveScore(found.id, delta > 0)
+        }
+      }
+      sendJson(res, { ok: true })
+    } catch (e) {
+      sendError(res, e.message, Number(e?.statusCode) || 500)
+    }
     return
   }
 
@@ -1093,7 +1084,8 @@ const httpServer = http.createServer(async (req, res) => {
       const result = await handleToolCall(body.name, body.arguments ?? {})
       sendJson(res, result)
     } catch (e) {
-      sendJson(res, { content: [{ type: 'text', text: `api/tool error: ${e.message}` }], isError: true }, 500)
+      const status = Number(e?.statusCode) || 500
+      sendJson(res, { content: [{ type: 'text', text: `api/tool error: ${e.message}` }], isError: true }, status)
     }
     return
   }
@@ -1125,7 +1117,7 @@ const httpServer = http.createServer(async (req, res) => {
       }
     } catch (e) {
       process.stderr.write(`[memory-service] /mcp error: ${e.stack || e.message}\n`)
-      if (!res.headersSent) sendError(res, e.message)
+      if (!res.headersSent) sendError(res, e.message, Number(e?.statusCode) || 500)
     }
     return
   }
@@ -1135,7 +1127,13 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
-  const body = await readBody(req)
+  let body
+  try {
+    body = await readBody(req)
+  } catch (e) {
+    sendError(res, e.message, Number(e?.statusCode) || 500)
+    return
+  }
 
   try {
 

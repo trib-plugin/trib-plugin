@@ -8,10 +8,11 @@
  *
  * Injection order (must match hooks/session-start.cjs exactly):
  *   1. workflow.md   (always)
+ *   1a. user workflow (scopes from agent-config.json + description from user-workflow.md)
  *   2. memory.md     (when memory-config.json has enabled)
  *   3. channels.md   (when channel backend configured)
  *   4. search.md     (when search-config.json has enabled)
- *   5. agent.md      (always)
+ *   5. team.md       (always)
  *   6. models        (from agent-config.json presets)
  *   7. context.md    (auto-generated core memory snapshot)
  *   8. user.md       (user profile)
@@ -53,23 +54,28 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const workflow = readOptional(path.join(RULES_DIR, 'workflow.md'));
   if (workflow) parts.push(workflow);
 
-  // --- 1a. User Workflow (description from .md + roles from config.scopes) ---
+  // --- 1a. User Workflow (roles from user-workflow.json + description from user-workflow.md) ---
+  const userWorkflowPath = path.join(DATA_DIR, 'user-workflow.json');
   const userWorkflowMdPath = path.join(DATA_DIR, 'user-workflow.md');
+  let userWorkflow = { roles: [] };
+  try {
+    if (fs.existsSync(userWorkflowPath)) {
+      userWorkflow = JSON.parse(fs.readFileSync(userWorkflowPath, 'utf8'));
+    }
+  } catch {}
   const wfDescription = readOptional(userWorkflowMdPath);
-  const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
-  const scopes = agentCfg.scopes || {};
   const wfLines = ['## User Workflow', ''];
   if (wfDescription) wfLines.push(wfDescription, '');
-  const scopeEntries = Object.entries(scopes);
-  if (scopeEntries.length > 0) {
+  if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
+    const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
     const typeMap = {};
     if (Array.isArray(agentCfg.presets)) {
       for (const p of agentCfg.presets) typeMap[p.id] = p.type || 'worker';
     }
     wfLines.push('Roles:');
-    for (const [scope, presetId] of scopeEntries) {
-      const label = (typeMap[presetId] || 'worker') === 'bridge' ? 'Bridge' : 'Worker';
-      wfLines.push(`- ${scope} → ${presetId} (${label})`);
+    for (const role of userWorkflow.roles) {
+      const label = (typeMap[role.preset] || 'worker') === 'bridge' ? 'Bridge' : 'Worker';
+      wfLines.push(`- ${role.name} → ${role.preset} (${label})`);
     }
   }
   parts.push(wfLines.join('\n'));

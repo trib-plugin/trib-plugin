@@ -16,15 +16,42 @@ function getStoreDir() {
 function sessionPath(id) {
     return join(getStoreDir(), `${id}.json`);
 }
+/** Module-level map tracking in-flight saves per session ID to prevent concurrent write corruption. */
+const _savePending = new Map();
+
 export function saveSession(session) {
-    const target = sessionPath(session.id);
+    const id = session.id;
+    if (_savePending.get(id)) {
+        // A save for this session is already in progress — queue the latest state.
+        // We store the session object; when the current write finishes it will
+        // pick up the queued value and write again.
+        _savePending.set(id, { queued: session });
+        return;
+    }
+    _savePending.set(id, { writing: true });
+    _doSave(session);
+}
+
+function _doSave(session) {
+    const id = session.id;
+    const target = sessionPath(id);
     const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';
     try {
         writeFileSync(tmp, JSON.stringify(session), 'utf-8');
         renameSync(tmp, target);
     } catch (err) {
         try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
+        _savePending.delete(id);
         throw err;
+    }
+    // Check if another save was queued while we were writing
+    const pending = _savePending.get(id);
+    if (pending && pending.queued) {
+        const next = pending.queued;
+        _savePending.set(id, { writing: true });
+        _doSave(next);
+    } else {
+        _savePending.delete(id);
     }
 }
 export function loadSession(id) {

@@ -61,7 +61,7 @@ function discordApi(method, apiPath, token, body) {
 function isProtectedPath(filePath) {
   if (!filePath) return false;
   const norm = filePath.replace(/\\/g, '/').toLowerCase();
-  return norm.includes('/.claude/') || norm.includes('\\.claude\\');
+  return norm.includes('/.claude/');
 }
 
 let input = '';
@@ -69,6 +69,10 @@ process.stdin.on('data', d => { input += d; });
 process.stdin.on('end', async () => {
   try {
     const data = JSON.parse(input);
+
+    // bypassPermissions → let it through without interruption
+    const mode = data.permissionMode || data.permission_mode || data.mode;
+    if (mode === 'bypassPermissions') process.exit(0);
 
     // Main session → skip (PermissionRequest hook handles it)
     if (!data.agent_id) process.exit(0);

@@ -87,12 +87,6 @@ const searchArgsSchema = z.object({
   { message: 'keywords is required for non-GitHub-read operations' },
 )
 
-const aiSearchArgsSchema = z.object({
-  query: z.string().min(1),
-  site: z.string().optional(),
-  timeoutMs: z.number().int().min(1000).max(300000).optional(),
-})
-
 const scrapeArgsSchema = z.object({
   urls: z.array(z.string().url()).min(1).describe('List of URLs to scrape.'),
 })
@@ -413,7 +407,7 @@ async function writeStartupSnapshot() {
     source: 'local',
   })
 
-  updateProviderState(usageState, 'firecrawl-extractor', {
+  updateProviderState(usageState, 'firecrawl', {
     available: scrapeCapabilities.firecrawl,
     connection: 'api',
     source: getRawProviderCredentialSource(config, 'firecrawl', process.env) || 'env',
@@ -505,51 +499,6 @@ async function handleToolCall(name, rawArgs) {
         }
         throw e
       }
-      const searchMode = args.mode || 'search_first'
-
-      // ai_only and ai_first modes: run AI search directly
-      if (searchMode === 'ai_only' || searchMode === 'ai_first') {
-        const query = Array.isArray(args.keywords) ? args.keywords.join(' ') : args.keywords
-        const result = await executeAiSearch({
-          query: args.site ? `${query} site:${args.site}` : query,
-          site: args.site,
-          config,
-          usageState,
-        })
-        saveUsageState(usageState)
-
-        if (!result.success) {
-          if (searchMode === 'ai_only') {
-            return { ...jsonText({
-              tool: 'search',
-              mode: searchMode,
-              error: result.error,
-              ...(result.availableProviders ? { availableProviders: result.availableProviders } : {}),
-              ...(result.aiFailures?.length ? { aiFailures: result.aiFailures } : {}),
-            }), isError: true }
-          }
-          // ai_first: fall through to raw search below
-        } else {
-          if (result.cached) {
-            return formattedText('ai_search', {
-              ...result.payload,
-              cache: result.cacheMeta,
-            })
-          }
-          return formattedText('ai_search', {
-            tool: 'search',
-            mode: searchMode,
-            site: args.site || null,
-            ...(result.fallbackSource ? { fallbackSource: result.fallbackSource, fallbackProvider: result.fallbackProvider } : { provider: result.provider, model: result.model }),
-            response: result.response,
-            ...(result.aiFailures ? { aiFailures: result.aiFailures } : {}),
-            ...(result.cacheMeta ? { cache: result.cacheMeta } : {}),
-          })
-        }
-      }
-
-      // search_first mode (default) or ai_first fallback to raw
-
       // GitHub read types: route directly to github provider
       const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(args.github_type)
       if (isGithubReadType) {
@@ -801,45 +750,54 @@ async function handleToolCall(name, rawArgs) {
         const host = new URL(args.urls[0]).host
         const siteRule = getSiteRule(config, host)
         if (siteRule?.scrape === 'xai.x_search') {
-          const xScrapeCacheKey = buildCacheKey('scrape:x', {
-            url: normalizedUrls[0],
-          })
-          const cachedXRoute = getCachedEntry(cacheState, xScrapeCacheKey)
-          if (cachedXRoute) {
-            return formattedText('scrape', {
-              ...cachedXRoute.payload,
-              cache: buildCacheMeta(cachedXRoute, true),
+          try {
+            const xScrapeCacheKey = buildCacheKey('scrape:x', {
+              url: normalizedUrls[0],
             })
-          }
-          const response = await runRawSearch({
-            keywords: `Summarize the X post at ${args.urls[0]} and include the link.`,
-            providers: ['xai'],
-            site: 'x.com',
-            type: 'web',
-            maxResults: 3,
-          })
-          noteProviderSuccess(usageState, 'xai', {
-            lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
-          })
-          saveUsageState(usageState)
-          const cachedEntry = setCachedEntry(
-            cacheState,
-            xScrapeCacheKey,
-            {
+            const cachedXRoute = getCachedEntry(cacheState, xScrapeCacheKey)
+            if (cachedXRoute) {
+              return formattedText('scrape', {
+                ...cachedXRoute.payload,
+                cache: buildCacheMeta(cachedXRoute, true),
+              })
+            }
+            const response = await runRawSearch({
+              keywords: `Summarize the X post at ${args.urls[0]} and include the link.`,
+              providers: ['xai'],
+              site: 'x.com',
+              type: 'web',
+              maxResults: 3,
+            })
+            noteProviderSuccess(usageState, 'xai', {
+              lastCostUsdTicks: response.usage?.cost_in_usd_ticks || null,
+            })
+            saveUsageState(usageState)
+            const cachedEntry = setCachedEntry(
+              cacheState,
+              xScrapeCacheKey,
+              {
+                tool: 'scrape',
+                url: args.urls[0],
+                provider: 'xai',
+                response,
+              },
+              getScrapeCacheTtlMs(true),
+            )
+            return formattedText('scrape', {
               tool: 'scrape',
               url: args.urls[0],
               provider: 'xai',
               response,
-            },
-            getScrapeCacheTtlMs(true),
-          )
-          return formattedText('scrape', {
-            tool: 'scrape',
-            url: args.urls[0],
-            provider: 'xai',
-            response,
-            cache: buildCacheMeta(cachedEntry, false),
-          })
+              cache: buildCacheMeta(cachedEntry, false),
+            })
+          } catch (error) {
+            return { ...jsonText({
+              tool: 'scrape',
+              url: args.urls[0],
+              provider: 'xai',
+              error: error instanceof Error ? error.message : String(error),
+            }), isError: true }
+          }
         }
       }
 
@@ -892,7 +850,7 @@ async function handleToolCall(name, rawArgs) {
         ...pageByUrl.get(normalizedUrl),
         cache: cacheByUrl.get(normalizedUrl) || null,
       }))
-      updateProviderState(usageState, 'scrape', {
+      updateProviderState(usageState, 'firecrawl', {
         lastUsedAt: new Date().toISOString(),
         lastSuccessAt: new Date().toISOString(),
       })
@@ -913,19 +871,27 @@ async function handleToolCall(name, rawArgs) {
         }
         throw e
       }
-      const links = await mapSite(
-        args.url,
-        {
-          limit: args.limit || 50,
-          sameDomainOnly: args.sameDomainOnly ?? true,
-          search: args.search,
-        },
-        timeoutMs,
-      )
-      return formattedText('map', {
-        tool: 'map',
-        links,
-      })
+      try {
+        const links = await mapSite(
+          args.url,
+          {
+            limit: args.limit || 50,
+            sameDomainOnly: args.sameDomainOnly ?? true,
+            search: args.search,
+          },
+          timeoutMs,
+        )
+        return formattedText('map', {
+          tool: 'map',
+          links,
+        })
+      } catch (error) {
+        return { ...jsonText({
+          tool: 'map',
+          url: args.url,
+          error: error instanceof Error ? error.message : String(error),
+        }), isError: true }
+      }
     }
 
     case 'crawl': {
@@ -938,21 +904,30 @@ async function handleToolCall(name, rawArgs) {
         }
         throw e
       }
-      const pages = await crawlSite(
-        args.url,
-        {
-          maxPages: args.maxPages || config.crawl?.maxPages || 10,
-          maxDepth: args.maxDepth ?? config.crawl?.maxDepth ?? 1,
-          sameDomainOnly: args.sameDomainOnly ?? config.crawl?.sameDomainOnly ?? true,
-        },
-        timeoutMs,
-        usageState,
-      )
-      saveUsageState(usageState)
-      return formattedText('crawl', {
-        tool: 'crawl',
-        pages,
-      })
+      try {
+        const pages = await crawlSite(
+          args.url,
+          {
+            maxPages: args.maxPages || config.crawl?.maxPages || 10,
+            maxDepth: args.maxDepth ?? config.crawl?.maxDepth ?? 1,
+            sameDomainOnly: args.sameDomainOnly ?? config.crawl?.sameDomainOnly ?? true,
+          },
+          timeoutMs,
+          usageState,
+        )
+        saveUsageState(usageState)
+        return formattedText('crawl', {
+          tool: 'crawl',
+          pages,
+        })
+      } catch (error) {
+        saveUsageState(usageState)
+        return { ...jsonText({
+          tool: 'crawl',
+          url: args.url,
+          error: error instanceof Error ? error.message : String(error),
+        }), isError: true }
+      }
     }
 
     case 'batch': {
@@ -972,40 +947,6 @@ async function handleToolCall(name, rawArgs) {
         try {
           switch (item.action) {
             case 'search': {
-              const batchMode = item.mode || 'search_first'
-
-              // ai_only and ai_first modes in batch
-              if (batchMode === 'ai_only' || batchMode === 'ai_first') {
-                const query = Array.isArray(item.keywords) ? item.keywords.join(' ') : item.keywords
-                const result = await executeAiSearch({
-                  query: item.site ? `${query} site:${item.site}` : query,
-                  site: item.site,
-                  config,
-                  usageState,
-                })
-
-                if (result.success) {
-                  if (result.cached) {
-                    return { index: idx + 1, action: 'search', mode: batchMode, status: 'success', ...result.payload, cache: result.cacheMeta }
-                  }
-                  return {
-                    index: idx + 1,
-                    action: 'search',
-                    mode: batchMode,
-                    status: 'success',
-                    ...(result.fallbackSource ? { fallbackSource: result.fallbackSource, fallbackProvider: result.fallbackProvider } : { provider: result.provider, model: result.model }),
-                    response: result.response,
-                    ...(result.aiFailures ? { aiFailures: result.aiFailures } : {}),
-                    ...(result.cacheMeta ? { cache: result.cacheMeta } : {}),
-                  }
-                }
-
-                if (batchMode === 'ai_only') {
-                  return { index: idx + 1, action: 'search', mode: batchMode, status: 'error', error: result.error, ...(result.aiFailures?.length ? { aiFailures: result.aiFailures } : {}) }
-                }
-                // ai_first: fall through to raw search below
-              }
-
               const siteRule = item.site ? getSiteRule(config, item.site) : null
               if (siteRule?.search === 'xai.x_search') {
                 const response = await runRawSearch({
