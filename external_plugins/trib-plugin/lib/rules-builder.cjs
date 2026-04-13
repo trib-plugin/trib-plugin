@@ -39,17 +39,6 @@ function readJson(filePath) {
  * @param {string} opts.DATA_DIR    — absolute path to the plugin data dir
  * @returns {string} joined injection content (parts joined with '\n\n')
  */
-const DEFAULT_USER_WORKFLOW = {
-  roles: [
-    { name: "worker", preset: "opus-max" },
-    { name: "debugger", preset: "GPT5.4" },
-    { name: "reviewer", preset: "GPT5.4" },
-    { name: "explorer", preset: "gpt5.4-mini" }
-  ]
-};
-
-const DEFAULT_USER_WORKFLOW_MD = "범용 작업은 worker, 디버그는 debugger, 리뷰는 reviewer, 탐색은 explorer에 맡긴다.\n";
-
 function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
   const HISTORY_DIR = path.join(DATA_DIR, 'history');
@@ -64,33 +53,23 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const workflow = readOptional(path.join(RULES_DIR, 'workflow.md'));
   if (workflow) parts.push(workflow);
 
-  // --- 1a. User Workflow (always, appended after workflow.md) ---
-  const userWorkflowPath = path.join(DATA_DIR, 'user-workflow.json');
+  // --- 1a. User Workflow (description from .md + roles from config.scopes) ---
   const userWorkflowMdPath = path.join(DATA_DIR, 'user-workflow.md');
-  let userWorkflow = DEFAULT_USER_WORKFLOW;
-  try {
-    if (fs.existsSync(userWorkflowPath)) {
-      userWorkflow = JSON.parse(fs.readFileSync(userWorkflowPath, 'utf8'));
-    }
-  } catch {}
-  let wfDescription = DEFAULT_USER_WORKFLOW_MD.trim();
-  try {
-    if (fs.existsSync(userWorkflowMdPath)) {
-      wfDescription = fs.readFileSync(userWorkflowMdPath, 'utf8').trim();
-    }
-  } catch {}
+  const wfDescription = readOptional(userWorkflowMdPath);
+  const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
+  const scopes = agentCfg.scopes || {};
   const wfLines = ['## User Workflow', ''];
   if (wfDescription) wfLines.push(wfDescription, '');
-  if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
-    const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
+  const scopeEntries = Object.entries(scopes);
+  if (scopeEntries.length > 0) {
     const typeMap = {};
     if (Array.isArray(agentCfg.presets)) {
       for (const p of agentCfg.presets) typeMap[p.id] = p.type || 'worker';
     }
     wfLines.push('Roles:');
-    for (const role of userWorkflow.roles) {
-      const label = (typeMap[role.preset] || 'worker') === 'bridge' ? 'Bridge' : 'Worker';
-      wfLines.push(`- ${role.name} → ${role.preset} (${label})`);
+    for (const [scope, presetId] of scopeEntries) {
+      const label = (typeMap[presetId] || 'worker') === 'bridge' ? 'Bridge' : 'Worker';
+      wfLines.push(`- ${scope} → ${presetId} (${label})`);
     }
   }
   parts.push(wfLines.join('\n'));
