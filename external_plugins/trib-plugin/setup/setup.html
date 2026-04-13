@@ -923,10 +923,18 @@
         <div class="sec-title">Settings</div>
         <div class="sec-body">
           <div class="r">
-            <span class="r-name-wide">Interval <span class="tip">?<span class="tip-text">Minutes between proactive ticks (e.g. 60 = hourly)</span></span></span>
+            <span class="r-name-wide">Interval <span class="tip">?<span class="tip-text">How often proactive ticks fire</span></span></span>
             <div style="display:flex;align-items:center;flex:1;gap:6px">
-              <input class="r-input" id="proactive-interval" type="number" placeholder="60">
-              <span style="font-size:11px;color:var(--text-4);flex-shrink:0">min</span>
+              <select class="r-select" id="proactive-interval" onchange="proactiveIntervalChanged()">
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60" selected>1 hour</option>
+                <option value="120">2 hours</option>
+                <option value="180">3 hours</option>
+                <option value="360">6 hours</option>
+                <option value="custom">Custom</option>
+              </select>
+              <input class="r-input" id="proactive-interval-custom" type="number" placeholder="min" style="flex:1;display:none">
             </div>
           </div>
           <div class="r">
@@ -1148,7 +1156,7 @@
       </div>
 
       <div class="sec">
-        <div class="sec-title">Cycle 3 — Agent Learning Cycle</div>
+        <div class="sec-title">Agent Learning Cycle</div>
         <div class="sec-desc">Periodic trajectory analysis and skill pattern detection.</div>
         <div class="sec-body">
           <div class="r toggle-row">
@@ -1160,11 +1168,15 @@
           </div>
           <div class="r">
             <span class="r-name-wide">Interval</span>
-            <select class="r-select" id="c3-interval" onchange="saveLearningConfig()">
+            <select class="r-select" id="c3-interval" onchange="c3IntervalChanged()">
+              <option value="5m">5 min</option>
+              <option value="10m">10 min</option>
               <option value="15m">15 min</option>
               <option value="30m" selected>30 min</option>
               <option value="1h">1 hour</option>
+              <option value="custom">Custom</option>
             </select>
+            <input class="r-input" id="c3-interval-custom" type="text" placeholder="e.g. 20m, 2h" style="flex:1;display:none;margin-left:8px" onchange="saveLearningConfig()">
           </div>
         </div>
       </div>
@@ -1202,7 +1214,7 @@
       </div>
       <div id="mem-settings-body" class="settings-body">
         <div class="sec">
-          <div class="sec-title">Cycle 1 — Extraction</div>
+          <div class="sec-title">Extraction</div>
           <div class="sec-body">
             <div class="r">
               <span class="r-name-wide">Interval</span>
@@ -1230,7 +1242,7 @@
           </div>
         </div>
         <div class="sec">
-          <div class="sec-title">Cycle 2 — Consolidation</div>
+          <div class="sec-title">Consolidation</div>
           <div class="sec-body">
             <div class="r">
               <span class="r-name-wide">Schedule</span>
@@ -1287,57 +1299,6 @@
     <div class="panel" id="panel-mem-models">
       <div class="hdr">
         <h1>Models</h1>
-        <button class="hdr-btn" onclick="memOpenPresetForm(null)">+ New Model</button>
-      </div>
-
-      <div class="sec">
-        <div class="sec-body" id="mem-preset-list">
-          <div class="empty">Loading...</div>
-        </div>
-      </div>
-
-      <div class="sec" id="mem-preset-form-sec" style="display:none">
-        <div class="sec-title" id="mem-preset-form-title">New Model</div>
-        <div class="sec-body">
-          <div class="form-row">
-            <span class="r-name">Name</span>
-            <input class="r-input" id="mem-pf-name" placeholder="my-model" maxlength="40">
-          </div>
-          <div class="form-row">
-            <span class="r-name">Provider</span>
-            <select class="r-select" id="mem-pf-provider" onchange="memOnProviderChange()"></select>
-          </div>
-          <div class="form-row">
-            <span class="r-name">Model</span>
-            <select class="r-select" id="mem-pf-model" disabled><option value="">Select a provider first</option></select>
-          </div>
-          <div class="form-row">
-            <span class="r-name">Effort</span>
-            <select class="r-select" id="mem-pf-effort"><option value="">(Provider Default)</option></select>
-          </div>
-          <div class="form-row" id="mem-pf-fast-row" style="display:none">
-            <span class="r-name">Fast Mode</span>
-            <div class="r-toggle" id="mem-pf-fast" onclick="memToggleFastMode(this)"></div>
-            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Speed optimized output (premium)</span>
-          </div>
-          <div class="advanced-toggle" onclick="toggleAdvanced(this)">
-            <span class="arrow">&#9654;</span> Advanced Options
-          </div>
-          <div class="advanced-content" id="mem-pf-access-section">
-            <div class="form-row">
-              <span class="r-name">Access</span>
-              <div class="radio-group" id="mem-pf-tools">
-                <div class="radio-btn on" data-v="full" onclick="memSelectTools(this)">Read & Write</div>
-                <div class="radio-btn" data-v="readonly" onclick="memSelectTools(this)">Read Only</div>
-                <div class="radio-btn" data-v="mcp" onclick="memSelectTools(this)">None</div>
-              </div>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="btn secondary" onclick="memClosePresetForm()">Cancel</button>
-            <button class="btn primary" onclick="memSavePreset()">Save Model</button>
-          </div>
-        </div>
       </div>
 
       <div class="sec">
@@ -1348,8 +1309,6 @@
         <div class="sec-title">Reranker</div>
         <div class="readonly-info">Local ONNX &mdash; BGE-reranker-large</div>
       </div>
-
-      <div class="warn-msg" id="warn-mem-presets"></div>
     </div>
 
     <!-- MEMORY FILES -->
@@ -1609,9 +1568,7 @@ let cliStatus = { whisper: { installed: false }, ngrok: { installed: false } };
 let agConfig = {}, agAuth = {}, agPresets = [];
 let agEditingPresetId = null;
 
-let memConfig = {}, memAuth = {}, memPresets = [];
-let memEditingPresetId = null;
-let memMergedPresets = [];
+let memConfig = {}, memAuth = {};
 
 let srConfig = null;
 let srSaveCounter = 0;
@@ -2058,17 +2015,37 @@ function removeFeedback(index) {
   });
 }
 
+function getProactiveInterval() {
+  const sel = document.getElementById('proactive-interval');
+  if (sel.value === 'custom') {
+    return parseInt(document.getElementById('proactive-interval-custom').value) || 60;
+  }
+  return parseInt(sel.value) || 60;
+}
+
+function proactiveIntervalChanged() {
+  const sel = document.getElementById('proactive-interval');
+  const customInput = document.getElementById('proactive-interval-custom');
+  if (sel.value === 'custom') {
+    customInput.style.display = '';
+    customInput.focus();
+  } else {
+    customInput.style.display = 'none';
+  }
+}
+
 function buildProactiveData() {
   const items = [];
   document.querySelectorAll('#proactive-items .r:not(#proactive-empty)').forEach(r => {
     const topic = r.querySelector('[data-f="pt-topic"]')?.value.trim();
     if (topic) items.push({ topic, channel: 'main' });
   });
+  const interval = getProactiveInterval();
   return {
-    interval: parseInt(document.getElementById('proactive-interval').value) || 60,
+    interval,
     model: document.getElementById('proactive-model').value || undefined,
     feedback: true,
-    frequency: Math.max(1, Math.min(5, Math.round(1440 / (parseInt(document.getElementById('proactive-interval').value) || 60)))),
+    frequency: Math.max(1, Math.min(5, Math.round(1440 / interval))),
     items,
   };
 }
@@ -2378,7 +2355,19 @@ async function populateChannels(cfg) {
 
   // Proactive (non-preset fields)
   const proactive = cfg?.proactive || {};
-  if (proactive.interval) document.getElementById('proactive-interval').value = proactive.interval;
+  if (proactive.interval) {
+    const sel = document.getElementById('proactive-interval');
+    const customInput = document.getElementById('proactive-interval-custom');
+    const val = String(proactive.interval);
+    if ([...sel.options].some(o => o.value === val)) {
+      sel.value = val;
+      customInput.style.display = 'none';
+    } else {
+      sel.value = 'custom';
+      customInput.value = val;
+      customInput.style.display = '';
+    }
+  }
   (proactive.items || []).forEach(item => addProactiveItem(item.topic));
   populateProactiveFeedback(cfg);
 
@@ -2614,8 +2603,8 @@ function agRenderPresetList() {
   if (agPresets.length === 0) { list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New Preset</strong> to create one.</div>'; return; }
   list.innerHTML = agPresets.map(p => {
     const accessLabel = AG_ACCESS_LABELS[p.tools] || 'Read & Write';
-    const provModel = p.type === 'worker' ? p.model : `${p.provider}/${p.model}`;
-    const meta = [provModel, p.type === 'worker' ? 'Claude Code' : null, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
+    const provModel = p.type === 'native' ? p.model : `${p.provider}/${p.model}`;
+    const meta = [provModel, p.type === 'native' ? 'Claude Code' : null, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
     return `<div class="preset-card"><div class="preset-info"><div class="preset-id">${escapeHtml(p.name || p.id)}</div><div class="preset-meta">${escapeHtml(meta)}</div></div><div class="preset-actions"><button class="icon-btn edit-btn" onclick="agOpenPresetForm('${escapeAttr(p.id)}')">Edit</button><button class="icon-btn danger" onclick="agDeletePreset('${escapeAttr(p.id)}')">Delete</button></div></div>`;
   }).join('');
 }
@@ -2706,7 +2695,7 @@ async function agSavePreset() {
   if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
   const isWorker = provider === 'claude-code';
   const body = { id, name, model, tools };
-  if (isWorker) { body.type = 'worker'; } else { body.type = 'bridge'; body.provider = provider; }
+  if (isWorker) { body.type = 'native'; } else { body.type = 'bridge'; body.provider = provider; }
   if (effort) body.effort = effort;
   if (fast && AG_FAST_PROVIDERS.has(provider)) body.fast = true;
   try { const r = await fetch('/agent/presets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()); if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; } isDirty = false; agClosePresetForm(); await agLoadPresets(); } catch (err) { warn.textContent = 'Save failed: ' + (err?.message || 'network error'); }
@@ -2724,25 +2713,14 @@ async function agDeletePreset(id) {
 const MEM_API_PROVIDERS = AG_API_PROVIDERS;
 const MEM_OAUTH_PROVIDERS = AG_OAUTH_PROVIDERS;
 const MEM_LOCAL_PROVIDERS = AG_LOCAL_PROVIDERS;
-const MEM_NATIVE_PRESETS = [
-  { id: 'native-opus', provider: 'native', model: 'opus', name: 'Claude Opus', tools: 'full', effort: 'medium', isNative: true },
-  { id: 'native-sonnet', provider: 'native', model: 'sonnet', name: 'Claude Sonnet', tools: 'full', effort: 'medium', isNative: true },
-  { id: 'native-haiku', provider: 'native', model: 'haiku', name: 'Claude Haiku', tools: 'full', effort: 'medium', isNative: true },
-];
-const MEM_EFFORT_OPTIONS = {
-  ...AG_EFFORT_OPTIONS,
-  native: [{v:'',label:'(Default)'},{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'max',label:'Max'}],
-};
-const MEM_FAST_PROVIDERS = new Set(['anthropic', 'native', 'openai', 'openai-oauth']);
-const MEM_ACCESS_LABELS = AG_ACCESS_LABELS;
 
 async function loadMemoryData() {
   memConfig = await fetch('/memory/config').then(r => r.json()).catch(() => ({}));
   memAuth = await fetch('/memory/auth').then(r => r.json()).catch(() => ({}));
   memPopulateConfig();
   memRenderAll();
-  await Promise.all([memLoadPresets(), memLoadFiles(), memLoadCoreMemory()]);
-  memPopulateCycleDropdowns();
+  await Promise.all([memLoadFiles(), memLoadCoreMemory()]);
+  await memPopulateCycleDropdowns();
 }
 
 function memPopulateConfig() {
@@ -2830,83 +2808,19 @@ async function memRunBackfill() {
   try { await fetch('/memory/backfill', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({window:window_}) }); btn.textContent='\u2713 Done'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); } catch { btn.textContent='Failed'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); }
 }
 
-function memGetEnabledProviders() { const c = memConfig.providers||{}; const out = ['native']; for (const p of MEM_API_PROVIDERS) { if (c[p.id]?.apiKey || memAuth.envKeys?.[p.id]) out.push(p.id); } if (memAuth.codexOAuth) out.push('openai-oauth'); if (memAuth.copilot) out.push('copilot'); for (const p of MEM_LOCAL_PROVIDERS) { if (memAuth[p.id]) out.push(p.id); } return out; }
-
-async function memLoadPresets() { try { const r = await fetch('/memory/presets').then(r=>r.json()); memPresets=r.presets||[]; } catch { memPresets=[]; } memRenderPresetList(); }
-
-function memRenderPresetList() {
-  const list = document.getElementById('mem-preset-list');
-  const nativeIds = new Set(MEM_NATIVE_PRESETS.map(np=>np.id));
-  const storedIds = new Set(memPresets.map(p=>p.id));
-  memMergedPresets = [...MEM_NATIVE_PRESETS.filter(np=>!storedIds.has(np.id)), ...memPresets.map(p=>nativeIds.has(p.id)?{...p,isNative:true}:p)];
-  if (memMergedPresets.length === 0) { list.innerHTML = '<div class="empty">No models yet.</div>'; return; }
-  list.innerHTML = memMergedPresets.map((p, i) => {
-    const accessLabel = MEM_ACCESS_LABELS[p.tools]||'Read & Write';
-    const meta = [`${p.provider}/${p.model}`, p.tools&&p.tools!=='full'?accessLabel:null, p.effort?`effort=${p.effort}`:null, p.fast?'Fast':null].filter(Boolean).join(' · ');
-    return `<div class="preset-card" draggable="true" data-idx="${i}"><div class="preset-info"><div class="preset-id">${escapeHtml(p.name||p.id)}</div><div class="preset-meta">${escapeHtml(meta)}</div></div><div class="preset-actions"><button class="icon-btn edit-btn" onclick="memOpenPresetForm('${escapeAttr(p.id)}')">Edit</button>${p.isNative?'<span class="icon-btn builtin">Built-in</span>':`<button class="icon-btn danger" onclick="memDeletePreset('${escapeAttr(p.id)}')">Delete</button>`}</div></div>`;
-  }).join('');
-  memInitPresetDrag();
-  memPopulateCycleDropdowns();
-}
-
-let _memPresetDragInit = false;
-function memInitPresetDrag() {
-  if (_memPresetDragInit) return; _memPresetDragInit = true;
-  const list = document.getElementById('mem-preset-list');
-  let dragIdx = null;
-  list.addEventListener('dragstart', e => { const card = e.target.closest('.preset-card'); if (!card) return; dragIdx = parseInt(card.dataset.idx); card.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
-  list.addEventListener('dragover', e => { e.preventDefault(); const card = e.target.closest('.preset-card'); if (card) card.classList.add('drag-over'); });
-  list.addEventListener('dragleave', e => { const card = e.target.closest('.preset-card'); if (card) card.classList.remove('drag-over'); });
-  list.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.drag-over').forEach(c=>c.classList.remove('drag-over')); const card = e.target.closest('.preset-card'); if (!card || dragIdx===null) return; const dropIdx = parseInt(card.dataset.idx); if (dragIdx===dropIdx) return; const [moved]=memMergedPresets.splice(dragIdx,1); memMergedPresets.splice(dropIdx,0,moved); memPresets=memMergedPresets.map(p=>{const{isNative,...rest}=p;return rest;}); memRenderPresetList(); memSavePresetOrder(); });
-  list.addEventListener('dragend', () => { dragIdx=null; list.querySelectorAll('.dragging').forEach(c=>c.classList.remove('dragging')); });
-}
-
-async function memSavePresetOrder() { const toSave=memMergedPresets.map(p=>{const{isNative,...rest}=p;return rest;}); await fetch('/memory/presets',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({presets:toSave})}); }
-
-function memOpenPresetForm(id) {
-  memEditingPresetId=id; const sec=document.getElementById('mem-preset-form-sec'); const title=document.getElementById('mem-preset-form-title'); sec.style.display='block';
-  const advToggle=sec.querySelector('.advanced-toggle'); const advContent=document.getElementById('mem-pf-access-section');
-  if (advToggle) advToggle.querySelector('.arrow').classList.remove('open'); if (advContent) advContent.classList.remove('open');
-  const providerSel=document.getElementById('mem-pf-provider'); const enabled=memGetEnabledProviders();
-  if (enabled.length===0) { providerSel.innerHTML='<option value="">No enabled providers</option>'; providerSel.disabled=true; }
-  else { providerSel.disabled=false; providerSel.innerHTML=enabled.map(p=>`<option value="${p}">${p}</option>`).join(''); }
-  if (id) { title.textContent='Edit Model'; const p=memPresets.find(x=>x.id===id)||MEM_NATIVE_PRESETS.find(x=>x.id===id); if(p){ document.getElementById('mem-pf-name').value=p.name||p.id; providerSel.value=p.provider; providerSel.disabled=p.provider==='native'; memOnProviderChange().then(()=>{ document.getElementById('mem-pf-model').value=p.model; if(p.provider==='native') document.getElementById('mem-pf-model').dispatchEvent(new Event('change')); document.getElementById('mem-pf-effort').value=p.effort||''; document.getElementById('mem-pf-fast').classList.toggle('on',!!p.fast); document.querySelectorAll('#mem-pf-tools .radio-btn').forEach(b=>b.classList.toggle('on',b.dataset.v===(p.tools||'full'))); if(p.tools&&p.tools!=='full'){if(advToggle) advToggle.querySelector('.arrow').classList.add('open');if(advContent) advContent.classList.add('open');} }); return; } }
-  title.textContent='New Model'; document.getElementById('mem-pf-name').value=''; document.getElementById('mem-pf-fast').classList.remove('on'); document.querySelectorAll('#mem-pf-tools .radio-btn').forEach(b=>b.classList.toggle('on',b.dataset.v==='full')); if(enabled.length>0){providerSel.value=enabled[0];memOnProviderChange();}
-}
-
-function memClosePresetForm() { document.getElementById('mem-preset-form-sec').style.display='none'; memEditingPresetId=null; document.getElementById('warn-mem-presets').textContent=''; }
-
-async function memOnProviderChange() {
-  const provider=document.getElementById('mem-pf-provider').value; const modelSel=document.getElementById('mem-pf-model'); const effortSel=document.getElementById('mem-pf-effort'); const fastRow=document.getElementById('mem-pf-fast-row');
-  const opts=MEM_EFFORT_OPTIONS[provider]||[{v:'',label:'(Provider Default)'}]; effortSel.innerHTML=opts.map(o=>`<option value="${o.v}">${o.label}</option>`).join('');
-  const mediumOpt=opts.find(o=>o.v==='medium'); if(mediumOpt) effortSel.value='medium';
-  modelSel.disabled=true; modelSel.innerHTML='<option value="">Loading...</option>';
-  if (provider==='native') { const nativeModels=['opus','sonnet','haiku']; modelSel.innerHTML=nativeModels.map(m=>`<option value="${m}">${m}</option>`).join(''); modelSel.disabled=false; const updateFast=()=>{fastRow.style.display=modelSel.value==='opus'?'flex':'none';if(modelSel.value!=='opus') document.getElementById('mem-pf-fast').classList.remove('on');}; modelSel.onchange=updateFast; updateFast(); }
-  else { fastRow.style.display=MEM_FAST_PROVIDERS.has(provider)?'flex':'none'; if(!MEM_FAST_PROVIDERS.has(provider)) document.getElementById('mem-pf-fast').classList.remove('on'); modelSel.onchange=null; try{const r=await fetch(`/memory/models?provider=${encodeURIComponent(provider)}`).then(r=>r.json());const models=r.models||[];if(models.length===0){modelSel.innerHTML='<option value="">No models found</option>';memReplaceModelWithInput('');}else{modelSel.innerHTML=models.map(m=>`<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join('');modelSel.disabled=false;}}catch{modelSel.innerHTML='<option value="">Failed to fetch</option>';memReplaceModelWithInput('');} }
-}
-
-function memReplaceModelWithInput(value) { const old=document.getElementById('mem-pf-model'); if(old.tagName==='INPUT') return; const inp=document.createElement('input'); inp.id='mem-pf-model'; inp.className='r-input'; inp.placeholder='Enter model ID manually'; inp.value=value||''; old.replaceWith(inp); }
-function memSelectTools(el) { el.parentElement.querySelectorAll('.radio-btn').forEach(b=>b.classList.remove('on')); el.classList.add('on'); }
-function memToggleFastMode(el) { el.classList.toggle('on'); }
-
-async function memSavePreset() {
-  const warn=document.getElementById('warn-mem-presets'); warn.textContent='';
-  const name=document.getElementById('mem-pf-name').value.trim(); const provider=document.getElementById('mem-pf-provider').value; const modelEl=document.getElementById('mem-pf-model'); const model=(modelEl.tagName==='INPUT'?modelEl.value:modelEl.value).trim(); const effort=document.getElementById('mem-pf-effort').value; const fast=document.getElementById('mem-pf-fast').classList.contains('on'); const tools=document.querySelector('#mem-pf-tools .radio-btn.on')?.dataset.v||'full';
-  if(!name){warn.textContent='Name is required';return;} if(!provider){warn.textContent='Provider is required';return;} if(!model){warn.textContent='Model is required';return;}
-  const id=memEditingPresetId||name.toLowerCase().replace(/[^a-z0-9._-]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,''); if(!id){warn.textContent='Name must contain valid characters';return;}
-  const body={id,name,provider,model,tools}; if(effort) body.effort=effort; if(fast&&MEM_FAST_PROVIDERS.has(provider)) body.fast=true;
-  try{const r=await fetch('/memory/presets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());if(!r.ok){warn.textContent=r.error||'Save failed';return;}memClosePresetForm();await memLoadPresets();}catch(err){warn.textContent='Save failed: '+(err?.message||'network error');}
-}
-
-async function memDeletePreset(id) { if(!confirm(`Delete model "${id}"?`)) return; try{await fetch(`/memory/presets?id=${encodeURIComponent(id)}`,{method:'DELETE'});await memLoadPresets();}catch{document.getElementById('warn-mem-presets').textContent='Delete failed';} }
-
-function memPopulateCycleDropdowns() {
-  const allPresets=memMergedPresets.length>0?memMergedPresets:MEM_NATIVE_PRESETS;
-  const options=allPresets.map(p=>`<option value="${escapeAttr(p.id)}">${escapeHtml(p.name||p.id)}</option>`).join('');
-  const c1=document.getElementById('mem-cycle1-preset'); const c2=document.getElementById('mem-cycle2-preset');
-  c1.innerHTML=options; c2.innerHTML=options;
-  if(memConfig.cycle1?.preset) c1.value=memConfig.cycle1.preset;
-  if(memConfig.cycle2?.preset) c2.value=memConfig.cycle2.preset;
+async function memPopulateCycleDropdowns() {
+  try {
+    const res = await fetch('/agent/presets');
+    const data = await res.json();
+    const presets = data.presets || [];
+    const options = presets.map(p => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name || p.id)} (${escapeHtml(p.model)})</option>`).join('');
+    const c1 = document.getElementById('mem-cycle1-preset');
+    const c2 = document.getElementById('mem-cycle2-preset');
+    c1.innerHTML = options;
+    c2.innerHTML = options;
+    if (memConfig.cycle1?.preset) c1.value = memConfig.cycle1.preset;
+    if (memConfig.cycle2?.preset) c2.value = memConfig.cycle2.preset;
+  } catch {}
 }
 
 async function memLoadFiles() { try{const data=await fetch('/memory/files').then(r=>r.json());document.getElementById('mem-file-bot').value=data['bot.md']||'';document.getElementById('mem-file-user-profile').value=data['user.md']||'';}catch{} }
@@ -3156,9 +3070,39 @@ async function loadLearningConfig() {
     document.getElementById('sp-threshold').value = data.statePacket?.threshold || 20;
     document.getElementById('sp-ttl').value = data.statePacket?.ttlMinutes || 30;
     document.getElementById('c3-enabled').checked = data.cycle3?.enabled === true;
-    document.getElementById('c3-interval').value = data.cycle3?.interval || '30m';
+    const interval = data.cycle3?.interval || '30m';
+    const sel = document.getElementById('c3-interval');
+    const customInput = document.getElementById('c3-interval-custom');
+    if ([...sel.options].some(o => o.value === interval)) {
+      sel.value = interval;
+      customInput.style.display = 'none';
+    } else {
+      sel.value = 'custom';
+      customInput.value = interval;
+      customInput.style.display = '';
+    }
     document.getElementById('skill-auto').checked = data.skillSuggest?.autoDetect === true;
   } catch {}
+}
+
+function c3IntervalChanged() {
+  const sel = document.getElementById('c3-interval');
+  const customInput = document.getElementById('c3-interval-custom');
+  if (sel.value === 'custom') {
+    customInput.style.display = '';
+    customInput.focus();
+  } else {
+    customInput.style.display = 'none';
+    saveLearningConfig();
+  }
+}
+
+function getC3Interval() {
+  const sel = document.getElementById('c3-interval');
+  if (sel.value === 'custom') {
+    return document.getElementById('c3-interval-custom').value.trim() || '30m';
+  }
+  return sel.value;
 }
 
 async function saveLearningConfig() {
@@ -3175,7 +3119,7 @@ async function saveLearningConfig() {
         },
         cycle3: {
           enabled: document.getElementById('c3-enabled').checked,
-          interval: document.getElementById('c3-interval').value,
+          interval: getC3Interval(),
         },
         skillSuggest: { autoDetect: document.getElementById('skill-auto').checked },
       }),

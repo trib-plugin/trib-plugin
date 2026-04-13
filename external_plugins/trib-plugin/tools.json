@@ -418,6 +418,11 @@
           "type": "number",
           "default": 0,
           "description": "Skip N results for pagination."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["search", "reason"],
+          "description": "search: normal retrieval. reason: synthesize an answer from stored knowledge using LLM."
         }
       },
       "required": []

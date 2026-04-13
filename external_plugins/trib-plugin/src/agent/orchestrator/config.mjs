@@ -119,22 +119,7 @@ export function loadConfig() {
             if (raw.agent && raw.agent.providers) {
                 raw = raw.agent;
             }
-            const userWorkflowPath = join(getPluginData(), 'user-workflow.json');
-            if (!existsSync(userWorkflowPath)) {
-                const defaultRoles = [
-                    { name: 'worker', preset: 'opus-max' },
-                    { name: 'debugger', preset: 'GPT5.4' },
-                    { name: 'reviewer', preset: 'GPT5.4' },
-                    { name: 'explorer', preset: 'gpt5.4-mini' },
-                    { name: 'tester', preset: 'gpt5.4-mini' },
-                ];
-                try {
-                    mkdirSync(dirname(userWorkflowPath), { recursive: true });
-                    const tmp = userWorkflowPath + '.tmp';
-                    writeFileSync(tmp, JSON.stringify({ roles: defaultRoles }, null, 2) + '\n', 'utf-8');
-                    renameSync(tmp, userWorkflowPath);
-                } catch {}
-            }
+            // user-workflow.json is managed by setup UI; no auto-seeding here
             const defaults = buildDefaultConfig();
             return {
                 providers: { ...defaults.providers, ...raw.providers },

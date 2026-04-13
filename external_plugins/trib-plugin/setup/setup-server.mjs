@@ -29,16 +29,10 @@ const USER_WORKFLOW_PATH = join(DATA_DIR, 'user-workflow.json');
 const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
 
 const DEFAULT_USER_WORKFLOW = {
-  roles: [
-    { name: "worker", preset: "opus-max" },
-    { name: "debugger", preset: "GPT5.4" },
-    { name: "reviewer", preset: "GPT5.4" },
-    { name: "explorer", preset: "gpt5.4-mini" },
-    { name: "tester", preset: "gpt5.4-mini" }
-  ]
+  roles: []
 };
 
-const DEFAULT_USER_WORKFLOW_MD = "Delegate tasks to worker, exploration to explorer, debugging to debugger, testing to tester, and final review to reviewer.\nVerify phase: code changes go to reviewer, runtime changes go to tester.\n";
+const DEFAULT_USER_WORKFLOW_MD = "";
 
 // -- Memory paths --
 const MEMORY_DATA_DIR = DATA_DIR;
@@ -312,13 +306,18 @@ function normalizePreset(input) {
   const id = String(input.id || '').trim();
   if (!id) throw new Error('preset.id is required');
   if (!/^[a-zA-Z0-9._-]+$/.test(id)) throw new Error('preset.id must be alphanumeric (._- allowed)');
-  const provider = String(input.provider || '').trim();
-  if (!provider) throw new Error('preset.provider is required');
+  const type = (input.type === 'native') ? 'native' : 'bridge';
   const model = String(input.model || '').trim();
   if (!model) throw new Error('preset.model is required');
-  const tools = String(input.tools || 'full');
-  if (!VALID_TOOLS.has(tools)) throw new Error(`preset.tools must be one of ${[...VALID_TOOLS].join(', ')}`);
-  const out = { id, provider, model, tools };
+  const out = { id, type, model };
+  if (type === 'bridge') {
+    const provider = String(input.provider || '').trim();
+    if (!provider) throw new Error('preset.provider is required for bridge presets');
+    out.provider = provider;
+    const tools = String(input.tools || 'full');
+    if (!VALID_TOOLS.has(tools)) throw new Error(`preset.tools must be one of ${[...VALID_TOOLS].join(', ')}`);
+    out.tools = tools;
+  }
   if (typeof input.name === 'string' && input.name.trim()) out.name = input.name.trim();
   if (input.effort != null && input.effort !== '') {
     const effort = String(input.effort);

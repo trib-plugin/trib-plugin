@@ -1,4 +1,5 @@
 import fs, { readFileSync } from 'fs'
+import dns from 'dns'
 
 import { JSDOM } from 'jsdom'
 import puppeteer from 'puppeteer-core'
@@ -122,6 +123,64 @@ function assertPublicUrl(url) {
   }
 }
 
+async function assertResolvedIps(hostname) {
+  const privatev4 = (ip) => {
+    assertPrivateIpv4(ip)
+  }
+  const privatev6 = (ip) => {
+    const lower = ip.toLowerCase()
+    if (lower === '::1') {
+      throw new Error(`Blocked request to private address: ${ip}`)
+    }
+    if (/^f[cd]/i.test(lower)) {
+      throw new Error(`Blocked request to private address: ${ip}`)
+    }
+    if (/^fe[89ab]/i.test(lower)) {
+      throw new Error(`Blocked request to private address: ${ip}`)
+    }
+    const mappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i)
+    if (mappedMatch) {
+      assertPrivateIpv4(mappedMatch[1])
+    }
+  }
+
+  let v4Addrs = []
+  try {
+    v4Addrs = await dns.promises.resolve4(hostname)
+  } catch (err) {
+    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err
+  }
+  for (const ip of v4Addrs) {
+    privatev4(ip)
+  }
+
+  let v6Addrs = []
+  try {
+    v6Addrs = await dns.promises.resolve6(hostname)
+  } catch (err) {
+    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err
+  }
+  for (const ip of v6Addrs) {
+    privatev6(ip)
+  }
+
+  // Also check via OS resolver (dns.lookup) to catch cases like localhost variants,
+  // numeric IP literals, and other entries the OS resolver handles differently.
+  let lookupAddrs = []
+  try {
+    lookupAddrs = await dns.promises.lookup(hostname, { all: true })
+  } catch (err) {
+    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err
+  }
+  for (const entry of lookupAddrs) {
+    if (entry.family === 4) {
+      privatev4(entry.address)
+    } else {
+      privatev6(entry.address)
+    }
+  }
+}
+
 function withTimeout(controller, timeoutMs) {
   return setTimeout(() => controller.abort(), timeoutMs)
 }
@@ -174,18 +233,38 @@ function extractReadableArticle(url, html) {
   )
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const MAX_REDIRECTS = 5
+
 async function fetchHtml(url, timeoutMs) {
   const controller = new AbortController()
   const timer = withTimeout(controller, timeoutMs)
   try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: buildHeaders(),
-    })
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+    let currentUrl = url
+    for (let hops = 0; ; hops++) {
+      await assertResolvedIps(new URL(currentUrl).hostname)
+      const response = await fetch(currentUrl, {
+        signal: controller.signal,
+        headers: buildHeaders(),
+        redirect: 'manual',
+      })
+      if (REDIRECT_STATUSES.has(response.status)) {
+        if (hops >= MAX_REDIRECTS) {
+          throw new Error(`Too many redirects (max ${MAX_REDIRECTS})`)
+        }
+        const location = response.headers.get('location')
+        if (!location) {
+          throw new Error(`Redirect ${response.status} without Location header`)
+        }
+        currentUrl = new URL(location, currentUrl).toString()
+        assertPublicUrl(currentUrl)
+        continue
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      return await response.text()
     }
-    return await response.text()
   } finally {
     clearTimeout(timer)
   }
@@ -210,6 +289,9 @@ function resolveBrowserLaunchOptions() {
   return { channel: 'chrome' }
 }
 
+// SSRF note: Puppeteer manages its own network stack so redirect interception
+// is not practical here. The primary defense is assertPublicUrl() called on
+// the original URL before scrapeWithPuppeteer is invoked (via scrapeUrl).
 async function scrapeWithPuppeteer(url, timeoutMs) {
   let browser
   try {
@@ -231,6 +313,9 @@ async function scrapeWithPuppeteer(url, timeoutMs) {
       waitUntil: 'networkidle2',
       timeout: timeoutMs,
     })
+    const finalUrl = page.url()
+    assertPublicUrl(finalUrl)
+    await assertResolvedIps(new URL(finalUrl).hostname)
     const html = await page.content()
     try {
       return {
@@ -343,6 +428,8 @@ async function mapWithHttp(url, options, timeoutMs) {
   return extractLinksFromHtml(url, html, options)
 }
 
+// SSRF note: Puppeteer manages its own network stack; redirect interception
+// is not practical. assertPublicUrl() on the original URL is the primary defense.
 async function mapWithPuppeteer(url, options, timeoutMs) {
   let browser
   try {
@@ -356,6 +443,9 @@ async function mapWithPuppeteer(url, options, timeoutMs) {
       waitUntil: 'networkidle2',
       timeout: timeoutMs,
     })
+    const finalUrl = page.url()
+    assertPublicUrl(finalUrl)
+    await assertResolvedIps(new URL(finalUrl).hostname)
     const links = await page.$$eval('a[href]', nodes => nodes.map(node => ({
       href: node.getAttribute('href'),
       text: node.textContent || '',
