@@ -46,7 +46,7 @@ import {
 import { getMemoryStore } from './lib/memory.mjs'
 import { configureEmbedding, embedText } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
-import { callLLM } from '../shared/llm/index.mjs'
+import { callLLM, resolveMaintenancePreset } from '../shared/llm/index.mjs'
 import {
   sleepCycle,
   memoryFlush,
@@ -57,7 +57,6 @@ import {
   runCycle1,
   readMainConfig,
   parseInterval,
-  resolveCyclePreset,
 } from './lib/memory-cycle.mjs'
 import { localNow } from './lib/memory-text-utils.mjs'
 import {
@@ -787,7 +786,7 @@ async function handleReason(query, options = {}) {
   // 4. Call LLM (use explicit preset override if provided, otherwise cycle2 default)
   try {
     const config = readMainConfig()
-    const presetId = options.preset || resolveCyclePreset(config, 'cycle2')
+    const presetId = options.preset || resolveMaintenancePreset('cycle2')
     const answer = await callLLM(prompt, presetId, { mode: 'maintenance', timeout: 60000 })
     return { text: answer }
   } catch (e) {

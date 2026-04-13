@@ -276,7 +276,7 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
       candidates: options.candidates ?? [],
     })
   }
-  const preset = options.preset || resolveCyclePreset(readMainConfig(), 'cycle1')
+  const preset = options.preset || resolveMaintenancePreset('cycle1')
   return await callLLM(prompt, preset, { mode: 'maintenance', timeout: options.timeout ?? 180000 })
 }
 
@@ -300,7 +300,7 @@ export async function consolidateCandidateDay(dayKey, _ws, options = {}) {
         return lines.join('\n')
       }).join('\n\n')
       const prompt = template.replace('{{DATE}}', dayKey).replace('{{CANDIDATES}}', candidatesText)
-      const preset = options.preset || resolveCyclePreset(readMainConfig(), 'cycle2')
+      const preset = options.preset || resolveMaintenancePreset('cycle2')
       const raw = await resolveCycleLlmOutput(prompt, _ws, {
         ...options,
         mode: 'consolidate',
@@ -385,7 +385,7 @@ async function refreshEmbeddings(ws, options = {}) {
   const store = options.store ?? getStore()
   const mainConfig = readMainConfig()
   const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
-  const contextualizePreset = resolveCyclePreset(mainConfig, 'cycle2')
+  const contextualizePreset = resolveMaintenancePreset('cycle2')
   const kind = options.kind ?? 'cycle2'
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit
@@ -557,7 +557,7 @@ export async function summarizeOnly(ws) {
   store.backfillProject(ws, { limit: resolveCycleBackfillLimit(mainConfig, 120) })
   const pendingDays = store.getPendingCandidateDays(3, 1).map(d => d.day_key).sort().reverse()
   if (pendingDays.length > 0) {
-    const preset = resolveCyclePreset(mainConfig, 'cycle2')
+    const preset = resolveMaintenancePreset('cycle2')
     await consolidateRecent(pendingDays, ws, { preset })
     await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys: pendingDays })
   }
@@ -574,7 +574,7 @@ async function memoryFlushImpl(ws, options = {}) {
   if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
   const targets = pendingDays.map(d => d.day_key).sort().reverse().slice(0, maxDays)
   const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
-  consolidateOpts.preset = options.preset ?? resolveCyclePreset(readMainConfig(), 'cycle2')
+  consolidateOpts.preset = options.preset ?? resolveMaintenancePreset('cycle2')
   for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
   await refreshEmbeddings(ws, { dayKeys: targets })
 }
@@ -591,7 +591,7 @@ async function rebuildAllImpl(ws) {
   store.resetConsolidatedMemory()
   const dayKeys = store.getPendingCandidateDays(10000, 1).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no candidate days.\n'); return }
-  const preset = resolveCyclePreset(mainConfig, 'cycle2')
+  const preset = resolveMaintenancePreset('cycle2')
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, { maxCandidatesPerBatch: MAX_MEMORY_CANDIDATES_PER_DAY, maxBatches: 999, preset })
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
@@ -699,7 +699,7 @@ async function rebuildRecentImpl(ws, options = {}) {
   const dayKeys = store.getRecentCandidateDays(maxDays).map(d => d.day_key).sort().reverse()
   if (!dayKeys.length) { process.stderr.write('[memory-cycle] no recent days.\n'); return }
   store.resetConsolidatedMemoryForDays(dayKeys)
-  const mergedOptions = options.preset ? options : { ...options, preset: resolveCyclePreset(mainConfig, 'cycle2') }
+  const mergedOptions = options.preset ? options : { ...options, preset: resolveMaintenancePreset('cycle2') }
   for (const dayKey of dayKeys) await consolidateCandidateDay(dayKey, ws, mergedOptions)
   store.syncHistoryFromFiles()
   await refreshEmbeddings(ws, { kind: 'cycle2', dayKeys })
@@ -777,9 +777,9 @@ export function getCycleStatus() {
       cycle1: {
         interval: memoryConfig.cycle1?.interval ?? '5m',
         maxPending: memoryConfig.cycle1?.maxPending ?? null,
-        preset: resolveCyclePreset(memoryConfig, 'cycle1'),
+        preset: resolveMaintenancePreset('cycle1'),
       },
-      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, preset: resolveCyclePreset(memoryConfig, 'cycle2') },
+      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, preset: resolveMaintenancePreset('cycle2') },
     },
   }
 }
@@ -823,9 +823,6 @@ function buildCycle1ClassificationRows(candidates = []) {
   }).join('\n')
 }
 
-export function resolveCyclePreset(config, cycleKey) {
-  return resolveMaintenancePreset(cycleKey)
-}
 
 
 async function runCycle1Impl(ws, config, options = {}) {
@@ -840,7 +837,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   const cycle1Config = config?.cycle1 ?? {}
   const batchSize = Math.max(1, Number(options.maxItems ?? cycle1Config.batchSize ?? BATCH_SIZE))
   const maxDays = force ? 9999 : Math.max(1, Number(options.maxAgeDays ?? cycle1Config.maxDays ?? 7))
-  const preset = resolveCyclePreset(config, 'cycle1')
+  const preset = resolveMaintenancePreset('cycle1')
   const timeout = config?.cycle1?.timeout || 300000
 
   // Support pre-split candidates from rebuildClassifications
@@ -1085,7 +1082,7 @@ async function runCycle1Impl(ws, config, options = {}) {
  */
 async function coreMemoryPromote(store, ws, config) {
   const cycle2Config = config?.cycle2 ?? {}
-  const preset = resolveCyclePreset(config, 'cycle2')
+  const preset = resolveMaintenancePreset('cycle2')
   const ACTIVE_CAP = 50
   const CHUNK_BATCH_SIZE = 50
 
