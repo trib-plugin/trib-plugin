@@ -725,7 +725,7 @@ async function handleRecall(args) {
 
   // Dialectic / reason mode: synthesize an answer from stored knowledge
   if (mode === 'reason' && query) {
-    return handleReason(query, { period, limit: 20 })
+    return handleReason(query, { period, limit: 20, preset: args.preset })
   }
 
   // Shortcut queries
@@ -784,10 +784,24 @@ async function handleReason(query, options = {}) {
     'Synthesize a concise answer. If the knowledge is insufficient, say so. Include confidence level (high/medium/low).',
   ].join('\n')
 
-  // 4. Call LLM
+  // 4. Call LLM (use explicit preset override if provided, otherwise cycle2 default)
   try {
     const config = readMainConfig()
-    const provider = resolveCycleProvider(config, 'cycle2')
+    let provider
+    if (options.preset) {
+      // Merge agent-config presets into config so resolveCycleProvider can resolve the preset ID
+      let presets = config.presets
+      if (!Array.isArray(presets)) {
+        try {
+          const agentCfg = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'agent-config.json'), 'utf8'))
+          presets = agentCfg.presets
+        } catch {}
+      }
+      if (Array.isArray(presets)) {
+        provider = resolveCycleProvider({ ...config, presets, _override: { preset: options.preset } }, '_override')
+      }
+    }
+    if (!provider) provider = resolveCycleProvider(config, 'cycle2')
     const answer = await callLLM(prompt, provider, { timeout: 60000 })
     return { text: answer }
   } catch (e) {

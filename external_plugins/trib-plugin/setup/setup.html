@@ -1272,6 +1272,27 @@
         </div>
       </div>
       <div class="sec">
+        <div class="sec-title">Session Recap</div>
+        <div class="sec-desc">Generate a summary of the previous session and inject into CLAUDE.md on startup.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Enabled</span>
+            <label class="toggle">
+              <input type="checkbox" id="mem-recap-enabled" checked>
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Model</span>
+            <select class="r-select" id="mem-recap-preset"></select>
+          </div>
+          <div class="r">
+            <span class="r-name-wide">Query</span>
+            <input class="r-input" id="mem-recap-query" type="text" placeholder="직전 세션에서 무엇을 작업했고 어디까지 진행했는지">
+          </div>
+        </div>
+      </div>
+      <div class="sec">
         <div class="sec-title">User Model</div>
         <div class="sec-desc">Build structured user profile from conversation patterns. Includes confidence decay.</div>
         <div class="sec-body">
@@ -2733,6 +2754,8 @@ function memPopulateConfig() {
   if (memConfig.cycle1?.timeout) document.getElementById('mem-set-timeout').value = memConfig.cycle1.timeout;
   if (memConfig.cycle1?.batchSize) document.getElementById('mem-set-batch-size').value = memConfig.cycle1.batchSize;
   if (memConfig.cycle2?.schedule) document.getElementById('mem-set-schedule').value = memConfig.cycle2.schedule;
+  document.getElementById('mem-recap-enabled').checked = memConfig.sessionRecap?.enabled !== false;
+  document.getElementById('mem-recap-query').value = memConfig.sessionRecap?.query || '';
 }
 
 function memToggleMemory() {
@@ -2793,7 +2816,7 @@ async function memSaveProviders() {
 }
 
 function memBuildConfigData() {
-  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { schedule: document.getElementById('mem-set-schedule').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined } };
+  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { schedule: document.getElementById('mem-set-schedule').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined }, sessionRecap: { enabled: document.getElementById('mem-recap-enabled').checked, preset: document.getElementById('mem-recap-preset')?.value||undefined, query: document.getElementById('mem-recap-query').value.trim()||undefined } };
 }
 
 async function memSaveConfig() {
@@ -2820,6 +2843,11 @@ async function memPopulateCycleDropdowns() {
     c2.innerHTML = options;
     if (memConfig.cycle1?.preset) c1.value = memConfig.cycle1.preset;
     if (memConfig.cycle2?.preset) c2.value = memConfig.cycle2.preset;
+    const recap = document.getElementById('mem-recap-preset');
+    if (recap) {
+      recap.innerHTML = options;
+      recap.value = memConfig.sessionRecap?.preset || 'sonnet-mid';
+    }
   } catch {}
 }
 

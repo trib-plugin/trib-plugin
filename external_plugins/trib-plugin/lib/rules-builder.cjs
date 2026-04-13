@@ -120,6 +120,10 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const contextContent = readOptional(path.join(HISTORY_DIR, 'context.md'));
   if (contextContent) parts.push(contextContent);
 
+  // --- 7a. Session recap (previous session summary) ---
+  const recapContent = readOptional(path.join(HISTORY_DIR, 'session-recap.md'));
+  if (recapContent) parts.push('## Session Recap\n\n' + recapContent);
+
   // --- 8. User profile ---
   const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
   if (userProfileContent) parts.push(userProfileContent);

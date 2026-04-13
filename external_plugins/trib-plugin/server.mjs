@@ -17,7 +17,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, appendFileSync, mkdirSync, watch as fsWatch } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch } from 'fs'
 import { join, resolve as pathResolve } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
@@ -182,7 +182,7 @@ setImmediate(() => {
     const DATA_ALLOWLIST = new Set([
       'config.json', 'memory-config.json', 'search-config.json',
       'agent-config.json', 'user-workflow.json', 'user-workflow.md',
-      'history/context.md', 'history/user.md', 'history/bot.md',
+      'history/context.md', 'history/user.md', 'history/bot.md', 'history/session-recap.md',
     ])
 
     const makeHandler = root => {
@@ -227,6 +227,49 @@ setImmediate(async () => {
       if (result.flushed > 0) log(`flushed ${result.flushed} buffered episodes`)
     } catch (e) {
       log(`buffer flush failed: ${e.message}`)
+    }
+    // ── Session Recap: query recent memory and write recap file ──
+    try {
+      const memModule = modules.get('memory')
+      if (memModule) {
+        const memCfg = JSON.parse(readFileSync(join(PLUGIN_DATA, 'memory-config.json'), 'utf8'))
+        const recapCfg = memCfg.sessionRecap || {}
+        if (recapCfg.enabled !== false) {
+          const query = recapCfg.query || '직전 세션에서 무엇을 작업했고 어디까지 진행했는지, 남은 과제는 무엇인지'
+          const preset = recapCfg.preset || 'sonnet-mid'
+          const result = await memModule.handleToolCall('search_memories', {
+            query,
+            mode: 'reason',
+            period: 'last',
+            preset,
+          })
+          const text = result?.content?.[0]?.text || ''
+          if (text && text.length > 20) {
+            mkdirSync(join(PLUGIN_DATA, 'history'), { recursive: true })
+            const recapPath = join(PLUGIN_DATA, 'history', 'session-recap.md')
+            writeFileSync(recapPath, text, 'utf8')
+            log(`session-recap: generated (${text.length} chars)`)
+            // Rebuild managed block so the recap is included
+            try {
+              const req2 = createRequire(import.meta.url)
+              const { buildInjectionContent } = req2(join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'))
+              const { upsertManagedBlock } = req2(join(PLUGIN_ROOT, 'lib', 'claude-md-writer.cjs'))
+              const cfgPath2 = join(PLUGIN_DATA, 'config.json')
+              let mainCfg2 = {}
+              try { mainCfg2 = JSON.parse(readFileSync(cfgPath2, 'utf8')) } catch {}
+              const inj2 = (mainCfg2 && mainCfg2.promptInjection) || {}
+              if (inj2.mode === 'claude_md') {
+                const content = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR: PLUGIN_DATA })
+                const targetPath = inj2.targetPath || '~/.claude/CLAUDE.md'
+                upsertManagedBlock(targetPath, content)
+                log(`session-recap: rebuilt managed block`)
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      log(`session-recap failed: ${e.message}`)
     }
   } catch (e) {
     log(`memory init failed: ${e.stack || e.message}`)

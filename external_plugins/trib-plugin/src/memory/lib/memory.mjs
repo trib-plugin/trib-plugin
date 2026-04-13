@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import { embedText, getEmbeddingModelId, getEmbeddingDims, warmupEmbeddingProvider, configureEmbedding, consumeProviderSwitchEvent } from './embedding-provider.mjs'
 import { cleanMemoryText } from './memory-extraction.mjs'
@@ -867,7 +867,7 @@ export class MemoryStore {
           channelId: null,
           userId: role === 'user' ? 'session:user' : 'session:assistant',
           userName: role,
-          sessionId: null,
+          sessionId: basename(transcriptPath, '.jsonl'),
           role,
           kind: 'message',
           content: clean,
