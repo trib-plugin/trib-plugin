@@ -91,7 +91,7 @@ seedDefaults();
 
 const INSTRUCTIONS = buildInstructions();
 
-// --- Prompt store (file-backed, shared with bin/ask CLI) ---
+// --- Prompt store (file-backed, shared with bin/bridge CLI) ---
 const _promptStorePath = join(getPluginData(), 'prompt-store.json');
 let _promptSeq = 0;
 
@@ -203,7 +203,7 @@ const TOOLS = [
   {
     name: 'set_prompt',
     title: 'Store Prompt',
-    description: 'Store a long prompt and get a short reference key. Use with ask tool\'s ref parameter.',
+    description: 'Store a long prompt and get a short reference key. Use with bridge tool\'s ref parameter.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -214,7 +214,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'ask',
+    name: 'bridge',
     title: 'Ask External Model',
     description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Use ref instead of prompt to reference a stored prompt.',
     inputSchema: {
@@ -340,7 +340,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return ok(`Stored as '${key}' (${content.length} chars)`);
       }
 
-      case 'ask': {
+      case 'bridge': {
         let prompt = args.prompt;
         if (!prompt && args.file) {
           try { prompt = readFileSync(args.file, 'utf-8'); }
@@ -366,8 +366,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           if (!preset) return fail('No preset specified and no default configured');
         }
 
-        const scope = args.scope || 'ask';
-        const effectiveLane = scope === 'ask' ? 'ask' : 'bridge';
+        const scope = args.scope || 'default';
+        const effectiveLane = 'bridge';
         const runtimeSpec = resolveRuntimeSpec(preset, {
           lane: effectiveLane,
           agentId: effectiveLane === 'bridge' ? scope : undefined,
@@ -542,7 +542,7 @@ export async function handleToolCall(name, args, opts = {}) {
         return ok(`Stored as '${key}' (${content.length} chars)`);
       }
 
-      case 'ask': {
+      case 'bridge': {
         let prompt = args.prompt;
         if (!prompt && args.file) {
           try { prompt = readFileSync(args.file, 'utf-8'); }
@@ -568,8 +568,8 @@ export async function handleToolCall(name, args, opts = {}) {
           if (!preset) return fail('No preset specified and no default configured');
         }
 
-        const scope = args.scope || 'ask';
-        const effectiveLane = scope === 'ask' ? 'ask' : 'bridge';
+        const scope = args.scope || 'default';
+        const effectiveLane = 'bridge';
         const runtimeSpec = resolveRuntimeSpec(preset, {
           lane: effectiveLane,
           agentId: effectiveLane === 'bridge' ? scope : undefined,

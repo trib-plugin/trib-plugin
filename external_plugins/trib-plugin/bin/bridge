@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// ask — CLI prompt store + lightweight ask for trib-plugin
+// bridge — CLI prompt store + lightweight bridge for trib-plugin
 // Usage:
-//   ask store <key> <file>   Store file content with key
-//   ask store <key>          Read from stdin
-//   ask list                 List stored keys
-//   ask get <key>            Print stored content
-//   ask delete <key>         Remove a key
-//   ask <scope> <prompt...>  Send prompt via owner HTTP (no server boot)
-//   ask <scope> -            Read prompt from stdin
+//   bridge store <key> <file>   Store file content with key
+//   bridge store <key>          Read from stdin
+//   bridge list                 List stored keys
+//   bridge get <key>            Print stored content
+//   bridge delete <key>         Remove a key
+//   bridge <scope> <prompt...>  Send prompt via owner HTTP (no server boot)
+//   bridge <scope> -            Read prompt from stdin
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -60,7 +60,7 @@ const [,, cmd, ...rest] = process.argv;
 switch (cmd) {
   case 'store': {
     const [key, file] = rest;
-    if (!key) { console.error('Usage: ask store <key> [file]'); process.exit(1); }
+    if (!key) { console.error('Usage: bridge store <key> [file]'); process.exit(1); }
     let content;
     if (file) {
       content = readFileSync(file, 'utf-8');
@@ -82,7 +82,7 @@ switch (cmd) {
   }
   case 'get': {
     const [key2] = rest;
-    if (!key2) { console.error('Usage: ask get <key>'); process.exit(1); }
+    if (!key2) { console.error('Usage: bridge get <key>'); process.exit(1); }
     const store = load();
     if (!(key2 in store)) { console.error(`Key '${key2}' not found`); process.exit(1); }
     console.log(store[key2]);
@@ -90,7 +90,7 @@ switch (cmd) {
   }
   case 'delete': {
     const [key3] = rest;
-    if (!key3) { console.error('Usage: ask delete <key>'); process.exit(1); }
+    if (!key3) { console.error('Usage: bridge delete <key>'); process.exit(1); }
     const store = load();
     if (!(key3 in store)) { console.error(`Key '${key3}' not found`); process.exit(1); }
     delete store[key3];
@@ -100,7 +100,7 @@ switch (cmd) {
   }
   default: {
     const scope = cmd;
-    if (!scope || scope.startsWith('-')) { console.error('Usage: ask <scope> <prompt...> | ask <scope> - (stdin)'); process.exit(1); }
+    if (!scope || scope.startsWith('-')) { console.error('Usage: bridge <scope> <prompt...> | bridge <scope> - (stdin)'); process.exit(1); }
     const port = getOwnerPort();
     if (!port) { console.error('No running trib-plugin instance found'); process.exit(1); }
     const body = { scope };
@@ -111,15 +111,15 @@ switch (cmd) {
     } else if (rest.length) {
       body.prompt = rest.join(' ');
     } else {
-      console.error('Usage: ask <scope> <prompt...> | ask <scope> - (stdin)');
+      console.error('Usage: bridge <scope> <prompt...> | bridge <scope> - (stdin)');
       process.exit(1);
     }
     try {
-      const result = await httpPost(port, '/ask', body);
+      const result = await httpPost(port, '/bridge', body);
       const text = result?.content?.[0]?.text || JSON.stringify(result);
       console.log(text);
     } catch (e) {
-      console.error(`ask failed: ${e.message}`);
+      console.error(`bridge failed: ${e.message}`);
       process.exit(1);
     }
     break;

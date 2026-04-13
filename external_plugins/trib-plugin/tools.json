@@ -938,9 +938,9 @@
     "module": "agent"
   },
   {
-    "name": "ask",
-    "title": "Ask External Model",
-    "description": "Send a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope maps to a configured preset.",
+    "name": "bridge",
+    "title": "Bridge to External Model",
+    "description": "Bridge a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope maps to a configured preset.",
     "inputSchema": {
       "type": "object",
       "properties": {

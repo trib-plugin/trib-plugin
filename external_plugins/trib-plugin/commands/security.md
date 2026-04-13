@@ -5,4 +5,4 @@ disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-!`cat "${CLAUDE_PLUGIN_ROOT}/prompts/security-audit.txt" | node "${CLAUDE_PLUGIN_ROOT}/bin/ask" ${ARGUMENTS:-reviewer} -`
+!`cat "${CLAUDE_PLUGIN_ROOT}/prompts/security-audit.txt" | node "${CLAUDE_PLUGIN_ROOT}/bin/bridge" ${ARGUMENTS:-reviewer} -`

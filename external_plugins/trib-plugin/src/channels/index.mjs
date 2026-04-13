@@ -475,7 +475,7 @@ async function startOwnerHttpServer() {
                 params: { content: text, meta: { user: "trib-agent", user_id: "system", ts: new Date().toISOString() } }
               }).catch(() => {});
             };
-            const result = await agentMod.handleToolCall("ask", toolArgs, { notifyFn });
+            const result = await agentMod.handleToolCall("bridge", toolArgs, { notifyFn });
             res.writeHead(200);
             res.end(JSON.stringify(result));
           } catch (e) {
