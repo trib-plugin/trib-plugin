@@ -170,7 +170,7 @@ export function saveConfig(config) {
 }
 // --- Preset helpers ---
 // preset shape: { id, name, type, provider?, model, effort?, fast?, tools? }
-// type: "worker" (Claude Code native) or "bridge" (external model via ask.mjs)
+// type: "worker" (Claude Code native) or "bridge" (external model via bridge tool)
 // worker presets have no provider (spawned via Agent tool with model param)
 function presetKey(p) { return p?.name || p?.id || ''; }
 function normalizePreset(preset) {
@@ -244,17 +244,17 @@ export function removePreset(config, name) {
 }
 // --- Lane-scoped runtime spec ---
 // Converts a preset + execution context into a scopeKey for session isolation.
-//   ask lane:    "ask:<presetName>"         — user-facing, reusable per preset
+//   bridge lane: "bridge:<presetName>"      — user-facing, reusable per preset
 //   bridge lane: "bridge:<agentId>:<presetName>" — per bridge agent instance
 export function resolveRuntimeSpec(preset, ctx) {
-    const lane = ctx.lane || 'ask';
+    const lane = ctx.lane || 'bridge';
     const presetName = preset.name || preset.id;
     let scopeKey;
     if (lane === 'bridge') {
         if (!ctx.agentId) throw new Error('bridge lane requires agentId');
         scopeKey = `bridge:${ctx.agentId}:${presetName}`;
     } else {
-        scopeKey = `ask:${presetName}`;
+        scopeKey = `bridge:${presetName}`;
     }
     return { lane, scopeKey, reuse: true, preset };
 }

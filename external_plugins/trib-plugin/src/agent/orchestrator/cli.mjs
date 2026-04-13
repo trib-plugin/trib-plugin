@@ -3,7 +3,7 @@
  * Orchestrator CLI — slash command entry point.
  *
  * Subcommands:
- *   ask [--provider X] [--model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>
+ *   bridge [--provider X] [--model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>
  *   new [prompt]
  *   resume [sessionId]
  *   clear
@@ -63,7 +63,7 @@ function fmtTokens(n) {
     return `${(n / 1000).toFixed(1)}k`;
 }
 
-// --- MCP setup (shared by ask) ---
+// --- MCP setup (shared by bridge) ---
 
 async function ensureMcpConnected(config) {
     if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
@@ -73,7 +73,7 @@ async function ensureMcpConnected(config) {
 
 // --- Subcommands ---
 
-async function cmdAsk(args) {
+async function cmdBridge(args) {
     // Parse flags: [--bg] [--lane X] [--scope Y] [--provider X] [--model Y]
     //              [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>
     let isBackground = false;
@@ -104,7 +104,7 @@ async function cmdAsk(args) {
         prompt = Buffer.concat(chunks).toString('utf8').trim();
     }
     if (!prompt) {
-        process.stderr.write('Usage: ask [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n');
+        process.stderr.write('Usage: bridge [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n');
         process.exit(1);
     }
 
@@ -114,7 +114,7 @@ async function cmdAsk(args) {
     // Background spawn (detach + return jobId)
     if (isBackground) {
         const jobId = createJob(explicitSession || readActiveSession() || '', prompt, context, { lane, scopeKey: scope });
-        const childArgs = ['ask'];
+        const childArgs = ['bridge'];
         if (lane) childArgs.push('--lane', lane);
         if (scope) childArgs.push('--scope', scope);
         if (provider) childArgs.push('--provider', provider);
@@ -167,8 +167,8 @@ async function cmdAsk(args) {
             }
             preset = { name: `${resolvedProvider}/${resolvedModel}`, provider: resolvedProvider, model: resolvedModel, type: 'bridge', tools: 'full' };
         } else {
-            // No --preset/--provider/--model: try active session (ask lane only), then default preset
-            if (!lane || lane === 'ask') {
+            // No --preset/--provider/--model: try active session (bridge command without --scope), then default preset
+            if (!scope && (!lane || lane === 'bridge')) {
                 const activeId = readActiveSession();
                 if (activeId) session = resumeSession(activeId);
             }
@@ -185,12 +185,19 @@ async function cmdAsk(args) {
         if (!session && preset) {
             await ensureMcpConnected(config);
 
-            // Determine effective lane: explicit --lane, or auto-detect from --scope
-            const effectiveLane = lane || (scope ? 'bridge' : 'ask');
-            const runtimeSpec = resolveRuntimeSpec(preset, {
-                lane: effectiveLane,
-                agentId: scope || undefined,
-            });
+            // Determine effective lane: bridge for scoped runs, reusable bridge session otherwise
+            const effectiveLane = scope ? 'bridge' : (lane || 'bridge');
+            const runtimeSpec = scope
+                ? resolveRuntimeSpec(preset, {
+                    lane: effectiveLane,
+                    agentId: scope,
+                })
+                : {
+                    lane: effectiveLane,
+                    scopeKey: `bridge:${preset.name || preset.id}`,
+                    reuse: true,
+                    preset,
+                };
 
             // Find existing session by scopeKey
             const existing = findSessionByScopeKey(runtimeSpec.scopeKey);
@@ -200,15 +207,15 @@ async function cmdAsk(args) {
                 session = createSession({
                     preset,
                     agent: role,
-                    owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+                    owner: scope ? 'bridge' : 'user',
                     scopeKey: runtimeSpec.scopeKey,
                     lane: runtimeSpec.lane,
                     cwd: process.cwd(),
                 });
             }
 
-            // Only update active pointer for ask lane
-            if (effectiveLane === 'ask') {
+            // Only update active pointer for bridge runs without --scope
+            if (!scope) {
                 writeActiveSession(session.id);
             }
         } else if (session) {
@@ -257,8 +264,8 @@ async function cmdNew(args) {
 
     const initialPrompt = args.join(' ').trim();
     if (initialPrompt) {
-        // Forward to ask flow inline
-        await cmdAsk([initialPrompt]);
+        // Forward to bridge flow inline
+        await cmdBridge([initialPrompt]);
         return;
     }
     process.stdout.write(
@@ -388,7 +395,7 @@ async function main() {
     const rest = args.slice(1);
 
     switch (command) {
-        case 'ask':       await cmdAsk(rest); break;
+        case 'bridge':    await cmdBridge(rest); break;
         case 'new':       await cmdNew(rest); break;
         case 'resume':    cmdResume(rest); break;
         case 'clear':     cmdClear(); break;
@@ -397,7 +404,7 @@ async function main() {
         default:
             process.stderr.write(
                 'Usage:\n' +
-                '  cli.js ask [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n' +
+                '  cli.js bridge [--provider X --model Y] [--preset Z] [--role R] [--context "text"] [:sessionId] <prompt>\n' +
                 '  cli.js new [prompt]\n' +
                 '  cli.js resume [sessionId]\n' +
                 '  cli.js clear\n' +

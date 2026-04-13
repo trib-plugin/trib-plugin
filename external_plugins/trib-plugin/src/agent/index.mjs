@@ -351,7 +351,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
         const config = loadConfig();
         const scopePresets = config.scopes || {};
-        const presetName = args.preset || (args.scope && scopePresets[args.scope]) || null;
+        // Resolve scope → preset: exact match first, then prefix ("reviewer-a" → "reviewer")
+        const resolvedPreset = args.scope && (scopePresets[args.scope] || scopePresets[Object.keys(scopePresets).find(k => args.scope.startsWith(k + '-')) || '']);
+        const presetName = args.preset || resolvedPreset || null;
 
         let preset = null;
         if (presetName) {
@@ -553,7 +555,9 @@ export async function handleToolCall(name, args, opts = {}) {
 
         const config = loadConfig();
         const scopePresets = config.scopes || {};
-        const presetName = args.preset || (args.scope && scopePresets[args.scope]) || null;
+        // Resolve scope → preset: exact match first, then prefix ("reviewer-a" → "reviewer")
+        const resolvedPreset = args.scope && (scopePresets[args.scope] || scopePresets[Object.keys(scopePresets).find(k => args.scope.startsWith(k + '-')) || '']);
+        const presetName = args.preset || resolvedPreset || null;
 
         let preset = null;
         if (presetName) {

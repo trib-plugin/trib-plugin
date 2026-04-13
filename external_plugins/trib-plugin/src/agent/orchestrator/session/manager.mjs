@@ -101,7 +101,7 @@ export function createSession(opts) {
         agent: opts.agent,
         owner: opts.owner || 'user',
         scopeKey: opts.scopeKey || null,
-        lane: opts.lane || 'ask',
+        lane: opts.lane || 'bridge',
         cwd: opts.cwd,
         createdAt: Date.now(),
         updatedAt: Date.now(),

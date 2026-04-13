@@ -445,7 +445,6 @@ async function startOwnerHttpServer() {
           res.end(JSON.stringify({ ok: true }));
           return;
         }
-        case "/ask":
         case "/bridge": {
           if (req.method !== "POST") { res.writeHead(405); res.end(JSON.stringify({ error: "POST required" })); return; }
           const askFile = body.file;
