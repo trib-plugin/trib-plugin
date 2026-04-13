@@ -50,15 +50,24 @@ export function deleteSession(id) {
         return false;
     }
 }
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export function listStoredSessions() {
     const dir = getStoreDir();
     if (!existsSync(dir))
         return [];
     const files = readdirSync(dir).filter(f => f.endsWith('.json'));
     const sessions = [];
+    const now = Date.now();
     for (const f of files) {
         try {
-            sessions.push(JSON.parse(readFileSync(join(dir, f), 'utf-8')));
+            const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
+            if (now - (session.updatedAt || session.createdAt || 0) > SESSION_TTL_MS) {
+                // Auto-cleanup expired session
+                try { unlinkSync(join(dir, f)); } catch { /* ignore */ }
+                continue;
+            }
+            sessions.push(session);
         }
         catch { /* skip corrupt */ }
     }

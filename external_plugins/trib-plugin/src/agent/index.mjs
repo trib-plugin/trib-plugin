@@ -253,54 +253,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'list_sessions': {
         const sessions = listSessions();
         if (sessions.length === 0) return ok('No active sessions.');
-
-        const choices = sessions.map((s, i) => {
-          const msgs = s.messages.length;
-          const inTok = fmtTokens(s.totalInputTokens || 0);
-          const outTok = fmtTokens(s.totalOutputTokens || 0);
-          return { const: String(i), title: `${s.provider}/${s.model} · ${msgs} msgs · ${inTok} in / ${outTok} out` };
-        });
-
-        try {
-          const result = await server.elicitInput({
-            message: `${sessions.length} active session(s). Select to resume:`,
-            requestedSchema: {
-              type: 'object',
-              properties: {
-                session: {
-                  type: 'string',
-                  title: 'Session',
-                  oneOf: choices,
-                  default: '0',
-                },
-              },
-              required: ['session'],
-            },
-          });
-
-          if (result.action === 'accept') {
-            const idx = parseInt(result.content.session, 10);
-            if (!isNaN(idx) && idx >= 0 && idx < sessions.length) {
-              const selected = sessions[idx];
-              if (selected) {
-                const resumed = resumeSession(selected.id);
-                if (resumed) {
-                  return ok(`Active session: ${selected.id} · ${selected.provider}/${selected.model} · ${selected.messages.length} msgs`);
-                }
-              }
-            }
-          }
-          // Declined or cancelled — silent exit
-          return ok('');
-        } catch {
-          // Elicitation not supported — fall back to plain list
-          return ok(sessions.map(s => ({
-            id: s.id, provider: s.provider, model: s.model,
-            messages: s.messages.length, tools: s.tools.length,
-            inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
-            createdAt: new Date(s.createdAt).toISOString(),
-          })));
-        }
+        return ok(sessions.map(s => ({
+          id: s.id, provider: s.provider, model: s.model,
+          messages: s.messages.length, tools: s.tools.length,
+          inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
+          scope: s.scopeKey || null,
+          createdAt: new Date(s.createdAt).toISOString(),
+        })));
       }
 
       case 'close_session': {
@@ -312,72 +271,49 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const cfg = loadConfig();
         const presets = listPresets(cfg);
         const current = getDefaultPreset(cfg);
-
-        if (presets.length === 0) {
-          return ok('No presets configured. Use /trib-agent:config to add presets.');
-        }
-
-        // Build enum choices for elicitation dropdown
+        if (presets.length === 0) return ok('No presets configured.');
+        const currentLabel = current ? `${current.model}${current.effort ? ' · ' + current.effort : ''}${current.fast ? ' · fast' : ''}` : 'none';
         const choices = presets.map((p, i) => {
           const parts = [p.model];
           if (p.effort) parts.push(p.effort);
           if (p.fast) parts.push('fast');
           return { const: String(i), title: parts.join(' · ') };
         });
-
         const currentIdx = current ? presets.findIndex(p => p.name === current.name) : 0;
-        const currentLabel = current ? `${current.model}${current.effort ? ' · ' + current.effort : ''}${current.fast ? ' · fast' : ''}` : 'none';
-
-        try {
-          const result = await server.elicitInput({
-            message: `Current: ${currentLabel}\nSelect a model preset:`,
-            requestedSchema: {
-              type: 'object',
-              properties: {
-                preset: {
-                  type: 'string',
-                  title: 'Model Preset',
-                  oneOf: choices,
-                  default: String(currentIdx >= 0 ? currentIdx : 0),
+        const elicitFn = typeof server !== 'undefined' && server.elicitInput ? (o) => server.elicitInput(o) : (typeof elicit === 'function' ? elicit : null);
+        if (elicitFn) {
+          try {
+            const result = await elicitFn({
+              message: `Current: ${currentLabel}\nSelect a model preset:`,
+              requestedSchema: {
+                type: 'object',
+                properties: {
+                  preset: { type: 'string', title: 'Model Preset', oneOf: choices, default: String(currentIdx >= 0 ? currentIdx : 0) },
                 },
+                required: ['preset'],
               },
-              required: ['preset'],
-            },
-          });
-
-          if (result.action === 'accept') {
-            const idx = parseInt(result.content.preset, 10);
-            if (!isNaN(idx) && idx >= 0 && idx < presets.length) {
-              const selected = presets[idx];
-              if (selected) {
-                setDefaultPreset(cfg, selected.name);
-                return ok(`Default preset changed to: ${selected.model}${selected.effort ? ' · ' + selected.effort : ''}${selected.fast ? ' · fast' : ''}`);
+            });
+            if (result.action === 'accept') {
+              const idx = parseInt(result.content.preset, 10);
+              if (!isNaN(idx) && idx >= 0 && idx < presets.length) {
+                const selected = presets[idx];
+                if (selected) {
+                  setDefaultPreset(cfg, selected.name);
+                  return ok(`Default preset changed to: ${selected.model}${selected.effort ? ' · ' + selected.effort : ''}${selected.fast ? ' · fast' : ''}`);
+                }
               }
             }
-          }
-          // Declined or cancelled — silent exit
-          return ok('');
-        } catch {
-          // Elicitation not supported by client — fall back to text list
-          const lines = presets.map((p, i) => {
-            const parts = [p.model];
-            if (p.effort) parts.push(p.effort);
-            if (p.fast) parts.push('fast');
-            const mark = current && p.name === current.name ? '  ← active' : '';
-            return `[${i}] ${parts.join(' · ')}${mark}`;
-          });
-          // Also list live provider models
-          const results = [];
-          for (const [provName, prov] of getAllProviders()) {
-            try {
-              const models = await prov.listModels();
-              results.push({ provider: provName, models });
-            } catch {
-              results.push({ provider: provName, models: [], error: 'failed to list models' });
-            }
-          }
-          return ok({ current: currentLabel, presets: lines, providers: results });
+            return ok('');
+          } catch { /* fall through */ }
         }
+        const lines = presets.map((p, i) => {
+          const parts = [p.name, p.model];
+          if (p.effort) parts.push(p.effort);
+          if (p.fast) parts.push('fast');
+          const mark = current && p.name === current.name ? '  ← active' : '';
+          return `[${i}] ${parts.join(' · ')}${mark}`;
+        });
+        return ok({ current: currentLabel, presets: lines });
       }
 
       case 'get_workflows': {
@@ -519,53 +455,11 @@ export async function handleToolCall(name, args, opts = {}) {
       case 'list_sessions': {
         const sessions = listSessions();
         if (sessions.length === 0) return ok('No active sessions.');
-
-        const choices = sessions.map((s, i) => {
-          const msgs = s.messages.length;
-          const inTok = fmtTokens(s.totalInputTokens || 0);
-          const outTok = fmtTokens(s.totalOutputTokens || 0);
-          return { const: String(i), title: `${s.provider}/${s.model} · ${msgs} msgs · ${inTok} in / ${outTok} out` };
-        });
-
-        if (elicit) {
-          try {
-            const result = await elicit({
-              message: `${sessions.length} active session(s). Select to resume:`,
-              requestedSchema: {
-                type: 'object',
-                properties: {
-                  session: {
-                    type: 'string',
-                    title: 'Session',
-                    oneOf: choices,
-                    default: '0',
-                  },
-                },
-                required: ['session'],
-              },
-            });
-
-            if (result.action === 'accept') {
-              const idx = parseInt(result.content.session, 10);
-              if (!isNaN(idx) && idx >= 0 && idx < sessions.length) {
-                const selected = sessions[idx];
-                if (selected) {
-                  const resumed = resumeSession(selected.id);
-                  if (resumed) {
-                    return ok(`Active session: ${selected.id} · ${selected.provider}/${selected.model} · ${selected.messages.length} msgs`);
-                  }
-                }
-              }
-            }
-            return ok('');
-          } catch {
-            // Elicitation not supported — fall back to plain list
-          }
-        }
         return ok(sessions.map(s => ({
           id: s.id, provider: s.provider, model: s.model,
           messages: s.messages.length, tools: s.tools.length,
           inputTokens: s.totalInputTokens, outputTokens: s.totalOutputTokens,
+          scope: s.scopeKey || null,
           createdAt: new Date(s.createdAt).toISOString(),
         })));
       }
@@ -579,39 +473,28 @@ export async function handleToolCall(name, args, opts = {}) {
         const cfg = loadConfig();
         const presets = listPresets(cfg);
         const current = getDefaultPreset(cfg);
-
-        if (presets.length === 0) {
-          return ok('No presets configured. Use /trib-agent:config to add presets.');
-        }
-
+        if (presets.length === 0) return ok('No presets configured.');
+        const currentLabel = current ? `${current.model}${current.effort ? ' · ' + current.effort : ''}${current.fast ? ' · fast' : ''}` : 'none';
         const choices = presets.map((p, i) => {
           const parts = [p.model];
           if (p.effort) parts.push(p.effort);
           if (p.fast) parts.push('fast');
           return { const: String(i), title: parts.join(' · ') };
         });
-
         const currentIdx = current ? presets.findIndex(p => p.name === current.name) : 0;
-        const currentLabel = current ? `${current.model}${current.effort ? ' · ' + current.effort : ''}${current.fast ? ' · fast' : ''}` : 'none';
-
-        if (elicit) {
+        const elicitFn = typeof server !== 'undefined' && server.elicitInput ? (o) => server.elicitInput(o) : (typeof elicit === 'function' ? elicit : null);
+        if (elicitFn) {
           try {
-            const result = await elicit({
+            const result = await elicitFn({
               message: `Current: ${currentLabel}\nSelect a model preset:`,
               requestedSchema: {
                 type: 'object',
                 properties: {
-                  preset: {
-                    type: 'string',
-                    title: 'Model Preset',
-                    oneOf: choices,
-                    default: String(currentIdx >= 0 ? currentIdx : 0),
-                  },
+                  preset: { type: 'string', title: 'Model Preset', oneOf: choices, default: String(currentIdx >= 0 ? currentIdx : 0) },
                 },
                 required: ['preset'],
               },
             });
-
             if (result.action === 'accept') {
               const idx = parseInt(result.content.preset, 10);
               if (!isNaN(idx) && idx >= 0 && idx < presets.length) {
@@ -623,28 +506,16 @@ export async function handleToolCall(name, args, opts = {}) {
               }
             }
             return ok('');
-          } catch {
-            // Elicitation not supported — fall back to text list
-          }
+          } catch { /* fall through */ }
         }
-        // Fallback: text list
         const lines = presets.map((p, i) => {
-          const parts = [p.model];
+          const parts = [p.name, p.model];
           if (p.effort) parts.push(p.effort);
           if (p.fast) parts.push('fast');
           const mark = current && p.name === current.name ? '  ← active' : '';
           return `[${i}] ${parts.join(' · ')}${mark}`;
         });
-        const results = [];
-        for (const [provName, prov] of getAllProviders()) {
-          try {
-            const models = await prov.listModels();
-            results.push({ provider: provName, models });
-          } catch {
-            results.push({ provider: provName, models: [], error: 'failed to list models' });
-          }
-        }
-        return ok({ current: currentLabel, presets: lines, providers: results });
+        return ok({ current: currentLabel, presets: lines });
       }
 
       case 'get_workflows': {
