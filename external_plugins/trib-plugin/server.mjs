@@ -257,13 +257,12 @@ setImmediate(async () => {
         const memCfg = JSON.parse(readFileSync(join(PLUGIN_DATA, 'memory-config.json'), 'utf8'))
         const recapCfg = memCfg.sessionRecap || {}
         if (recapCfg.enabled !== false) {
-          const query = recapCfg.query || '직전 세션에서 무엇을 작업했고 어디까지 진행했는지, 남은 과제는 무엇인지'
-          const preset = recapCfg.preset || 'sonnet-mid'
+          const limit = recapCfg.limit || 20
           const result = await memModule.handleToolCall('search_memories', {
-            query,
-            mode: 'reason',
+            mode: 'search',
             period: 'last',
-            preset,
+            sort: 'date',
+            limit,
           })
           const text = result?.content?.[0]?.text || ''
           if (text && text.length > 20) {

@@ -27,7 +27,13 @@ export async function runOllamaHTTP(prompt, options = {}) {
   const data = JSON.parse(stdout || '{}')
   if (data.error) throw new Error(`Ollama error: ${data.error}`)
   if (!data.response) throw new Error('Ollama returned empty response')
-  return data.response
+  return {
+    text: data.response,
+    usage: {
+      inputTokens: data.prompt_eval_count || 0,
+      outputTokens: data.eval_count || 0,
+    },
+  }
 }
 
 export async function runHTTP(prompt, options = {}) {
@@ -61,7 +67,13 @@ export async function runHTTP(prompt, options = {}) {
     if (data.error) throw new Error(data.error.message || JSON.stringify(data.error))
     const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
     if (!text) throw new Error('Anthropic returned empty response')
-    return text
+    return {
+      text,
+      usage: {
+        inputTokens: data.usage?.input_tokens || 0,
+        outputTokens: data.usage?.output_tokens || 0,
+      },
+    }
   }
 
   // OpenAI-compatible
@@ -85,5 +97,11 @@ export async function runHTTP(prompt, options = {}) {
   if (data.error) throw new Error(data.error.message || JSON.stringify(data.error))
   const text = data.choices?.[0]?.message?.content
   if (!text) throw new Error(`${provider} returned empty response`)
-  return text
+  return {
+    text,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens || 0,
+      outputTokens: data.usage?.completion_tokens || 0,
+    },
+  }
 }

@@ -213,6 +213,7 @@ let _rebuildLock = false
 let _cycleInterval = null
 let _startupTimeout = null
 let _initialized = false
+let _bootTimestamp = null  // timestamp at boot — episodes after this are current session
 
 // ── Shared init logic (used by both standalone and unified modes) ─────
 
@@ -231,6 +232,9 @@ async function _initStore() {
   store = getMemoryStore(DATA_DIR)
   store.syncHistoryFromFiles()
   startLlmWorker()
+
+  // Capture boot timestamp in local time (same format as episode ts)
+  _bootTimestamp = new Date().toLocaleString('sv-SE').replace(' ', 'T')
 
   WORKSPACE_PATH = process.env.TRIB_MEMORY_WORKSPACE || process.cwd()
 }
@@ -598,8 +602,36 @@ async function handleRead(options) {
   const params = []
 
   if (temporal?.mode === 'last') {
-    // No additional filter — just use ORDER BY ts DESC LIMIT below
-  } else if (temporal?.start) {
+    // Exclude current session — only show data before boot
+    if (_bootTimestamp) {
+      whereClause += " AND e.ts < ?"
+      params.push(_bootTimestamp)
+    }
+
+    // period=last: unified timeline — classification upgrades where available, episode fallback
+    const rows = store.db.prepare(`
+      SELECT e.ts, e.role, e.content AS episode_content,
+             c.classification, c.topic, c.element, c.state
+      FROM episodes e
+      LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
+      WHERE e.kind IN ('message', 'turn')${_bootTimestamp ? " AND e.ts < ?" : ""}
+      ORDER BY e.ts DESC, e.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...(_bootTimestamp ? [_bootTimestamp] : []), limit, offset)
+
+    const lines = rows.map(r => {
+      const ts = String(r.ts || '').slice(0, 16)
+      if (r.topic) {
+        const cls = [r.classification, r.topic, r.element, r.state].filter(Boolean).join(' | ')
+        return `[${ts}] ${cls.slice(0, 500)}`
+      }
+      const prefix = r.role === 'user' ? 'u' : 'a'
+      return `[${ts}] ${prefix}: ${String(r.episode_content).slice(0, 500)}`
+    })
+    return { text: lines.join('\n') || '(no results found)' }
+  }
+
+  if (temporal?.start) {
     if (temporal.end && temporal.end !== temporal.start) {
       whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
       params.push(temporal.start, temporal.end)
@@ -614,7 +646,7 @@ async function handleRead(options) {
     const halfLimit = Math.ceil(limit / 2)
     let classWhereDate = ''
     const classParams = []
-    if (temporal?.start && temporal.mode !== 'last') {
+    if (temporal?.start) {
       classWhereDate = ' AND day_key >= ? AND day_key <= ?'
       classParams.push(temporal.start, temporal.end ?? temporal.start)
     }
@@ -638,7 +670,8 @@ async function handleRead(options) {
 
     const lines = []
     for (const c of classifications) {
-      const ts = String(c.updated_at || '').slice(0, 10)
+      const raw = Number(c.updated_at || 0)
+      const ts = raw > 1e9 ? new Date(raw * 1000).toLocaleString('sv-SE').replace(' ', 'T').slice(0, 16) : String(c.updated_at || '').slice(0, 10)
       lines.push(`[${ts}] ${String(c.content || '').slice(0, 500)}`)
     }
     for (const ep of episodes) {
@@ -756,10 +789,16 @@ async function handleRecall(args) {
 async function handleReason(query, options = {}) {
   // 1. Normal search to get relevant memories (with temporal scope if period given)
   const temporal = options.period ? parsePeriod(options.period, true) : null
-  const searchTemporal = temporal
-    ? (temporal.mode === 'last' ? null : { start: temporal.start, end: temporal.end, exact: temporal.exact })
-    : null
-  const searchResult = await handleGrep(query, { sort: 'importance', offset: 0, limit: options.limit ?? 20, temporal: searchTemporal })
+  let searchResult
+  if (temporal?.mode === 'last') {
+    // period=last: use handleRead with session_id filtering instead of semantic search
+    searchResult = await handleRead({ sort: 'date', offset: 0, limit: options.limit ?? 20, temporal })
+  } else {
+    const searchTemporal = temporal
+      ? { start: temporal.start, end: temporal.end, exact: temporal.exact }
+      : null
+    searchResult = await handleGrep(query, { sort: 'importance', offset: 0, limit: options.limit ?? 20, temporal: searchTemporal })
+  }
 
   // 2. Load user model
   let userModelLines = []
@@ -1111,6 +1150,14 @@ const httpServer = http.createServer(async (req, res) => {
     } catch (e) {
       sendError(res, e.message, Number(e?.statusCode) || 500)
     }
+    return
+  }
+
+  // POST /session-reset — update boot timestamp (called by SessionStart hook on /clear, /resume)
+  if (req.method === 'POST' && req.url === '/session-reset') {
+    _bootTimestamp = new Date().toLocaleString('sv-SE').replace(' ', 'T')
+    process.stderr.write(`[memory] session-reset: _bootTimestamp updated to ${_bootTimestamp}\n`)
+    sendJson(res, { ok: true, bootTimestamp: _bootTimestamp })
     return
   }
 

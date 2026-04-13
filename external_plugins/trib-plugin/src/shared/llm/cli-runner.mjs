@@ -61,10 +61,13 @@ export async function runClaude(prompt, options = {}) {
   try {
     const parsed = JSON.parse(stdout)
     if (parsed?.is_error) throw new Error(parsed?.result || 'claude returned error')
-    return String(parsed?.result ?? '').trim()
+    return {
+      text: String(parsed?.result ?? '').trim(),
+      usage: { costUsd: parsed?.total_cost_usd || 0 },
+    }
   } catch (e) {
     if (e.message.includes('claude returned error')) throw e
-    return stdout.trim()
+    return { text: stdout.trim(), usage: null }
   }
 }
 
@@ -97,7 +100,7 @@ export async function runCodex(prompt, options = {}) {
     } catch {}
   }
   if (!lastText) throw new Error('Codex returned no agent_message')
-  return lastText
+  return { text: lastText, usage: null }
 }
 
 /**
@@ -116,10 +119,10 @@ export async function runGemini(prompt, options = {}) {
     if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error))
     const text = parsed.response || parsed.text || parsed.result || ''
     if (!text) throw new Error('Gemini returned empty response')
-    return text
+    return { text, usage: null }
   } catch (e) {
     if (e.message && !e.message.includes('Unexpected')) throw e
     if (!stdout.trim()) throw new Error('Gemini returned empty output')
-    return stdout.trim()
+    return { text: stdout.trim(), usage: null }
   }
 }

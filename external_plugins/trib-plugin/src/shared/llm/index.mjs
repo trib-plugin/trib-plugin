@@ -5,7 +5,7 @@
  */
 import { runClaude, runCodex, runGemini } from './cli-runner.mjs'
 import { runHTTP, runOllamaHTTP } from './http-runner.mjs'
-import { readFileSync } from 'fs'
+import { readFileSync, appendFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -59,43 +59,78 @@ export async function callLLM(prompt, presetOrId, options = {}) {
 
   const model = preset.model
   const providerKey = preset.provider
+  const presetName = preset.id || preset.name || 'unknown'
+  const startMs = Date.now()
+  let result
 
   // Native (Claude Code CLI)
   if (preset.type === 'native') {
-    return runClaude(prompt, { model, mode, timeout, systemPrompt, effort: preset.effort })
+    result = await runClaude(prompt, { model, mode, timeout, systemPrompt, effort: preset.effort })
+  } else if (!providerKey) {
+    throw new Error(`Preset "${presetName}" has no provider`)
+  } else {
+    // Bridge — route by provider
+    switch (providerKey) {
+      case 'openai-oauth':
+      case 'copilot':
+        result = await runCodex(prompt, { model, mode, timeout, effort: preset.effort, fast: preset.fast })
+        break
+      case 'ollama': {
+        const rawUrl = preset.baseUrl || agentConfig?.providers?.ollama?.baseURL || 'http://localhost:11434'
+        const baseUrl = rawUrl.replace(/\/v1\/?$/, '')
+        result = await runOllamaHTTP(prompt, { model, timeout, baseUrl })
+        break
+      }
+      case 'lmstudio': {
+        const apiKey = preset.apiKey || 'lm-studio'
+        const baseUrl = preset.baseUrl || agentConfig?.providers?.lmstudio?.baseURL || 'http://localhost:1234/v1'
+        result = await runHTTP(prompt, { model, timeout, apiKey, baseUrl, provider: 'lmstudio', systemPrompt })
+        break
+      }
+      case 'gemini':
+        result = await runGemini(prompt, { model, mode, timeout })
+        break
+      default: {
+        const apiKey = preset.apiKey || resolveApiKey(providerKey, agentConfig)
+        const baseUrl = preset.baseUrl || agentConfig?.providers?.[providerKey]?.baseURL
+        result = await runHTTP(prompt, { model, timeout, apiKey, baseUrl, provider: providerKey, systemPrompt })
+        break
+      }
+    }
   }
 
-  // Bridge — must have provider
-  if (!providerKey) throw new Error(`Preset "${preset.id || preset.name}" has no provider`)
+  // Unwrap { text, usage } from runners
+  const text = typeof result === 'string' ? result : result.text
+  const usage = typeof result === 'object' ? result.usage : null
+  const durationMs = Date.now() - startMs
 
-  // Bridge — route by provider
-  switch (providerKey) {
-    case 'openai-oauth':
-    case 'copilot':
-      return runCodex(prompt, { model, mode, timeout, effort: preset.effort, fast: preset.fast })
+  // Log usage
+  const parts = [`[llm] ${presetName} (${model}) ${durationMs}ms`]
+  if (usage?.inputTokens) parts.push(`in=${usage.inputTokens}`)
+  if (usage?.outputTokens) parts.push(`out=${usage.outputTokens}`)
+  if (usage?.costUsd) parts.push(`$${usage.costUsd.toFixed(4)}`)
+  process.stderr.write(parts.join(' ') + '\n')
 
-    case 'ollama': {
-      const rawUrl = preset.baseUrl || agentConfig?.providers?.ollama?.baseURL || 'http://localhost:11434'
-      const baseUrl = rawUrl.replace(/\/v1\/?$/, '')
-      return runOllamaHTTP(prompt, { model, timeout, baseUrl })
-    }
+  // Persist to llm-usage.jsonl
+  try {
+    const dataDir = process.env.CLAUDE_PLUGIN_DATA
+      || join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin')
+    const logPath = join(dataDir, 'llm-usage.jsonl')
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      preset: presetName,
+      model,
+      provider: providerKey || 'native',
+      mode,
+      duration: durationMs,
+      inputTokens: usage?.inputTokens || 0,
+      outputTokens: usage?.outputTokens || 0,
+      costUsd: usage?.costUsd || 0,
+    })
+    appendFileSync(logPath, entry + '\n')
+  } catch {}
 
-    case 'lmstudio': {
-      const apiKey = preset.apiKey || 'lm-studio'
-      const baseUrl = preset.baseUrl || agentConfig?.providers?.lmstudio?.baseURL || 'http://localhost:1234/v1'
-      return runHTTP(prompt, { model, timeout, apiKey, baseUrl, provider: 'lmstudio', systemPrompt })
-    }
-
-    case 'gemini':
-      return runGemini(prompt, { model, mode, timeout })
-
-    default: {
-      // API-key based (openai, anthropic, groq, xai, openrouter, etc.)
-      const apiKey = preset.apiKey || resolveApiKey(providerKey, agentConfig)
-      const baseUrl = preset.baseUrl || agentConfig?.providers?.[providerKey]?.baseURL
-      return runHTTP(prompt, { model, timeout, apiKey, baseUrl, provider: providerKey, systemPrompt })
-    }
-  }
+  return text
 }
 
 /**
