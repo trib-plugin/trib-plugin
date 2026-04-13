@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
 import { join, isAbsolute } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import { DATA_DIR, PLUGIN_ROOT } from "./config.mjs";
+import { DATA_DIR } from "./config.mjs";
 import { appendFileSync } from "fs";
 import { runScript as execScript, ensureNopluginDir } from "./executor.mjs";
 import { callLLM } from '../../shared/llm/index.mjs';

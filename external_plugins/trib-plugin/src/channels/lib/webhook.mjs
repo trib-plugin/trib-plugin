@@ -2,7 +2,7 @@ import * as http from "http";
 import * as crypto from "crypto";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
-import { DATA_DIR, PLUGIN_ROOT } from "./config.mjs";
+import { DATA_DIR } from "./config.mjs";
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from "fs";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
 import { callLLM } from '../../shared/llm/index.mjs';

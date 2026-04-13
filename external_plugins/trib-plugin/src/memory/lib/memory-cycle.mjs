@@ -4,13 +4,13 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { homedir, tmpdir } from 'os'
+import { homedir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
 import { classifyCandidateConcept } from './memory-extraction.mjs'
-import { embedText, configureEmbedding, getEmbeddingModelId } from './embedding-provider.mjs'
+import { embedText, configureEmbedding } from './embedding-provider.mjs'
 import { callLLM, resolveMaintenancePreset } from '../../shared/llm/index.mjs'
-import { cosineSimilarity as cosineSimilarityShared, hashEmbeddingInput } from './memory-vector-utils.mjs'
+import { cosineSimilarity as cosineSimilarityShared } from './memory-vector-utils.mjs'
 
 const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
   const candidates = [
@@ -21,7 +21,6 @@ const PLUGIN_DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || (() => {
   }
   return candidates[0]
 })()
-const HISTORY_DIR = join(PLUGIN_DATA_DIR, 'history')
 const CONFIG_PATH = join(PLUGIN_DATA_DIR, 'memory-cycle.json')
 
 // ── Cycle State (waterfall chaining) ──
@@ -98,7 +97,6 @@ const MEMORY_FLUSH_DEFAULT_MIN_PENDING = 8
 // ── Batch system constants ──
 const BATCH_SIZE = 50
 const MAX_CONCURRENT_BATCHES = 5
-const DEFAULT_MAX_AGE_DAYS = 1
 
 // Tier 2 (Auto-flush) thresholds
 const AUTO_FLUSH_THRESHOLD = 15
