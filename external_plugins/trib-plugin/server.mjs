@@ -199,15 +199,12 @@ const modules = new Map()
 function agentContext() {
   return {
     notifyFn: text => {
-      log(`[agent-notify] sending: ${text.slice(0, 80)}...`)
       server.notification({
         method: 'notifications/claude/channel',
         params: {
           content: text,
           meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
         },
-      }).then(() => {
-        log(`[agent-notify] sent OK`)
       }).catch(err => {
         log(`[agent-notify] failed: ${err instanceof Error ? err.message : String(err)}`)
       })
@@ -249,15 +246,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 })
 
 // ── Transport ───────────────────────────────────────────────────────
-const _transport = new StdioServerTransport()
-const _origSend = _transport.send.bind(_transport)
-_transport.send = function(msg, opts) {
-  if (msg?.method?.startsWith('notifications/')) {
-    log(`[transport-debug] notification: ${JSON.stringify(msg).slice(0, 300)}`)
-  }
-  return _origSend(msg, opts)
-}
-await server.connect(_transport)
+await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
