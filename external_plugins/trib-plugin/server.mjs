@@ -359,7 +359,7 @@ setImmediate(() => {
     const onReady = (msg) => {
       if (msg.type === 'ready') {
         reconcileClaudeMd()
-        spawnWorker('channels')
+        if (!workers.has('channels')) spawnWorker('channels')
         memEntry.proc.removeListener('message', onReady)
       }
     }

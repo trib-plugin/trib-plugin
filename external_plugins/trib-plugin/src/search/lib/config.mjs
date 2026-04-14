@@ -78,56 +78,7 @@ export function writeJson(filePath, value) {
 
 function normalizeLegacyConfig(config) {
   if (!config) return DEFAULT_CONFIG
-  if (config.rawSearch || config.siteRules) {
-    return config
-  }
-
-  return {
-    rawSearch: {
-      priority: config.rawProviders || DEFAULT_CONFIG.rawSearch.priority,
-      maxResults: config.rawMaxResults || DEFAULT_CONFIG.rawSearch.maxResults,
-      credentials: {
-        ...DEFAULT_CONFIG.rawSearch.credentials,
-        serper: {
-          apiKey:
-            config.serperApiKey ||
-            DEFAULT_CONFIG.rawSearch.credentials.serper.apiKey,
-        },
-        brave: {
-          apiKey:
-            config.braveApiKey ||
-            DEFAULT_CONFIG.rawSearch.credentials.brave.apiKey,
-        },
-        perplexity: {
-          apiKey:
-            config.perplexityApiKey ||
-            DEFAULT_CONFIG.rawSearch.credentials.perplexity.apiKey,
-        },
-        firecrawl: {
-          apiKey:
-            config.firecrawlApiKey ||
-            DEFAULT_CONFIG.rawSearch.credentials.firecrawl.apiKey,
-        },
-        tavily: {
-          apiKey:
-            config.tavilyApiKey ||
-            DEFAULT_CONFIG.rawSearch.credentials.tavily.apiKey,
-        },
-        xai: {
-          apiKey:
-            config.xaiApiKey ||
-            config.grokApiKey ||
-            DEFAULT_CONFIG.rawSearch.credentials.xai.apiKey,
-        },
-      },
-    },
-    requestTimeoutMs: config.requestTimeoutMs || DEFAULT_CONFIG.requestTimeoutMs,
-    crawl: {
-      ...DEFAULT_CONFIG.crawl,
-      ...(config.crawl || {}),
-    },
-    siteRules: DEFAULT_CONFIG.siteRules,
-  }
+  return config
 }
 
 export function loadConfig() {

@@ -444,6 +444,7 @@ export async function handleToolCall(name, args, opts = {}) {
           let result = null;
           const toolCallLog = [];
           updateSessionStatus(session.id, 'running');
+          emit(`[${scopeLabel}] started · ${modelLabel}`);
           try {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, process.cwd());
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);

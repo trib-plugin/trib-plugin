@@ -130,7 +130,7 @@ export function loadConfig() {
                 trajectory: { enabled: true, ...raw.trajectory },
                 statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...raw.statePacket },
                 skillSuggest: { autoDetect: false, ...raw.skillSuggest },
-                agentMaintenance: { enabled: false, interval: '30m', ...raw.agentMaintenance },
+                agentMaintenance: { enabled: false, interval: '30m', ...(raw.agentMaintenance ?? raw.cycle3) },
             };
         }
         catch { /* fall through */ }

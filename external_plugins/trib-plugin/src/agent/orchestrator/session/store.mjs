@@ -119,6 +119,9 @@ export function sweepStaleSessions(ttlMs) {
         try {
             const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
             const lastActive = session.updatedAt || session.createdAt || 0;
+            // Only sweep bridge sessions; skip running sessions
+            if (session.owner !== 'bridge') { remaining++; continue; }
+            if (session.status === 'running') { remaining++; continue; }
             if (now - lastActive > maxAge) {
                 try { unlinkSync(join(dir, f)); } catch { continue; }
                 cleaned++;
