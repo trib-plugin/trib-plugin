@@ -620,6 +620,58 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Proactive sources CRUD (reads from memory.sqlite proactive_sources table)
+  if (path === '/proactive-sources') {
+    const sendErr = (code, msg) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: msg })); };
+    if (!DatabaseSync || !existsSync(MEMORY_DB_PATH)) {
+      sendErr(503, 'memory DB not available');
+      return;
+    }
+    try {
+      const db = new DatabaseSync(MEMORY_DB_PATH, { readOnly: req.method === 'GET' });
+      if (req.method === 'GET') {
+        const rows = db.prepare('SELECT id, category, topic, query, score, status, hit_count, skip_count, pinned FROM proactive_sources ORDER BY status ASC, score DESC').all();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ sources: rows }));
+        db.close();
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        if (body.action === 'add' && body.topic) {
+          db.prepare('INSERT INTO proactive_sources (category, topic, query, score, status) VALUES (?, ?, ?, 1.0, ?)').run(
+            body.category || 'custom', body.topic, body.query || body.topic, 'active'
+          );
+        } else if (body.action === 'remove' && body.id) {
+          db.prepare("UPDATE proactive_sources SET status = 'removed', pinned = 1, updated_at = unixepoch() WHERE id = ?").run(body.id);
+        } else if (body.action === 'update' && body.id) {
+          const sets = [];
+          const vals = [];
+          if (body.topic !== undefined) { sets.push('topic = ?'); vals.push(body.topic); }
+          if (body.category !== undefined) { sets.push('category = ?'); vals.push(body.category); }
+          if (body.query !== undefined) { sets.push('query = ?'); vals.push(body.query); }
+          if (body.score !== undefined) { sets.push('score = ?'); vals.push(body.score); }
+          if (body.status !== undefined) { sets.push('status = ?'); vals.push(body.status); }
+          if (sets.length > 0) {
+            sets.push('updated_at = unixepoch()');
+            vals.push(body.id);
+            db.prepare(`UPDATE proactive_sources SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+          }
+        } else if (body.action === 'restore' && body.id) {
+          db.prepare("UPDATE proactive_sources SET status = 'active', pinned = 0, updated_at = unixepoch() WHERE id = ?").run(body.id);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        db.close();
+        return;
+      }
+      db.close();
+    } catch (err) {
+      sendErr(500, err.message);
+      return;
+    }
+  }
+
   if (req.method === 'GET' && path === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);

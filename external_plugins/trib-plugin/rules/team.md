@@ -5,10 +5,13 @@ Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check 
 
 ## Lead role
 - Lead is a control tower, not an executor. User collaboration and agent management are the top priority.
-- Direct code work is forbidden. All implementation must be delegated to role-matched agents.
+- Direct code work is forbidden. Only trivial one-liner fixes (1-2 lines) are allowed. Any change touching 3+ lines or multiple files MUST be delegated to a worker agent.
 - Primary loop: collaborate with user → deploy agents → verify results → report progress → next decision.
-- Use parallel agents when justified by task size and file independence. Small edits can be batched or handled directly.
 - Verify phase: delegate verification to appropriate roles per user workflow. Never skip peer review.
+
+## Agent deployment
+- Agent deployment is independent of the workflow cycle. Agents can be spawned at any time — during research, Q&A, planning, execution, or review.
+- Lead proactively assigns role-matched agents whenever beneficial. No per-agent approval needed.
 
 ## Bridge (external models)
 - Use MCP `bridge` tool for external model delegation.
@@ -23,11 +26,6 @@ Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check 
 - Spawn: `run_in_background: true`, `team_name: "main"`, `name: <role>`, `model: <from preset>`.
 - Reuse via SendMessage. Respawn when prior context would interfere.
 - Before terminating an agent for respawn, get user approval.
-
-## Agent allocation
-- All workflow phases (Plan→Execute→Verify→Ship→Retro) must be followed.
-- Agent deployment is always active. Lead proactively assigns role-matched agents in background at every opportunity.
-- No per-agent approval needed. Lead decides and deploys.
 
 ## Progress reporting
 - When running parallel agents, report status on each update.

@@ -146,7 +146,7 @@ ${prompt}`;
   static INSTANCE_UUID = randomUUID();
   start() {
     if (this.tickTimer) return;
-    const total = this.nonInteractive.length + this.interactive.length + (this.proactive?.items.length ?? 0);
+    const total = this.nonInteractive.length + this.interactive.length + (this.proactive ? 1 : 0);
     if (total === 0) {
       process.stderr.write("trib-plugin scheduler: no schedules configured\n");
       return;
@@ -195,7 +195,7 @@ ${Scheduler.INSTANCE_UUID}`;
       } catch {
       }
     });
-    logSchedule(`${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, ${this.proactive?.items.length ?? 0} proactive
+    logSchedule(`${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, proactive=${this.proactive ? 'on' : 'off'}
 `);
     this.tick();
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL);
@@ -270,16 +270,17 @@ ${Scheduler.INSTANCE_UUID}`;
       });
     }
     if (this.proactive) {
-      for (const item of this.proactive.items) {
-        result.push({
-          name: `proactive:${item.topic}`,
-          time: `freq=${this.proactive.frequency}`,
-          days: "daily",
-          type: "proactive",
-          running: false,
-          lastFired: this.lastFired.get(`proactive:${item.topic}`) ?? null
-        });
-      }
+      const nextTick = this.proactiveNextTick > 0 ? new Date(this.proactiveNextTick).toLocaleTimeString() : 'pending';
+      const sessionState = this.getSessionState();
+      result.push({
+        name: 'proactive',
+        time: `interval=${this.proactive.interval ?? 60}m, next=${nextTick}`,
+        days: "daily",
+        type: "proactive",
+        running: false,
+        lastFired: this.proactiveLastFire > 0 ? new Date(this.proactiveLastFire).toISOString() : null,
+        meta: { session: sessionState, firedToday: this.proactiveFiredToday }
+      });
     }
     return result;
   }
@@ -297,14 +298,19 @@ ${Scheduler.INSTANCE_UUID}`;
     }
     if (this.proactive) {
       const topic = name.replace(/^proactive:/, "");
+      // "proactive" alone or "proactive:" with no topic → fire without preferred topic
+      if (name === "proactive" || topic === "") {
+        await this.fireProactiveTick();
+        return `triggered proactive (auto-topic)`;
+      }
       const item = this.proactive.items.find((i) => i.topic === topic);
       if (item) {
-        if (this.lastActivity > 0 && Date.now() - this.lastActivity < 5 * 6e4) {
-          return `skipped proactive "${topic}" \u2014 conversation active (last activity ${Math.floor((Date.now() - this.lastActivity) / 1e3)}s ago)`;
-        }
         await this.fireProactiveTick(item.topic);
         return `triggered proactive "${topic}"`;
       }
+      // topic specified but not in items → still fire with it as preference
+      await this.fireProactiveTick(topic);
+      return `triggered proactive "${topic}"`;
     }
     return `schedule "${name}" not found`;
   }
@@ -558,6 +564,11 @@ ${scriptResult}
     this.proactiveDbUpdater = dbUpdater;
   }
   async fireProactiveTick(preferredTopic) {
+    // Pre-check: skip LLM call entirely if user is active (manual trigger with topic bypasses)
+    if (!preferredTopic && this.getSessionState() !== 'idle') {
+      logSchedule('proactive: skip (session active, pre-check)\n');
+      return;
+    }
     const data = await this.proactiveDataFetcher?.() ?? { memory: "", sources: [] };
     const now = /* @__PURE__ */ new Date();
     const timeInfo = `${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")} (${["\uC77C", "\uC6D4", "\uD654", "\uC218", "\uBAA9", "\uAE08", "\uD1A0"][now.getDay()]}\uC694\uC77C)`;
@@ -567,6 +578,7 @@ ${scriptResult}
 Prefer the topic "${preferredTopic}" if it is available and suitable. Only choose another source when that topic is unavailable or clearly not a good fit right now.
 ` : "";
     const task = `You are a proactive conversation agent. You run periodically in the background.
+Your goal: bring the user genuinely useful, timely information or start a natural conversation.
 
 ## Current Time
 ${timeInfo}
@@ -579,17 +591,44 @@ ${sourcesText}
 ${preferredTopicText}
 
 ## Your Job (do all of these in order)
-1. **Judge availability**: Based on the memory context, is now a good time to talk? If the user seems busy, stressed, or in deep focus \u2192 respond with ONLY the JSON below with action:"skip".
-2. **Discover new sources**: If you see interesting topics from recent conversations that aren't in the source list, include them in sourceUpdates.add.
-3. **Pick a source**: Randomly pick one from the available sources (weighted by score). Research or compose material for it.
-4. **Prepare message**: Write a natural, casual conversation starter in Korean (1-2 sentences). Be specific, not generic.
-5. **Score adjustments**: Suggest score changes for sources based on what seems relevant now.
+
+### 1. Judge availability
+Based on the memory context, is now a good time to talk?
+- If the user seems busy, stressed, or in deep focus → respond with action:"skip".
+- If the user has been idle or context suggests a natural break → proceed.
+
+### 2. Pick a topic
+Choose the best topic using these signals:
+- **Recency**: Topics mentioned frequently in recent conversations are higher priority.
+- **User interest**: Topics the user engaged with positively (long replies, follow-up questions) score higher.
+- **User disinterest**: Topics the user dismissed ("별로", short replies, no follow-up) score lower.
+- **Timeliness**: Prefer topics where real-time information would be genuinely useful right now.
+- **Variety**: Avoid repeating the same topic category consecutively.
+
+### 3. Research (IMPORTANT)
+Before composing the message, **search the web** for current information about the chosen topic.
+- Use the topic's query field as a search starting point.
+- Find specific, concrete, up-to-date facts (prices, news, events, releases).
+- Do NOT make up information. If search returns nothing useful, pick another topic or skip.
+
+### 4. Compose message
+Write a natural, casual conversation starter in Korean (2-4 sentences).
+- Be specific and factual — include the real data you found.
+- Don't be generic ("요즘 뭐하세요?" is bad). Include actual information.
+- Match the tone: casual for casual topics, informative for news/work topics.
+
+### 5. Source lifecycle management
+- **Discover**: Interesting topics from recent conversations not in the source list → add.
+- **Score up (+0.1~0.3)**: Topics the user recently showed interest in.
+- **Score down (-0.1~0.3)**: Topics with high skip rate or user dismissed.
+- **Remove**: Topics that are clearly no longer relevant or stale (>30 days unused, skip_count >> hit_count).
 
 ## Response Format (JSON only, no markdown)
 {
   "action": "talk" | "skip",
-  "message": "prepared conversation starter (Korean)",
+  "message": "prepared conversation starter with real data (Korean)",
   "sourcePicked": "topic name",
+  "researchSummary": "brief summary of what you found (for logging)",
   "sourceUpdates": {
     "add": [{ "category": "...", "topic": "...", "query": "..." }],
     "remove": ["topic name"],
@@ -610,10 +649,13 @@ ${preferredTopicText}
         return;
       }
       if (!result) return;
-      if (result.log) {
+      if (result.log || result.researchSummary) {
         const logPath = join(DATA_DIR, "proactive.log");
+        const parts = [`[${(/* @__PURE__ */ new Date()).toISOString()}]`];
+        if (result.log) parts.push(result.log);
+        if (result.researchSummary) parts.push(`research: ${result.researchSummary}`);
         try {
-          appendFileSync(logPath, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${result.log}\n`);
+          appendFileSync(logPath, parts.join(' ') + '\n');
         } catch {}
       }
       if (result.sourceUpdates) {

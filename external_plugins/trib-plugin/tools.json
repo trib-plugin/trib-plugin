@@ -224,7 +224,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Manually trigger a named schedule immediately, ignoring time/day constraints.",
+    "description": "Manually trigger a named schedule immediately, ignoring time/day constraints. Use \"proactive\" to trigger a proactive tick with auto-selected topic.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -312,7 +312,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Reload config from disk and re-register all schedules, webhooks, and event rules without restarting.",
+    "description": "Reload config.json from disk and re-register all schedules, webhooks, and event rules. Config only — code changes require a full session restart.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -329,7 +329,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (process unclassified episodes then run cycle1), status.",
+    "description": "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (process unclassified episodes then run cycle1), status, remember (store a fact in core memory on user request).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -399,7 +399,7 @@
         },
         "period": {
           "type": "string",
-          "description": "Time scope: \"last\" (previous session), \"24h\"/\"3d\"/\"7d\"/\"30d\" (relative), \"all\" (no limit), \"2026-04-05\" (single date), \"2026-04-01~2026-04-05\" (date range). Default: 30d when query is set, latest entries when no query."
+          "description": "Time scope: \"last\" (records before current boot, not session-scoped), \"24h\"/\"3d\"/\"7d\"/\"30d\" (relative), \"all\" (no limit), \"2026-04-05\" (single date), \"2026-04-01~2026-04-05\" (date range). Default: 30d when query is set, latest entries when no query."
         },
         "sort": {
           "type": "string",
@@ -432,7 +432,7 @@
   {
     "name": "search",
     "title": "Search",
-    "description": "Search the web for external information. Use this instead of built-in WebSearch/WebFetch. For 2+ lookups use batch tool. Not for codebase (Grep/Glob/Read) or past context (search_memories).",
+    "description": "REQUIRED for all external web lookups. Built-in WebSearch/WebFetch must NOT be used — always use this tool. For 2+ lookups use batch tool. Not for codebase (Grep/Glob/Read) or past context (search_memories).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -823,7 +823,7 @@
   },
   {
     "name": "create_session",
-    "description": "Create an external AI session. Auto-injects CLAUDE.md, agent rules, skills. Registers builtin+MCP tools. Use preset: \"full\"/\"readonly\"/\"mcp\". Use agent: \"Worker\"/\"Reviewer\" for role rules. Pass cwd for project-scoped tool execution.",
+    "description": "Create an external AI session for multi-turn interaction requiring direct tool access. Auto-injects CLAUDE.md, agent rules, skills. Registers builtin+MCP tools. Use preset: \"full\"/\"readonly\"/\"mcp\". Use agent: \"Worker\"/\"Reviewer\" for role rules. Pass cwd for project-scoped tool execution. For single-turn delegation, prefer the bridge tool.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -961,7 +961,7 @@
   {
     "name": "bridge",
     "title": "Bridge to External Model",
-    "description": "Bridge a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope maps to a configured preset.",
+    "description": "Bridge a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope is prefix-matched to preset names in user-workflow.json (e.g. \"reviewer\" matches \"reviewer-a\", \"reviewer-b\"). No scope uses the default model.",
     "inputSchema": {
       "type": "object",
       "properties": {

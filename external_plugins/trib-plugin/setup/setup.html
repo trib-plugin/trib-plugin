@@ -1991,32 +1991,75 @@ function setMainChannel(radio) {
   radio.classList.add('on');
 }
 
-// -- Proactive topic CRUD --
-function removeProactiveItem(el) {
-  el.parentElement.remove();
-  isDirty = true;
+// -- Proactive sources CRUD (DB-backed) --
+function loadProactiveSources() {
   const sec = document.getElementById('proactive-items');
-  if (!sec.querySelector('.r:not(#proactive-empty)') && !document.getElementById('proactive-empty')) {
-    const e = document.createElement('div');
-    e.className = 'r'; e.id = 'proactive-empty';
-    e.style.cssText = 'padding:12px 14px;color:var(--text-4);font-size:12px';
-    e.textContent = 'No topics yet \u2014 click + Add to create one';
-    sec.appendChild(e);
-  }
+  sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">Loading...</div>';
+  fetch('/proactive-sources').then(r => r.json()).then(data => {
+    sec.innerHTML = '';
+    const sources = data.sources || [];
+    const active = sources.filter(s => s.status === 'active');
+    const inactive = sources.filter(s => s.status !== 'active');
+    if (active.length === 0 && inactive.length === 0) {
+      sec.innerHTML = '<div id="proactive-empty" style="padding:12px 14px;color:var(--text-4);font-size:12px">No topics yet — click + Add to create one</div>';
+      return;
+    }
+    active.forEach(s => sec.appendChild(buildSourceRow(s)));
+    if (inactive.length > 0) {
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'padding:6px 14px;font-size:11px;color:var(--text-4);border-top:1px solid var(--border)';
+      hdr.textContent = `Inactive (${inactive.length})`;
+      sec.appendChild(hdr);
+      inactive.forEach(s => sec.appendChild(buildSourceRow(s)));
+    }
+  }).catch(() => {
+    sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">Could not load sources (memory DB unavailable)</div>';
+  });
+}
+
+function buildSourceRow(s) {
+  const div = document.createElement('div');
+  div.className = 'r';
+  div.style.cssText = 'gap:8px;align-items:center' + (s.status !== 'active' ? ';opacity:0.5' : '');
+  const scoreColor = s.score >= 0.7 ? '#3fb950' : s.score >= 0.3 ? '#d29922' : '#e5534b';
+  div.innerHTML = `
+    <span style="font-size:10px;color:var(--text-4);min-width:40px">${s.category}</span>
+    <span style="flex:1;font-size:13px">${s.topic}</span>
+    <span style="font-size:10px;color:${scoreColor};min-width:30px;text-align:right">${s.score?.toFixed(1) ?? '—'}</span>
+    <span style="font-size:10px;color:var(--text-4);min-width:35px;text-align:right">${s.hit_count ?? 0}/${(s.hit_count ?? 0) + (s.skip_count ?? 0)}</span>
+    ${s.status === 'active'
+      ? `<span style="cursor:pointer;color:#e5534b;font-size:12px;padding:2px 6px;border-radius:4px;background:rgba(229,83,75,0.1)" onclick="removeProactiveSource(${s.id})">Remove</span>`
+      : `<span style="cursor:pointer;color:#3fb950;font-size:12px;padding:2px 6px;border-radius:4px;background:rgba(63,185,80,0.1)" onclick="restoreProactiveSource(${s.id})">Restore</span>`
+    }
+  `;
+  return div;
+}
+
+function removeProactiveSource(id) {
+  fetch('/proactive-sources', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'remove', id }),
+  }).then(() => loadProactiveSources());
+}
+
+function restoreProactiveSource(id) {
+  fetch('/proactive-sources', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'restore', id }),
+  }).then(() => loadProactiveSources());
 }
 
 function addProactiveItem(topic) {
-  const sec = document.getElementById('proactive-items');
-  const empty = document.getElementById('proactive-empty');
-  if (empty) empty.remove();
-  const div = document.createElement('div');
-  div.className = 'r';
-  div.innerHTML = `
-    <input class="r-input" data-f="pt-topic" type="text" placeholder="Topic name" value="${topic || ''}" style="flex:1">
-    <span style="margin-left:10px;cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="removeProactiveItem(this)">Delete</span>
-  `;
-  sec.appendChild(div);
-  isDirty = true;
+  const name = topic || prompt('Topic name:');
+  if (!name) return;
+  const category = prompt('Category (e.g. news, work, casual):', 'custom') || 'custom';
+  fetch('/proactive-sources', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'add', topic: name, category }),
+  }).then(() => loadProactiveSources());
 }
 
 function populateProactiveFeedback(cfg) {
@@ -2081,18 +2124,13 @@ function proactiveIntervalChanged() {
 }
 
 function buildProactiveData() {
-  const items = [];
-  document.querySelectorAll('#proactive-items .r:not(#proactive-empty)').forEach(r => {
-    const topic = r.querySelector('[data-f="pt-topic"]')?.value.trim();
-    if (topic) items.push({ topic, channel: 'main' });
-  });
+  // Sources are managed via DB (proactive_sources table), not config items.
   const interval = getProactiveInterval();
   return {
     interval,
     model: document.getElementById('proactive-model').value || undefined,
     feedback: true,
     frequency: Math.max(1, Math.min(5, Math.round(1440 / interval))),
-    items,
   };
 }
 
@@ -2414,7 +2452,7 @@ async function populateChannels(cfg) {
       customInput.style.display = '';
     }
   }
-  (proactive.items || []).forEach(item => addProactiveItem(item.topic));
+  loadProactiveSources();
   populateProactiveFeedback(cfg);
 
   // Schedules
