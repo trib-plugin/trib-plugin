@@ -34,7 +34,7 @@ const PLUGIN_VERSION = readPluginVersion()
 try { os.setPriority(os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
 try {
   const { env } = await import('@huggingface/transformers')
-  env.backends.onnx.wasm.numThreads = 2
+  env.backends.onnx.wasm.numThreads = 1
 } catch {}
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -302,7 +302,7 @@ async function checkCycles(options = {}) {
       : cycle1Due
   ) {
     try {
-      const result = await runCycle1(WORKSPACE_PATH, mainConfig, { maxItems: 50, maxAgeDays: 1 })
+      const result = await runCycle1(WORKSPACE_PATH, mainConfig, { maxItems: 50, maxAgeDays: 30 })
       process.stderr.write(
         `[cycle1] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''} extracted=${Number(result?.extracted ?? 0)} classifications=${Number(result?.classifications ?? 0)}\n`,
       )
