@@ -149,7 +149,6 @@ class OutputForwarder {
   mainSessionId = "";
   watchDebounce = null;
   turnTextBuffer = "";
-  healthCheckTimer = null;
   hasBinding() {
     return !!this.transcriptPath;
   }
@@ -583,20 +582,6 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
     } catch {
       this.closeWatcher();
     }
-    if (!this.healthCheckTimer) {
-      this.healthCheckTimer = setInterval(() => {
-        if (!this.transcriptPath || existsSync(this.transcriptPath)) return;
-        const relocated = findLatestTranscriptByMtime();
-        if (relocated && relocated !== this.transcriptPath) {
-          process.stderr.write(`trib-plugin: watched transcript disappeared, relocated to ${relocated}
-`);
-          this.closeWatcher();
-          this.transcriptPath = relocated;
-          this.mainSessionId = "";
-          this.startWatch();
-        }
-      }, 3e4);
-    }
   }
   /** No-op — watch is kept alive permanently */
   stopWatch() {
@@ -617,10 +602,6 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
     if (this.sendRetryTimer) {
       clearTimeout(this.sendRetryTimer);
       this.sendRetryTimer = null;
-    }
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
     }
     if (this.watcher) {
       this.watcher.close();

@@ -10,12 +10,6 @@ Plan → Execute → Verify → Ship → Retro.
 
 All phase transitions require explicit user approval. Never proceed to the next phase without approval. Exceptions: Execute flows directly into Verify, and Ship flows directly into Retro.
 
-## Progress reporting
-- When running parallel agents (bridge or native), report status on each update.
-- Format: which agents completed, which are in progress, what each is doing.
-- Example: "a,c completed. b is processing session trim logic."
-- Keep the user aware of overall progress without waiting for all to finish.
-
 ## Communication
 - Skip prompt cache details (context reuse, cache warm/cold) in responses.
 

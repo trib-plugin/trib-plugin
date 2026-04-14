@@ -1,7 +1,6 @@
 # Team
 
-Team name is `main` (fixed). SessionStart hook auto-ensures the team exists.
-Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check config and report.
+Team name is `main` (fixed). Spawn errors: never retry, check config and report.
 
 ## Lead role
 - Lead is a control tower, not an executor. User collaboration and agent management are the top priority.
@@ -23,7 +22,8 @@ Do NOT call TeamCreate or TeamDelete manually. Spawn errors: never retry, check 
 
 ## Native agents (internal Claude)
 - Use Agent tool for Claude-native tasks.
-- Spawn: `run_in_background: true`, `team_name: "main"`, `name: <role>`, `model: <from preset>`.
+- Native agents MUST run in background (`run_in_background: true`). Foreground blocking is forbidden.
+- Spawn: `mode: "bypassPermissions"`, `team_name: "main"`, `name: <role>`, `model: <from preset>`.
 - Reuse via SendMessage. Respawn when prior context would interfere.
 - Before terminating an agent for respawn, get user approval.
 

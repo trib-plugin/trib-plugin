@@ -509,6 +509,21 @@ async function startOwnerHttpServer() {
           }
           return;
         }
+        case "/rebind": {
+          const latest = discoverSessionBoundTranscript();
+          if (latest?.exists && latest.transcriptPath !== forwarder.transcriptPath) {
+            applyTranscriptBinding(
+              statusState.read().channelId,
+              latest.transcriptPath
+            );
+            res.writeHead(200);
+            res.end(JSON.stringify({ rebound: true, path: latest.transcriptPath }));
+          } else {
+            res.writeHead(200);
+            res.end(JSON.stringify({ rebound: false }));
+          }
+          return;
+        }
         default: {
           res.writeHead(404);
           res.end(JSON.stringify({ error: "not found" }));

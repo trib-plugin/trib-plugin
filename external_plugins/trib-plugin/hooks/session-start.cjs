@@ -14,7 +14,7 @@
  * server at boot, giving the content OVERRIDE-level enforcement.
  *
  * Injection order (see lib/rules-builder.cjs):
- *   1. workflow.md   (always)
+ *   1. user-workflow.md (always)
  *   2. memory.md     (when memory-config.json has enabled)
  *   3. channels.md   (when channel backend configured)
  *   4. search.md     (when search-config.json has enabled)
@@ -29,6 +29,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // Read hook event from stdin
 let _event = {};
@@ -46,54 +47,53 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
 
-// --- Ensure team exists (reuse or create) ---
-try {
-  const os = require('os');
-  const TEAMS_ROOT = path.join(os.homedir(), '.claude', 'teams');
-  const TASKS_ROOT = path.join(os.homedir(), '.claude', 'tasks');
-  const TEAM_NAME = 'main';
-  const teamDir = path.join(TEAMS_ROOT, TEAM_NAME);
-  const tasksDir = path.join(TASKS_ROOT, TEAM_NAME);
-  const configPath = path.join(teamDir, 'config.json');
-  const sessionId = _event.session_id || _event.sessionId || '';
-
-  fs.mkdirSync(teamDir, { recursive: true });
-  fs.mkdirSync(tasksDir, { recursive: true });
-
-  if (fs.existsSync(configPath)) {
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    if (config.leadSessionId !== sessionId && sessionId) {
-      config.leadSessionId = sessionId;
-      config.members = (config.members || []).filter(m => m.agentType === 'team-lead');
-      if (config.members[0]) config.members[0].cwd = _event.cwd || process.cwd();
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    }
-  } else {
-    fs.writeFileSync(configPath, JSON.stringify({
-      name: TEAM_NAME,
-      description: 'Default reusable team',
-      createdAt: Date.now(),
-      leadAgentId: `team-lead@${TEAM_NAME}`,
-      leadSessionId: sessionId,
-      members: [{
-        agentId: `team-lead@${TEAM_NAME}`,
-        name: 'team-lead',
-        agentType: 'team-lead',
-        joinedAt: Date.now(),
-        tmuxPaneId: '',
-        cwd: _event.cwd || process.cwd(),
-        subscriptions: [],
-      }],
-    }, null, 2));
-  }
-} catch (e) {
-  process.stderr.write(`[ensure-team] error: ${e.message}\n`)
-}
 
 // --- Mode branch: claude_md mode delegates to MCP boot-time writer ---
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
+
+// --- Trigger recap rebuild (fire-and-forget) ---
+try {
+  const http = require('http');
+  const portFile = path.join(os.tmpdir(), 'trib-memory', 'memory-port');
+  if (fs.existsSync(portFile)) {
+    const port = Number(fs.readFileSync(portFile, 'utf8').trim());
+    if (port > 0) {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path: '/rebuild-recap',
+        method: 'POST',
+        timeout: 5000,
+      });
+      req.on('error', () => {});
+      req.on('timeout', () => req.destroy());
+      req.end();
+    }
+  }
+} catch {}
+
+// --- Trigger transcript rebind (fire-and-forget) ---
+try {
+  const activePath = path.join(os.tmpdir(), 'trib-plugin', 'active-instance.json');
+  if (fs.existsSync(activePath)) {
+    const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
+    if (active.httpPort) {
+      const http2 = require('http');
+      const req2 = http2.request({
+        hostname: '127.0.0.1',
+        port: active.httpPort,
+        path: '/rebind',
+        method: 'POST',
+        timeout: 3000,
+      });
+      req2.on('error', () => {});
+      req2.on('timeout', () => req2.destroy());
+      req2.end();
+    }
+  }
+} catch {}
 
 const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
 if (mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md') {

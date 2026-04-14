@@ -7,7 +7,7 @@
  * (hook mode) or the MCP boot-time writer (claude_md mode) uses.
  *
  * Injection order (must match hooks/session-start.cjs exactly):
- *   1. workflow.md   (always)
+ *   1. user-workflow.md (always)
  *   1a. user workflow (scopes from agent-config.json + description from user-workflow.md)
  *   2. memory.md     (when memory-config.json has enabled)
  *   3. channels.md   (when channel backend configured)
@@ -51,7 +51,7 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const parts = [];
 
   // --- 1. Workflow (always) ---
-  const workflow = readOptional(path.join(RULES_DIR, 'workflow.md'));
+  const workflow = readOptional(path.join(RULES_DIR, 'user-workflow.md'));
   if (workflow) parts.push(workflow);
 
   // --- 1a. User Workflow (roles from user-workflow.json + description from user-workflow.md) ---
