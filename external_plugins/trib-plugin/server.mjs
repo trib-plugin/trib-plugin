@@ -76,11 +76,15 @@ try {
   log(`[bridge-cleanup] failed: ${e && (e.stack || e.message) || e}`)
 }
 
-// ── Stale session cleanup ──────────────────────────────────────────
+// ── Session cleanup: bridge sessions from previous MCP process ─────
 try {
-  const { listSessions } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
-  const alive = listSessions() // TTL-based: automatically deletes expired sessions
-  log(`[session-cleanup] ${alive.length} active sessions after cleanup`)
+  const { listSessions, closeSession } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
+  const sessions = listSessions()
+  let closed = 0
+  for (const s of sessions) {
+    if (s.owner === 'bridge' && s.mcpPid && s.mcpPid !== process.pid) { closeSession(s.id); closed++ }
+  }
+  log(`[session-cleanup] closed ${closed} stale bridge sessions (pid≠${process.pid}), ${sessions.length - closed} remaining`)
 } catch (e) {
   log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`)
 }

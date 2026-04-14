@@ -102,6 +102,7 @@ export function createSession(opts) {
         fast,
         agent: opts.agent,
         owner: opts.owner || 'user',
+        mcpPid: process.pid,
         scopeKey: opts.scopeKey || null,
         lane: opts.lane || 'bridge',
         cwd: opts.cwd,
