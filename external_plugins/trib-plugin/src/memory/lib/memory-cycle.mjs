@@ -382,38 +382,10 @@ export async function consolidateRecent(dayKeys, ws, options = {}) {
 async function refreshEmbeddings(ws, options = {}) {
   const store = options.store ?? getStore()
   const mainConfig = readMainConfig()
-  const contextualizeEnabled = mainConfig?.embedding?.contextualize !== false
-  const contextualizePreset = resolveMaintenancePreset('cycle2')
   const kind = options.kind ?? 'cycle2'
   const refreshOptions = resolveEmbeddingRefreshOptions(mainConfig, kind)
   const perTypeLimit = options.perTypeLimit ?? refreshOptions.perTypeLimit
-  let contextMap = new Map()
-
-  // Contextualize items for better embeddings (skipped when embedding.contextualize === false)
-  if (contextualizeEnabled) {
-    const promptPath = join(resourceDir(), 'defaults', 'memory-contextualize-prompt.md')
-    if (existsSync(promptPath)) {
-      const items = store.getEmbeddableItems({ perTypeLimit }).slice(0, refreshOptions.contextualizeItems)
-      if (items.length > 0) {
-        const template = readFileSync(promptPath, 'utf8')
-        const itemsText = items.map((item, i) => [`#${i + 1}`, `key=${item.key}`, `type=${item.entityType}`, item.subtype ? `subtype=${item.subtype}` : '', `content=${item.content}`].filter(Boolean).join('\n')).join('\n\n')
-        try {
-          const raw = await resolveCycleLlmOutput(template.replace('{{ITEMS}}', itemsText), ws, {
-            mode: 'contextualize',
-            preset: contextualizePreset,
-            timeout: 180000,
-            candidates: items,
-          })
-          const parsed = extractJsonObject(raw)
-          for (const row of parsed?.items ?? []) {
-            if (row?.key && row?.context) contextMap.set(row.key, row.context)
-          }
-        } catch (e) { process.stderr.write(`[memory-cycle] contextualize failed: ${e.message}\n`) }
-      }
-    }
-  } else {
-    process.stderr.write('[memory-cycle] contextualize disabled by config (embedding.contextualize=false), embedding raw content\n')
-  }
+  const contextMap = new Map()
 
   const embedOpts = { perTypeLimit, contextMap }
   if (Array.isArray(options.dayKeys) && options.dayKeys.length > 0) {
@@ -550,18 +522,24 @@ async function deduplicateClassifications(store, options = {}) {
 }
 
 async function memoryFlushImpl(ws, options = {}) {
-  const store = getStore()
-  const maxDays = Math.max(1, Number(options.maxDays ?? MEMORY_FLUSH_DEFAULT_MAX_DAYS))
-  const maxPerBatch = Math.max(1, Number(options.maxCandidatesPerBatch ?? MEMORY_FLUSH_DEFAULT_MAX_CANDIDATES))
-  const maxBatches = Math.max(1, Number(options.maxBatches ?? MEMORY_FLUSH_DEFAULT_MAX_BATCHES))
-  const minPending = Math.max(1, Number(options.minPending ?? MEMORY_FLUSH_DEFAULT_MIN_PENDING))
-  const pendingDays = store.getPendingCandidateDays(maxDays * 3, minPending)
-  if (!pendingDays.length) { process.stderr.write('[memory-cycle] no flushable batches.\n'); return }
-  const targets = pendingDays.map(d => d.day_key).sort().reverse().slice(0, maxDays)
-  const consolidateOpts = { maxCandidatesPerBatch: maxPerBatch, maxBatches }
-  consolidateOpts.preset = options.preset ?? resolveMaintenancePreset('cycle2')
-  for (const dayKey of targets) await consolidateCandidateDay(dayKey, ws, consolidateOpts)
-  await refreshEmbeddings(ws, { dayKeys: targets })
+  const mainConfig = readMainConfig()
+  // Phase 1: cycle1 backlog 처리 (큰 배치)
+  try {
+    const result = await runCycle1Impl(ws, mainConfig, {
+      maxItems: Number(options.maxCandidatesPerBatch ?? 100),
+      maxAgeDays: Number(options.maxDays ?? 30)
+    })
+    process.stderr.write(`[flush] cycle1: extracted=${result?.extracted ?? 0} classifications=${result?.classifications ?? 0}\n`)
+  } catch (e) {
+    process.stderr.write(`[flush] cycle1 error: ${e.message}\n`)
+  }
+  // Phase 2: cycle2 트리거
+  try {
+    await sleepCycleImpl(ws)
+    process.stderr.write(`[flush] cycle2 completed\n`)
+  } catch (e) {
+    process.stderr.write(`[flush] cycle2 error: ${e.message}\n`)
+  }
 }
 
 export async function memoryFlush(ws, options = {}) {
