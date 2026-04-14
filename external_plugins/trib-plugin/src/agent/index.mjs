@@ -100,6 +100,9 @@ const server = new Server(
   { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: INSTRUCTIONS },
 );
 
+// --- Bridge inbox (in-memory result store) ---
+const _bridgeInbox = new Map(); // jobId → { jobId, scope, model, content, usage, completedAt, delivered }
+
 // --- Helpers ---
 
 function ok(data) {
@@ -384,6 +387,29 @@ export async function handleToolCall(name, args, opts = {}) {
         return ok(report);
       }
 
+      case 'bridge_inbox': {
+        const limit = typeof args.limit === 'number' && args.limit > 0 ? args.limit : 50;
+        const items = [];
+        for (const entry of _bridgeInbox.values()) {
+          if (!entry.delivered) items.push(entry);
+        }
+        items.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+        const sliced = items.slice(0, limit);
+        for (const item of sliced) {
+          item.delivered = true;
+        }
+        return ok({
+          items: sliced.map(i => ({
+            jobId: i.jobId,
+            scope: i.scope,
+            model: i.model,
+            content: i.content.length > 200 ? i.content.slice(0, 200) + '…' : i.content,
+            completedAt: i.completedAt,
+          })),
+          count: sliced.length,
+        });
+      }
+
       case 'bridge': {
         let prompt = args.prompt;
         if (!prompt && args.file) {
@@ -455,11 +481,13 @@ export async function handleToolCall(name, args, opts = {}) {
             const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
             const content = result.content || '(empty response)';
             const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
+            _bridgeInbox.set(jobId, { jobId, scope: scopeLabel, model: modelLabel, content, usage: result.usage || null, completedAt: new Date().toISOString(), delivered: false });
             emit(`[${scopeLabel}] ${content}\n\n${footer}`);
             updateSessionStatus(session.id, 'idle');
           } catch (err) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
+            _bridgeInbox.set(jobId, { jobId, scope: scopeLabel, model: modelLabel, content: `❌ ${errorMessage}`, usage: null, completedAt: new Date().toISOString(), delivered: false });
             emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
             updateSessionStatus(session.id, 'error');
           } finally {

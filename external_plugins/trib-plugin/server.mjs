@@ -98,7 +98,6 @@ const server = new Server(
   {
     capabilities: {
       tools: {},
-      logging: {},
       experimental: { 'claude/channel': {}, 'claude/channel/permission': {} },
     },
   },
@@ -200,7 +199,6 @@ const modules = new Map()
 function agentContext() {
   return {
     notifyFn: text => {
-      // Channel notification (requires --channels)
       server.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -209,10 +207,6 @@ function agentContext() {
         },
       }).catch(err => {
         log(`[agent-notify] channel failed: ${err instanceof Error ? err.message : String(err)}`)
-      })
-      // Logging notification (standard MCP, test)
-      server.sendLoggingMessage({ level: 'info', data: `[bridge] ${text}` }).catch(err => {
-        log(`[agent-notify] logging failed: ${err instanceof Error ? err.message : String(err)}`)
       })
     },
     elicitFn: opts => server.elicitInput(opts),
