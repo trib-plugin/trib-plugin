@@ -999,27 +999,5 @@
       ]
     },
     "module": "agent"
-  },
-  {
-    "name": "bridge_inbox",
-    "title": "Bridge Inbox",
-    "description": "Poll completed bridge results. Returns undelivered results and marks them delivered. Works without --channels flag. Call periodically while waiting for bridge jobs.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "limit": {
-          "type": "number",
-          "description": "Max results to return (default 50)"
-        }
-      }
-    },
-    "annotations": {
-      "title": "Bridge Inbox",
-      "readOnlyHint": false,
-      "destructiveHint": false,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "module": "agent"
   }
 ]
