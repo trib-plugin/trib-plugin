@@ -73,30 +73,41 @@ function extractAccountId(token) {
 }
 // --- Token refresh ---
 async function refreshTokens(refreshToken) {
-    const res = await fetch(TOKEN_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: refreshToken,
-            client_id: CLIENT_ID,
-        }),
-    });
-    if (!res.ok)
-        return null;
-    const json = await res.json();
-    if (!json.access_token || !json.refresh_token || !json.expires_in)
-        return null;
-    const tokens = {
-        access_token: json.access_token,
-        refresh_token: json.refresh_token,
-        expires_at: Date.now() + json.expires_in * 1000,
-        account_id: extractAccountId(json.access_token),
-    };
-    saveTokens(tokens);
-    return tokens;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    try {
+        const res = await fetch(TOKEN_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: refreshToken,
+                client_id: CLIENT_ID,
+            }),
+            signal: controller.signal,
+        });
+        if (!res.ok)
+            return null;
+        const json = await res.json();
+        if (!json.access_token || !json.refresh_token || !json.expires_in)
+            return null;
+        const tokens = {
+            access_token: json.access_token,
+            refresh_token: json.refresh_token,
+            expires_at: Date.now() + json.expires_in * 1000,
+            account_id: extractAccountId(json.access_token),
+        };
+        saveTokens(tokens);
+        return tokens;
+    } catch (err) {
+        if (err?.name === 'AbortError')
+            throw new Error('OpenAI OAuth token refresh timed out after 30000ms');
+        throw err;
+    } finally {
+        clearTimeout(timeout);
+    }
 }
-async function parseSSEStream(response) {
+async function parseSSEStream(response, signal, abortStream) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
@@ -104,80 +115,87 @@ async function parseSSEStream(response) {
     let toolCalls = [];
     let usage;
     let buffer = '';
-    // Track: item_id → { name, call_id } from output_item.added events
+    let idleTimedOut = false;
+    let idleTimer = null;
     const pendingCalls = new Map();
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done)
-            break;
-        buffer += decoder.decode(value, { stream: true });
-        // Process complete SSE lines
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-            if (!line.startsWith('data: '))
-                continue;
-            const data = line.slice(6).trim();
-            if (data === '[DONE]')
-                continue;
-            try {
-                const event = JSON.parse(data);
-                // Extract text output
-                if (event.type === 'response.output_text.delta') {
-                    content += event.delta || '';
-                }
-                // Extract model from response.created
-                if (event.type === 'response.created' && event.response?.model) {
-                    model = event.response.model;
-                }
-                // Track tool call info from output_item.added (has name + call_id)
-                if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
-                    pendingCalls.set(event.item.id || '', {
-                        name: event.item.name || '',
-                        callId: event.item.call_id || '',
-                    });
-                }
-                // Extract tool calls when arguments are complete (has item_id, NOT call_id/name)
-                if (event.type === 'response.function_call_arguments.done') {
-                    const itemId = event.item_id || '';
-                    const pending = pendingCalls.get(itemId);
-                    toolCalls.push({
-                        id: pending?.callId || `tc_${Date.now()}_${toolCalls.length}`,
-                        name: pending?.name || '',
-                        arguments: JSON.parse(event.arguments || '{}'),
-                    });
-                }
-                // Extract usage from response.completed
-                if (event.type === 'response.completed' && event.response?.usage) {
-                    const u = event.response.usage;
-                    usage = {
-                        inputTokens: u.input_tokens || 0,
-                        outputTokens: u.output_tokens || 0,
-                    };
-                    if (!model && event.response.model)
+    const resetIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            idleTimedOut = true;
+            try { abortStream?.(); } catch {}
+            try { reader.cancel('SSE idle timeout'); } catch {}
+        }, 60_000);
+    };
+    const onAbort = () => { try { reader.cancel('SSE aborted'); } catch {} };
+    if (signal) {
+        if (signal.aborted) throw new Error('Codex SSE stream aborted');
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+    try {
+        resetIdleTimer();
+        while (true) {
+            let chunk;
+            try { chunk = await reader.read(); } catch (err) {
+                if (idleTimedOut) throw new Error('Codex SSE stream timed out after 60000ms of inactivity');
+                if (signal?.aborted) throw new Error('Codex SSE stream aborted');
+                throw err;
+            }
+            const { done, value } = chunk;
+            if (done) break;
+            resetIdleTimer();
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') continue;
+                try {
+                    const event = JSON.parse(data);
+                    if (event.type === 'response.output_text.delta') {
+                        content += event.delta || '';
+                    }
+                    if (event.type === 'response.created' && event.response?.model) {
                         model = event.response.model;
-                    // Also extract final text from output if we missed deltas
-                    if (!content && event.response.output) {
-                        for (const item of event.response.output) {
-                            if (item.type === 'message') {
-                                for (const c of item.content || []) {
-                                    if (c.type === 'output_text')
-                                        content += c.text || '';
+                    }
+                    if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
+                        pendingCalls.set(event.item.id || '', {
+                            name: event.item.name || '',
+                            callId: event.item.call_id || '',
+                        });
+                    }
+                    if (event.type === 'response.function_call_arguments.done') {
+                        const itemId = event.item_id || '';
+                        const pending = pendingCalls.get(itemId);
+                        toolCalls.push({
+                            id: pending?.callId || `tc_${Date.now()}_${toolCalls.length}`,
+                            name: pending?.name || '',
+                            arguments: JSON.parse(event.arguments || '{}'),
+                        });
+                    }
+                    if (event.type === 'response.completed' && event.response?.usage) {
+                        const u = event.response.usage;
+                        usage = { inputTokens: u.input_tokens || 0, outputTokens: u.output_tokens || 0 };
+                        if (!model && event.response.model) model = event.response.model;
+                        if (!content && event.response.output) {
+                            for (const item of event.response.output) {
+                                if (item.type === 'message') {
+                                    for (const c of item.content || []) {
+                                        if (c.type === 'output_text') content += c.text || '';
+                                    }
                                 }
                             }
                         }
                     }
-                }
+                } catch { /* skip malformed events */ }
             }
-            catch { /* skip malformed events */ }
         }
+        return { content, model, toolCalls: toolCalls.length ? toolCalls : undefined, usage };
+    } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+        try { reader.releaseLock(); } catch {}
     }
-    return {
-        content,
-        model,
-        toolCalls: toolCalls.length ? toolCalls : undefined,
-        usage,
-    };
 }
 // --- Build Responses API request ---
 function buildRequestBody(messages, model, tools, sendOpts) {
@@ -297,25 +315,36 @@ export class OpenAIOAuthProvider {
         const useModel = model || 'gpt-5.4';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
         const doRequest = async (token) => {
-            return fetch(CODEX_API_URL, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token.access_token}`,
-                    'Content-Type': 'application/json',
-                    'chatgpt-account-id': token.account_id || '',
-                    'originator': 'codex_cli_rs',
-                    'OpenAI-Beta': 'responses=experimental',
-                },
-                body: JSON.stringify(body),
-            });
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 120_000);
+            try {
+                const response = await fetch(CODEX_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token.access_token}`,
+                        'Content-Type': 'application/json',
+                        'chatgpt-account-id': token.account_id || '',
+                        'originator': 'codex_cli_rs',
+                        'OpenAI-Beta': 'responses=experimental',
+                    },
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeout);
+                return { response, controller };
+            } catch (err) {
+                clearTimeout(timeout);
+                if (err?.name === 'AbortError')
+                    throw new Error('Codex API initial response timed out after 120000ms');
+                throw err;
+            }
         };
-        let response = await doRequest(auth);
-        // Auto-retry on 401: force token refresh and retry once
+        let { response, controller } = await doRequest(auth);
         if (response.status === 401) {
             process.stderr.write(`[openai-oauth] Got 401, forcing token refresh and retrying...\n`);
-            this.tokens.expires_at = 0; // force refresh
+            this.tokens.expires_at = 0;
             auth = await this.ensureAuth();
-            response = await doRequest(auth);
+            ({ response, controller } = await doRequest(auth));
         }
         if (!response.ok) {
             const text = await response.text().catch(() => '');
@@ -324,7 +353,7 @@ export class OpenAIOAuthProvider {
             throw new Error(`Codex API ${response.status}: ${safeText}`);
         }
         process.stderr.write(`[openai-oauth] Response ${response.status}, parsing SSE...\n`);
-        const result = await parseSSEStream(response);
+        const result = await parseSSEStream(response, controller.signal, () => controller.abort());
         process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
         return result;
     }

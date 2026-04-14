@@ -528,7 +528,7 @@ ${scriptResult}
     }
     if (this.running.has(schedule.name)) return;
     this.running.add(schedule.name);
-    const presetId = schedule.model || schedule.preset || this.proactive?.model || 'sonnet-mid';
+    const presetId = schedule.model || schedule.preset || 'sonnet-mid';
     callLLM(prompt, presetId, { mode: 'active', timeout: 120000 })
       .then((result) => {
         this.running.delete(schedule.name);

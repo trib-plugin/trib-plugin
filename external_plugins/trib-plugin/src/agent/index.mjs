@@ -118,7 +118,9 @@ function notify(text) {
       content: text,
       meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
     },
-  }).catch(() => {});
+  }).catch((err) => {
+    process.stderr.write(`[agent-notify] failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  });
 }
 
 // Format token counts in Claude Code style: <1000 as-is, >=1000 as "9.9k".
