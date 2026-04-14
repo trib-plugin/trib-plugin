@@ -1270,8 +1270,8 @@
           <div class="sec-title">Consolidation</div>
           <div class="sec-body">
             <div class="r">
-              <span class="r-name-wide">Schedule</span>
-              <input class="r-input" id="mem-set-schedule" type="text" placeholder="03:00">
+              <span class="r-name-wide">Interval</span>
+              <input class="r-input" id="mem-set-interval" type="text" placeholder="1h">
             </div>
             <div class="r">
               <span class="r-name-wide">Model</span>
@@ -2817,7 +2817,7 @@ function memPopulateConfig() {
   if (memConfig.cycle1?.interval) document.getElementById('mem-set-retention').value = memConfig.cycle1.interval;
   if (memConfig.cycle1?.timeout) document.getElementById('mem-set-timeout').value = memConfig.cycle1.timeout;
   if (memConfig.cycle1?.batchSize) document.getElementById('mem-set-batch-size').value = memConfig.cycle1.batchSize;
-  if (memConfig.cycle2?.schedule) document.getElementById('mem-set-schedule').value = memConfig.cycle2.schedule;
+  if (memConfig.cycle2?.interval) document.getElementById('mem-set-interval').value = memConfig.cycle2.interval;
   document.getElementById('mem-recap-enabled').checked = memConfig.sessionRecap?.enabled !== false;
   document.getElementById('mem-recap-query').value = memConfig.sessionRecap?.query || '';
 }
@@ -2880,7 +2880,7 @@ async function memSaveProviders() {
 }
 
 function memBuildConfigData() {
-  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { schedule: document.getElementById('mem-set-schedule').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined }, sessionRecap: { enabled: document.getElementById('mem-recap-enabled').checked, preset: document.getElementById('mem-recap-preset')?.value||undefined, query: document.getElementById('mem-recap-query').value.trim()||undefined } };
+  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { interval: document.getElementById('mem-set-interval').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined }, sessionRecap: { enabled: document.getElementById('mem-recap-enabled').checked, preset: document.getElementById('mem-recap-preset')?.value||undefined, query: document.getElementById('mem-recap-query').value.trim()||undefined } };
 }
 
 async function memSaveConfig() {

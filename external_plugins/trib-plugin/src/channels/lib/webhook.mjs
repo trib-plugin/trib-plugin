@@ -3,7 +3,8 @@ import * as crypto from "crypto";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
 import { DATA_DIR } from "./config.mjs";
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, statSync, existsSync } from "fs";
+import { appendFileSync, readFileSync, readdirSync, writeFileSync, unlinkSync, statSync, existsSync } from "fs";
+import { homedir } from "os";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
 import { callLLM } from '../../shared/llm/index.mjs';
 const WEBHOOK_LOG = join(DATA_DIR, "webhook.log");
@@ -66,9 +67,42 @@ function resolveNgrokBin() {
     if (r.status === 0 && resolved) return resolved;
   } catch {
   }
+  // Fallback: check common install locations
+  if (isWin) {
+    const wingetBase = join(homedir(), "AppData", "Local", "Microsoft", "WinGet", "Packages");
+    try {
+      const dirs = readdirSync(wingetBase).filter(d => d.startsWith("Ngrok.Ngrok"));
+      for (const d of dirs) {
+        const p = join(wingetBase, d, "ngrok.exe");
+        if (existsSync(p)) return p;
+      }
+    } catch {}
+  }
   return null;
 }
 const NGROK_PID_FILE = join(DATA_DIR, "ngrok.pid");
+const NGROK_MAX_AGE_MS = 24 * 60 * 60 * 1e3; // 24 hours
+
+function checkNgrokHealth(expectedDomain) {
+  try {
+    return new Promise((resolve) => {
+      const req = http.get("http://localhost:4040/api/tunnels", { timeout: 2000 }, (res) => {
+        let data = "";
+        res.on("data", chunk => data += chunk);
+        res.on("end", () => {
+          try {
+            const tunnels = JSON.parse(data).tunnels || [];
+            const match = tunnels.some(t => t.public_url?.includes(expectedDomain));
+            resolve(match);
+          } catch { resolve(false); }
+        });
+      });
+      req.on("error", () => resolve(false));
+      req.on("timeout", () => { req.destroy(); resolve(false); });
+    });
+  } catch { return Promise.resolve(false); }
+}
+
 class WebhookServer {
   config;
   server = null;
@@ -161,45 +195,75 @@ class WebhookServer {
     tryListen();
     this.startNgrok();
   }
-  /** Kill any previous ngrok process left behind from a crashed session */
-  killPreviousNgrok() {
+  /**
+   * Check if a previous ngrok process can be reused.
+   * Returns true if the existing ngrok is alive, healthy, and serving the right domain.
+   * Returns false (and kills the old process if needed) otherwise.
+   */
+  async reclaimOrKillNgrok(domain) {
+    let pid = 0;
     try {
       const pidContent = readFileSync(NGROK_PID_FILE, "utf8").trim();
-      const pid = parseInt(pidContent);
-      if (pid > 0) {
-        try {
-          const age = Date.now() - statSync(NGROK_PID_FILE).mtimeMs;
-          if (age > 60 * 60 * 1e3) {
-            logWebhook(`ngrok PID file stale (${Math.round(age / 6e4)}m old), removing without kill`);
-            try {
-              unlinkSync(NGROK_PID_FILE);
-            } catch {
-            }
-            return;
-          }
-        } catch {
-        }
-        try {
-          process.kill(pid, 0);
-          process.kill(pid);
-          logWebhook(`killed previous ngrok (PID ${pid})`);
-        } catch {
-        }
-      }
+      pid = parseInt(pidContent);
     } catch {
+      return false; // no PID file
     }
+    if (!(pid > 0)) {
+      try { unlinkSync(NGROK_PID_FILE); } catch {}
+      return false;
+    }
+
+    // Check if PID file is older than 24 hours — stale, kill regardless
     try {
-      unlinkSync(NGROK_PID_FILE);
-    } catch {
+      const age = Date.now() - statSync(NGROK_PID_FILE).mtimeMs;
+      if (age > NGROK_MAX_AGE_MS) {
+        logWebhook(`ngrok PID file stale (${Math.round(age / 6e4)}m old), killing and removing`);
+        try { process.kill(pid); } catch {}
+        try { unlinkSync(NGROK_PID_FILE); } catch {}
+        return false;
+      }
+    } catch {}
+
+    // Check if process is alive
+    let alive = false;
+    try {
+      process.kill(pid, 0); // signal 0 = existence check
+      alive = true;
+    } catch {}
+
+    if (!alive) {
+      logWebhook(`ngrok PID ${pid} is dead, cleaning up PID file`);
+      try { unlinkSync(NGROK_PID_FILE); } catch {}
+      return false;
     }
+
+    // Process is alive — health-check the tunnel via ngrok local API
+    const healthy = await checkNgrokHealth(domain);
+    if (healthy) {
+      logWebhook(`reusing existing ngrok (PID ${pid}), tunnel domain matches ${domain}`);
+      return true;
+    }
+
+    // Alive but unhealthy (wrong domain or no tunnels) — kill it
+    logWebhook(`ngrok PID ${pid} alive but unhealthy, killing`);
+    try { process.kill(pid); } catch {}
+    try { unlinkSync(NGROK_PID_FILE); } catch {}
+    return false;
   }
-  startNgrok() {
+  async startNgrok() {
     if (this.ngrokProcess || this.ngrokStarting) return;
     const authtoken = this.config.authtoken;
     const domain = this.config.ngrokDomain || this.config.domain;
     if (!authtoken || !domain) return;
     this.ngrokStarting = true;
-    this.killPreviousNgrok();
+
+    // Try to reuse an existing ngrok process
+    const reused = await this.reclaimOrKillNgrok(domain);
+    if (reused) {
+      this.ngrokStarting = false;
+      return;
+    }
+
     const ngrokBin = resolveNgrokBin();
     if (!ngrokBin) {
       logWebhook("ngrok binary not found \u2014 webhook tunnel disabled");
@@ -221,7 +285,8 @@ class WebhookServer {
       try {
         this.ngrokProcess = spawn(ngrokBin, ["http", String(this.boundPort), "--url=" + domain], {
           stdio: "ignore",
-          windowsHide: true
+          windowsHide: true,
+          detached: true
         });
         this.ngrokProcess.unref();
         if (this.ngrokProcess.pid) {
@@ -255,22 +320,16 @@ class WebhookServer {
     setTimeout(waitAndStart, 1e3);
   }
   stop() {
+    // Intentionally do NOT kill ngrok — let it survive across MCP restarts.
+    // The next start() will reuse it via reclaimOrKillNgrok().
     if (this.ngrokProcess) {
-      try {
-        this.ngrokProcess.kill();
-      } catch {
-      }
       this.ngrokProcess = null;
-      try {
-        unlinkSync(NGROK_PID_FILE);
-      } catch {
-      }
     }
     if (this.server) {
       this.server.close();
       this.server = null;
     }
-    logWebhook("stopped");
+    logWebhook("stopped (ngrok left running for reuse)");
   }
   reloadConfig(config, _channelsConfig, options = {}) {
     this.stop();

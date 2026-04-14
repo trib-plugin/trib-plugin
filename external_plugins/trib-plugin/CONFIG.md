@@ -106,8 +106,8 @@ Memory cycle configuration. The runtime centers on one active worker plus one ma
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `schedule` | string | `"03:00"` | Time of day to run consolidation (`"HH:MM"`) |
-| `maxCandidates` | number | — | When pending candidates exceed this count, consolidation runs immediately (bypasses schedule). Unset = no auto-trigger. |
+| `interval` | string | `"1h"` | Interval between consolidation runs (e.g. `"1h"`, `"30m"`) |
+| `maxCandidates` | number | — | When pending candidates exceed this count, consolidation runs immediately (bypasses interval). Unset = no auto-trigger. |
 | `provider` | object | codex | LLM provider for consolidation |
 | `provider.connection` | string | `"codex"` | Provider type |
 | `provider.model` | string | `"gpt-5.4"` | Model identifier |

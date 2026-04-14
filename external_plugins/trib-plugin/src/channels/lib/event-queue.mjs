@@ -146,8 +146,8 @@ ${it.prompt}`).join("\n\n")}`;
       if (this.injectFn) {
         const opts = { type: item.source === "webhook" ? "webhook" : "event" };
         if (item.instruction) {
-          opts.instruction = item.instruction;
-          this.injectFn("", `event:${item.name}`, item.prompt, opts);
+          opts.instruction = `${item.instruction}\n\n${item.prompt}`;
+          this.injectFn("", `event:${item.name}`, " ", opts);
         } else {
           opts.instruction = item.prompt;
           this.injectFn("", `event:${item.name}`, " ", opts);

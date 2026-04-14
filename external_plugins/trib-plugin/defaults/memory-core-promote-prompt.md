@@ -18,6 +18,7 @@ Only promote items that meet ALL of the following:
 - Transient debugging notes
 - One-time conversation details
 - Anything with "원인 미확인", "미검증", "추정" qualifiers
+- Implementation specifics already encoded in code (how a feature works, function behavior, code-level constraints)
 
 ### SHOULD PROMOTE:
 - Architecture decisions confirmed by the user

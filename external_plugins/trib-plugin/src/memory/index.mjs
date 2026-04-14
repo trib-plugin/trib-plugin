@@ -59,6 +59,7 @@ import {
   parseInterval,
 } from './lib/memory-cycle.mjs'
 import { localNow } from './lib/memory-text-utils.mjs'
+import { cleanMemoryText } from './lib/memory-extraction.mjs'
 import {
   readMemoryOpsPolicy,
   buildStartupBackfillOptions,
@@ -626,7 +627,7 @@ async function handleRead(options) {
         return `[${ts}] ${cls.slice(0, 500)}`
       }
       const prefix = r.role === 'user' ? 'u' : 'a'
-      return `[${ts}] ${prefix}: ${String(r.episode_content).slice(0, 500)}`
+      return `[${ts}] ${prefix}: ${cleanMemoryText(String(r.episode_content)).slice(0, 300)}`
     })
     return { text: lines.join('\n') || '(no results found)' }
   }
