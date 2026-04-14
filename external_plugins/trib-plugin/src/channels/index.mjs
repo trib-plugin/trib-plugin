@@ -782,38 +782,30 @@ function reloadRuntimeConfig() {
   }
   eventPipeline.reloadConfig(config.events, config.channelsConfig);
 }
-scheduler.setInjectHandler((channelId, name, content, options) => {
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
-  const now = /* @__PURE__ */ new Date();
+function injectAndRecord(channelId, name, content, options, kind, prefix) {
+  const ts = new Date().toISOString();
+  const now = new Date();
   const timeLabel = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} `;
   const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel;
-  const meta = {
-    chat_id: channelId,
-    user: sourceLabel,
-    user_id: "system",
-    ts
-  };
+  const meta = { chat_id: channelId, user: sourceLabel, user_id: "system", ts };
   if (options?.instruction) meta.instruction = options.instruction;
   if (options?.type) meta.type = options.type;
-  void mcpServer.notification({
+  void mcpServer?.notification({
     method: "notifications/claude/channel",
     params: { content, meta }
   }).catch((e) => {
-    process.stderr.write(`trib-plugin: notification failed: ${e}
-`);
+    try { process.stderr.write(`trib-plugin ${prefix}: notification failed: ${e}\n`); } catch {}
   });
   void memoryAppendEpisode({
-    ts,
-    backend: backend.name,
-    channelId,
-    userId: "system",
-    userName: `schedule:${name}`,
-    sessionId: null,
-    role: "user",
-    kind: "schedule-inject",
+    ts, backend: backend.name, channelId,
+    userId: "system", userName: `${prefix}:${name}`,
+    sessionId: null, role: "user", kind,
     content: options?.instruction || content,
-    sourceRef: `schedule:${name}:${ts}`
+    sourceRef: `${prefix}:${name}:${ts}`
   });
+}
+scheduler.setInjectHandler((channelId, name, content, options) => {
+  injectAndRecord(channelId, name, content, options, "schedule-inject", "schedule");
 });
 scheduler.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
@@ -849,40 +841,7 @@ function wireWebhookHandlers() {
 wireWebhookHandlers();
 const eventQueue = eventPipeline.getQueue();
 eventQueue.setInjectHandler((channelId, name, content, options) => {
-  const ts = (/* @__PURE__ */ new Date()).toISOString();
-  const now = /* @__PURE__ */ new Date();
-  const timeLabel = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} `;
-  const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel;
-  const meta = {
-    chat_id: channelId,
-    user: sourceLabel,
-    user_id: "system",
-    ts
-  };
-  if (options?.instruction) meta.instruction = options.instruction;
-  if (options?.type) meta.type = options.type;
-  void mcpServer.notification({
-    method: "notifications/claude/channel",
-    params: { content, meta }
-  }).catch((e) => {
-    try {
-      process.stderr.write(`trib-plugin event: notification failed: ${e}
-`);
-    } catch {
-    }
-  });
-  void memoryAppendEpisode({
-    ts,
-    backend: backend.name,
-    channelId,
-    userId: "system",
-    userName: `event:${name}`,
-    sessionId: null,
-    role: "user",
-    kind: "event-inject",
-    content: options?.instruction || content,
-    sourceRef: `event:${name}:${ts}`
-  });
+  injectAndRecord(channelId, name, content, options, "event-inject", "event");
 });
 eventQueue.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
@@ -1925,73 +1884,10 @@ ${messageBody}`;
 async function init(sharedMcp) {
   mcpServer = sharedMcp;
   scheduler.setInjectHandler((channelId, name, content, options) => {
-    const ts = (/* @__PURE__ */ new Date()).toISOString();
-    const now = /* @__PURE__ */ new Date();
-    const timeLabel = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} `;
-    const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel;
-    const meta = {
-      chat_id: channelId,
-      user: sourceLabel,
-      user_id: "system",
-      ts
-    };
-    if (options?.instruction) meta.instruction = options.instruction;
-    if (options?.type) meta.type = options.type;
-    void mcpServer.notification({
-      method: "notifications/claude/channel",
-      params: { content, meta }
-    }).catch((e) => {
-      process.stderr.write(`trib-plugin: notification failed: ${e}
-`);
-    });
-    void memoryAppendEpisode({
-      ts,
-      backend: backend.name,
-      channelId,
-      userId: "system",
-      userName: `schedule:${name}`,
-      sessionId: null,
-      role: "user",
-      kind: "schedule-inject",
-      content: options?.instruction || content,
-      sourceRef: `schedule:${name}:${ts}`
-    });
+    injectAndRecord(channelId, name, content, options, "schedule-inject", "schedule");
   });
   eventQueue.setInjectHandler((channelId, name, content, options) => {
-    const ts = (/* @__PURE__ */ new Date()).toISOString();
-    const now = /* @__PURE__ */ new Date();
-    const timeLabel = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} `;
-    const sourceLabel = options?.type ? `${timeLabel}: ${options.type}` : timeLabel;
-    const meta = {
-      chat_id: channelId,
-      user: sourceLabel,
-      user_id: "system",
-      ts
-    };
-    if (options?.instruction) meta.instruction = options.instruction;
-    if (options?.type) meta.type = options.type;
-    void mcpServer.notification({
-      method: "notifications/claude/channel",
-      params: { content, meta }
-    }).catch((e) => {
-      try {
-        process.stderr.write(`trib-plugin event: notification failed: ${e}
-`);
-      } catch {
-      }
-    });
-    void memoryAppendEpisode({
-      ts,
-      backend: backend.name,
-      channelId,
-      userId: "system",
-      userName: `event:${name}`,
-      sessionId: null,
-      role: "user",
-      kind: "event-inject",
-      content: options?.instruction || content,
-      sourceRef: `event:${name}:${ts}`
-    });
+    injectAndRecord(channelId, name, content, options, "event-inject", "event");
   });
 }
 async function start() {

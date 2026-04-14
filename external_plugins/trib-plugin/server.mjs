@@ -178,7 +178,13 @@ function callWorker(name, toolName, args) {
       reject(new Error(`worker ${name} call ${toolName} timed out after ${WORKER_CALL_TIMEOUT}ms`))
     }, WORKER_CALL_TIMEOUT)
     entry.pending.push({ callId, resolve: v => { clearTimeout(timer); resolve(v) }, reject: e => { clearTimeout(timer); reject(e) } })
-    entry.proc.send({ type: 'call', callId, name: toolName, args })
+    try {
+      entry.proc.send({ type: 'call', callId, name: toolName, args })
+    } catch (sendErr) {
+      clearTimeout(timer)
+      entry.pending = entry.pending.filter(p => p.callId !== callId)
+      reject(new Error(`worker ${name} send failed: ${sendErr.message}`))
+    }
   })
 }
 
