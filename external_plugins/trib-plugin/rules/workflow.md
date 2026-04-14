@@ -8,7 +8,7 @@ Plan → Execute → Verify → Ship → Retro.
 - Ship: git status → propose commit message → commit on approval → push on approval.
 - Retro: evaluate the work done. Identify improvements if any.
 
-All phase transitions require explicit user approval. Never proceed to the next phase without approval. Exception: Execute flows directly into Verify without approval.
+All phase transitions require explicit user approval. Never proceed to the next phase without approval. Exceptions: Execute flows directly into Verify, and Ship flows directly into Retro.
 
 ## Progress reporting
 - When running parallel agents (bridge or native), report status on each update.
