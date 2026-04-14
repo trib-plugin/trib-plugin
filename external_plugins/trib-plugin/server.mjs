@@ -249,7 +249,15 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 })
 
 // ── Transport ───────────────────────────────────────────────────────
-await server.connect(new StdioServerTransport())
+const _transport = new StdioServerTransport()
+const _origSend = _transport.send.bind(_transport)
+_transport.send = function(msg, opts) {
+  if (msg?.method?.startsWith('notifications/')) {
+    log(`[transport-debug] notification: ${JSON.stringify(msg).slice(0, 300)}`)
+  }
+  return _origSend(msg, opts)
+}
+await server.connect(_transport)
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
