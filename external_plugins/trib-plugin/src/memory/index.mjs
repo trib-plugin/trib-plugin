@@ -1453,45 +1453,6 @@ function _startHttpServer() {
   })
 }
 
-if (process.env.TRIB_UNIFIED !== '1') {
-
-// ── Decide: proxy or primary ────────────────────────────────────────
-
-const existingPort = await isExistingServerHealthy()
-if (existingPort) {
-  await runProxyMode(existingPort)
-  process.exit(0)
-}
-
-// No healthy server — start as primary
-acquireLock()
-await _initRuntime()
-await _startHttpServer()
-
-// ── MCP stdio transport ──────────────────────────────────────────────
-
-const transport = new StdioServerTransport()
-await mcp.connect(transport)
-process.stderr.write('[memory-service] MCP stdio connected\n')
-
-// ── Graceful shutdown ────────────────────────────────────────────────
-
-function shutdown() {
-  process.stderr.write('[memory-service] shutting down...\n')
-  _stopCycles()
-  void stopLlmWorker().catch(() => {})
-  removePortFile()
-  releaseLock()
-  void mcp.close()
-  httpServer.close(() => process.exit(0))
-  setTimeout(() => process.exit(0), 3000)
-}
-
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
-
-} // end standalone guard
-
 // ── IPC worker mode ──────────────────────────────────────────────
 if (process.env.TRIB_WORKER_MODE === '1' && process.send) {
   process.on('message', async (msg) => {

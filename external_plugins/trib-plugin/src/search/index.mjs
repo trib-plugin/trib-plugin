@@ -713,21 +713,3 @@ export { handleToolCall }
 export async function start() { await writeStartupSnapshot() }
 export function stop() { flushUsageState(); flushCacheState() }
 
-/* ── Standalone MCP server (skipped when loaded as a module) ── */
-if (process.env.TRIB_UNIFIED !== '1') {
-  const transport = new StdioServerTransport()
-  await writeStartupSnapshot()
-  await server.connect(transport)
-
-  async function shutdown() {
-    flushUsageState()
-    flushCacheState()
-    process.exit(0)
-  }
-
-  // Block until the MCP connection closes (stdin EOF).
-  await new Promise((resolve) => { server.onclose = resolve })
-
-  process.on('SIGTERM', () => { void shutdown() })
-  process.on('SIGINT', () => { void shutdown() })
-}

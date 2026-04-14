@@ -32,7 +32,6 @@ if (!PLUGIN_ROOT || !PLUGIN_DATA) {
 mkdirSync(PLUGIN_DATA, { recursive: true })
 
 globalThis.__tribFastEntry = true
-process.env.TRIB_UNIFIED = '1'
 
 // ── Unified config sync ────────────────────────────────────────────
 // trib-config.json is the single source. On boot, split into individual

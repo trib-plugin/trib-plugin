@@ -499,37 +499,3 @@ export async function handleToolCall(name, args, opts = {}) {
 export async function start() { /* noop — standalone mode uses main() */ }
 export async function stop() { stopAgentMaintenance(); await disconnectAll(); }
 
-// --- Init providers + MCP clients, then start (standalone) ---
-
-if (process.env.TRIB_UNIFIED !== '1') {
-  async function main() {
-    // loadConfig handles legacy mcp-tools.json migration into config.json automatically
-    const config = loadConfig();
-    await initProviders(config.providers);
-    initTrajectoryStore(getPluginData());
-
-    // MCP tool servers come from config.mcpServers (config.json)
-    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
-      process.stderr.write(`[trib-agent] Loading ${Object.keys(config.mcpServers).length} MCP tool server(s) from config.json\n`);
-      await connectMcpServers(config.mcpServers);
-    }
-
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-
-    process.on('SIGINT', async () => {
-      await disconnectAll();
-      process.exit(0);
-    });
-
-    // Block until the MCP connection closes (stdin EOF).
-    await new Promise((resolve) => {
-      server.onclose = resolve;
-    });
-  }
-
-  main().catch((err) => {
-    process.stderr.write(`[trib-agent] Failed to start: ${err}\n`);
-    process.exit(1);
-  });
-}

@@ -1899,7 +1899,7 @@ async function stop() {
   await stopOwnedRuntime("unified server stop");
   cleanupInstanceRuntimeFiles(INSTANCE_ID);
 }
-if (process.env.TRIB_UNIFIED !== "1") {
+{
   let detectChannelFlag = function() {
     const isWin = process.platform === "win32";
     const flagRe = /--channels\b|--dangerously-load-development-channels\b/;
@@ -1954,41 +1954,7 @@ if (process.env.TRIB_UNIFIED !== "1") {
       }
     }
     return false;
-  }, shutdown = function() {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    writeBridgeState(false);
-    try {
-      process.stderr.write("trib-plugin: shutting down\n");
-    } catch {
-    }
-    if (process.env.TRIB_UNIFIED !== "1") {
-      setTimeout(() => process.exit(0), 3e3);
-    }
-    if (bridgeOwnershipTimer) {
-      clearInterval(bridgeOwnershipTimer);
-      bridgeOwnershipTimer = null;
-    }
-    try {
-      turnEndWatcher.close();
-    } catch {
-    }
-    void stopCliWorker().catch(() => {
-    });
-    void stopOwnedRuntime("process shutdown").catch(() => {
-    }).finally(() => {
-      cleanupInstanceRuntimeFiles(INSTANCE_ID);
-      clearServerPid();
-      if (process.env.TRIB_UNIFIED !== "1") {
-        process.exit(0);
-      }
-    });
   };
-  fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect starting
-`);
-  await mcpServer.connect(new StdioServerTransport());
-  fs.appendFileSync(_bootLog, `[${localTimestamp()}] mcp.connect done
-`);
   const _channelFlagDetected = detectChannelFlag();
   fs.appendFileSync(_bootLog, `[${localTimestamp()}] channelFlag: ${_channelFlagDetected}
 `);
@@ -2051,27 +2017,6 @@ if (process.env.TRIB_UNIFIED !== "1") {
         }
       })();
     }
-  }
-  let shuttingDown = false;
-  if (process.env.TRIB_UNIFIED !== "1") {
-    process.stdin.on("end", () => {
-      try {
-        process.stderr.write("[trib-plugin] stdin end, shutting down...\n");
-      } catch {
-      }
-      shutdown();
-    });
-    process.stdin.on("close", () => {
-      try {
-        process.stderr.write("[trib-plugin] stdin closed, shutting down...\n");
-      } catch {
-      }
-      shutdown();
-    });
-    process.on("SIGTERM", shutdown);
-    process.on("SIGINT", () => {
-      process.stderr.write("[trib-plugin] SIGINT received, ignoring (handled by host)\n");
-    });
   }
   const configPath = path.join(DATA_DIR, "config.json");
   let reloadDebounce = null;

@@ -19,7 +19,6 @@ const PLUGIN_ROOT = join(__dirname, '..')
 const OUTPUT = join(PLUGIN_ROOT, 'tools.json')
 
 globalThis.__tribFastEntry = true
-process.env.TRIB_UNIFIED = '1'
 process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT
 if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.env.CLAUDE_PLUGIN_DATA = join(PLUGIN_ROOT, '.data')
