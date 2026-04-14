@@ -199,12 +199,15 @@ const modules = new Map()
 function agentContext() {
   return {
     notifyFn: text => {
+      log(`[agent-notify] sending: ${text.slice(0, 80)}...`)
       server.notification({
         method: 'notifications/claude/channel',
         params: {
           content: text,
           meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
         },
+      }).then(() => {
+        log(`[agent-notify] sent OK`)
       }).catch(err => {
         log(`[agent-notify] failed: ${err instanceof Error ? err.message : String(err)}`)
       })
