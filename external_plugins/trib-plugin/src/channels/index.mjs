@@ -71,36 +71,36 @@ function readPluginVersion() {
 }
 const PLUGIN_VERSION = readPluginVersion();
 let crashLogging = false;
+let _channelsDegraded = false;
+function isChannelsDegraded() { return _channelsDegraded; }
+
 function logCrash(label, err) {
   if (crashLogging) return;
   crashLogging = true;
-  if (err instanceof Error && err.message.includes("EPIPE")) {
-    try {
-      const crashLog = path.join(DATA_DIR, "crash.log");
-      fs.appendFileSync(crashLog, `[${localTimestamp()}] trib-plugin: EPIPE detected, disconnecting + exiting
-`);
-    } catch {
-    }
-    process.exit(1);
-  }
   const msg = `[${localTimestamp()}] trib-plugin: ${label}: ${err}
 ${err instanceof Error ? err.stack : ""}
 `;
-  try {
-    process.stderr.write(msg);
-  } catch {
-  }
+  try { process.stderr.write(msg); } catch {}
   try {
     const crashLog = path.join(DATA_DIR, "crash.log");
     fs.appendFileSync(crashLog, msg);
-  } catch {
+  } catch {}
+  if (err instanceof Error && err.message.includes("EPIPE")) {
+    _channelsDegraded = true;
+    try {
+      const crashLog = path.join(DATA_DIR, "crash.log");
+      fs.appendFileSync(crashLog, `[${localTimestamp()}] trib-plugin: EPIPE detected, channels degraded (not exiting)
+`);
+    } catch {}
   }
+  crashLogging = false;
 }
 process.on("unhandledRejection", (err) => logCrash("unhandled rejection", err));
 process.on("uncaughtException", (err) => logCrash("uncaught exception", err));
 if (process.env.TRIB_CHANNELS_NO_CONNECT) {
   process.exit(0);
 }
+const _isWorkerMode = process.env.TRIB_WORKER_MODE === '1'
 const _bootLogEarly = path.join(
   process.env.CLAUDE_PLUGIN_DATA || path.join(os.tmpdir(), "trib-plugin"),
   "boot.log"
@@ -113,10 +113,12 @@ let botConfig = loadBotConfig();
 const backend = createBackend(config);
 const INSTANCE_ID = makeInstanceId();
 ensureRuntimeDirs();
-killAllPreviousServers();
-writeServerPid();
-cleanupStaleRuntimeFiles();
-startCliWorker();
+if (!_isWorkerMode) {
+  killAllPreviousServers();
+  writeServerPid();
+  cleanupStaleRuntimeFiles();
+  startCliWorker();
+}
 const INSTRUCTIONS = "";
 let mcpServer = new Server(
   { name: "trib-plugin", version: PLUGIN_VERSION },
@@ -161,19 +163,22 @@ function stopServerTyping() {
 const TURN_END_FILE = getTurnEndPath(INSTANCE_ID);
 const TURN_END_BASENAME = path.basename(TURN_END_FILE);
 const TURN_END_DIR = path.dirname(TURN_END_FILE);
-removeFileIfExists(TURN_END_FILE);
-const turnEndWatcher = fs.watch(TURN_END_DIR, async (_event, filename) => {
-  if (filename !== TURN_END_BASENAME) return;
-  try {
-    const stat = fs.statSync(TURN_END_FILE);
-    if (stat.size > 0) {
-      stopServerTyping();
-      await forwarder.forwardFinalText();
-      removeFileIfExists(TURN_END_FILE);
+let turnEndWatcher = null;
+if (!_isWorkerMode) {
+  removeFileIfExists(TURN_END_FILE);
+  turnEndWatcher = fs.watch(TURN_END_DIR, async (_event, filename) => {
+    if (filename !== TURN_END_BASENAME) return;
+    try {
+      const stat = fs.statSync(TURN_END_FILE);
+      if (stat.size > 0) {
+        stopServerTyping();
+        await forwarder.forwardFinalText();
+        removeFileIfExists(TURN_END_FILE);
+      }
+    } catch {
     }
-  } catch {
-  }
-});
+  });
+}
 const STATUS_FILE = getStatusPath(INSTANCE_ID);
 const statusState = new JsonStateFile(STATUS_FILE, {});
 statusState.ensure();
@@ -263,12 +268,12 @@ const scheduler = new Scheduler(
   botConfig
 );
 let webhookServer = null;
-if (config.webhook?.enabled) {
+if (!_isWorkerMode && config.webhook?.enabled) {
   webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
   webhookServer.start();
 }
 const eventPipeline = new EventPipeline(config.events, config.channelsConfig);
-if (config.webhook?.enabled || config.events?.rules?.length) eventPipeline.start();
+if (!_isWorkerMode && (config.webhook?.enabled || config.events?.rules?.length)) eventPipeline.start();
 let bridgeRuntimeConnected = false;
 let bridgeOwnershipRefreshRunning = false;
 let bridgeOwnershipTimer = null;
@@ -1454,6 +1459,9 @@ function createHttpMcpServer() {
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
 const BACKEND_TOOLS = /* @__PURE__ */ new Set(["reply", "fetch", "react", "edit_message", "download_attachment"]);
 async function handleToolCall(name, args) {
+  if (_channelsDegraded) {
+    return { content: [{ type: 'text', text: `[channels degraded] ${name} unavailable — restart MCP to recover` }], isError: true }
+  }
   let result;
   try {
     if (proxyMode && BACKEND_TOOLS.has(name)) {
@@ -1795,7 +1803,6 @@ backend.onMessage = (msg) => {
   if (!claimChannelOwner(msg.chatId)) return;
   const route = resolveInboundRoute(msg.chatId);
   scheduler.noteActivity();
-  eventPipeline.handleMessage(msg.text, msg.user, msg.chatId, false);
   startServerTyping(route.targetChatId);
   backend.resetSendCount();
   void forwarder.forwardFinalText();
@@ -2185,12 +2192,27 @@ if (process.env.TRIB_UNIFIED !== "1") {
   } catch {
   }
 }
+// ── IPC worker mode ──────────────────────────────────────────────
+if (_isWorkerMode && process.send) {
+  process.on('message', async (msg) => {
+    if (msg.type !== 'call' || !msg.callId) return
+    try {
+      const result = await handleToolCall(msg.name, msg.args || {})
+      process.send({ type: 'result', callId: msg.callId, result })
+    } catch (e) {
+      process.send({ type: 'result', callId: msg.callId, error: e.message })
+    }
+  })
+  process.send({ type: 'ready' })
+}
+
 export {
   TOOL_DEFS,
   handleToolCall,
   init,
   INSTRUCTIONS as instructions,
   isChannelBridgeActive,
+  isChannelsDegraded,
   start,
   stop
 };

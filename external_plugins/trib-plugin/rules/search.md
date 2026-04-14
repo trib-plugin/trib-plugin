@@ -1,6 +1,5 @@
 # Search
 
-- REQUIRED: use the `search` tool (MCP) for ALL external information lookups. No exceptions.
-- Built-in WebSearch and WebFetch are FORBIDDEN. Never use them.
+- All external information lookups MUST use the `search` tool (MCP). Built-in WebSearch/WebFetch are forbidden.
 - Use `batch` for 2+ concurrent lookups.
-- Search first when unsure. Never guess.
+- When unsure, search first. Never guess.

@@ -144,7 +144,7 @@ ${it.prompt}`).join("\n\n")}`;
   executeItem(item, file) {
     if (item.exec === "interactive") {
       if (this.injectFn) {
-        const opts = { type: item.source === "webhook" ? "webhook" : "event" };
+        const opts = { type: "webhook" };
         if (item.instruction) {
           opts.instruction = `${item.instruction}\n\n${item.prompt}`;
           this.injectFn("", `event:${item.name}`, " ", opts);

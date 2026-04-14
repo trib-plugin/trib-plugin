@@ -146,7 +146,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             session.messages.push({ role: 'assistant', content: 'Noted.' });
         }
         const beforeCount = session.messages.length + 1;
-        const budget = Math.floor(session.contextWindow * 0.8);
+        const budget = Math.floor(session.contextWindow * 0.25);
         const promptTokenEstimate = prompt.length * 0.5; // conservative for CJK
         if (promptTokenEstimate > budget * 0.7) {
             process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${budget} budget)\n`);
@@ -169,10 +169,12 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             session.totalOutputTokens += result.usage.outputTokens;
         }
         saveSession(session);
-        // Async state packet extraction — best-effort, never blocks response
-        const spCfg = loadConfig();
-        if (spCfg.statePacket?.enabled !== false && session.scopeKey && session.messages.filter(m => m.role !== 'system').length > (spCfg.statePacket?.threshold || 20)) {
-            extractAndSave(session).catch(() => {});
+        // Async state packet extraction — skip for bridge sessions (short-lived, not reused)
+        if (session.owner !== 'bridge') {
+            const spCfg = loadConfig();
+            if (spCfg.statePacket?.enabled !== false && session.scopeKey && session.messages.filter(m => m.role !== 'system').length > (spCfg.statePacket?.threshold || 20)) {
+                extractAndSave(session).catch(() => {});
+            }
         }
         return {
             ...result,
@@ -246,6 +248,14 @@ export function clearSessionMessages(sessionId) {
     session.messages = (session.messages || []).filter(m => m && m.role === 'system');
     session.totalInputTokens = 0;
     session.totalOutputTokens = 0;
+    session.updatedAt = Date.now();
+    saveSession(session);
+    return true;
+}
+export function updateSessionStatus(id, status) {
+    const session = loadSession(id);
+    if (!session) return false;
+    session.status = status;
     session.updatedAt = Date.now();
     saveSession(session);
     return true;

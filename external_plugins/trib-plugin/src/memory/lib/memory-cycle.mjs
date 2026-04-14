@@ -3,7 +3,8 @@
  * Standalone memory consolidation module.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
+import { randomUUID } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
 import { cleanMemoryText, getMemoryStore } from './memory.mjs'
@@ -31,44 +32,69 @@ const DEFAULT_CYCLE_STATE = {
   cycle2: { lastRunAt: null, interval: '1h' },
 }
 
-const CYCLE_WRITE_PRIORITY = {
-  cycle1: 1,
-  cycle2: 1,
-}
+// ── File-based lease lock (atomic via exclusive create) ──
+const LOCK_DIR = join(PLUGIN_DATA_DIR, 'locks')
+const LEASE_FILE = join(LOCK_DIR, 'cycle-lock.json')
+const LEASE_TTL_MS = 30 * 60 * 1000 // 30 minutes
 
-let _cycleWriteActive = false
-let _cycleWriteSeq = 0
-const _cycleWriteQueue = []
-
-function enqueueCycleWrite(kind, work) {
-  return new Promise((resolve, reject) => {
-    _cycleWriteQueue.push({
-      kind,
-      priority: CYCLE_WRITE_PRIORITY[kind] ?? 1,
-      seq: _cycleWriteSeq++,
-      work,
-      resolve,
-      reject,
-    })
-    _cycleWriteQueue.sort((left, right) => right.priority - left.priority || left.seq - right.seq)
-    void pumpCycleWriteQueue()
-  })
-}
-
-async function pumpCycleWriteQueue() {
-  if (_cycleWriteActive) return
-  const next = _cycleWriteQueue.shift()
-  if (!next) return
-  _cycleWriteActive = true
-  try {
-    const result = await next.work()
-    next.resolve(result)
-  } catch (error) {
-    next.reject(error)
-  } finally {
-    _cycleWriteActive = false
-    if (_cycleWriteQueue.length > 0) void pumpCycleWriteQueue()
+function acquireLease(holder) {
+  mkdirSync(LOCK_DIR, { recursive: true })
+  const nonce = randomUUID()
+  const lease = {
+    holder,
+    pid: process.pid,
+    nonce,
+    startedAt: new Date().toISOString(),
+    expiresAt: Date.now() + LEASE_TTL_MS,
   }
+  // Try atomic exclusive create
+  try {
+    writeFileSync(LEASE_FILE, JSON.stringify(lease, null, 2), { flag: 'wx' })
+    return nonce
+  } catch (e) {
+    if (e.code !== 'EEXIST') return null
+  }
+  // File exists — check if stale or dead
+  try {
+    const existing = JSON.parse(readFileSync(LEASE_FILE, 'utf8'))
+    const now = Date.now()
+    if (now < existing.expiresAt) {
+      try { process.kill(existing.pid, 0); return null } catch {}
+      // PID dead — reclaim
+    }
+    // Stale or dead — remove and retry once
+    try { unlinkSync(LEASE_FILE) } catch {}
+    try {
+      writeFileSync(LEASE_FILE, JSON.stringify(lease, null, 2), { flag: 'wx' })
+      return nonce
+    } catch { return null }
+  } catch {
+    // Corrupt file — remove and retry
+    try { unlinkSync(LEASE_FILE) } catch {}
+    try {
+      writeFileSync(LEASE_FILE, JSON.stringify(lease, null, 2), { flag: 'wx' })
+      return nonce
+    } catch { return null }
+  }
+}
+
+function releaseLease(nonce) {
+  try {
+    const raw = readFileSync(LEASE_FILE, 'utf8')
+    const lease = JSON.parse(raw)
+    if (lease.nonce === nonce) {
+      try { unlinkSync(LEASE_FILE) } catch {}
+    }
+  } catch {}
+}
+
+function isLeaseHeld() {
+  try {
+    const raw = readFileSync(LEASE_FILE, 'utf8')
+    const lease = JSON.parse(raw)
+    if (Date.now() >= lease.expiresAt) return false
+    try { process.kill(lease.pid, 0); return true } catch { return false }
+  } catch { return false }
 }
 
 export function loadCycleState() {
@@ -457,7 +483,14 @@ async function runCycle2Impl(ws) {
 }
 
 export async function runCycle2(ws) {
-  return enqueueCycleWrite('cycle2', () => runCycle2Impl(ws))
+  const leaseId = 'cycle2'
+  const nonce = acquireLease(leaseId)
+  if (!nonce) throw new Error(`${leaseId}: another job is running`)
+  try {
+    return await runCycle2Impl(ws)
+  } finally {
+    releaseLease(nonce)
+  }
 }
 
 // ── Cycle2: Dedup/merge similar classifications ──
@@ -553,7 +586,14 @@ async function memoryFlushImpl(ws, options = {}) {
 }
 
 export async function memoryFlush(ws, options = {}) {
-  return enqueueCycleWrite('cycle2', () => memoryFlushImpl(ws, options))
+  const leaseId = 'flush'
+  const nonce = acquireLease(leaseId)
+  if (!nonce) throw new Error(`${leaseId}: another job is running`)
+  try {
+    return await memoryFlushImpl(ws, options)
+  } finally {
+    releaseLease(nonce)
+  }
 }
 
 // ── Rebuild mode: concurrent batch cycle1 + embedding pairs ──
@@ -641,7 +681,14 @@ async function rebuildClassificationsImpl(ws, options = {}) {
 }
 
 export async function rebuildClassifications(ws, options = {}) {
-  return enqueueCycleWrite('cycle1', () => rebuildClassificationsImpl(ws, options))
+  const leaseId = 'rebuild'
+  const nonce = acquireLease(leaseId)
+  if (!nonce) throw new Error(`${leaseId}: another job is running`)
+  try {
+    return await rebuildClassificationsImpl(ws, options)
+  } finally {
+    releaseLease(nonce)
+  }
 }
 
 async function rebuildRecentImpl(ws, options = {}) {
@@ -661,7 +708,14 @@ async function rebuildRecentImpl(ws, options = {}) {
 }
 
 export async function rebuildRecent(ws, options = {}) {
-  return enqueueCycleWrite('cycle2', () => rebuildRecentImpl(ws, options))
+  const leaseId = 'rebuild-recent'
+  const nonce = acquireLease(leaseId)
+  if (!nonce) throw new Error(`${leaseId}: another job is running`)
+  try {
+    return await rebuildRecentImpl(ws, options)
+  } finally {
+    releaseLease(nonce)
+  }
 }
 
 async function pruneToRecentImpl(ws, options = {}) {
@@ -678,7 +732,14 @@ async function pruneToRecentImpl(ws, options = {}) {
 }
 
 export async function pruneToRecent(ws, options = {}) {
-  return enqueueCycleWrite('cycle2', () => pruneToRecentImpl(ws, options))
+  const leaseId = 'prune'
+  const nonce = acquireLease(leaseId)
+  if (!nonce) throw new Error(`${leaseId}: another job is running`)
+  try {
+    return await pruneToRecentImpl(ws, options)
+  } finally {
+    releaseLease(nonce)
+  }
 }
 
 export function getCycleStatus() {
@@ -688,12 +749,26 @@ export function getCycleStatus() {
   const pending = store.getPendingCandidateDays(100, 1)
   const cycleState = loadCycleState()
   const memoryConfig = mainConfig ?? {}
+  // Lease status
+  let lease = null
+  try {
+    const raw = readFileSync(LEASE_FILE, 'utf8')
+    const parsed = JSON.parse(raw)
+    const expired = Date.now() >= parsed.expiresAt
+    let pidAlive = false
+    if (!expired) {
+      try { process.kill(parsed.pid, 0); pidAlive = true } catch {}
+    }
+    lease = { ...parsed, expired, pidAlive, held: !expired && pidAlive }
+  } catch {}
+
   return {
     lastSleepAt: config.lastSleepAt ? new Date(config.lastSleepAt).toISOString() : null,
     lastCycle1At: config.lastCycle1At ? new Date(config.lastCycle1At).toISOString() : null,
     pendingDays: pending.length,
     pendingCandidates: pending.reduce((sum, d) => sum + d.n, 0),
     cycleState,
+    lease,
     memoryConfig: {
       cycle1: {
         interval: memoryConfig.cycle1?.interval ?? '5m',
@@ -1259,7 +1334,14 @@ async function coreMemoryPromote(store, ws, config) {
 }
 
 export async function runCycle1(ws, config, options = {}) {
-  return enqueueCycleWrite('cycle1', () => runCycle1Impl(ws, config, options))
+  const leaseId = 'cycle1'
+  const nonce = acquireLease(leaseId)
+  if (!nonce) throw new Error(`${leaseId}: another job is running`)
+  try {
+    return await runCycle1Impl(ws, config, options)
+  } finally {
+    releaseLease(nonce)
+  }
 }
 
 export function parseInterval(s) {

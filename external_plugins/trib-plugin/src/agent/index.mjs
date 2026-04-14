@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus } from './orchestrator/session/manager.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
@@ -279,10 +279,12 @@ export async function handleToolCall(name, args, opts = {}) {
           model: s.model,
           messages: s.messages.length,
           tools: s.tools.length,
-          inputTokens: s.totalInputTokens,
-          outputTokens: s.totalOutputTokens,
+          sentTokens: s.totalInputTokens,
+          receivedTokens: s.totalOutputTokens,
           scope: s.scopeKey || null,
+          status: s.status || 'idle',
           createdAt: new Date(s.createdAt).toISOString(),
+          updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : null,
         })));
       }
 
@@ -441,6 +443,7 @@ export async function handleToolCall(name, args, opts = {}) {
           let errorMessage = null;
           let result = null;
           const toolCallLog = [];
+          updateSessionStatus(session.id, 'running');
           try {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, process.cwd());
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -450,10 +453,12 @@ export async function handleToolCall(name, args, opts = {}) {
             const content = result.content || '(empty response)';
             const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
             emit(`[${scopeLabel}] ${content}\n\n${footer}`);
+            updateSessionStatus(session.id, 'idle');
           } catch (err) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
             emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
+            updateSessionStatus(session.id, 'error');
           } finally {
             try {
               const cfg = loadConfig();

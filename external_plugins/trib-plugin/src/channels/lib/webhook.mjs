@@ -80,8 +80,37 @@ function resolveNgrokBin() {
   }
   return null;
 }
-const NGROK_PID_FILE = join(DATA_DIR, "ngrok.pid");
+const NGROK_META_FILE = join(DATA_DIR, "ngrok-meta.json");
+const NGROK_OLD_PID_FILE = join(DATA_DIR, "ngrok.pid");
 const NGROK_MAX_AGE_MS = 24 * 60 * 60 * 1e3; // 24 hours
+
+function normalizeDomain(d) {
+  if (!d) return '';
+  try { return new URL(d.includes('://') ? d : 'https://' + d).hostname.toLowerCase() } catch { return d.toLowerCase().replace(/^https?:\/\//, '').split('/')[0] }
+}
+
+function readNgrokMeta() {
+  try { return JSON.parse(readFileSync(NGROK_META_FILE, 'utf8')) } catch {}
+  // Migration: read old pid file if meta doesn't exist
+  try {
+    const pid = parseInt(readFileSync(NGROK_OLD_PID_FILE, 'utf8').trim());
+    if (pid > 0) {
+      logWebhook(`migrating ngrok.pid (PID ${pid}) to ngrok-meta.json`);
+      const meta = { pid, domain: '', port: 0, startedAt: new Date().toISOString() };
+      writeNgrokMeta(meta);
+      try { unlinkSync(NGROK_OLD_PID_FILE) } catch {}
+      return meta;
+    }
+  } catch {}
+  return null;
+}
+function writeNgrokMeta(meta) {
+  try { writeFileSync(NGROK_META_FILE, JSON.stringify(meta, null, 2)) } catch {}
+}
+function clearNgrokMeta() {
+  try { unlinkSync(NGROK_META_FILE) } catch {}
+  try { unlinkSync(NGROK_OLD_PID_FILE) } catch {} // clean up legacy
+}
 
 function checkNgrokHealth(expectedDomain) {
   try {
@@ -92,7 +121,8 @@ function checkNgrokHealth(expectedDomain) {
         res.on("end", () => {
           try {
             const tunnels = JSON.parse(data).tunnels || [];
-            const match = tunnels.some(t => t.public_url?.includes(expectedDomain));
+            const expected = normalizeDomain(expectedDomain);
+            const match = tunnels.some(t => normalizeDomain(t.public_url) === expected);
             resolve(match);
           } catch { resolve(false); }
         });
@@ -201,53 +231,51 @@ class WebhookServer {
    * Returns false (and kills the old process if needed) otherwise.
    */
   async reclaimOrKillNgrok(domain) {
-    let pid = 0;
-    try {
-      const pidContent = readFileSync(NGROK_PID_FILE, "utf8").trim();
-      pid = parseInt(pidContent);
-    } catch {
-      return false; // no PID file
-    }
-    if (!(pid > 0)) {
-      try { unlinkSync(NGROK_PID_FILE); } catch {}
+    const meta = readNgrokMeta();
+    if (!meta || !(meta.pid > 0)) {
+      clearNgrokMeta();
       return false;
     }
 
-    // Check if PID file is older than 24 hours — stale, kill regardless
-    try {
-      const age = Date.now() - statSync(NGROK_PID_FILE).mtimeMs;
-      if (age > NGROK_MAX_AGE_MS) {
-        logWebhook(`ngrok PID file stale (${Math.round(age / 6e4)}m old), killing and removing`);
-        try { process.kill(pid); } catch {}
-        try { unlinkSync(NGROK_PID_FILE); } catch {}
-        return false;
-      }
-    } catch {}
+    const { pid } = meta;
+
+    // Metadata domain mismatch — different config, kill
+    if (meta.domain && normalizeDomain(meta.domain) !== normalizeDomain(domain)) {
+      logWebhook(`ngrok meta domain mismatch (${meta.domain} vs ${domain}), killing PID ${pid}`);
+      try { process.kill(pid); } catch {}
+      clearNgrokMeta();
+      return false;
+    }
+
+    // Stale check — older than 24 hours
+    if (meta.startedAt && (Date.now() - new Date(meta.startedAt).getTime()) > NGROK_MAX_AGE_MS) {
+      logWebhook(`ngrok meta stale (started ${meta.startedAt}), killing PID ${pid}`);
+      try { process.kill(pid); } catch {}
+      clearNgrokMeta();
+      return false;
+    }
 
     // Check if process is alive
     let alive = false;
-    try {
-      process.kill(pid, 0); // signal 0 = existence check
-      alive = true;
-    } catch {}
+    try { process.kill(pid, 0); alive = true } catch {}
 
     if (!alive) {
-      logWebhook(`ngrok PID ${pid} is dead, cleaning up PID file`);
-      try { unlinkSync(NGROK_PID_FILE); } catch {}
+      logWebhook(`ngrok PID ${pid} is dead, cleaning up`);
+      clearNgrokMeta();
       return false;
     }
 
-    // Process is alive — health-check the tunnel via ngrok local API
+    // Process alive + domain matches — verify tunnel via 4040 API
     const healthy = await checkNgrokHealth(domain);
     if (healthy) {
-      logWebhook(`reusing existing ngrok (PID ${pid}), tunnel domain matches ${domain}`);
+      logWebhook(`reusing ngrok (PID ${pid}, domain ${domain}, port ${meta.port})`);
       return true;
     }
 
-    // Alive but unhealthy (wrong domain or no tunnels) — kill it
-    logWebhook(`ngrok PID ${pid} alive but unhealthy, killing`);
+    // Alive but tunnel unhealthy — kill
+    logWebhook(`ngrok PID ${pid} alive but tunnel unhealthy, killing`);
     try { process.kill(pid); } catch {}
-    try { unlinkSync(NGROK_PID_FILE); } catch {}
+    clearNgrokMeta();
     return false;
   }
   async startNgrok() {
@@ -290,26 +318,23 @@ class WebhookServer {
         });
         this.ngrokProcess.unref();
         if (this.ngrokProcess.pid) {
-          try {
-            writeFileSync(NGROK_PID_FILE, String(this.ngrokProcess.pid));
-          } catch {
-          }
+          writeNgrokMeta({
+            pid: this.ngrokProcess.pid,
+            domain,
+            port: this.boundPort,
+            startedAt: new Date().toISOString(),
+            binaryPath: ngrokBin,
+          });
         }
         this.ngrokProcess.on("exit", () => {
           this.ngrokProcess = null;
           this.ngrokStarting = false;
-          try {
-            unlinkSync(NGROK_PID_FILE);
-          } catch {
-          }
+          clearNgrokMeta();
         });
         this.ngrokProcess.on("error", () => {
           this.ngrokProcess = null;
           this.ngrokStarting = false;
-          try {
-            unlinkSync(NGROK_PID_FILE);
-          } catch {
-          }
+          clearNgrokMeta();
         });
         logWebhook(`ngrok tunnel started: ${domain} \u2192 localhost:${this.boundPort} (PID ${this.ngrokProcess.pid})`);
       } catch (e) {

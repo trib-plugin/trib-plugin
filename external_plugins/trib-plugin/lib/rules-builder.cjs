@@ -64,7 +64,7 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     }
   } catch {}
   const wfDescription = readOptional(userWorkflowMdPath);
-  const wfLines = ['## User Workflow', ''];
+  const wfLines = ['## User Rules', ''];
   if (wfDescription) wfLines.push(wfDescription, '');
   if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
     const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
