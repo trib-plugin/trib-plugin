@@ -329,7 +329,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (process unclassified episodes then run cycle1), status, remember (store a fact in core memory on user request).",
+    "description": "Run memory management operations: cycle2/sleep (core memory promotion + dedup), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (process unclassified episodes then run cycle1), status, remember (store a fact in core memory on user request).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -337,6 +337,7 @@
           "type": "string",
           "enum": [
             "sleep",
+            "cycle2",
             "flush",
             "rebuild",
             "rebuild_classifications",
@@ -421,7 +422,10 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["search", "reason"],
+          "enum": [
+            "search",
+            "reason"
+          ],
           "description": "search: normal retrieval. reason: synthesize an answer from stored knowledge using LLM."
         }
       },
@@ -990,7 +994,9 @@
           "description": "Read prompt from this file path"
         }
       },
-      "required": ["prompt"]
+      "required": [
+        "prompt"
+      ]
     },
     "module": "agent"
   }

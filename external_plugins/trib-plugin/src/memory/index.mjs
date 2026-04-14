@@ -48,7 +48,7 @@ import { configureEmbedding, embedText } from './lib/embedding-provider.mjs'
 import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
 import { callLLM, resolveMaintenancePreset } from '../shared/llm/index.mjs'
 import {
-  sleepCycle,
+  runCycle2,
   memoryFlush,
   rebuildRecent,
   rebuildClassifications,
@@ -321,7 +321,7 @@ async function checkCycles(options = {}) {
       : cycle2Due
   ) {
     try {
-      await sleepCycle(WORKSPACE_PATH)
+      await runCycle2(WORKSPACE_PATH)
       process.stderr.write(`[cycle2] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''}\n`)
     } catch (e) {
       process.stderr.write(`[cycle2] error: ${e.message}\n`)
@@ -851,9 +851,9 @@ async function handleCycle(args) {
   if (action === 'status') {
     return { text: JSON.stringify(getCycleStatus(), null, 2) }
   }
-  if (action === 'sleep') {
-    await sleepCycle(ws)
-    return { text: 'Memory cycle completed.' }
+  if (action === 'sleep' || action === 'cycle2') {
+    await runCycle2(ws)
+    return { text: 'Cycle2 completed.' }
   }
   if (action === 'flush') {
     await memoryFlush(ws, { maxDays: Number(args.maxDays ?? 1) })
@@ -965,11 +965,11 @@ const TOOL_DEFS = [
     name: 'memory_cycle',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory management operations: sleep (merged update), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (classify old episodes then run cycle1), status.',
+    description: 'Run memory management operations: cycle2/sleep (core memory promotion + dedup), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (classify old episodes then run cycle1), status.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['sleep', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status', 'remember'], description: 'Memory operation to run. remember: inject into core memory.' },
+        action: { type: 'string', enum: ['sleep', 'cycle2', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status', 'remember'], description: 'Memory operation to run. remember: inject into core memory.' },
         topic: { type: 'string', description: 'Topic for remember action (e.g. "user preference", "project rule")' },
         element: { type: 'string', description: 'Content for remember action (e.g. "prefers dark mode")' },
         importance: { type: 'string', description: 'Importance level for remember action (default: fact)' },

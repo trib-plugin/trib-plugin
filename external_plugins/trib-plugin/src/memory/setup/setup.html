@@ -449,8 +449,8 @@
           <div class="sec-title">Consolidation</div>
           <div class="sec-body">
             <div class="r">
-              <span class="r-name-wide">Schedule</span>
-              <input class="r-input" id="set-schedule" type="text" placeholder="03:00">
+              <span class="r-name-wide">Interval</span>
+              <input class="r-input" id="set-interval" type="text" placeholder="1h">
             </div>
           </div>
         </div>
@@ -803,7 +803,7 @@ function populateConfig() {
   if (config.cycle1?.batchSize) document.getElementById('set-batch-size').value = config.cycle1.batchSize;
 
   // Consolidation
-  if (config.cycle2?.schedule) document.getElementById('set-schedule').value = config.cycle2.schedule;
+  if (config.cycle2?.interval) document.getElementById('set-interval').value = config.cycle2.interval;
 }
 
 function toggleMemory() {
@@ -827,7 +827,7 @@ function buildConfigData() {
       preset: document.getElementById('cycle1-preset')?.value || undefined,
     },
     cycle2: {
-      schedule: document.getElementById('set-schedule').value.trim(),
+      interval: document.getElementById('set-interval').value.trim(),
       preset: document.getElementById('cycle2-preset')?.value || undefined,
     },
   };

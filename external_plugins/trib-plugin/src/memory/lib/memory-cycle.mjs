@@ -28,7 +28,7 @@ const CYCLE_STATE_PATH = join(PLUGIN_DATA_DIR, 'cycle-state.json')
 
 const DEFAULT_CYCLE_STATE = {
   cycle1: { lastRunAt: null, interval: '5m' },
-  cycle2: { lastRunAt: null, schedule: '03:00' },
+  cycle2: { lastRunAt: null, interval: '1h' },
 }
 
 const CYCLE_WRITE_PRIORITY = {
@@ -411,7 +411,7 @@ export function readMainConfig() {
   } catch { return {} }
 }
 
-async function sleepCycleImpl(ws) {
+async function runCycle2Impl(ws) {
   const store = getStore()
   const mainConfig = readMainConfig()
 
@@ -445,10 +445,19 @@ async function sleepCycleImpl(ws) {
   }
 
   process.stderr.write('[memory-cycle2] Cycle complete.\n')
+
+  // Update cycle config
+  const cycleConfig = readCycleConfig()
+  writeCycleConfig({ ...cycleConfig, lastSleepAt: Date.now() })
+
+  // Update cycle state
+  const cycleState = loadCycleState()
+  cycleState.cycle2.lastRunAt = new Date().toISOString()
+  saveCycleState(cycleState)
 }
 
-export async function sleepCycle(ws) {
-  return enqueueCycleWrite('cycle2', () => sleepCycleImpl(ws))
+export async function runCycle2(ws) {
+  return enqueueCycleWrite('cycle2', () => runCycle2Impl(ws))
 }
 
 // ── Cycle2: Dedup/merge similar classifications ──
@@ -464,6 +473,7 @@ async function deduplicateClassifications(store, options = {}) {
     FROM classifications c
     WHERE c.status = 'active'
     ORDER BY c.updated_at DESC
+    LIMIT 500
   `).all()
 
   if (rows.length < 2) return { merged: 0, checked: 0 }
@@ -535,7 +545,7 @@ async function memoryFlushImpl(ws, options = {}) {
   }
   // Phase 2: cycle2 트리거
   try {
-    await sleepCycleImpl(ws)
+    await runCycle2Impl(ws)
     process.stderr.write(`[flush] cycle2 completed\n`)
   } catch (e) {
     process.stderr.write(`[flush] cycle2 error: ${e.message}\n`)
@@ -690,7 +700,7 @@ export function getCycleStatus() {
         maxPending: memoryConfig.cycle1?.maxPending ?? null,
         preset: resolveMaintenancePreset('cycle1'),
       },
-      cycle2: { schedule: memoryConfig.cycle2?.schedule ?? '03:00', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, preset: resolveMaintenancePreset('cycle2') },
+      cycle2: { interval: memoryConfig.cycle2?.interval ?? '1h', maxCandidates: memoryConfig.cycle2?.maxCandidates ?? null, preset: resolveMaintenancePreset('cycle2') },
     },
   }
 }

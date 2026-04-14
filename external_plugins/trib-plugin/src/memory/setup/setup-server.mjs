@@ -389,7 +389,7 @@ function mergeConfig(existing, incoming) {
   // cycle2
   if (incoming.cycle2) {
     if (!config.cycle2) config.cycle2 = {};
-    if (incoming.cycle2.schedule !== undefined) config.cycle2.schedule = incoming.cycle2.schedule;
+    if (incoming.cycle2.interval !== undefined) config.cycle2.interval = incoming.cycle2.interval;
     if (incoming.cycle2.preset !== undefined) config.cycle2.preset = incoming.cycle2.preset;
   }
 

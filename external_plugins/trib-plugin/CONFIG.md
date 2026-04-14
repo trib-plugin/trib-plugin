@@ -187,7 +187,7 @@ Representative tuning groups:
       }
     },
     "cycle2": {
-      "schedule": "03:00",
+      "interval": "1h",
       "maxCandidates": 50,
       "provider": {
         "connection": "codex",
