@@ -601,7 +601,7 @@ Based on the memory context, is now a good time to talk?
 Choose the best topic using these signals:
 - **Recency**: Topics mentioned frequently in recent conversations are higher priority.
 - **User interest**: Topics the user engaged with positively (long replies, follow-up questions) score higher.
-- **User disinterest**: Topics the user dismissed ("별로", short replies, no follow-up) score lower.
+- **User disinterest**: Topics the user dismissed ("별로" ("not really"), short replies, no follow-up) score lower.
 - **Timeliness**: Prefer topics where real-time information would be genuinely useful right now.
 - **Variety**: Avoid repeating the same topic category consecutively.
 
@@ -614,7 +614,7 @@ Before composing the message, **search the web** for current information about t
 ### 4. Compose message
 Write a natural, casual conversation starter in Korean (2-4 sentences).
 - Be specific and factual — include the real data you found.
-- Don't be generic ("요즘 뭐하세요?" is bad). Include actual information.
+- Don't be generic ("요즘 뭐하세요?" ("What have you been up to?") is bad). Include actual information.
 - Match the tone: casual for casual topics, informative for news/work topics.
 
 ### 5. Source lifecycle management

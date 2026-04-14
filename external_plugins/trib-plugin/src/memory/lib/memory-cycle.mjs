@@ -170,7 +170,7 @@ function parseClassificationCsv(text) {
   const startIdx = lines[0]?.toLowerCase().includes('case_id') ? 1 : 0
   const items = []
   for (let i = startIdx; i < lines.length; i++) {
-    // CSV 파싱: 따옴표 안의 쉼표 보호
+    // CSV parsing: protect commas inside quotes
     const parts = []
     let cur = '', inQuote = false
     for (const ch of lines[i]) {
@@ -533,7 +533,7 @@ async function deduplicateClassifications(store, options = {}) {
 
 async function memoryFlushImpl(ws, options = {}) {
   const mainConfig = readMainConfig()
-  // Phase 1: cycle1 backlog 처리 (큰 배치)
+  // Phase 1: process cycle1 backlog (large batch)
   try {
     const result = await runCycle1Impl(ws, mainConfig, {
       maxItems: Number(options.maxCandidatesPerBatch ?? 100),
@@ -543,7 +543,7 @@ async function memoryFlushImpl(ws, options = {}) {
   } catch (e) {
     process.stderr.write(`[flush] cycle1 error: ${e.message}\n`)
   }
-  // Phase 2: cycle2 트리거
+  // Phase 2: trigger cycle2
   try {
     await runCycle2Impl(ws)
     process.stderr.write(`[flush] cycle2 completed\n`)
@@ -791,7 +791,7 @@ async function runCycle1Impl(ws, config, options = {}) {
   let totalExtracted = 0, totalClassifications = 0
   const changedClassificationIds = new Set()
 
-  // force: 전체 pending을 batchSize씩 연속 처리 / 주기: batchSize 1회
+  // force: process all pending in batchSize chunks continuously / scheduled: one batchSize pass
   const batches = []
   for (let i = 0; i < allCandidates.length; i += batchSize) {
     batches.push(allCandidates.slice(i, i + batchSize))
@@ -874,7 +874,7 @@ async function runCycle1Impl(ws, config, options = {}) {
     return { candidates, classificationRows, batchIndex }
   }
 
-  // LLM 호출은 병렬, DB 쓰기는 결과 모아서 순차
+  // LLM calls run in parallel; DB writes are sequential after collecting results
   const allResults = []
   for (let i = 0; i < batches.length; i += concurrency) {
     const chunk = batches.slice(i, i + concurrency)

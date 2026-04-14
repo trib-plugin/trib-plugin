@@ -246,7 +246,7 @@ export function generateQueryVariants(query) {
   const baseVariants = [clean]
   const tokens = tokenizeMemoryText(clean)
 
-  // 1. Token alias 적용 버전 (한→영)
+  // 1. Token alias applied version (Korean → English)
   const aliasedTokens = tokens.map(t => {
     const alias = MEMORY_TOKEN_ALIASES.get(t)
     return alias && alias !== t ? alias : t
@@ -254,7 +254,7 @@ export function generateQueryVariants(query) {
   const aliased = aliasedTokens.join(' ')
   const aliasVariants = aliased !== tokens.join(' ') ? [aliased] : []
 
-  // 2. 한국어 조사 제거 + 영문 키워드 보강
+  // 2. Remove Korean particles + reinforce English keywords
   const koToEn = {
     '수정': 'fix', '상태': 'status', '구조': 'structure', '방식': 'method',
     '설정': 'config settings', '작업': 'task work', '규칙': 'rule policy',
@@ -332,7 +332,7 @@ export function generateQueryVariants(query) {
     ...reverseVariants,
   ]
 
-  // 중복 제거
+  // Remove duplicates
   return [...new Set(variants)].slice(0, 6)
 }
 

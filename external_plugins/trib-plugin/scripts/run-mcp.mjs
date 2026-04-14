@@ -10,11 +10,21 @@ import { spawn } from 'child_process';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverPath = join(__dirname, '..', 'server.mjs');
 
-// Spawn the server with stdio inheritance
+// Spawn the server with stdio inheritance and reduced CPU priority
+const isWin = process.platform === 'win32';
 const proc = spawn('node', [serverPath], {
   stdio: 'inherit',
-  env: process.env,
+  env: { ...process.env, UV_THREADPOOL_SIZE: '2' },
+  ...(isWin ? { windowsHide: true } : {}),
 });
+
+// Lower process priority on Windows to reduce fan noise
+if (isWin && proc.pid) {
+  try {
+    const { execSync } = await import('child_process');
+    execSync(`wmic process where processid=${proc.pid} call setpriority "below normal"`, { stdio: 'ignore', windowsHide: true });
+  } catch {}
+}
 
 process.on('SIGTERM', () => {
   proc.kill('SIGTERM');
