@@ -4,7 +4,7 @@ import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
 import { collectSkillsCached, buildSkillToolDef, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
-import { saveSession, loadSession, deleteSession, listStoredSessions } from './store.mjs';
+import { saveSession, loadSession, deleteSession, listStoredSessions, sweepStaleSessions } from './store.mjs';
 import { extractAndSave, restoreStatePacket } from './state-packet.mjs';
 import { loadConfig } from '../config.mjs';
 let _mcpToolsCache = null;
@@ -263,4 +263,35 @@ export function updateSessionStatus(id, status) {
 }
 export function closeSession(id) {
     return deleteSession(id);
+}
+
+// --- Periodic idle session cleanup ---
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // check every 5 minutes
+let _cleanupTimer = null;
+
+function sweepIdleSessions() {
+    try {
+        const { cleaned, remaining, details } = sweepStaleSessions();
+        if (cleaned > 0) {
+            for (const d of details) {
+                process.stderr.write(`[bridge-session] idle cleanup: closed ${d.id} (idle ${d.idleMinutes}m, owner=${d.owner})\n`);
+            }
+            process.stderr.write(`[bridge-session] idle sweep: cleaned ${cleaned} session(s), ${remaining} remaining\n`);
+        }
+    } catch (e) {
+        process.stderr.write(`[bridge-session] idle sweep error: ${e && e.message || e}\n`);
+    }
+}
+
+export function startIdleCleanup() {
+    if (_cleanupTimer) return;
+    _cleanupTimer = setInterval(sweepIdleSessions, CLEANUP_INTERVAL_MS);
+    if (_cleanupTimer.unref) _cleanupTimer.unref(); // don't block process exit
+}
+
+export function stopIdleCleanup() {
+    if (_cleanupTimer) {
+        clearInterval(_cleanupTimer);
+        _cleanupTimer = null;
+    }
 }

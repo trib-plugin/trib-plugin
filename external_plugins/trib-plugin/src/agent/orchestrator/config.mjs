@@ -130,7 +130,7 @@ export function loadConfig() {
                 trajectory: { enabled: true, ...raw.trajectory },
                 statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...raw.statePacket },
                 skillSuggest: { autoDetect: false, ...raw.skillSuggest },
-                cycle3: { enabled: false, interval: '30m', ...raw.cycle3 },
+                agentMaintenance: { enabled: false, interval: '30m', ...raw.agentMaintenance },
             };
         }
         catch { /* fall through */ }
@@ -144,7 +144,7 @@ export function loadConfig() {
         trajectory: { enabled: true },
         statePacket: { enabled: true, threshold: 20, ttlMinutes: 30 },
         skillSuggest: { autoDetect: false },
-        cycle3: { enabled: false, interval: '30m' },
+        agentMaintenance: { enabled: false, interval: '30m' },
     };
 }
 /**
@@ -179,7 +179,7 @@ export function saveConfig(config) {
         trajectory: config.trajectory || {},
         statePacket: config.statePacket || {},
         skillSuggest: config.skillSuggest || {},
-        cycle3: config.cycle3 || {},
+        agentMaintenance: config.agentMaintenance || {},
     };
     const tmp = path + '.tmp';
     writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');

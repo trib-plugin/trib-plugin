@@ -14,7 +14,8 @@ User rules always take precedence over base rules when they conflict.
 - When user rules define Roles and rules, agent operation always prioritizes user rules first.
 - Agent deployment is independent of the workflow cycle. Agents can be spawned at any time.
 - External models: use MCP `bridge` tool. Internal models: use `Agent` tool (background only, `bypassPermissions`).
-- Same role reuses session context.
+- Same role reuses session context. Never spawn multiple agents for the same role — batch tasks into one session or send sequentially.
+- Prefer fewer agents with grouped tasks over many single-task agents.
 
 ### Progress reporting
 - When running parallel agents, report status on each update.

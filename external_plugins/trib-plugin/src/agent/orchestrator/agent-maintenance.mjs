@@ -11,28 +11,28 @@ function parseInterval(str) {
   return Number(n) * (unit === 'h' ? 3600000 : 60000);
 }
 
-export function startCycle3() {
+export function startAgentMaintenance() {
   const config = loadConfig();
-  if (!config.cycle3?.enabled) return;
+  if (!config.agentMaintenance?.enabled) return;
 
-  const interval = parseInterval(config.cycle3?.interval);
+  const interval = parseInterval(config.agentMaintenance?.interval);
 
   _timer = setInterval(async () => {
     try {
-      await runCycle3();
+      await runAgentMaintenance();
     } catch (err) {
-      process.stderr.write(`[cycle3] error: ${err.message}\n`);
+      process.stderr.write(`[agent-maintenance] error: ${err.message}\n`);
     }
   }, interval);
 
-  process.stderr.write(`[cycle3] started (interval: ${config.cycle3?.interval || '30m'})\n`);
+  process.stderr.write(`[agent-maintenance] started (interval: ${config.agentMaintenance?.interval || '30m'})\n`);
 }
 
-export function stopCycle3() {
+export function stopAgentMaintenance() {
   if (_timer) { clearInterval(_timer); _timer = null; }
 }
 
-export async function runCycle3() {
+export async function runAgentMaintenance() {
   const config = loadConfig();
   const db = getTrajectoryDb();
   if (!db) return;
@@ -40,18 +40,18 @@ export async function runCycle3() {
   // 1. Log stats
   const stats = getTrajectoryStats(null, new Date(Date.now() - 86400000).toISOString());
   if (stats.total > 0) {
-    process.stderr.write(`[cycle3] 24h stats: ${stats.total} calls, ${stats.successRate}% success, avg ${stats.avgDuration}ms\n`);
+    process.stderr.write(`[agent-maintenance] 24h stats: ${stats.total} calls, ${stats.successRate}% success, avg ${stats.avgDuration}ms\n`);
   }
 
   // 2. Pattern detection
   const patterns = findRepeatingPatterns(3);
   if (patterns.length > 0) {
-    process.stderr.write(`[cycle3] ${patterns.length} repeating pattern(s) detected\n`);
+    process.stderr.write(`[agent-maintenance] ${patterns.length} repeating pattern(s) detected\n`);
   }
 
   // 3. Skill suggestion report (logged, not auto-created)
   if (config.skillSuggest?.autoDetect && patterns.length > 0) {
     const report = getSkillSuggestionReport(db);
-    process.stderr.write(`[cycle3] skill report: ${report}\n`);
+    process.stderr.write(`[agent-maintenance] skill report: ${report}\n`);
   }
 }

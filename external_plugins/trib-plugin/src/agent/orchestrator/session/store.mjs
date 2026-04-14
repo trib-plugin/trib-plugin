@@ -100,3 +100,38 @@ export function listStoredSessions(ttlMs) {
     }
     return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
+
+/**
+ * Proactive sweep: delete session files idle longer than ttlMs.
+ * Returns { cleaned, remaining, details } for logging.
+ */
+export function sweepStaleSessions(ttlMs) {
+    const maxAge = ttlMs || DEFAULT_SESSION_TTL_MS;
+    const dir = getStoreDir();
+    if (!existsSync(dir))
+        return { cleaned: 0, remaining: 0, details: [] };
+    const files = readdirSync(dir).filter(f => f.endsWith('.json'));
+    const now = Date.now();
+    let cleaned = 0;
+    let remaining = 0;
+    const details = [];
+    for (const f of files) {
+        try {
+            const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
+            const lastActive = session.updatedAt || session.createdAt || 0;
+            if (now - lastActive > maxAge) {
+                try { unlinkSync(join(dir, f)); } catch { continue; }
+                cleaned++;
+                details.push({
+                    id: session.id,
+                    owner: session.owner || 'unknown',
+                    idleMinutes: Math.round((now - lastActive) / 60000),
+                });
+            } else {
+                remaining++;
+            }
+        }
+        catch { /* skip corrupt */ }
+    }
+    return { cleaned, remaining, details };
+}

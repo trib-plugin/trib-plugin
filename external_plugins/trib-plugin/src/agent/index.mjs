@@ -7,7 +7,7 @@ import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPre
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
-import { startCycle3, stopCycle3 } from './orchestrator/cycle3.mjs';
+import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
 import { writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -243,7 +243,7 @@ export async function init() {
   seedDefaults();
   initTrajectoryStore(getPluginData());
   if (config.mcpServers) await connectMcpServers(config.mcpServers);
-  startCycle3();
+  startAgentMaintenance();
 }
 
 /**
@@ -494,7 +494,7 @@ export async function handleToolCall(name, args, opts = {}) {
 }
 
 export async function start() { /* noop — standalone mode uses main() */ }
-export async function stop() { stopCycle3(); await disconnectAll(); }
+export async function stop() { stopAgentMaintenance(); await disconnectAll(); }
 
 // --- Init providers + MCP clients, then start (standalone) ---
 

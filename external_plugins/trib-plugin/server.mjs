@@ -78,13 +78,16 @@ try {
 
 // ── Session cleanup: bridge sessions from previous MCP process ─────
 try {
-  const { listSessions, closeSession } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
+  const { listSessions, closeSession, startIdleCleanup } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
   const sessions = listSessions()
   let closed = 0
   for (const s of sessions) {
     if (s.owner === 'bridge' && (!s.mcpPid || s.mcpPid !== process.pid)) { closeSession(s.id); closed++ }
   }
   log(`[session-cleanup] closed ${closed} stale bridge sessions (pid≠${process.pid}), ${sessions.length - closed} remaining`)
+  // Start periodic idle session cleanup (every 5 min, 30 min TTL)
+  startIdleCleanup()
+  log(`[session-cleanup] idle sweep timer started (interval=5m, ttl=30m)`)
 } catch (e) {
   log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`)
 }
@@ -234,17 +237,12 @@ await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
-// Runs fail-soft after the MCP handshake so the server is already
-// responsive. Any error is logged and swallowed — never crashes the
-// server or blocks tool calls.
+// Called after memory worker is ready so session-recap.md is fresh.
+// Fail-soft: any error is logged and swallowed.
 //
 //   mode === 'claude_md'  → upsert the managed block (strong enforcement)
 //   mode === 'hook' (default or missing) → remove any stale managed block
-//
-// This means toggling the setting back to hook mode and restarting
-// Claude Code automatically cleans up the previously written block —
-// no manual cleanup command needed.
-setImmediate(() => {
+function reconcileClaudeMd() {
   try {
     const cfgPath = join(PLUGIN_DATA, 'config.json')
     let mainConfig = {}
@@ -260,15 +258,13 @@ setImmediate(() => {
       upsertManagedBlock(targetPath, content)
       log(`claude_md: wrote managed block to ${expandHome(targetPath)} (${content.length} chars)`)
     } else {
-      // Hook mode (default) — scrub any stale managed block so CLAUDE.md
-      // stays clean when the user toggles back.
       const removed = removeManagedBlock(targetPath)
       if (removed) log(`hook mode: removed stale managed block from ${expandHome(targetPath)}`)
     }
   } catch (e) {
     log(`claude_md reconcile failed: ${e && (e.stack || e.message) || e}`)
   }
-})
+}
 
 // ── CLAUDE.md managed block live watcher ───────────────────────────
 // After boot-time reconcile, watch the rules/config sources and rebuild
@@ -351,22 +347,29 @@ setImmediate(() => {
 // scheduling all run inside the worker process. No in-process fallback.
 setImmediate(() => {
   spawnWorker('memory')
-  // channels depends on memory HTTP — wait for memory ready
+  // channels + CLAUDE.md depend on memory — wait for memory ready
   const memEntry = workers.get('memory')
   if (memEntry) {
     const onReady = (msg) => {
       if (msg.type === 'ready') {
+        reconcileClaudeMd()
         spawnWorker('channels')
         memEntry.proc.removeListener('message', onReady)
       }
     }
     memEntry.proc.on('message', onReady)
-    // Safety: spawn channels anyway after 10s if ready never arrives
+    // Safety: proceed anyway after 10s if ready never arrives
     setTimeout(() => {
-      if (!workers.has('channels')) spawnWorker('channels')
+      if (!workers.has('channels')) {
+        reconcileClaudeMd()
+        spawnWorker('channels')
+      }
     }, 10000)
   } else {
-    setTimeout(() => spawnWorker('channels'), 2000)
+    setTimeout(() => {
+      reconcileClaudeMd()
+      spawnWorker('channels')
+    }, 2000)
   }
 })
 
@@ -377,6 +380,11 @@ async function shutdown(reason) {
   if (shuttingDown) return
   shuttingDown = true
   log(`shutdown: ${reason}`)
+  // Stop idle session sweep timer
+  try {
+    const { stopIdleCleanup } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
+    stopIdleCleanup()
+  } catch {}
   // Kill workers — Windows needs taskkill for reliable cleanup
   for (const [name, entry] of workers) {
     const pid = entry.proc.pid
