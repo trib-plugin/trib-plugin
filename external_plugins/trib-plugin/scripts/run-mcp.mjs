@@ -26,13 +26,21 @@ if (isWin && proc.pid) {
   } catch {}
 }
 
-process.on('SIGTERM', () => {
-  proc.kill('SIGTERM');
-});
+function killChild() {
+  if (isWin && proc.pid) {
+    try {
+      const { execSync } = await import('child_process');
+      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 });
+    } catch {}
+  } else {
+    proc.kill('SIGTERM');
+  }
+}
 
-process.on('SIGINT', () => {
-  proc.kill('SIGINT');
-});
+process.on('SIGTERM', killChild);
+process.on('SIGINT', killChild);
+process.stdin.on('end', killChild);
+process.stdin.on('close', killChild);
 
 proc.on('exit', (code) => {
   process.exit(code || 0);

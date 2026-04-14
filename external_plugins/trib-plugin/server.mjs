@@ -371,15 +371,30 @@ setImmediate(() => {
 })
 
 // ── Shutdown ────────────────────────────────────────────────────────
+const isWin = process.platform === 'win32'
 let shuttingDown = false
 async function shutdown(reason) {
   if (shuttingDown) return
   shuttingDown = true
   log(`shutdown: ${reason}`)
-  // Stop workers first
+  // Kill workers — Windows needs taskkill for reliable cleanup
   for (const [name, entry] of workers) {
-    try { entry.proc.kill('SIGTERM') } catch {}
+    const pid = entry.proc.pid
+    try {
+      if (isWin && pid) {
+        require('child_process').execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', windowsHide: true, timeout: 5000 })
+      } else {
+        entry.proc.kill('SIGTERM')
+      }
+      log(`shutdown: killed worker ${name} (pid=${pid})`)
+    } catch {}
   }
+  // Kill tracked bridge CLI processes
+  try {
+    const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/cli-runner.mjs')).href)
+    const killed = cleanupOrphanedPids()
+    if (killed > 0) log(`shutdown: cleaned ${killed} bridge CLI processes`)
+  } catch {}
   for (const mod of modules.values()) {
     if (mod.stop) await mod.stop()
   }
