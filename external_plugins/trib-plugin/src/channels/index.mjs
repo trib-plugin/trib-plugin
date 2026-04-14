@@ -13,7 +13,6 @@ import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from "./lib/config.mjs";
-import { tryRead } from "./lib/settings.mjs";
 import { Scheduler } from "./lib/scheduler.mjs";
 import { WebhookServer } from "./lib/webhook.mjs";
 import { EventPipeline } from "./lib/event-pipeline.mjs";
@@ -120,13 +119,28 @@ if (!_isWorkerMode) {
   startCliWorker();
 }
 const INSTRUCTIONS = "";
-let mcpServer = new Server(
-  { name: "trib-plugin", version: PLUGIN_VERSION },
-  {
-    capabilities: { tools: {}, experimental: { "claude/channel": {}, "claude/channel/permission": {} } },
-    instructions: INSTRUCTIONS
+
+// ── Parent notification helper ───────────────────────────────────────
+// This worker has no MCP transport of its own. All notifications flow
+// through IPC to the parent (server.mjs), which owns the single connected
+// MCP `Server` instance. The parent's IPC message handler translates
+// `{type:'notify', method, params}` into `server.notification({method, params})`.
+//
+// Before v0.6.7 the worker had its own orphan `Server` instance that was
+// never `connect()`ed to any transport, so `.notification()` silently
+// threw 'Not connected' inside the SDK and every call was dropped by an
+// outer `.catch(() => {})`. That regression is what this path replaces.
+function sendNotifyToParent(method, params) {
+  if (!process.send) {
+    try { process.stderr.write(`trib-plugin channels: notify dropped (no IPC): ${method}\n`); } catch {}
+    return;
   }
-);
+  try {
+    process.send({ type: 'notify', method, params });
+  } catch (err) {
+    try { process.stderr.write(`trib-plugin channels: notify IPC send failed: ${err && err.message || err}\n`); } catch {}
+  }
+}
 function resolveChannelLabel(channelsConfig, label) {
   if (!label || !channelsConfig) return label;
   const entry = channelsConfig[label];
@@ -441,11 +455,7 @@ async function startOwnerHttpServer() {
           const injMeta = { user: source, user_id: "system", ts: (/* @__PURE__ */ new Date()).toISOString() };
           if (body.instruction) injMeta.instruction = body.instruction;
           if (body.type) injMeta.type = body.type;
-          void mcpServer.notification({
-            method: "notifications/claude/channel",
-            params: { content, meta: injMeta }
-          }).catch(() => {
-          });
+          sendNotifyToParent("notifications/claude/channel", { content, meta: injMeta });
           res.writeHead(200);
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -475,10 +485,10 @@ async function startOwnerHttpServer() {
             if (bridgePreset) toolArgs.preset = bridgePreset;
             if (bridgeContext) toolArgs.context = bridgeContext;
             const notifyFn = text => {
-              void mcpServer.notification({
-                method: "notifications/claude/channel",
-                params: { content: text, meta: { user: "trib-agent", user_id: "system", ts: new Date().toISOString() } }
-              }).catch(() => {});
+              sendNotifyToParent("notifications/claude/channel", {
+                content: text,
+                meta: { user: "trib-agent", user_id: "system", ts: new Date().toISOString() }
+              });
             };
             const result = await agentMod.handleToolCall("bridge", toolArgs, { notifyFn });
             res.writeHead(200);
@@ -790,12 +800,7 @@ function injectAndRecord(channelId, name, content, options, kind, prefix) {
   const meta = { chat_id: channelId, user: sourceLabel, user_id: "system", ts };
   if (options?.instruction) meta.instruction = options.instruction;
   if (options?.type) meta.type = options.type;
-  void mcpServer?.notification({
-    method: "notifications/claude/channel",
-    params: { content, meta }
-  }).catch((e) => {
-    try { process.stderr.write(`trib-plugin ${prefix}: notification failed: ${e}\n`); } catch {}
-  });
+  sendNotifyToParent("notifications/claude/channel", { content, meta });
   void memoryAppendEpisode({
     ts, backend: backend.name, channelId,
     userId: "system", userName: `${prefix}:${name}`,
@@ -949,24 +954,18 @@ backend.onInteraction = (interaction) => {
     writeTextFile(TURN_END_FILE, String(Date.now()));
     return;
   }
-  void mcpServer.notification({
-    method: "notifications/claude/channel",
-    params: {
-      content: `[interaction] ${interaction.type}: ${interaction.customId}${interaction.values ? " values=" + interaction.values.join(",") : ""}`,
-      meta: {
-        chat_id: interaction.channelId,
-        user: `interaction:${interaction.type}`,
-        user_id: interaction.userId,
-        ts: (/* @__PURE__ */ new Date()).toISOString(),
-        interaction_type: interaction.type,
-        custom_id: interaction.customId,
-        ...interaction.values ? { values: interaction.values.join(",") } : {},
-        ...interaction.message ? { message_id: interaction.message.id } : {}
-      }
+  sendNotifyToParent("notifications/claude/channel", {
+    content: `[interaction] ${interaction.type}: ${interaction.customId}${interaction.values ? " values=" + interaction.values.join(",") : ""}`,
+    meta: {
+      chat_id: interaction.channelId,
+      user: `interaction:${interaction.type}`,
+      user_id: interaction.userId,
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      interaction_type: interaction.type,
+      custom_id: interaction.customId,
+      ...interaction.values ? { values: interaction.values.join(",") } : {},
+      ...interaction.message ? { message_id: interaction.message.id } : {}
     }
-  }).catch((e) => {
-    process.stderr.write(`trib-plugin: notification failed: ${e}
-`);
   });
 };
 function isVoiceAttachment(contentType) {
@@ -1415,7 +1414,10 @@ function createHttpMcpServer() {
   });
   return s;
 }
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
+// Tool dispatch in worker mode goes through the IPC `call` handler at the
+// bottom of this file (parent's `callWorker` → `handleToolCall`). The HTTP
+// MCP path uses its own short-lived `Server` instance built by
+// `createHttpMcpServer()` above. There is no orphan worker-level Server.
 const BACKEND_TOOLS = /* @__PURE__ */ new Set(["reply", "fetch", "react", "edit_message", "download_attachment"]);
 async function handleToolCall(name, args) {
   if (_channelsDegraded) {
@@ -1667,10 +1669,13 @@ ${lines.join("\n")}` }]
   }
   return result;
 }
-mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
+// Bridge auto-connect retry + forwarder-aware tool dispatch wrapper. Used by
+// both the HTTP MCP path (createHttpMcpServer's CallTool handler can call this)
+// and the worker IPC handler at the bottom of this file. The pre-v0.6.7 code
+// registered this on the orphan worker-level `Server`, which never had a
+// transport, so the wrapper never actually fired. Centralised here for reuse.
+async function handleToolCallWithBridgeRetry(toolName, args) {
   await forwarder.forwardNewText();
-  const toolName = req.params.name;
-  const args = req.params.arguments ?? {};
   if (BACKEND_TOOLS.has(toolName) && !bridgeRuntimeConnected && !proxyMode) {
     if (!currentOwnerState().owned) claimBridgeOwnership("tool call");
     for (let i = 0; i < 2 && !bridgeRuntimeConnected && !proxyMode; i++) {
@@ -1693,7 +1698,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (req) => {
     void forwarder.forwardToolLog(toolLine);
   }
   return result;
-});
+}
 const INBOUND_DEDUP_TTL = 5 * 6e4;
 const inboundSeen = /* @__PURE__ */ new Map();
 const INBOUND_DEDUP_DIR = path.join(os.tmpdir(), "trib-plugin-inbound");
@@ -1858,15 +1863,9 @@ async function handleInbound(msg, route, options = {}) {
   };
   const notificationContent = `[${now}]
 ${messageBody}`;
-  void mcpServer.notification({
-    method: "notifications/claude/channel",
-    params: {
-      content: notificationContent,
-      meta: notificationMeta
-    }
-  }).catch((e) => {
-    process.stderr.write(`trib-plugin: notification failed: ${e}
-`);
+  sendNotifyToParent("notifications/claude/channel", {
+    content: notificationContent,
+    meta: notificationMeta
   });
   void memoryAppendEpisode({
     ts: msg.ts,
@@ -1881,8 +1880,10 @@ ${messageBody}`;
     sourceRef: `${backend.name}:${msg.messageId}:user`
   });
 }
-async function init(sharedMcp) {
-  mcpServer = sharedMcp;
+async function init(_sharedMcp) {
+  // _sharedMcp is no longer used. Notifications now flow via IPC to the parent
+  // (sendNotifyToParent above). The parameter is retained for backward
+  // compatibility with any caller that still passes a Server reference.
   scheduler.setInjectHandler((channelId, name, content, options) => {
     injectAndRecord(channelId, name, content, options, "schedule-inject", "schedule");
   });
@@ -1973,51 +1974,9 @@ async function stop() {
   bridgeOwnershipTimer = setInterval(() => {
     void refreshBridgeOwnership();
   }, 3e4);
-  if (bridgeRuntimeConnected && channelBridgeActive) {
-    const greetingDone = path.join(DATA_DIR, ".greeting-sent");
-    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-    const lastGreetDate = tryRead(greetingDone);
-    if (lastGreetDate === today) {
-    } else {
-      void (async () => {
-        fs.writeFileSync(greetingDone, today);
-        const greetChannel = config.channelsConfig?.main?.channelId || "";
-        if (!greetChannel) return;
-        const bot = loadBotConfig();
-        const quietSchedule = bot.quiet?.schedule;
-        if (quietSchedule) {
-          const parts = quietSchedule.split("-");
-          if (parts.length === 2) {
-            const now = /* @__PURE__ */ new Date();
-            const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-            const [start2, end] = parts;
-            const inQuiet = start2 > end ? hhmm >= start2 || hhmm < end : hhmm >= start2 && hhmm < end;
-            if (inQuiet) return;
-          }
-        }
-        await mcpServer.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: "New session started. Say something different each time \u2014 mention recent work, ask a question, or just be casual. Never repeat the same greeting. One short message only, no tools. This is an internal system trigger. Do not mention that this is a greeting notification, session start, or system message. Just be natural.",
-            meta: { chat_id: greetChannel, user: "system:greeting", user_id: "system", ts: (/* @__PURE__ */ new Date()).toISOString() }
-          }
-        }).catch(() => {
-        });
-        for (let i = 0; i < 30; i++) {
-          await new Promise((r) => setTimeout(r, 2e3));
-          const t = discoverSessionBoundTranscript();
-          if (t?.exists) {
-            if (!forwarder.hasBinding()) {
-              applyTranscriptBinding(greetChannel, t.transcriptPath, { persistStatus: false });
-              process.stderr.write(`trib-plugin: greeting transcript bound: ${t.transcriptPath}
-`);
-            }
-            break;
-          }
-        }
-      })();
-    }
-  }
+  // Boot-time session greeting removed — proactive covers the same role
+  // (conversational session kickoff) with real topic selection + source
+  // scoring instead of a canned template. See proactive-chat.md.
   const configPath = path.join(DATA_DIR, "config.json");
   let reloadDebounce = null;
   try {
@@ -2038,7 +1997,7 @@ if (_isWorkerMode && process.send) {
   process.on('message', async (msg) => {
     if (msg.type !== 'call' || !msg.callId) return
     try {
-      const result = await handleToolCall(msg.name, msg.args || {})
+      const result = await handleToolCallWithBridgeRetry(msg.name, msg.args || {})
       process.send({ type: 'result', callId: msg.callId, result })
     } catch (e) {
       process.send({ type: 'result', callId: msg.callId, error: e.message })

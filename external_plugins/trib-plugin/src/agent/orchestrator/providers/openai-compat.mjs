@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { loadConfig } from '../config.mjs';
+import { warnBridgeOnce } from '../bridge-trace.mjs';
 const PRESETS = {
     openai: {
         baseURL: 'https://api.openai.com/v1',
@@ -125,6 +126,11 @@ export class OpenAICompatProvider {
     async _doSend(messages, model, tools, sendOpts) {
         const useModel = model || this.defaultModel;
         const opts = sendOpts || {};
+        const signal = opts.signal || null;
+        if (signal?.aborted) {
+            const reason = signal.reason;
+            throw reason instanceof Error ? reason : new Error('OpenAI-compat request aborted by session close');
+        }
         const isReasoningModel = opts.effort || /^(gpt-5|o[13])/i.test(useModel);
         if (this.name === 'openai' && isReasoningModel && tools?.length) {
             return await this._sendViaResponsesAPI(messages, useModel, tools, opts);
@@ -147,7 +153,8 @@ export class OpenAICompatProvider {
                 params.service_tier = 'priority';
             }
         }
-        const response = await this.client.chat.completions.create(params);
+        const requestOpts = signal ? { signal } : undefined;
+        const response = await this.client.chat.completions.create(params, requestOpts);
         const choice = response.choices[0];
         const toolCalls = choice ? parseToolCalls(choice) : undefined;
         return {
@@ -206,11 +213,19 @@ export class OpenAICompatProvider {
             input,
             reasoning: { effort: opts.effort || 'medium' },
         };
+        if (opts.sessionId && this.name === 'openai') {
+            body.prompt_cache_key = String(opts.sessionId);
+        }
+        else if (opts.sessionId && this.name !== 'openai') {
+            warnBridgeOnce(`prompt-cache-skip:${this.name}`, `[bridge-cache] ${this.name} responses endpoint: prompt_cache_key unsupported, skipping`);
+        }
         if (toolsFlat?.length)
             body.tools = toolsFlat;
         if (opts.fast === true)
             body.service_tier = 'priority';
-        const response = await this.client.responses.create(body);
+        const signal = opts.signal || null;
+        const requestOpts = signal ? { signal } : undefined;
+        const response = await this.client.responses.create(body, requestOpts);
         let content = '';
         const toolCalls = [];
         for (const item of response.output || []) {

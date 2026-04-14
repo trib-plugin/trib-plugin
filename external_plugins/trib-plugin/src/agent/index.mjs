@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError } from './orchestrator/session/manager.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
@@ -275,24 +275,47 @@ export async function handleToolCall(name, args, opts = {}) {
       case 'list_sessions': {
         const sessions = listSessions();
         if (sessions.length === 0) return ok('No active sessions.');
-        return ok(sessions.map((s) => ({
-          id: s.id,
-          provider: s.provider,
-          model: s.model,
-          messages: s.messages.length,
-          tools: s.tools.length,
-          sentTokens: s.totalInputTokens,
-          receivedTokens: s.totalOutputTokens,
-          scope: s.scopeKey || null,
-          status: s.status || 'idle',
-          createdAt: new Date(s.createdAt).toISOString(),
-          updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : null,
-        })));
+        const now = Date.now();
+        return ok(sessions.map((s) => {
+          const runtime = getSessionRuntime(s.id);
+          // No runtime entry → session has no in-flight work; stage derives from
+          // persisted status ('running' is only set by long-running callers; idle
+          // otherwise). Single derivation, no legacy fallback path.
+          const persistedStatus = s.status || 'idle';
+          const stage = runtime?.stage || (persistedStatus === 'running' ? 'connecting' : 'idle');
+          const lastStreamDeltaAt = runtime?.lastStreamDeltaAt
+            ? new Date(runtime.lastStreamDeltaAt).toISOString()
+            : null;
+          const staleSeconds = runtime?.lastStreamDeltaAt
+            ? Math.floor((now - runtime.lastStreamDeltaAt) / 1000)
+            : null;
+          return {
+            id: s.id,
+            provider: s.provider,
+            model: s.model,
+            messages: s.messages.length,
+            tools: s.tools.length,
+            sentTokens: s.totalInputTokens,
+            receivedTokens: s.totalOutputTokens,
+            scope: s.scopeKey || null,
+            status: persistedStatus,
+            createdAt: new Date(s.createdAt).toISOString(),
+            updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : null,
+            stage,
+            lastStreamDeltaAt,
+            staleSeconds,
+            lastToolCall: runtime?.lastToolCall || null,
+          };
+        }));
       }
 
       case 'close_session': {
-        const closed = closeSession(args.sessionId);
-        return ok(closed ? `Session ${args.sessionId} closed.` : `Session ${args.sessionId} not found.`);
+        // Fire-and-forget: plant tombstone, abort in-flight controller, defer
+        // cleanup. We don't wait for the abort to unwind — callers get an
+        // immediate ack and unknown IDs return the same shape for simplicity
+        // (Q1: unified {ok: true}).
+        closeSession(args.sessionId);
+        return ok({ ok: true, sessionId: args.sessionId });
       }
 
       case 'list_models': {
@@ -460,8 +483,16 @@ export async function handleToolCall(name, args, opts = {}) {
           } catch (err) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
-            emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
-            updateSessionStatus(session.id, 'error');
+            if (err instanceof SessionClosedError) {
+              // Cancellation is a clean exit, not a failure — render as grey
+              // "cancelled" rather than a red ❌ so the user can distinguish.
+              emit(`[${scopeLabel}] ⏹ cancelled\n\n${modelLabel}`);
+              // updateSessionStatus on a closed session would recreate a stale
+              // file after the tombstone; skip it.
+            } else {
+              emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
+              updateSessionStatus(session.id, 'error');
+            }
           } finally {
             try {
               const cfg = loadConfig();

@@ -16,35 +16,56 @@ function getStoreDir() {
 function sessionPath(id) {
     return join(getStoreDir(), `${id}.json`);
 }
+/**
+ * Ensure generation/closed defaults on every session object.
+ * Older persisted sessions predate these fields; we normalise at load and save.
+ */
+function _ensureLifecycleFields(session) {
+    if (typeof session.generation !== 'number') session.generation = 0;
+    if (typeof session.closed !== 'boolean') session.closed = false;
+    return session;
+}
+
 /** Module-level map tracking in-flight saves per session ID to prevent concurrent write corruption. */
 const _savePending = new Map();
 
-export function saveSession(session) {
+/**
+ * Persist a session. `opts.expectedGeneration` guards against resurrecting a
+ * session that was closed mid-flight: before the rename, we re-read the file
+ * on disk and, if it's already marked closed with a >= generation, drop the
+ * write. `opts.allowClosed=true` is used by `markSessionClosed` itself when
+ * writing the tombstone.
+ */
+export function saveSession(session, opts) {
+    _ensureLifecycleFields(session);
     const id = session.id;
+    const payload = { session, opts: opts || null };
     if (_savePending.get(id)) {
-        // A save for this session is already in progress — queue the latest state.
-        // We store the session object; when the current write finishes it will
-        // pick up the queued value and write again.
-        _savePending.set(id, { queued: session });
+        _savePending.set(id, { queued: payload });
         return;
     }
     _savePending.set(id, { writing: true });
-    _doSave(session);
+    _doSave(payload);
 }
 
-function _doSave(session) {
-    const id = session.id;
+function _shouldDrop(id, opts) {
+    if (!opts || opts.allowClosed) return false;
+    const expected = typeof opts.expectedGeneration === 'number' ? opts.expectedGeneration : null;
+    if (expected === null) return false;
+    // Re-read current tombstone state from disk. If the session is closed with
+    // a generation >= expected, our write is stale — drop it.
     const target = sessionPath(id);
-    const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';
+    if (!existsSync(target)) return false;
     try {
-        writeFileSync(tmp, JSON.stringify(session), 'utf-8');
-        renameSync(tmp, target);
-    } catch (err) {
-        try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
-        _savePending.delete(id);
-        throw err;
+        const onDisk = JSON.parse(readFileSync(target, 'utf-8'));
+        const diskGen = typeof onDisk.generation === 'number' ? onDisk.generation : 0;
+        return onDisk.closed === true && diskGen >= expected;
+    } catch {
+        return false;
     }
-    // Check if another save was queued while we were writing
+}
+
+function _drainQueue(id) {
     const pending = _savePending.get(id);
     if (pending && pending.queued) {
         const next = pending.queued;
@@ -54,12 +75,68 @@ function _doSave(session) {
         _savePending.delete(id);
     }
 }
+
+function _doSave(payload) {
+    const { session, opts } = payload;
+    const id = session.id;
+    // First check: upfront, before any disk I/O. Cheap short-circuit when a
+    // tombstone is already on disk when the caller arrives.
+    if (_shouldDrop(id, opts)) {
+        _drainQueue(id);
+        return;
+    }
+    const target = sessionPath(id);
+    const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';
+    try {
+        writeFileSync(tmp, JSON.stringify(session), 'utf-8');
+        // Second check: between the temp write and the rename, closeSession()
+        // may have planted a tombstone. Re-check on disk; if a newer tombstone
+        // now exists, discard our temp file rather than let rename clobber it.
+        if (_shouldDrop(id, opts)) {
+            try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
+            process.stderr.write(`[session-store] ${id}: dropped stale save (tombstone planted during write)\n`);
+            _drainQueue(id);
+            return;
+        }
+        renameSync(tmp, target);
+    } catch (err) {
+        try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
+        _savePending.delete(id);
+        throw err;
+    }
+    _drainQueue(id);
+}
+
+/**
+ * Atomically mark a session closed on disk with a bumped generation.
+ * Returns the new generation, or null if the session file doesn't exist.
+ * Used by closeSession() to plant a tombstone that races against in-flight
+ * saveSession() calls.
+ */
+export function markSessionClosed(id) {
+    const existing = loadSession(id);
+    if (!existing) return null;
+    const newGen = (typeof existing.generation === 'number' ? existing.generation : 0) + 1;
+    const tombstone = { ...existing, closed: true, generation: newGen, updatedAt: Date.now() };
+    // Bypass the queue + guard — this IS the tombstone write.
+    const target = sessionPath(id);
+    const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';
+    try {
+        writeFileSync(tmp, JSON.stringify(tombstone), 'utf-8');
+        renameSync(tmp, target);
+    } catch {
+        try { unlinkSync(tmp); } catch { /* ignore */ }
+        return null;
+    }
+    return newGen;
+}
+
 export function loadSession(id) {
     const path = sessionPath(id);
     if (!existsSync(path))
         return null;
     try {
-        return JSON.parse(readFileSync(path, 'utf-8'));
+        return _ensureLifecycleFields(JSON.parse(readFileSync(path, 'utf-8')));
     }
     catch {
         return null;
@@ -99,6 +176,24 @@ export function listStoredSessions(ttlMs) {
         catch { /* skip corrupt */ }
     }
     return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Raw directory scan — returns every parseable session file without any
+ * TTL-based inline deletion. Callers (e.g. sweepTombstones) need to own the
+ * unlink decision and log it themselves.
+ */
+export function getStoredSessionsRaw() {
+    const dir = getStoreDir();
+    if (!existsSync(dir)) return [];
+    const files = readdirSync(dir).filter(f => f.endsWith('.json'));
+    const sessions = [];
+    for (const f of files) {
+        try {
+            sessions.push(JSON.parse(readFileSync(join(dir, f), 'utf-8')));
+        } catch { /* skip corrupt */ }
+    }
+    return sessions;
 }
 
 /**

@@ -10,6 +10,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getPluginData } from '../config.mjs';
+import {
+    extractCachedTokens,
+    traceBridgeFetch,
+    traceBridgeSse,
+    traceBridgeUsage,
+} from '../bridge-trace.mjs';
+import { createAbortController } from '../../../shared/abort-controller.mjs';
 // --- Constants ---
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
@@ -107,7 +114,7 @@ async function refreshTokens(refreshToken) {
         clearTimeout(timeout);
     }
 }
-async function parseSSEStream(response, signal, abortStream) {
+async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
@@ -154,6 +161,7 @@ async function parseSSEStream(response, signal, abortStream) {
                     const event = JSON.parse(data);
                     if (event.type === 'response.output_text.delta') {
                         content += event.delta || '';
+                        try { onStreamDelta?.(); } catch {}
                     }
                     if (event.type === 'response.created' && event.response?.model) {
                         model = event.response.model;
@@ -164,6 +172,9 @@ async function parseSSEStream(response, signal, abortStream) {
                             callId: event.item.call_id || '',
                         });
                     }
+                    if (event.type === 'response.function_call_arguments.delta') {
+                        try { onStreamDelta?.(); } catch {}
+                    }
                     if (event.type === 'response.function_call_arguments.done') {
                         const itemId = event.item_id || '';
                         const pending = pendingCalls.get(itemId);
@@ -172,10 +183,16 @@ async function parseSSEStream(response, signal, abortStream) {
                             name: pending?.name || '',
                             arguments: JSON.parse(event.arguments || '{}'),
                         });
+                        try { onStreamDelta?.(); } catch {}
                     }
                     if (event.type === 'response.completed' && event.response?.usage) {
                         const u = event.response.usage;
-                        usage = { inputTokens: u.input_tokens || 0, outputTokens: u.output_tokens || 0 };
+                        usage = {
+                            inputTokens: u.input_tokens || 0,
+                            outputTokens: u.output_tokens || 0,
+                            cachedTokens: extractCachedTokens(u),
+                            raw: u,
+                        };
                         if (!model && event.response.model) model = event.response.model;
                         if (!content && event.response.output) {
                             for (const item of event.response.output) {
@@ -244,6 +261,9 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         stream: true,
         reasoning: { effort: opts.effort || 'medium' },
     };
+    if (opts.sessionId) {
+        body.prompt_cache_key = String(opts.sessionId);
+    }
     if (opts.fast === true) {
         body.service_tier = 'priority';
     }
@@ -311,13 +331,36 @@ export class OpenAIOAuthProvider {
             .replace(/"access_token"\s*:\s*"[^"]+"/g, '"access_token":"[REDACTED]"');
     }
     async send(messages, model, tools, sendOpts) {
+        const opts = sendOpts || {};
+        const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
+        const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
+        const externalSignal = opts.signal || null;
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.4';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
+        const sessionId = opts.sessionId || null;
+        const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
         const doRequest = async (token) => {
-            const controller = new AbortController();
+            const controller = createAbortController();
             const timeout = setTimeout(() => controller.abort(), 120_000);
+            const fetchStartedAt = Date.now();
+            // Bridge external cancellation → inner controller. We can't use
+            // createChildAbortController here because `controller` was created
+            // independently; instead we forward the abort directly.
+            let cancelHandler = null;
+            if (externalSignal) {
+                if (externalSignal.aborted) {
+                    clearTimeout(timeout);
+                    controller.abort(externalSignal.reason);
+                    throw externalSignal.reason instanceof Error
+                        ? externalSignal.reason
+                        : new Error('Codex request aborted by session close');
+                }
+                cancelHandler = () => { try { controller.abort(externalSignal.reason); } catch {} };
+                externalSignal.addEventListener('abort', cancelHandler, { once: true });
+            }
             try {
+                try { onStageChange?.('requesting'); } catch {}
                 const response = await fetch(CODEX_API_URL, {
                     method: 'POST',
                     headers: {
@@ -330,32 +373,62 @@ export class OpenAIOAuthProvider {
                     body: JSON.stringify(body),
                     signal: controller.signal,
                 });
+                traceBridgeFetch({
+                    sessionId,
+                    headersMs: Date.now() - fetchStartedAt,
+                    httpStatus: response.status,
+                });
                 clearTimeout(timeout);
-                return { response, controller };
+                return { response, controller, cancelHandler };
             } catch (err) {
                 clearTimeout(timeout);
+                if (cancelHandler) externalSignal.removeEventListener('abort', cancelHandler);
+                if (externalSignal?.aborted) {
+                    const reason = externalSignal.reason;
+                    throw reason instanceof Error ? reason : new Error('Codex request aborted by session close');
+                }
                 if (err?.name === 'AbortError')
                     throw new Error('Codex API initial response timed out after 120000ms');
                 throw err;
             }
         };
-        let { response, controller } = await doRequest(auth);
+        let { response, controller, cancelHandler } = await doRequest(auth);
         if (response.status === 401) {
             process.stderr.write(`[openai-oauth] Got 401, forcing token refresh and retrying...\n`);
+            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
             this.tokens.expires_at = 0;
             auth = await this.ensureAuth();
-            ({ response, controller } = await doRequest(auth));
+            ({ response, controller, cancelHandler } = await doRequest(auth));
         }
         if (!response.ok) {
+            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
             const text = await response.text().catch(() => '');
             const safeText = this.scrubTokens(text).slice(0, 200);
             process.stderr.write(`[openai-oauth] API error ${response.status}: ${safeText}\n`);
             throw new Error(`Codex API ${response.status}: ${safeText}`);
         }
         process.stderr.write(`[openai-oauth] Response ${response.status}, parsing SSE...\n`);
-        const result = await parseSSEStream(response, controller.signal, () => controller.abort());
-        process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
-        return result;
+        try { onStageChange?.('streaming'); } catch {}
+        try {
+            const sseStartedAt = Date.now();
+            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta);
+            traceBridgeSse({
+                sessionId,
+                sseParseMs: Date.now() - sseStartedAt,
+            });
+            traceBridgeUsage({
+                sessionId,
+                iteration,
+                inputTokens: result.usage?.inputTokens || 0,
+                outputTokens: result.usage?.outputTokens || 0,
+                cachedTokens: result.usage?.cachedTokens || 0,
+                model: result.model || useModel,
+            });
+            process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
+            return result;
+        } finally {
+            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+        }
     }
     async listModels() {
         return [

@@ -27,9 +27,9 @@ class CopilotProvider {
         });
         return this.inner;
     }
-    async send(messages, model) {
+    async send(messages, model, tools, sendOpts) {
         const client = await this.ensureClient();
-        return client.send(messages, model);
+        return client.send(messages, model, tools, sendOpts);
     }
     async listModels() {
         try {

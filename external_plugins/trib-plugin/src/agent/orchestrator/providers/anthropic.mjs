@@ -1,5 +1,36 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadConfig } from '../config.mjs';
+
+function withEphemeralCacheControl(block) {
+    if (!block || typeof block !== 'object' || block.cache_control) return block;
+    return { ...block, cache_control: { type: 'ephemeral' } };
+}
+
+function appendAnthropicCacheControl(content) {
+    if (Array.isArray(content)) {
+        if (content.length === 0) return content;
+        const next = [...content];
+        const lastIndex = next.length - 1;
+        next[lastIndex] = withEphemeralCacheControl(next[lastIndex]);
+        return next;
+    }
+    if (typeof content === 'string') {
+        return [withEphemeralCacheControl({ type: 'text', text: content })];
+    }
+    return content;
+}
+
+function collectRecentCacheableMessageIndexes(messages) {
+    const marked = new Set();
+    for (let i = messages.length - 1; i >= 0 && marked.size < 3; i--) {
+        const msg = messages[i];
+        if (msg?.role !== 'system') {
+            marked.add(i);
+        }
+    }
+    return marked;
+}
+
 const MODELS = [
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000 },
     { id: 'claude-opus-4-0', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000 },
@@ -26,14 +57,15 @@ function toAnthropicTools(tools) {
         input_schema: t.inputSchema,
     }));
 }
-function toAnthropicMessages(messages) {
+function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
     const result = [];
-    for (const m of messages) {
+    for (let idx = 0; idx < messages.length; idx++) {
+        const m = messages[idx];
         if (m.role === 'system')
             continue; // handled separately
         if (m.role === 'assistant' && m.toolCalls?.length) {
             // Assistant message with tool use blocks
-            const content = [];
+            let content = [];
             if (m.content)
                 content.push({ type: 'text', text: m.content });
             for (const tc of m.toolCalls) {
@@ -44,12 +76,17 @@ function toAnthropicMessages(messages) {
                     input: tc.arguments,
                 });
             }
+            if (cacheableIndexes.has(idx)) {
+                content = appendAnthropicCacheControl(content);
+            }
             result.push({ role: 'assistant', content });
             continue;
         }
         if (m.role === 'tool') {
-            // Tool results must be in a user message with tool_result blocks
-            // Group consecutive tool messages into one user message
+            // Tool results must be in a user message with tool_result blocks.
+            // Anthropic native path allows cache_control on content blocks, so if
+            // this synthetic user/tool_result message is one of the last 3
+            // non-system messages we mark the last block in the array.
             const last = result[result.length - 1];
             const block = {
                 type: 'tool_result',
@@ -58,15 +95,25 @@ function toAnthropicMessages(messages) {
             };
             if (last?.role === 'user' && Array.isArray(last.content)) {
                 last.content.push(block);
+                if (cacheableIndexes.has(idx)) {
+                    last.content = appendAnthropicCacheControl(last.content);
+                }
             }
             else {
-                result.push({ role: 'user', content: [block] });
+                let content = [block];
+                if (cacheableIndexes.has(idx)) {
+                    content = appendAnthropicCacheControl(content);
+                }
+                result.push({ role: 'user', content });
             }
             continue;
         }
+        const content = cacheableIndexes.has(idx)
+            ? appendAnthropicCacheControl(m.content)
+            : m.content;
         result.push({
             role: m.role,
-            content: m.content,
+            content,
         });
     }
     return result;
@@ -119,11 +166,14 @@ export class AnthropicProvider {
         const opts = sendOpts || {};
         const systemMsgs = messages.filter(m => m.role === 'system');
         const chatMsgs = messages.filter(m => m.role !== 'system');
+        const systemText = systemMsgs.map(m => m.content).join('\n\n') || undefined;
+        const cacheableIndexes = collectRecentCacheableMessageIndexes(chatMsgs);
+        const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes);
         const params = {
             model: useModel,
             max_tokens: maxTokens,
-            system: systemMsgs.map(m => m.content).join('\n\n') || undefined,
-            messages: toAnthropicMessages(chatMsgs),
+            system: systemText ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }] : undefined,
+            messages: anthropicMessages,
         };
         if (tools?.length) {
             params.tools = toAnthropicTools(tools);
@@ -137,7 +187,9 @@ export class AnthropicProvider {
         if (opts.fast === true) {
             params.speed = 'fast';
         }
-        const response = await this.client.messages.create(params, { headers: extraHeaders });
+        const requestOpts = { headers: extraHeaders };
+        if (opts.signal) requestOpts.signal = opts.signal;
+        const response = await this.client.messages.create(params, requestOpts);
         const textBlock = response.content.find(b => b.type === 'text');
         const toolCalls = parseToolCalls(response);
         return {

@@ -136,6 +136,19 @@ function spawnWorker(name) {
         if (msg.error) pending.reject(new Error(msg.error))
         else pending.resolve(msg.result)
       }
+      return
+    }
+    if (msg.type === 'notify' && msg.method) {
+      // Worker → parent notification forwarding. The worker has no MCP
+      // transport of its own; this is the single path that delivers Discord
+      // inbound, schedule injects, webhook events, proactive, and
+      // interaction events to the host (Claude Code) over the parent's
+      // connected Server.
+      server.notification({ method: msg.method, params: msg.params || {} })
+        .catch(err => {
+          log(`worker ${name} notify forward failed (${msg.method}): ${err instanceof Error ? err.message : String(err)}`)
+        })
+      return
     }
   })
 
