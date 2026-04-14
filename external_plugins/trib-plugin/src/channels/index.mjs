@@ -1372,7 +1372,7 @@ const TOOL_DEFS = [
       required: ["active"]
     }
   },
-  // memory_cycle and recall_memory tools are now provided by memory-service.mjs via MCP
+  // memory and recall_memory tools are now provided by memory-service.mjs via MCP
   {
     name: "reload_config",
     title: "Reload Config",
@@ -1691,7 +1691,7 @@ ${lines.join("\n")}` }]
           result = { content: [{ type: "text", text: "config reloaded \u2014 schedules, webhooks, and events re-registered" }] };
           break;
         }
-        // memory_cycle — handled by memory-service.mjs MCP
+        // memory — handled by memory-service.mjs MCP
         default:
           result = {
             content: [{ type: "text", text: `unknown tool: ${name}` }],

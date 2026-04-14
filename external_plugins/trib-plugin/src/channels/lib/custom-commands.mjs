@@ -320,7 +320,7 @@ function handleSleeping(parsed, ctx) {
     }
     case "now":
     case "run": {
-      return { text: "Use `/trib-plugin memory sleep` or MCP `memory_cycle` tool to run memory summarize." };
+      return { text: "Use `/trib-plugin memory sleep` or MCP `memory` tool to run memory summarize." };
     }
     default:
       return { text: t("unknown_action", ctx.lang, { action }) };

@@ -6,7 +6,7 @@ process.on('warning', () => {})
  * memory-service.mjs — MCP server + HTTP hybrid memory service.
  *
  * Single Node.js process providing:
- *   MCP (stdio)  — search_memories, memory_cycle tools for Claude Code
+ *   MCP (stdio)  — search_memories, memory tools for Claude Code
  *   MCP (http)   — /mcp endpoint (Streamable HTTP transport, stateless)
  *   HTTP (tcp)   — /episode, /health, /api/tool for hooks + internal use
  *
@@ -201,7 +201,7 @@ const MEMORY_INSTRUCTIONS_TEXT = [
   'When in doubt, call search_memories first — cost is near zero, missing context is expensive.',
 ].join('\n')
 const PROXY_TOOL_DEFS = [
-  { name: 'memory_cycle', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+  { name: 'memory', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
   { name: 'search_memories', description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['search', 'reason'] } }, required: [] } },
 ]
 
@@ -1001,7 +1001,7 @@ const mcp = new Server(
 
 const TOOL_DEFS = [
   {
-    name: 'memory_cycle',
+    name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: 'Run memory management operations: cycle2/sleep (core memory promotion + dedup), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (classify old episodes then run cycle1), status.',
@@ -1049,7 +1049,7 @@ async function handleToolCall(name, args) {
       }
     }
 
-    if (name === 'memory_cycle') {
+    if (name === 'memory') {
       const result = await handleCycle(args)
       return {
         content: [{ type: 'text', text: result.text }],

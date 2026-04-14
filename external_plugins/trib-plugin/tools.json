@@ -320,7 +320,7 @@
     "module": "channels"
   },
   {
-    "name": "memory_cycle",
+    "name": "memory",
     "title": "Memory Cycle",
     "annotations": {
       "title": "Memory Cycle",

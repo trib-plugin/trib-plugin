@@ -39,7 +39,7 @@ All modules coexist under `src/<module>/index.mjs` and share the same entry poin
 `reply`, `react`, `edit_message`, `download_attachment`, `fetch`, `schedule_status`, `trigger_schedule`, `schedule_control`, `activate_channel_bridge`, `reload_config`
 
 ### memory (2)
-`memory_cycle`, `search_memories`
+`memory`, `search_memories`
 
 ### search (6)
 `search`, `firecrawl_scrape`, `firecrawl_map`, `crawl`, `batch`, `setup`
