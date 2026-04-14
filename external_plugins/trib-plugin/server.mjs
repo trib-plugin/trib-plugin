@@ -179,7 +179,12 @@ function callWorker(name, toolName, args) {
     }, WORKER_CALL_TIMEOUT)
     entry.pending.push({ callId, resolve: v => { clearTimeout(timer); resolve(v) }, reject: e => { clearTimeout(timer); reject(e) } })
     try {
-      entry.proc.send({ type: 'call', callId, name: toolName, args })
+      const sent = entry.proc.send({ type: 'call', callId, name: toolName, args })
+      if (sent === false) {
+        clearTimeout(timer)
+        entry.pending = entry.pending.filter(p => p.callId !== callId)
+        reject(new Error(`worker ${name} IPC channel full or closed`))
+      }
     } catch (sendErr) {
       clearTimeout(timer)
       entry.pending = entry.pending.filter(p => p.callId !== callId)
