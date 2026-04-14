@@ -3,7 +3,7 @@ import * as crypto from "crypto";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
 import { DATA_DIR } from "./config.mjs";
-import { appendFileSync, readFileSync, readdirSync, writeFileSync, unlinkSync, statSync, existsSync } from "fs";
+import { appendFileSync, readFileSync, readdirSync, writeFileSync, unlinkSync, statSync, existsSync, watch as fsWatch } from "fs";
 import { homedir } from "os";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
 import { callLLM } from '../../shared/llm/index.mjs';
@@ -55,6 +55,48 @@ function verifySignature(secret, rawBody, signatureValue, parser) {
     );
   } catch {
     return false;
+  }
+}
+
+// ── Endpoint config loader ─────────────────────────────────────────────
+// Reads DATA_DIR/webhooks/<name>/config.json (written by setup-server.mjs
+// via POST /webhooks). Cached in-memory, invalidated by fs.watch on the
+// webhooks directory. Returns { secret, parser, channel, exec, model, analyze }.
+const _endpointCache = new Map();
+let _endpointWatcher = null;
+function _endpointConfigPath(name) {
+  return join(WEBHOOKS_DIR, name, "config.json");
+}
+function _ensureEndpointWatcher() {
+  if (_endpointWatcher) return;
+  try {
+    if (!existsSync(WEBHOOKS_DIR)) return;
+    _endpointWatcher = fsWatch(WEBHOOKS_DIR, { recursive: true }, (_event, filename) => {
+      if (!filename) { _endpointCache.clear(); return; }
+      // filename is like "<endpoint>/config.json" or "<endpoint>"
+      const parts = String(filename).split(/[\\/]/);
+      const endpointName = parts[0];
+      if (endpointName) _endpointCache.delete(endpointName);
+      else _endpointCache.clear();
+    });
+    _endpointWatcher.on("error", () => { _endpointWatcher = null; _endpointCache.clear(); });
+  } catch {
+    // Watch failures are non-fatal; cache simply stays until process restart.
+  }
+}
+function loadEndpointConfig(name) {
+  if (!name) return null;
+  if (_endpointCache.has(name)) return _endpointCache.get(name);
+  _ensureEndpointWatcher();
+  const p = _endpointConfigPath(name);
+  if (!existsSync(p)) { _endpointCache.set(name, null); return null; }
+  try {
+    const cfg = JSON.parse(readFileSync(p, "utf8"));
+    _endpointCache.set(name, cfg);
+    return cfg;
+  } catch {
+    _endpointCache.set(name, null);
+    return null;
   }
 }
 function resolveNgrokBin() {
@@ -168,17 +210,20 @@ class WebhookServer {
             for (const [k, v] of Object.entries(req.headers)) {
               if (typeof v === "string") headers[k.toLowerCase()] = v;
             }
-            const secret = this.config.secret;
+            // Secret lookup: per-endpoint (folder config.json) → global (webhook config) → warn+accept.
+            // Parser likewise prefers per-endpoint, falls back to global endpoints map.
+            const endpoint = loadEndpointConfig(name) || this.config.endpoints?.[name] || null;
+            const secret = endpoint?.secret || this.config.secret;
+            const parser = endpoint?.parser || this.config.endpoints?.[name]?.parser;
             if (secret) {
-              const endpoint = this.config.endpoints?.[name];
-              const signature = extractSignature(headers, endpoint?.parser);
+              const signature = extractSignature(headers, parser);
               if (!signature) {
                 logWebhook(`${name}: rejected \u2014 no signature header found`);
                 res.writeHead(403, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: "missing signature" }));
                 return;
               }
-              if (!verifySignature(secret, body, signature, endpoint?.parser)) {
+              if (!verifySignature(secret, body, signature, parser)) {
                 logWebhook(`${name}: rejected \u2014 signature mismatch`);
                 res.writeHead(403, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: "invalid signature" }));

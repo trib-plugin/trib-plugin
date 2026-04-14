@@ -1084,7 +1084,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/memory/files') {
     const result = {};
-    for (const name of ['bot.md', 'user.md', 'context.md']) {
+    for (const name of ['bot.md', 'user.md']) {
       try { result[name] = readFileSync(join(MEMORY_FILES_DIR, name), 'utf8'); }
       catch { result[name] = ''; }
     }
@@ -1095,7 +1095,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path.startsWith('/memory/file/')) {
     const name = decodeURIComponent(path.slice('/memory/file/'.length));
-    if (!['bot.md', 'user.md', 'context.md'].includes(name)) { res.writeHead(404); res.end('Not found'); return; }
+    if (!['bot.md', 'user.md'].includes(name)) { res.writeHead(404); res.end('Not found'); return; }
     const filePath = join(MEMORY_FILES_DIR, name);
     mkdirSync(MEMORY_FILES_DIR, { recursive: true });
     if (!existsSync(filePath)) writeFileSync(filePath, '', 'utf8');
@@ -1109,7 +1109,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/memory/files') {
     const data = await readBody(req);
     mkdirSync(MEMORY_FILES_DIR, { recursive: true });
-    for (const name of ['bot.md', 'user.md', 'context.md']) {
+    for (const name of ['bot.md', 'user.md']) {
       if (data[name] != null) writeFileSync(join(MEMORY_FILES_DIR, name), data[name], 'utf8');
     }
     console.log('  Memory files saved');

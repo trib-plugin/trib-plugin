@@ -3,33 +3,20 @@
 /**
  * trib-plugin unified SessionStart hook
  *
- * Reads rules/*.md files and profile data, injects as additionalContext.
- *
- * Content is built by lib/rules-builder.cjs so that the MCP boot-time
- * writer (claude_md mode) and this hook (hook mode) produce identical
- * output.
- *
- * If config.promptInjection.mode === 'claude_md', this hook becomes a
- * no-op — the block is written directly into CLAUDE.md by the MCP
- * server at boot, giving the content OVERRIDE-level enforcement.
- *
- * Injection order (see lib/rules-builder.cjs):
- *   1. user-workflow.md (always)
- *   2. memory.md     (when memory-config.json has enabled)
- *   3. channels.md   (when channel backend configured)
- *   4. search.md     (when search-config.json has enabled)
- *   5. team.md       (always)
- *   6. models        (from agent-config.json presets)
- *   7. context.md    (auto-generated core memory snapshot)
- *   8. user.md       (user profile)
- *   9. bot.md        (bot persona)
- *  10. user name     (from memory-config.json user.name)
- *  11. user title    (from memory-config.json user.title)
+ * Two injection layers:
+ *   1. Static rules (workflow/team/memory/etc.)
+ *        - claude_md mode: MCP server writes them into CLAUDE.md
+ *        - hook mode: this hook emits them via additionalContext
+ *   2. Session recap (latest N episodes from memory.sqlite)
+ *        - Always emitted by this hook via additionalContext — read
+ *          directly from the DB so content is always fresh, with
+ *          no intermediate file and no race with the MCP boot writer.
  */
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { DatabaseSync } = require('node:sqlite');
 
 // Read hook event from stdin
 let _event = {};
@@ -48,31 +35,9 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
 
 
-// --- Mode branch: claude_md mode delegates to MCP boot-time writer ---
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }
-
-// --- Trigger recap rebuild (fire-and-forget) ---
-try {
-  const http = require('http');
-  const portFile = path.join(os.tmpdir(), 'trib-memory', 'memory-port');
-  if (fs.existsSync(portFile)) {
-    const port = Number(fs.readFileSync(portFile, 'utf8').trim());
-    if (port > 0) {
-      const req = http.request({
-        hostname: '127.0.0.1',
-        port,
-        path: '/rebuild-recap',
-        method: 'POST',
-        timeout: 5000,
-      });
-      req.on('error', () => {});
-      req.on('timeout', () => req.destroy());
-      req.end();
-    }
-  }
-} catch {}
 
 // --- Trigger transcript rebind (fire-and-forget) ---
 try {
@@ -95,23 +60,154 @@ try {
   }
 } catch {}
 
+// --- Read memory.sqlite (shared helper, fail-soft) ---
+function openMemoryDb() {
+  try {
+    const dbPath = path.join(DATA_DIR, 'memory.sqlite');
+    if (!fs.existsSync(dbPath)) return null;
+    return new DatabaseSync(dbPath, { readOnly: true });
+  } catch (e) {
+    process.stderr.write(`[session-start] open memory.sqlite failed: ${e.message}\n`);
+    return null;
+  }
+}
+
+// --- Build context (core memory + user model) directly from sqlite ---
+function buildContext() {
+  let db = null;
+  try {
+    db = openMemoryDb();
+    if (!db) return '';
+    const parts = [];
+
+    const coreItems = db.prepare(`
+      SELECT topic, element
+      FROM core_memory
+      WHERE status = 'active'
+      ORDER BY final_score DESC, mention_count DESC
+    `).all();
+    if (coreItems.length > 0) {
+      const lines = coreItems.map(r => `- ${r.topic} — ${r.element}`);
+      parts.push(`## Core Memory\n${lines.join('\n')}`);
+    }
+
+    const userModel = db.prepare(`
+      SELECT category, hypothesis, confidence
+      FROM user_model
+      WHERE status = 'active' AND confidence >= 0.5
+      ORDER BY confidence DESC
+    `).all();
+    if (userModel.length > 0) {
+      const lines = userModel.map(m =>
+        `- [${m.category}] ${m.hypothesis} (confidence: ${Number(m.confidence).toFixed(2)})`
+      );
+      parts.push(`## User Model\n${lines.join('\n')}`);
+    }
+
+    return parts.join('\n\n').trim();
+  } catch (e) {
+    process.stderr.write(`[session-start] context build failed: ${e.message}\n`);
+    return '';
+  } finally {
+    if (db) { try { db.close(); } catch {} }
+  }
+}
+
+// --- Build session recap directly from memory.sqlite ---
+function buildRecap() {
+  let db = null;
+  try {
+    const memCfg = readJson(path.join(DATA_DIR, 'memory-config.json'));
+    const recapCfg = memCfg.sessionRecap || {};
+    if (recapCfg.enabled === false) return '';
+    const limit = recapCfg.limit || 20;
+
+    db = openMemoryDb();
+    if (!db) return '';
+
+    const rows = db.prepare(`
+      SELECT e.ts, e.role, e.content AS episode_content,
+             c.classification, c.topic, c.element, c.state
+      FROM episodes e
+      LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
+      WHERE e.kind IN ('message', 'turn')
+      ORDER BY e.ts DESC, e.id DESC
+      LIMIT ?
+    `).all(limit);
+
+    const lines = rows.map(r => {
+      const ts = String(r.ts || '').slice(0, 16);
+      if (r.topic) {
+        const cls = [r.classification, r.topic, r.element, r.state].filter(Boolean).join(' | ');
+        return `[${ts}] ${cls.slice(0, 500)}`;
+      }
+      const prefix = r.role === 'user' ? 'u' : 'a';
+      return `[${ts}] ${prefix}: ${cleanText(String(r.episode_content)).slice(0, 300)}`;
+    });
+    const text = lines.join('\n');
+    return text.length > 20 ? '## Session Recap\n\n' + text : '';
+  } catch (e) {
+    process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
+    return '';
+  } finally {
+    if (db) { try { db.close(); } catch {} }
+  }
+}
+
+// Mirrors src/memory/lib/memory-extraction.mjs#cleanMemoryText so recap output
+// stays consistent with what the memory worker would produce.
+function cleanText(text) {
+  return String(text ?? '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/<memory-context>[\s\S]*?<\/memory-context>/gi, '')
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, '')
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, '')
+    .replace(/<command-name>[\s\S]*?<\/command-name>/gi, '')
+    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, '')
+    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, '')
+    .replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, '')
+    .replace(/<tool-use-id>[\s\S]*?<\/tool-use-id>/gi, '')
+    .replace(/<output-file>[\s\S]*?<\/output-file>/gi, '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '')
+    .replace(/<schedule-context>[\s\S]*?<\/schedule-context>/gi, '')
+    .replace(/<teammate-message[\s\S]*?<\/teammate-message>/gi, '')
+    .replace(/<channel[^>]*>\n?([\s\S]*?)\n?<\/channel>/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*/g, '')
+    .replace(/^#{1,4}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/^[-*]\s+/gm, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/^This session is being continued from a previous conversation[\s\S]*?(?=\n\n|$)/gim, '')
+    .replace(/^\s*●\s.*$/gm, '')
+    .replace(/^\s*Ran .*$/gm, '')
+    .replace(/^\s*Command: .*$/gm, '')
+    .replace(/^\s*Process exited .*$/gm, '')
+    .replace(/^\s*Full transcript available at: .*$/gm, '')
+    .replace(/<\/?[a-z][-a-z]*(?:\s[^>]*)?\/?>/gi, '')
+    .replace(/[\u{1F300}-\u{1FAD6}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
+// --- Build additionalContext ---
 const mainConfig = readJson(path.join(DATA_DIR, 'config.json'));
-if (mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md') {
-  // Managed block is written into CLAUDE.md by the MCP server at boot.
-  // No hook-level injection in this mode.
-  process.exit(0);
+const claudeMdMode = mainConfig.promptInjection && mainConfig.promptInjection.mode === 'claude_md';
+
+let additionalContext = '';
+
+if (!claudeMdMode) {
+  // Hook mode: rules-builder provides the static rules too
+  try {
+    const { buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'));
+    additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) || '';
+  } catch {}
 }
 
-// --- Hook mode: build content and emit as additionalContext ---
-let buildInjectionContent;
-try {
-  ({ buildInjectionContent } = require(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs')));
-} catch {
-  // Builder not available — exit quietly rather than breaking the session.
-  process.exit(0);
-}
+const blocks = [additionalContext, buildContext(), buildRecap()].filter(Boolean);
+additionalContext = blocks.join('\n\n');
 
-const additionalContext = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR });
 if (additionalContext) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {

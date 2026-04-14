@@ -75,8 +75,8 @@ const BENCH_SET = [
   },
   {
     id: 'B09',
-    episode: 'reranker는 Xenova/bge-reranker-base 모델이 코드에 구현되어 있지만 현재 비활성화 상태 (features.reranker: false).',
-    classification: { topic: 'reranker status', element: 'bge-reranker-base implemented but disabled (features.reranker: false)', importance: 'fact' },
+    episode: 'reranker는 Xenova/bge-reranker-base 모델로 기본 활성화 상태 (features.reranker: true). 비활성화하려면 features.reranker를 false로 명시해야 한다.',
+    classification: { topic: 'reranker status', element: 'bge-reranker-base enabled by default (features.reranker: true). set to false to disable', importance: 'fact' },
     queries: ['reranker 활성화 여부', 'cross-encoder reranker status'],
   },
   {

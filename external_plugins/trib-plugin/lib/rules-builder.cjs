@@ -6,7 +6,8 @@
  * Builds the injection content string that either the SessionStart hook
  * (hook mode) or the MCP boot-time writer (claude_md mode) uses.
  *
- * Injection order (must match hooks/session-start.cjs exactly):
+ * Injection order for static rules (core memory snapshot and session recap
+ * are injected separately by hooks/session-start.cjs from memory.sqlite):
  *   1. user-workflow.md (always)
  *   1a. user workflow (scopes from agent-config.json + description from user-workflow.md)
  *   2. memory.md     (when memory-config.json has enabled)
@@ -14,11 +15,10 @@
  *   4. search.md     (when search-config.json has enabled)
  *   5. team.md       (always)
  *   6. models        (from agent-config.json presets)
- *   7. context.md    (auto-generated core memory snapshot)
- *   8. user.md       (user profile)
- *   9. bot.md        (bot persona)
- *  10. user name     (from memory-config.json user.name)
- *  11. user title    (from memory-config.json user.title)
+ *   7. user.md       (user profile)
+ *   8. bot.md        (bot persona)
+ *   9. user name     (from memory-config.json user.name)
+ *  10. user title    (from memory-config.json user.title)
  */
 
 const fs = require('fs');
@@ -116,13 +116,9 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     parts.push(lines.join('\n'));
   }
 
-  // --- 7. Context (auto-generated core memory snapshot) ---
-  const contextContent = readOptional(path.join(HISTORY_DIR, 'context.md'));
-  if (contextContent) parts.push(contextContent);
-
-  // --- 7a. Session recap (previous session summary) ---
-  const recapContent = readOptional(path.join(HISTORY_DIR, 'session-recap.md'));
-  if (recapContent) parts.push('## Session Recap\n\n' + recapContent);
+  // Core memory / user model snapshot (context) and session recap are both
+  // injected by hooks/session-start.cjs, reading directly from memory.sqlite.
+  // This keeps them always fresh with no intermediate file.
 
   // --- 8. User profile ---
   const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));

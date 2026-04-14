@@ -249,7 +249,8 @@ await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
-// Called after memory worker is ready so session-recap.md is fresh.
+// Writes static rules into the managed block. Session recap is NOT
+// written here — the SessionStart hook injects it live from sqlite.
 // Fail-soft: any error is logged and swallowed.
 //
 //   mode === 'claude_md'  → upsert the managed block (strong enforcement)
@@ -321,7 +322,7 @@ setImmediate(() => {
     const DATA_ALLOWLIST = new Set([
       'trib-config.json', 'config.json', 'memory-config.json', 'search-config.json',
       'agent-config.json', 'user-workflow.json', 'user-workflow.md',
-      'history/context.md', 'history/user.md', 'history/bot.md', 'history/session-recap.md',
+      'history/user.md', 'history/bot.md',
     ])
 
     const makeHandler = root => {

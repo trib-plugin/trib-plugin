@@ -1,6 +1,6 @@
 const DEFAULT_OPS_POLICY = {
   features: {
-    reranker: false,
+    reranker: true,
     temporalParser: false,
   },
   startup: {
@@ -85,10 +85,9 @@ export function readMemoryOpsPolicy(mainConfig = {}) {
 
   return {
     features: {
-      // Opt-in: reranker must be explicitly `true` in config.
-      // Previous `!== false` treated undefined as true, contradicting
-      // DEFAULT_OPS_POLICY.features.reranker=false.
-      reranker: featuresConfig.reranker === true,
+      // Opt-out: reranker defaults to true. Set `features.reranker: false`
+      // explicitly to disable. Matches DEFAULT_OPS_POLICY.features.reranker=true.
+      reranker: featuresConfig.reranker !== false,
       temporalParser: featuresConfig.temporalParser === true,
     },
     startup: {

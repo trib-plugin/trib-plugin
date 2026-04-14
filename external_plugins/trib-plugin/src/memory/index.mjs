@@ -19,7 +19,6 @@ import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createRequire } from 'node:module'
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -210,7 +209,6 @@ let store = null
 let mainConfig = null
 let opsPolicy = null
 let WORKSPACE_PATH = null
-let serverStartedAt = null
 let _rebuildLock = false
 let _cycleInterval = null
 let _startupTimeout = null
@@ -451,15 +449,8 @@ function _runStartupMigrations() {
     if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications\n`)
   } catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
 
-  // Refresh context.md
-  try {
-    fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
-    store.writeContextFile()
-    store.writeRecentFile({ serverStartedAt })
-    process.stderr.write(`[memory-service] context.md refreshed on startup\n`)
-  } catch (e) {
-    process.stderr.write(`[memory-service] context.md refresh failed: ${e.message}\n`)
-  }
+  // context.md and recent.md are no longer generated — the SessionStart hook
+  // reads core_memory / user_model / episodes directly from sqlite at boot.
 }
 
 // ── Full runtime init (store + backfill + cycles + watcher + migrations) ──
@@ -467,7 +458,6 @@ function _runStartupMigrations() {
 async function _initRuntime() {
   await _initStore()
   _runStartupBackfill()
-  serverStartedAt = localNow()
   _initTranscriptWatcher()
   _runStartupMigrations()
   _startCycles()
@@ -475,43 +465,8 @@ async function _initRuntime() {
   // Background warmup: preload models so first cycle doesn't spike
   store.warmupEmbeddings().catch(() => {})
   import('./lib/reranker.mjs').then(m => m.warmupReranker()).catch(() => {})
-  // Generate session recap on startup
-  _buildSessionRecap()
-}
-
-function _buildSessionRecap() {
-  try {
-    const memCfg = readMainConfig()
-    const recapCfg = memCfg.sessionRecap || {}
-    if (recapCfg.enabled === false) return
-    const limit = recapCfg.limit || 20
-    const rows = store.db.prepare(`
-      SELECT e.ts, e.role, e.content AS episode_content,
-             c.classification, c.topic, c.element, c.state
-      FROM episodes e
-      LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
-      WHERE e.kind IN ('message', 'turn')
-      ORDER BY e.ts DESC, e.id DESC
-      LIMIT ?
-    `).all(limit)
-    const lines = rows.map(r => {
-      const ts = String(r.ts || '').slice(0, 16)
-      if (r.topic) {
-        const cls = [r.classification, r.topic, r.element, r.state].filter(Boolean).join(' | ')
-        return `[${ts}] ${cls.slice(0, 500)}`
-      }
-      const prefix = r.role === 'user' ? 'u' : 'a'
-      return `[${ts}] ${prefix}: ${cleanMemoryText(String(r.episode_content)).slice(0, 300)}`
-    })
-    const text = lines.join('\n') || ''
-    if (text.length > 20) {
-      fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
-      fs.writeFileSync(path.join(DATA_DIR, 'history', 'session-recap.md'), text, 'utf8')
-      process.stderr.write(`[memory] startup recap: ${text.length} chars\n`)
-    }
-  } catch (e) {
-    process.stderr.write(`[memory] startup recap failed: ${e.message}\n`)
-  }
+  // Session recap is built on demand by hooks/session-start.cjs (reads
+  // memory.sqlite directly), so no boot-time recap generation is needed.
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -905,7 +860,6 @@ async function handleCycle(args) {
       const window = args.window || undefined
       await rebuildRecent(ws, { maxDays, window })
       store.syncChunksFromClassifications()
-      store.writeRecentFile({ serverStartedAt })
       return { text: `Memory rebuild completed (maxDays=${maxDays}).` }
     } finally { _rebuildLock = false }
   }
@@ -1200,58 +1154,6 @@ const httpServer = http.createServer(async (req, res) => {
     return
   }
 
-  // POST /rebuild-recap — regenerate session recap without touching _bootTimestamp
-  if (req.method === 'POST' && req.url === '/rebuild-recap') {
-    try {
-      const limit = 20
-      const rows = store.db.prepare(`
-        SELECT e.ts, e.role, e.content AS episode_content,
-               c.classification, c.topic, c.element, c.state
-        FROM episodes e
-        LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
-        WHERE e.kind IN ('message', 'turn')
-        ORDER BY e.ts DESC, e.id DESC
-        LIMIT ?
-      `).all(limit)
-
-      const lines = rows.map(r => {
-        const ts = String(r.ts || '').slice(0, 16)
-        if (r.topic) {
-          const cls = [r.classification, r.topic, r.element, r.state].filter(Boolean).join(' | ')
-          return `[${ts}] ${cls.slice(0, 500)}`
-        }
-        const prefix = r.role === 'user' ? 'u' : 'a'
-        return `[${ts}] ${prefix}: ${cleanMemoryText(String(r.episode_content)).slice(0, 300)}`
-      })
-      const text = lines.join('\n') || '(no results found)'
-
-      fs.mkdirSync(path.join(DATA_DIR, 'history'), { recursive: true })
-      fs.writeFileSync(path.join(DATA_DIR, 'history', 'session-recap.md'), text, 'utf8')
-
-      // Rebuild CLAUDE.md managed block so recap is included
-      try {
-        const req2 = createRequire(import.meta.url)
-        const { buildInjectionContent } = req2(path.join(PLUGIN_ROOT, 'lib', 'rules-builder.cjs'))
-        const { upsertManagedBlock } = req2(path.join(PLUGIN_ROOT, 'lib', 'claude-md-writer.cjs'))
-        const cfgPath2 = path.join(DATA_DIR, 'config.json')
-        let mainCfg2 = {}
-        try { mainCfg2 = JSON.parse(fs.readFileSync(cfgPath2, 'utf8')) } catch {}
-        const inj2 = (mainCfg2 && mainCfg2.promptInjection) || {}
-        if (inj2.mode === 'claude_md') {
-          const content = buildInjectionContent({ PLUGIN_ROOT, DATA_DIR })
-          const targetPath = inj2.targetPath || '~/.claude/CLAUDE.md'
-          upsertManagedBlock(targetPath, content)
-        }
-      } catch {}
-
-      process.stderr.write(`[memory] rebuild-recap: ${text.length} chars\n`)
-      sendJson(res, { ok: true, chars: text.length })
-    } catch (e) {
-      sendError(res, e.message)
-    }
-    return
-  }
-
   // GET /health
   if (req.method === 'GET' && req.url === '/health') {
     try {
@@ -1339,13 +1241,6 @@ const httpServer = http.createServer(async (req, res) => {
         sourceRef: body.sourceRef || null,
       })
       sendJson(res, { ok: true, id })
-      return
-    }
-
-    // POST /context
-    if (req.url === '/context') {
-      store.writeContextFile()
-      sendJson(res, { ok: true })
       return
     }
 

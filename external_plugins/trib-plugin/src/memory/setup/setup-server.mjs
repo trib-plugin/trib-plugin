@@ -670,7 +670,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/files') {
     const result = {};
-    for (const name of ['bot.md', 'user.md', 'context.md']) {
+    for (const name of ['bot.md', 'user.md']) {
       try { result[name] = readFileSync(join(FILES_DIR, name), 'utf8'); }
       catch { result[name] = ''; }
     }
@@ -682,12 +682,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/files') {
     const data = await readBody(req);
     mkdirSync(FILES_DIR, { recursive: true });
-    for (const name of ['bot.md', 'user.md', 'context.md']) {
+    for (const name of ['bot.md', 'user.md']) {
       if (data[name] != null) {
         writeFileSync(join(FILES_DIR, name), data[name], 'utf8');
       }
     }
-    console.log('  Files saved: bot.md, user.md, context.md');
+    console.log('  Files saved: bot.md, user.md');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;

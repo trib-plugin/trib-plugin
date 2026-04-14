@@ -462,13 +462,8 @@ async function runCycle2Impl(ws) {
     try { store.decayUserModel(decayConfig.userModel?.decayDays || 30) } catch {}
   }
 
-  // 4. Refresh context.md from core_memory
-  try {
-    store.writeContextFile()
-    process.stderr.write('[memory-cycle2] context.md refreshed.\n')
-  } catch (e) {
-    process.stderr.write(`[memory-cycle2] context.md refresh error: ${e.message}\n`)
-  }
+  // context.md generation removed — SessionStart hook reads core_memory
+  // directly from sqlite at boot, so no intermediate file is needed.
 
   process.stderr.write('[memory-cycle2] Cycle complete.\n')
 
@@ -673,8 +668,6 @@ async function rebuildClassificationsImpl(ws, options = {}) {
     const rebuildDayKeys = [...new Set(allCandidates.map(c => c.day_key).filter(Boolean))]
     await refreshEmbeddings(ws, { store, kind: 'cycle1', dayKeys: rebuildDayKeys })
   }
-
-  store.writeRecentFile()
 
   process.stderr.write(`[rebuild] complete: ${totalExtracted} extracted, ${totalClassifications} classifications, ${batchesCompleted} batches\n`)
   return { total: totalExtracted, batches: batchesCompleted, classifications: totalClassifications }
@@ -1045,9 +1038,6 @@ async function runCycle1Impl(ws, config, options = {}) {
   }
 
   // NOTE: cycle1 must NEVER access core_memory — that is cycle2's exclusive domain
-
-  // Update recent.md (last 20 turns)
-  store.writeRecentFile()
 
   writeCycleConfig({ ...cycleConfig, lastCycle1At: Date.now() })
 

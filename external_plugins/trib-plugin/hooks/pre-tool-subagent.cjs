@@ -75,7 +75,9 @@ process.stdin.on('end', async () => {
     if (mode === 'bypassPermissions') process.exit(0);
 
     // Main session → skip (PermissionRequest hook handles it)
-    if (!data.agent_id) process.exit(0);
+    const isSubagent = data.isSidechain === true || Boolean(data.agentId);
+    if (!isSubagent) process.exit(0);
+    const agentId = data.agentId || 'unknown';
 
     // Only intercept Edit/Write to protected paths
     const toolName = data.tool_name || '';
@@ -107,7 +109,7 @@ process.stdin.on('end', async () => {
     } else {
       detail = filePath;
     }
-    const content = `🔐 **Sub-agent Permission**\nAgent: \`${data.agent_id}\`\nTool: \`${toolName}\`\n\`\`\`\n${detail}\n\`\`\``;
+    const content = `🔐 **Sub-agent Permission**\nAgent: \`${agentId}\`\nTool: \`${toolName}\`\n\`\`\`\n${detail}\n\`\`\``;
 
     const body = {
       content,
@@ -125,7 +127,7 @@ process.stdin.on('end', async () => {
     const messageId = msgResult.id;
     if (!messageId) process.exit(0); // Discord failed, fall back to terminal
 
-    fs.writeFileSync(pendingFile, JSON.stringify({ uuid, messageId, channelId, toolName, agentId: data.agent_id, createdAt: Date.now() }));
+    fs.writeFileSync(pendingFile, JSON.stringify({ uuid, messageId, channelId, toolName, agentId, createdAt: Date.now() }));
 
     // File-based signal for terminal resolution (Windows SIGTERM may not fire)
     const resolvedFile = path.join(RUNTIME_ROOT, `perm-${instanceId}-${uuid}.resolved`);
