@@ -82,7 +82,7 @@ try {
   const sessions = listSessions()
   let closed = 0
   for (const s of sessions) {
-    if (s.owner === 'bridge' && s.mcpPid && s.mcpPid !== process.pid) { closeSession(s.id); closed++ }
+    if (s.owner === 'bridge' && (!s.mcpPid || s.mcpPid !== process.pid)) { closeSession(s.id); closed++ }
   }
   log(`[session-cleanup] closed ${closed} stale bridge sessions (pid≠${process.pid}), ${sessions.length - closed} remaining`)
 } catch (e) {
