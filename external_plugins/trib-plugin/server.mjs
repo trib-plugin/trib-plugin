@@ -205,6 +205,8 @@ function agentContext() {
           content: text,
           meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
         },
+      }).catch(err => {
+        log(`[agent-notify] failed: ${err instanceof Error ? err.message : String(err)}`)
       })
     },
     elicitFn: opts => server.elicitInput(opts),
