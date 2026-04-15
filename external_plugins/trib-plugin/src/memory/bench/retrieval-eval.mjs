@@ -128,8 +128,8 @@ const BENCH_SET = [
   },
   {
     id: 'B15',
-    episode: 'Cycle1은 10분 간격, 배치 50개. Cycle2는 매일 03:00. 둘 다 gpt-5.4-mini preset 사용.',
-    classification: { topic: 'memory cycle config', element: 'cycle1: 10m interval, batch 50. cycle2: daily 03:00. both use gpt-5.4-mini', importance: 'fact' },
+    episode: 'Cycle1은 10분 간격. Cycle2는 1시간 간격, 최대 50 candidates. 둘 다 GPT5.4 preset 사용.',
+    classification: { topic: 'memory cycle config', element: 'cycle1: 10m interval. cycle2: 1h interval, maxCandidates 50. both use GPT5.4', importance: 'fact' },
     queries: ['메모리 사이클 설정값', 'cycle interval configuration'],
   },
 
