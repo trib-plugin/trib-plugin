@@ -6,8 +6,6 @@ import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
 import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
-import { extractAndSave, restoreStatePacket } from './state-packet.mjs';
-import { loadConfig } from '../config.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 
 /**
@@ -141,6 +139,10 @@ export function createSession(opts) {
         updatedAt: Date.now(),
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        // Hermes-style in-flight compressor state
+        compressionCount: 0,
+        previousSummary: null,
+        lastCompressionAttemptAt: null,
     };
     saveSession(session);
     return session;
@@ -340,6 +342,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     sessionId,
                     signal,
                     providerState: session.providerState ?? undefined,
+                    session,
                     onStageChange: (stage) => updateSessionStage(sessionId, stage),
                     onStreamDelta: () => markSessionStreamDelta(sessionId),
                 }),
@@ -369,13 +372,6 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.providerState = result.providerState;
             }
             saveSession(session, { expectedGeneration: askGeneration });
-            // Async state packet extraction — skip for bridge sessions (short-lived, not reused)
-            if (session.owner !== 'bridge') {
-                const spCfg = loadConfig();
-                if (spCfg.statePacket?.enabled !== false && session.scopeKey && session.messages.filter(m => m.role !== 'system').length > (spCfg.statePacket?.threshold || 20)) {
-                    extractAndSave(session).catch(() => {});
-                }
-            }
             markSessionDone(sessionId);
             return {
                 ...result,
@@ -444,8 +440,10 @@ export function resumeSession(sessionId, preset) {
     // than silently dropping the tool-refresh side effects.
     if (session.closed === true) return null;
     if (!session.owner) session.owner = 'user';
-    // Inject state packet if available (scope-keyed, after system messages)
-    restoreStatePacket(session);
+    // Backfill compressor state for sessions created before the feature landed.
+    if (typeof session.compressionCount !== 'number') session.compressionCount = 0;
+    if (session.previousSummary === undefined) session.previousSummary = null;
+    if (session.lastCompressionAttemptAt === undefined) session.lastCompressionAttemptAt = null;
     // Refresh tools (MCP connections may have changed)
     const oldTools = session.tools || [];
     const skills = collectSkillsCached(session.cwd);

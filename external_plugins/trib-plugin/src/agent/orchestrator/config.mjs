@@ -146,7 +146,6 @@ export function loadConfig() {
                 default: raw.default || null,
                 // New feature config with defaults
                 trajectory: { enabled: true, ...raw.trajectory },
-                statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...raw.statePacket },
                 skillSuggest: { autoDetect: false, ...raw.skillSuggest },
                 agentMaintenance: { enabled: false, interval: '30m', ...raw.agentMaintenance },
                 // Top-level extension blocks preserved through save/load so
@@ -164,7 +163,6 @@ export function loadConfig() {
         presets: [],
         default: null,
         trajectory: { enabled: true },
-        statePacket: { enabled: true, threshold: 20, ttlMinutes: 30 },
         skillSuggest: { autoDetect: false },
         agentMaintenance: { enabled: false, interval: '30m' },
         bridge: {},
@@ -207,7 +205,6 @@ export function saveConfig(config) {
         presets: Array.isArray(config.presets) ? config.presets : [],
         default: config.default || null,
         trajectory: config.trajectory || {},
-        statePacket: config.statePacket || {},
         skillSuggest: config.skillSuggest || {},
         agentMaintenance: config.agentMaintenance || {},
         bridge: config.bridge || {},

@@ -1159,28 +1159,6 @@
       </div>
 
       <div class="sec">
-        <div class="sec-title">State Packet Extraction</div>
-        <div class="sec-desc">Auto-extract structured session state (goal, progress, decisions) for session handoff.</div>
-        <div class="sec-body">
-          <div class="r toggle-row">
-            <span class="r-name-wide">Enabled</span>
-            <label class="toggle">
-              <input type="checkbox" id="sp-enabled" checked onchange="saveLearningConfig()">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Message Threshold</span>
-            <input class="r-input" id="sp-threshold" type="number" value="20" min="5" max="100" style="flex:1" onchange="saveLearningConfig()">
-          </div>
-          <div class="r">
-            <span class="r-name-wide">TTL (minutes)</span>
-            <input class="r-input" id="sp-ttl" type="number" value="30" min="5" max="1440" style="flex:1" onchange="saveLearningConfig()">
-          </div>
-        </div>
-      </div>
-
-      <div class="sec">
         <div class="sec-title">Agent Learning Cycle</div>
         <div class="sec-desc">Periodic trajectory analysis and skill pattern detection.</div>
         <div class="sec-body">
@@ -3140,9 +3118,6 @@ async function loadLearningConfig() {
     const res = await fetch('/agent/learning');
     const data = await res.json();
     document.getElementById('traj-enabled').checked = data.trajectory?.enabled !== false;
-    document.getElementById('sp-enabled').checked = data.statePacket?.enabled !== false;
-    document.getElementById('sp-threshold').value = data.statePacket?.threshold || 20;
-    document.getElementById('sp-ttl').value = data.statePacket?.ttlMinutes || 30;
     document.getElementById('c3-enabled').checked = data.cycle3?.enabled === true;
     const interval = data.cycle3?.interval || '30m';
     const sel = document.getElementById('c3-interval');
@@ -3186,11 +3161,6 @@ async function saveLearningConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         trajectory: { enabled: document.getElementById('traj-enabled').checked },
-        statePacket: {
-          enabled: document.getElementById('sp-enabled').checked,
-          threshold: parseInt(document.getElementById('sp-threshold').value) || 20,
-          ttlMinutes: parseInt(document.getElementById('sp-ttl').value) || 30,
-        },
         cycle3: {
           enabled: document.getElementById('c3-enabled').checked,
           interval: getC3Interval(),
@@ -3206,8 +3176,6 @@ const AG_MAINT_TASKS = [
   { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
   { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (daily)' },
   { id: 'cycle3', label: 'Cycle 3', desc: 'Trajectory analysis (periodic)' },
-  { id: 'sessionRecap', label: 'Session Recap', desc: 'Previous session summary at boot' },
-  { id: 'statePacket', label: 'State Packet', desc: 'Structured state extraction' },
   { id: 'reason', label: 'Reason', desc: 'Memory-based reasoning synthesis' },
 ];
 let agMaintenance = {};

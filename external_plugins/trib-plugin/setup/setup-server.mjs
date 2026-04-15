@@ -962,7 +962,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       trajectory: { enabled: true, ...cfg.trajectory },
-      statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...cfg.statePacket },
       skillSuggest: { autoDetect: false, ...cfg.skillSuggest },
       cycle3: { enabled: false, interval: '30m', ...cfg.cycle3 },
     }));
@@ -973,7 +972,6 @@ const server = http.createServer(async (req, res) => {
     const data = await readBody(req);
     const existing = readAgentConfig();
     if (data.trajectory) existing.trajectory = { ...(existing.trajectory || {}), ...data.trajectory };
-    if (data.statePacket) existing.statePacket = { ...(existing.statePacket || {}), ...data.statePacket };
     if (data.skillSuggest) existing.skillSuggest = { ...(existing.skillSuggest || {}), ...data.skillSuggest };
     if (data.cycle3) existing.cycle3 = { ...(existing.cycle3 || {}), ...data.cycle3 };
     writeAgentConfig(existing);

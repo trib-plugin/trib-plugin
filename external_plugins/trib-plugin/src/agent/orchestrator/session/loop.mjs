@@ -3,6 +3,13 @@ import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
 import { traceBridgeLoop, traceBridgeTool, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
+import {
+    shouldCompress,
+    compress,
+    estimateMessagesTokensRough,
+    THRESHOLD_PERCENT,
+    SUMMARY_FAILURE_COOLDOWN_SECONDS,
+} from './compressor.mjs';
 const MAX_ITERATIONS = 100;
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 /**
@@ -78,8 +85,47 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             throw new SessionClosedError(sessionId || 'unknown', 'agent loop aborted');
         }
     };
+    // Session ref for in-flight compressor state. Provided by the caller when
+    // available (askSession passes it); the loop mutates messages in place.
+    const sessionRef = opts.session || null;
     while (true) {
         throwIfAborted();
+        // --- Hermes-style in-flight compression (before each provider.send) ---
+        // Only runs when we have a session ref (i.e. called from askSession).
+        // Threshold: messages token estimate >= contextWindow * THRESHOLD_PERCENT.
+        if (sessionRef && typeof sessionRef.contextWindow === 'number') {
+            try {
+                const currentTokens = estimateMessagesTokensRough(messages);
+                const thresholdTokens = Math.round(sessionRef.contextWindow * THRESHOLD_PERCENT);
+                const lastAttempt = Number(sessionRef.lastCompressionAttemptAt) || 0;
+                const cooldownActive = lastAttempt > 0
+                    && (Date.now() - lastAttempt) < SUMMARY_FAILURE_COOLDOWN_SECONDS * 1000
+                    && (sessionRef.compressionCount || 0) === sessionRef._lastCompressionCountSnapshot;
+                if (!cooldownActive && shouldCompress(messages, currentTokens, thresholdTokens)) {
+                    sessionRef.lastCompressionAttemptAt = Date.now();
+                    sessionRef._lastCompressionCountSnapshot = sessionRef.compressionCount || 0;
+                    const result = await compress(messages, {
+                        provider,
+                        sendOpts: { ...opts, model },
+                        previousSummary: sessionRef.previousSummary || null,
+                        focusTopic: null,
+                        contextLength: sessionRef.contextWindow,
+                        thresholdTokens,
+                    });
+                    if (result.compressed && Array.isArray(result.messages)) {
+                        // Mutate the shared array in place so callers holding the
+                        // same reference observe the compaction.
+                        messages.length = 0;
+                        messages.push(...result.messages);
+                        sessionRef.previousSummary = result.summary || sessionRef.previousSummary || null;
+                        sessionRef.compressionCount = (sessionRef.compressionCount || 0) + 1;
+                        sessionRef._lastCompressionCountSnapshot = sessionRef.compressionCount;
+                    }
+                }
+            } catch (err) {
+                process.stderr.write(`[loop] compressor error: ${err?.message || err}\n`);
+            }
+        }
         const nextIteration = iterations + 1;
         opts.iteration = nextIteration;
         opts.providerState = providerState;
