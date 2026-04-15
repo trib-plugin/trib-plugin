@@ -4,7 +4,7 @@ import { compress as compactMessages } from './compaction.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
-import { collectSkillsCached, buildSkillToolDef, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
+import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { extractAndSave, restoreStatePacket } from './state-packet.mjs';
 import { loadConfig } from '../config.mjs';
@@ -33,17 +33,17 @@ function resolveToolPreset(preset, skills) {
         _mcpToolsCacheTime = now;
     }
     const mcp = _mcpToolsCache;
-    const skillTool = buildSkillToolDef(skills);
+    const skillTools = buildSkillToolDefs(skills);
     switch (preset) {
         case 'mcp':
-            return [...mcp, ...(skillTool ? [skillTool] : [])];
+            return [...mcp, ...skillTools];
         case 'readonly': {
             const readTools = BUILTIN_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name));
-            return [...readTools, ...mcp, ...(skillTool ? [skillTool] : [])];
+            return [...readTools, ...mcp, ...skillTools];
         }
         case 'full':
         default:
-            return [...BUILTIN_TOOLS, ...mcp, ...(skillTool ? [skillTool] : [])];
+            return [...BUILTIN_TOOLS, ...mcp, ...skillTools];
     }
 }
 let nextId = Date.now();
@@ -103,14 +103,11 @@ export function createSession(opts) {
     const claudeMd = collectClaudeMd(opts.cwd);
     const agentTemplate = opts.agent ? loadAgentTemplate(opts.agent, opts.cwd) : null;
     const skills = collectSkillsCached(opts.cwd);
-    const skillsSummary = skills.length
-        ? skills.map(s => `- ${s.name}: ${s.description}`).join('\n')
-        : undefined;
     const systemPrompt = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         claudeMd: claudeMd || undefined,
         agentTemplate: agentTemplate || undefined,
-        skillsSummary,
+        hasSkills: skills.length > 0,
     });
     if (systemPrompt) {
         messages.push({ role: 'system', content: systemPrompt });
@@ -363,9 +360,11 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.totalInputTokens += result.usage.inputTokens;
                 session.totalOutputTokens += result.usage.outputTokens;
             }
-            // Stateful continuation (Phase 3a): persist opaque providerState
-            // so a restart can resume server-side conversation. Field stays
-            // undefined for stateless providers — harmless on JSON round-trip.
+            // Persist opaque providerState for future stateful providers.
+            // No provider currently emits it (Codex OAuth is stateless per
+            // contract), so this branch is dormant — kept so a future
+            // Responses-API provider with stable continuation can plug in
+            // without reworking the session shape.
             if (result.providerState !== undefined) {
                 session.providerState = result.providerState;
             }
@@ -408,7 +407,11 @@ const _scopeCreateLocks = new Map();
 export function findSessionByScopeKey(scopeKey) {
     if (!scopeKey) return null;
     const sessions = listStoredSessions();
-    return sessions.find(s => s.scopeKey === scopeKey) || null;
+    // Exclude tombstoned sessions (`closed === true`) so callers never receive
+    // a session whose controller was aborted by closeSession(). The `closed`
+    // bit is the authoritative tombstone flag; `status === 'error'` is not,
+    // since transient-error sessions remain resumable.
+    return sessions.find(s => s.scopeKey === scopeKey && s.closed !== true) || null;
 }
 export function findOrCreateSession(scopeKey, createFn) {
     if (!scopeKey) return createFn();

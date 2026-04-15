@@ -1,25 +1,43 @@
 import { executeMcpTool, isMcpTool } from '../mcp/client.mjs';
 import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
-import { loadSkillContent } from '../context/collect.mjs';
+import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
 import { traceBridgeLoop, traceBridgeTool, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
 const MAX_ITERATIONS = 100;
+const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 /**
  * Execute a single tool call — routes to MCP or builtin.
  */
 function getToolKind(name) {
-    if (name === 'skill') return 'skill';
+    if (SKILL_TOOL_NAMES.has(name)) return 'skill';
     if (isMcpTool(name)) return 'mcp';
     if (isBuiltinTool(name)) return 'builtin';
     return 'builtin';
 }
+function buildSkillsListResponse(cwd) {
+    const skills = collectSkillsCached(cwd);
+    const entries = skills.map(s => ({ name: s.name, description: s.description || '' }));
+    return JSON.stringify({ skills: entries });
+}
+function viewSkill(cwd, name) {
+    if (!name) return 'Error: skill name is required';
+    const content = loadSkillContent(name, cwd);
+    return content || `Error: skill "${name}" not found`;
+}
+function executeSkill(cwd, name, _args) {
+    if (!name) return 'Error: skill name is required';
+    const content = loadSkillContent(name, cwd);
+    return content || `Error: skill "${name}" not found`;
+}
 async function executeTool(name, args, cwd) {
-    if (name === 'skill') {
-        const skillName = args.name;
-        if (!skillName)
-            return 'Error: skill name is required';
-        const content = loadSkillContent(skillName, cwd);
-        return content || `Error: skill "${skillName}" not found`;
+    if (name === 'skills_list') {
+        return buildSkillsListResponse(cwd);
+    }
+    if (name === 'skill_view') {
+        return viewSkill(cwd, args?.name);
+    }
+    if (name === 'skill_execute') {
+        return executeSkill(cwd, args?.name, args?.args);
     }
     if (isMcpTool(name)) {
         return executeMcpTool(name, args);
@@ -48,10 +66,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const opts = sendOpts || {};
     const sessionId = opts.sessionId || null;
     const signal = opts.signal || null;
-    // Phase 3a stateful continuation: carry opaque providerState between
-    // iterations. Loop never inspects it; only the originating provider does.
-    // Seed from initial sendOpts.providerState (set by manager when restoring
-    // a stateful session); undefined otherwise.
+    // Opaque providerState passthrough. The loop never inspects it; only the
+    // originating provider does. Seed from sendOpts.providerState if the
+    // manager restored one. No provider currently emits state (Codex OAuth is
+    // stateless per contract); field remains undefined end-to-end for now.
     let providerState = opts.providerState ?? undefined;
     const throwIfAborted = () => {
         if (signal?.aborted) {

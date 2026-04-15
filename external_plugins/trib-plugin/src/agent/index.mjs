@@ -396,14 +396,28 @@ export async function handleToolCall(name, args, opts = {}) {
           agentId: effectiveLane === 'bridge' ? scope : undefined,
         });
 
-        const found = findOrCreateSession(runtimeSpec.scopeKey, () => createSession({
+        const createFreshSession = () => createSession({
           preset,
           owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
           scopeKey: runtimeSpec.scopeKey,
           lane: runtimeSpec.lane,
           cwd: process.cwd(),
-        }));
-        let session = found.id ? resumeSession(found.id) || found : found;
+        });
+        const found = findOrCreateSession(runtimeSpec.scopeKey, createFreshSession);
+        // resumeSession returns null for tombstoned / unresumable sessions.
+        // In that case spin up a fresh session instead of returning the raw
+        // closed record — a tombstone must never reach the caller, it would
+        // be aborted immediately by the abort-controller wired during close.
+        let session;
+        if (found.id) {
+          session = resumeSession(found.id);
+          if (!session) {
+            session = createFreshSession();
+          }
+        }
+        else {
+          session = found;
+        }
 
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const scopeLabel = args.scope || 'default';

@@ -263,17 +263,16 @@ Facts in the memory database can have the following status values:
 
 v0.6.10 ships these features active by default. There are **no enable/disable toggles, no silent fallbacks, no recovery retry**. Failures surface to the caller as exceptions or trip per-task cooldowns. Operators wanting different behaviour change the code, not config.
 
-> Note: transport-level retries that already existed before v0.6.10 (e.g. OpenAI OAuth 502/503 before the SSE stream starts) are preserved. "No recovery retry" above refers to silent re-issuance after a feature-level failure (stale `previous_response_id`, cache-create failure, summary failure) — those now surface rather than being masked.
+> Note: transport-level retries that already existed before v0.6.10 (e.g. OpenAI OAuth 502/503 before the SSE stream starts) are preserved. "No recovery retry" above refers to silent re-issuance after a feature-level failure (cache-create failure, summary failure, etc.) — those now surface rather than being masked.
 
 ### Anthropic ephemeral cache_control (5m, always-on)
 - The provider always sets `cache_control: { type: 'ephemeral' }` on the system block and the last few non-system messages. The 1h extended-TTL beta is not exposed.
 - The `providers.anthropic.cacheTtl` key is removed.
 
-### OpenAI OAuth stateful continuation (Phase 3a, always-on)
-- Every call uses Codex Responses with `store: true`. After the first turn captures `response.id`, subsequent turns send `previous_response_id` + the delta since the last assistant message.
-- If the local history can't form a valid delta (no prior assistant turn), `extractDeltaSinceLastAssistant` throws `StaleStatefulStateError` and the caller sees the error — no silent recovery, no stateless retry.
-- If the server rejects `previous_response_id`, the API error propagates unchanged.
-- The `providers.openai-oauth.statefulContinuation` key is removed.
+### OpenAI OAuth stateless single-path
+- The Codex OAuth Responses contract is stateless-only: every call sets `store: false` and re-sends the full transcript. The endpoint rejects `store: true` with HTTP 400 (`Store must be set to false`).
+- `previous_response_id`-based continuation is not supported on the Codex OAuth path; server-side auto-cache is achieved via `prompt_cache_key` (see prompt caching section).
+- Phase 3a (stateful continuation) only applies to Responses-API providers that expose a stable `previous_response_id`. The plugin does not implement that path currently — see `docs/ROADMAP.md` Phase 3 Decision Gate.
 
 ### Gemini context cache (always-on)
 - The provider always creates and reuses `cachedContent` per session (TTL 5m, min 1024 prefix tokens).

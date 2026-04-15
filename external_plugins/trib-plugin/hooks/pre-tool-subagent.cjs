@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { shouldRoutePermissionToDiscord } = require('./lib/permission-route.cjs');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 if (!DATA_DIR) process.exit(0);
@@ -74,17 +75,29 @@ process.stdin.on('end', async () => {
     const mode = data.permissionMode || data.permission_mode || data.mode;
     if (mode === 'bypassPermissions') process.exit(0);
 
+    // Accept both camelCase (CC native) and snake_case (some payload shapes)
+    // so the sub-agent detector doesn't silently drop either form.
+    const isSidechain = data.isSidechain ?? data.is_sidechain;
+    const agentIdRaw = data.agentId ?? data.agent_id;
+    const toolInput = data.tool_input ?? data.toolInput ?? {};
+
     // Main session → skip (PermissionRequest hook handles it)
-    const isSubagent = data.isSidechain === true || Boolean(data.agentId);
+    const isSubagent = isSidechain === true || Boolean(agentIdRaw);
     if (!isSubagent) process.exit(0);
-    const agentId = data.agentId || 'unknown';
+    const agentId = agentIdRaw || 'unknown';
 
     // Only intercept Edit/Write to protected paths
     const toolName = data.tool_name || '';
     if (toolName !== 'Edit' && toolName !== 'Write') process.exit(0);
 
-    const filePath = (data.tool_input && data.tool_input.file_path) || '';
+    const filePath = toolInput.file_path || '';
     if (!isProtectedPath(filePath)) process.exit(0);
+
+    // Route decision: owner terminal must be live AND reachable via HTTP
+    // (or channel bridge flagged active) to send to Discord. Otherwise fall
+    // through to Claude Code's built-in terminal prompt.
+    const route = shouldRoutePermissionToDiscord();
+    if (route.route !== 'discord') process.exit(0);
 
     // --- Sub-agent + protected path: Discord approval flow ---
     const configPath = path.join(DATA_DIR, 'config.json');
@@ -105,7 +118,7 @@ process.stdin.on('end', async () => {
     // Build message
     let detail = '';
     if (toolName === 'Edit') {
-      detail = filePath + '\n' + ((data.tool_input && data.tool_input.old_string) || '').substring(0, 200);
+      detail = filePath + '\n' + (toolInput.old_string || '').substring(0, 200);
     } else {
       detail = filePath;
     }

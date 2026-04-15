@@ -107,8 +107,9 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         output_tokens: outputTokens,
         cached_tokens: cachedTokens,
         model: model || null,
-        // Phase 3a: correlation id for stateful continuation (optional — only
-        // populated by openai-oauth when Codex SSE exposes response.id).
+        // Correlation id for cross-turn trace alignment only (populated by
+        // openai-oauth when Codex SSE exposes response.id). Not consumed by
+        // any continuation logic — the Codex OAuth path is stateless.
         response_id: responseId || null,
     });
 }

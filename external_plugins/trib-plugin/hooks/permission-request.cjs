@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { shouldRoutePermissionToDiscord } = require('./lib/permission-route.cjs');
 
 const DEBUG = process.env.TRIB_CHANNELS_DEBUG === '1';
 
@@ -116,6 +117,12 @@ process.stdin.on('end', async () => {
     const access = config.access || null;
     const channelId = config.channelsConfig && config.channelsConfig.main && config.channelsConfig.main.channelId;
     if (!channelId) process.exit(0);
+
+    // Route decision: owner terminal must be live AND reachable via HTTP
+    // (or channel bridge flagged active) to send to Discord. Otherwise fall
+    // through to Claude Code's built-in terminal prompt.
+    const route = shouldRoutePermissionToDiscord();
+    if (route.route !== 'discord') process.exit(0);
 
     // Clean up stale pending files before creating a new request.
     cleanupStaleFiles();

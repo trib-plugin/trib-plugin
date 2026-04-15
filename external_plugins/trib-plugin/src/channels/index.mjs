@@ -525,18 +525,21 @@ async function startOwnerHttpServer() {
           return;
         }
         case "/rebind": {
-          const latest = discoverSessionBoundTranscript();
-          if (latest?.exists && latest.transcriptPath !== forwarder.transcriptPath) {
-            applyTranscriptBinding(
-              statusState.read().channelId,
-              latest.transcriptPath
-            );
+          const channelId = statusState.read().channelId;
+          if (!channelId) {
             res.writeHead(200);
-            res.end(JSON.stringify({ rebound: true, path: latest.transcriptPath }));
-          } else {
-            res.writeHead(200);
-            res.end(JSON.stringify({ rebound: false }));
+            res.end(JSON.stringify({ rebound: false, reason: "no channelId" }));
+            return;
           }
+          const previousPath = getPersistedTranscriptPath();
+          const bound = await rebindTranscriptContext(channelId, {
+            previousPath,
+            persistStatus: true,
+            catchUp: true
+          });
+          const reboundChanged = Boolean(bound) && bound !== previousPath;
+          res.writeHead(200);
+          res.end(JSON.stringify({ rebound: reboundChanged, path: bound || null }));
           return;
         }
         default: {
@@ -604,9 +607,12 @@ function noteStartupHandoff(previous) {
   if (previous.pid === process.pid) return;
   logOwnership(`startup handoff from ${previous.instanceId}`);
 }
-function bindPersistedTranscriptIfAny() {
-  const initBound = discoverSessionBoundTranscript();
-  if (!initBound?.exists) return;
+async function bindPersistedTranscriptIfAny() {
+  // Resolve channelId first from persisted status; fall back to the most
+  // recent status-*.json snapshot, then to the configured main channel when
+  // the bridge is active. No exists-gate here — once we have a channelId,
+  // hand off to rebindTranscriptContext(), which owns the 30-attempt retry
+  // for transcripts that are not yet on disk at boot/activate time.
   let currentStatus = statusState.read();
   if (!currentStatus.channelId) {
     try {
@@ -647,9 +653,14 @@ function bindPersistedTranscriptIfAny() {
     }
   }
   if (!currentStatus.channelId) return;
-  applyTranscriptBinding(currentStatus.channelId, initBound.transcriptPath);
-  process.stderr.write(`trib-plugin: initial transcript bind: ${initBound.transcriptPath}
+  const bound = await rebindTranscriptContext(currentStatus.channelId, {
+    previousPath: getPersistedTranscriptPath(),
+    persistStatus: true
+  });
+  if (bound) {
+    process.stderr.write(`trib-plugin: initial transcript bind: ${bound}
 `);
+  }
 }
 async function startOwnedRuntime(options = {}) {
   if (bridgeRuntimeConnected) return;
@@ -674,7 +685,7 @@ async function startOwnedRuntime(options = {}) {
 `);
   }
   refreshActiveInstance(INSTANCE_ID, httpPort ? { httpPort } : void 0);
-  if (options.restoreBinding !== false) bindPersistedTranscriptIfAny();
+  if (options.restoreBinding !== false) void bindPersistedTranscriptIfAny();
   process.stderr.write(`trib-plugin: running with ${backend.name} backend
 `);
   logOwnership(`active owner pid=${process.pid}`);

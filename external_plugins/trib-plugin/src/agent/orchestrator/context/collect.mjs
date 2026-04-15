@@ -144,23 +144,47 @@ export function loadSkillContent(name, cwd) {
     return readSafe(skill.filePath);
 }
 /**
- * Build the skill tool definition for external models.
+ * Build slim skill tool definitions (Hermes-style 3-tool split).
+ * The skill catalogue is served at runtime via `skills_list` rather than
+ * inlined into tool descriptions, keeping per-session schema bytes small.
  */
-export function buildSkillToolDef(skills) {
+export function buildSkillToolDefs(skills) {
     if (!skills.length)
-        return null;
-    const listing = skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
-    return {
-        name: 'skill',
-        description: `Load a skill by name. Available skills:\n${listing}`,
-        inputSchema: {
-            type: 'object',
-            properties: {
-                name: { type: 'string', description: 'Skill name to load' },
+        return [];
+    return [
+        {
+            name: 'skills_list',
+            description: 'List available skills with short descriptions. Call this first to discover what skills are available before using skill_view or skill_execute.',
+            inputSchema: {
+                type: 'object',
+                properties: {},
+                required: [],
             },
-            required: ['name'],
         },
-    };
+        {
+            name: 'skill_view',
+            description: 'Return the full body of a skill by name (without executing it). Use this to inspect skill contents.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Skill name' },
+                },
+                required: ['name'],
+            },
+        },
+        {
+            name: 'skill_execute',
+            description: 'Load and execute a skill by name. The skill body is injected into the conversation context.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Skill name' },
+                    args: { type: 'object', description: 'Optional arguments passed to the skill', additionalProperties: true },
+                },
+                required: ['name'],
+            },
+        },
+    ];
 }
 // --- Compose full system prompt ---
 export function composeSystemPrompt(opts) {
@@ -171,8 +195,8 @@ export function composeSystemPrompt(opts) {
     if (opts.agentTemplate) {
         parts.push('# Agent Role\n\n' + opts.agentTemplate);
     }
-    if (opts.skillsSummary) {
-        parts.push('# Available Skills\n\nUse the `skill` tool to load a skill when needed.\n\n' + opts.skillsSummary);
+    if (opts.hasSkills) {
+        parts.push('# Skills\n\nCall `skills_list` to discover available skills.');
     }
     if (opts.userPrompt) {
         parts.push(opts.userPrompt);
