@@ -124,9 +124,6 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
     let buffer = '';
     let idleTimedOut = false;
     let idleTimer = null;
-    // Phase 3a: Codex SSE emits `event.response.id` on response.created and
-    // again on response.completed. We keep the last seen id for use as
-    // `previous_response_id` on the next iteration (stateful continuation).
     let responseId = '';
     const pendingCalls = new Map();
     const resetIdleTimer = () => {
@@ -222,9 +219,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
 }
 // --- Build Responses API request ---
 /**
- * Convert a message slice to Responses API input items. Shared by both the
- * stateless full-transcript path and the stateful delta path so the two stay
- * in sync on tool-call / function_call_output encoding rules.
+ * Convert a message slice to Responses API input items.
  */
 function convertMessagesToResponsesInput(messages) {
     const out = [];
@@ -257,63 +252,22 @@ function convertMessagesToResponsesInput(messages) {
     }
     return out;
 }
-/**
- * Extract the delta input emitted since the most recent assistant message.
- * Used by the stateful-continuation path: once `previous_response_id` carries
- * the prior turn, we send only what was added since — tool_results AND any
- * new user prompts in cross-ask continuation. Without including user role
- * here, a fresh ask after a stateful turn would silently drop the new user
- * message. Single-path policy: if no assistant turn exists in history the
- * call cannot form a valid delta and we throw; there is no recovery path.
- */
-function extractDeltaSinceLastAssistant(messages) {
-    let cutoff = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i]?.role === 'assistant') { cutoff = i; break; }
-    }
-    if (cutoff < 0) {
-        throw new StaleStatefulStateError('stateful continuation requires assistant turn in history');
-    }
-    return convertMessagesToResponsesInput(messages.slice(cutoff + 1));
-}
-
-/**
- * Error class signalling that the local message history cannot form a valid
- * stateful delta (no prior assistant turn). v0.6.10 single-path policy: this
- * surfaces to the caller unchanged — no silent recovery, no stateless retry.
- */
-class StaleStatefulStateError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'StaleStatefulStateError';
-    }
-}
 function buildRequestBody(messages, model, tools, sendOpts) {
     // Extract system/instructions
     const systemMsgs = messages.filter(m => m.role === 'system');
     const instructions = systemMsgs.map(m => m.content).join('\n\n') || 'You are a helpful assistant.';
     const opts = sendOpts || {};
-    // Phase 3a single-path: stateful continuation is always on. First call
-    // has no previousResponseId → full transcript. Subsequent calls carry
-    // `store: true` + `previous_response_id` with the delta since the last
-    // assistant turn. If the local history can't form a valid delta,
-    // `extractDeltaSinceLastAssistant` throws and the error surfaces to the
-    // caller (no recovery, no retry).
-    const previousResponseId = opts.providerState?.previousResponseId || null;
-    const input = previousResponseId
-        ? extractDeltaSinceLastAssistant(messages)
-        : convertMessagesToResponsesInput(messages);
+    // Codex OAuth contract: store=false, full transcript every call.
+    // prompt_cache_key drives server-side auto-cache.
+    const input = convertMessagesToResponsesInput(messages);
     const body = {
         model,
         instructions,
         input,
-        store: true,
+        store: false,
         stream: true,
         reasoning: { effort: opts.effort || 'medium' },
     };
-    if (previousResponseId) {
-        body.previous_response_id = previousResponseId;
-    }
     if (opts.sessionId) {
         body.prompt_cache_key = String(opts.sessionId);
     }
@@ -392,8 +346,6 @@ export class OpenAIOAuthProvider {
         const externalSignal = opts.signal || null;
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.4';
-        // Single-path: no build-time recovery. If extractDeltaSinceLastAssistant
-        // throws StaleStatefulStateError the error surfaces to the caller.
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
         const sessionId = opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
@@ -540,13 +492,7 @@ export class OpenAIOAuthProvider {
                 responseId: result.responseId || null,
             });
             process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
-            // Strip the transport-level responseId from the return shape and
-            // re-expose it through the opaque `providerState` contract. Loop
-            // forwards this as-is on the next iteration without inspection.
-            const { responseId, ...out } = result;
-            if (responseId) {
-                out.providerState = { previousResponseId: responseId };
-            }
+            const { responseId: _ignored, ...out } = result;
             return out;
         } finally {
             if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
