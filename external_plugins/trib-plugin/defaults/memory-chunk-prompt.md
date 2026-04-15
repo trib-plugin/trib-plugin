@@ -25,7 +25,7 @@ Your job: read the entries below, group contiguous/related entries into chunks, 
 - Do NOT emit a root id. The calling code selects the root deterministically (earliest ts, then smallest id) from `member_ids`.
 - Output language: same as the input content language.
 - `element` is a short label (5-10 words). Include the subject. Not a single keyword.
-- `summary` is a self-contained synthesis of what the members collectively established. Include who decided what, why, and the outcome. 1 to 3 sentences.
+- `summary` is exactly 3 sentences in this fixed order: (1) context or background of the discussion, (2) the cause, key finding, or analysis, (3) the decision or outcome. Each sentence ends with a period. Write in the same language as the input.
 - `category` must be exactly one of: `rule`, `constraint`, `decision`, `fact`, `goal`, `preference`, `task`, `issue`.
 
 ## Category definitions

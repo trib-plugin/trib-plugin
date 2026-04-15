@@ -130,7 +130,7 @@ Retrieval tuning configuration. All keys are optional; if omitted, the current b
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default` | number | `-0.50` | Fallback rerank threshold |
+| `default` | number | `-0.50` | Fallback second-stage threshold |
 | `profile` | number | `-0.42` | Profile intent threshold |
 | `task` | number | `-0.42` | Task intent threshold |
 | `policy` | number | `-0.44` | Policy intent threshold |

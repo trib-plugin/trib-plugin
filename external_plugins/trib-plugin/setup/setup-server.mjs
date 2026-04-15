@@ -7,7 +7,9 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
 import { DEFAULT_MAINTENANCE } from '../src/agent/orchestrator/config.mjs';
-import { syncRootEmbedding } from '../src/memory/lib/memory-cycle.mjs';
+import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
+import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
+import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
 
 let DatabaseSync;
 try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
@@ -403,12 +405,10 @@ function mergeMemoryConfig(existing, incoming) {
     if (incoming.cycle1.interval !== undefined) config.cycle1.interval = incoming.cycle1.interval;
     if (incoming.cycle1.timeout !== undefined) config.cycle1.timeout = incoming.cycle1.timeout;
     if (incoming.cycle1.batchSize !== undefined) config.cycle1.batchSize = incoming.cycle1.batchSize;
-    if (incoming.cycle1.preset !== undefined) config.cycle1.preset = incoming.cycle1.preset;
   }
   if (incoming.cycle2) {
     if (!config.cycle2) config.cycle2 = {};
     if (incoming.cycle2.interval !== undefined) config.cycle2.interval = incoming.cycle2.interval;
-    if (incoming.cycle2.preset !== undefined) config.cycle2.preset = incoming.cycle2.preset;
   }
   if (incoming.user) {
     if (!config.user) config.user = { name: '', title: '' };
@@ -454,6 +454,55 @@ function mergeSearchConfig(existing, data) {
 function openMemoryDb(readonly = false) {
   if (!DatabaseSync) throw new Error('node:sqlite not available');
   return new DatabaseSync(MEMORY_DB_PATH, { open: true, readOnly: readonly });
+}
+
+// -- Memory backfill (UI trigger) --
+
+let _backfillInProgress = false;
+
+function ingestTranscriptForBackfill(db, transcriptPath) {
+  if (!existsSync(transcriptPath)) return 0;
+  let content;
+  try { content = readFileSync(transcriptPath, 'utf8'); } catch { return 0; }
+  const parts = transcriptPath.split(/[\\/]/);
+  const sessionUuid = (parts[parts.length - 1] || '').replace(/\.jsonl$/, '');
+  const lines = content.split('\n').filter(Boolean);
+  const insertStmt = db.prepare(
+    `INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id) VALUES (?, ?, ?, ?, ?)`
+  );
+  let count = 0;
+  for (let i = 0; i < lines.length; i++) {
+    let parsed;
+    try { parsed = JSON.parse(lines[i]); } catch { continue; }
+    const role = parsed?.message?.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    const rawContent = parsed?.message?.content;
+    let text = '';
+    if (typeof rawContent === 'string') text = rawContent;
+    else if (Array.isArray(rawContent)) {
+      for (const item of rawContent) {
+        if (typeof item === 'string') { text = item; break; }
+        if (item?.type === 'text' && typeof item.text === 'string') { text = item.text; break; }
+      }
+    }
+    if (!text || !text.trim()) continue;
+    const cleaned = cleanMemoryText(text);
+    if (!cleaned) continue;
+    const tsRaw = parsed.timestamp ?? parsed.ts ?? Date.now();
+    let tsMs;
+    if (typeof tsRaw === 'number' && Number.isFinite(tsRaw)) {
+      tsMs = tsRaw < 1e12 ? tsRaw * 1000 : tsRaw;
+    } else {
+      const parsedTs = Date.parse(String(tsRaw));
+      tsMs = Number.isFinite(parsedTs) ? parsedTs : Date.now();
+    }
+    const sourceRef = `transcript:${sessionUuid}#${i + 1}`;
+    try {
+      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid);
+      if (result.changes > 0) count += 1;
+    } catch {}
+  }
+  return count;
 }
 
 function getBrowserPath() {
@@ -1152,13 +1201,39 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && path === '/memory/backfill') {
+    if (_backfillInProgress) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'backfill already in progress' }));
+      return;
+    }
     const data = await readBody(req);
-    const window = data.window || '7d';
-    const backfillPath = join(MEMORY_DATA_DIR, 'backfill-request.json');
-    writeJsonFile(backfillPath, { window, requestedAt: Date.now() });
-    console.log(`  Backfill requested: ${window}`);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    const requestedWindow = data.window || '7d';
+    _backfillInProgress = true;
+    let db;
+    try {
+      db = openMemoryDb();
+      try { db.exec('PRAGMA busy_timeout = 30000'); } catch {}
+      const memoryConfig = readMemoryConfig() || {};
+      console.log(`[backfill] start window=${requestedWindow}`);
+      const result = await runFullBackfill(db, {
+        window: requestedWindow,
+        scope: 'all',
+        config: memoryConfig,
+        ingestTranscriptFile: (fp) => ingestTranscriptForBackfill(db, fp),
+        runCycle1,
+        runCycle2,
+      });
+      console.log(`[backfill] done files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, result }));
+    } catch (err) {
+      console.error(`[backfill] failed: ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    } finally {
+      try { db?.close?.(); } catch {}
+      _backfillInProgress = false;
+    }
     return;
   }
 

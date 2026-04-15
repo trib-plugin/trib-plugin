@@ -408,7 +408,7 @@
             "date",
             "importance"
           ],
-          "description": "Sort order: \"date\" (newest first, reranker skipped) or \"importance\" (final score, reranker enabled). Default: \"date\" when period=\"last\", \"importance\" otherwise."
+          "description": "Sort order: \"date\" (newest first) or \"importance\" (by score + RRF). Default: \"date\" when period=\"last\", \"importance\" otherwise."
         },
         "limit": {
           "type": "number",

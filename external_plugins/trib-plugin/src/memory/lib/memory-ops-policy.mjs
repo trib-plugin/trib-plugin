@@ -1,15 +1,12 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 const DEFAULT_OPS_POLICY = {
   features: {
-    reranker: true,
     temporalParser: false,
   },
   startup: {
-    backfill: {
-      mode: 'off',
-      window: '1d',
-      scope: 'all',
-      limit: 80,
-    },
     // Startup catch-up disabled by default: was running inline embeddings
     // ~5s after server start, causing perceptible lag right after user typed.
     // Pending work is still handled by the regular 5-min cycle1 interval.
@@ -53,13 +50,6 @@ function normalizeCatchUpMode(value, fallback = 'light') {
   return 'light'
 }
 
-function normalizeBackfillMode(value) {
-  const normalized = String(value ?? 'if-empty').trim().toLowerCase()
-  if (['off', 'none', 'disabled'].includes(normalized)) return 'off'
-  if (['always', 'force'].includes(normalized)) return 'always'
-  return 'if-empty'
-}
-
 function normalizeBackfillScope(value) {
   const normalized = String(value ?? 'all').trim().toLowerCase()
   if (['workspace', 'project', 'current'].includes(normalized)) return 'workspace'
@@ -78,25 +68,15 @@ export function readMemoryOpsPolicy(mainConfig = {}) {
   const runtimeConfig = mainConfig?.runtime ?? {}
   const featuresConfig = runtimeConfig?.features ?? {}
   const startupConfig = runtimeConfig?.startup ?? {}
-  const backfillConfig = mainConfig?.backfill ?? startupConfig?.backfill ?? {}
   const cycle1CatchUpConfig = startupConfig?.cycle1CatchUp ?? {}
   const cycle2CatchUpConfig = startupConfig?.cycle2CatchUp ?? {}
   const schedulerConfig = runtimeConfig?.scheduler ?? {}
 
   return {
     features: {
-      // Opt-out: reranker defaults to true. Set `features.reranker: false`
-      // explicitly to disable. Matches DEFAULT_OPS_POLICY.features.reranker=true.
-      reranker: featuresConfig.reranker !== false,
       temporalParser: featuresConfig.temporalParser === true,
     },
     startup: {
-      backfill: {
-        mode: normalizeBackfillMode(backfillConfig.mode ?? DEFAULT_OPS_POLICY.startup.backfill.mode),
-        window: normalizeBackfillWindow(backfillConfig.window ?? DEFAULT_OPS_POLICY.startup.backfill.window),
-        scope: normalizeBackfillScope(backfillConfig.scope ?? DEFAULT_OPS_POLICY.startup.backfill.scope),
-        limit: coercePositiveInt(backfillConfig.limit, DEFAULT_OPS_POLICY.startup.backfill.limit),
-      },
       cycle1CatchUp: {
         mode: normalizeCatchUpMode(cycle1CatchUpConfig.mode, DEFAULT_OPS_POLICY.startup.cycle1CatchUp.mode),
         delayMs: coercePositiveInt(cycle1CatchUpConfig.delayMs, DEFAULT_OPS_POLICY.startup.cycle1CatchUp.delayMs),
@@ -121,7 +101,6 @@ export function readMemoryOpsPolicy(mainConfig = {}) {
 export function readMemoryFeatureFlags(mainConfig = {}) {
   const policy = readMemoryOpsPolicy(mainConfig)
   return {
-    reranker: envFlag(process.env.TRIB_MEMORY_ENABLE_RERANKER, policy.features.reranker),
     temporalParser: envFlag(process.env.TRIB_MEMORY_ENABLE_TEMPORAL_PARSER, policy.features.temporalParser),
   }
 }
@@ -135,14 +114,115 @@ export function resolveBackfillSinceMs(windowValue, now = Date.now()) {
   return null
 }
 
-export function buildStartupBackfillOptions(policy, store, now = Date.now()) {
-  const backfill = policy?.startup?.backfill
-  if (!backfill || backfill.mode === 'off') return null
-  if (backfill.mode === 'if-empty' && Number(store?.countEpisodes?.() ?? 0) > 0) return null
+export function countUnclassified(db) {
+  if (!db) return 0
+  try {
+    const row = db.prepare(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`).get()
+    return Number(row?.c ?? 0)
+  } catch {
+    return 0
+  }
+}
+
+export function selectBackfillTranscripts({ sinceMs = null, limit = null, projectsRoot = null } = {}) {
+  const root = projectsRoot || path.join(os.homedir(), '.claude', 'projects')
+  if (!fs.existsSync(root)) return []
+  const files = []
+  for (const d of fs.readdirSync(root)) {
+    if (d.includes('tmp') || d.includes('cache') || d.includes('plugins')) continue
+    const full = path.join(root, d)
+    try {
+      for (const f of fs.readdirSync(full)) {
+        if (!f.endsWith('.jsonl') || f.startsWith('agent-')) continue
+        const fp = path.join(full, f)
+        let mtime
+        try { mtime = fs.statSync(fp).mtimeMs } catch { continue }
+        if (sinceMs != null && mtime < sinceMs) continue
+        files.push({ path: fp, mtime })
+      }
+    } catch {}
+  }
+  files.sort((a, b) => b.mtime - a.mtime)
+  const capped = (limit != null && Number(limit) > 0) ? files.slice(0, Number(limit)) : files
+  return capped.map(f => f.path).reverse()
+}
+
+const FULL_BACKFILL_MAX_ITERS = 30
+const BACKFILL_CONCURRENCY = 3
+
+export async function runFullBackfill(db, {
+  window = '7d',
+  scope = 'all',
+  limit = null,
+  config = {},
+  ingestTranscriptFile,
+  runCycle1,
+  runCycle2,
+  now = Date.now(),
+  projectsRoot = null,
+} = {}) {
+  if (typeof ingestTranscriptFile !== 'function') {
+    throw new Error('runFullBackfill: ingestTranscriptFile required')
+  }
+  if (typeof runCycle1 !== 'function' || typeof runCycle2 !== 'function') {
+    throw new Error('runFullBackfill: runCycle1/runCycle2 required')
+  }
+
+  const normalizedWindow = normalizeBackfillWindow(window)
+  const normalizedScope = normalizeBackfillScope(scope)
+  const sinceMs = resolveBackfillSinceMs(normalizedWindow, now)
+  const selected = selectBackfillTranscripts({ sinceMs, limit, projectsRoot })
+
+  let ingested = 0
+  let cursor = 0
+  const workers = Array.from({ length: BACKFILL_CONCURRENCY }, async () => {
+    while (cursor < selected.length) {
+      const idx = cursor++
+      const fp = selected[idx]
+      try {
+        const n = Number(await ingestTranscriptFile(fp) ?? 0)
+        ingested += n
+      } catch (err) {
+        process.stderr.write(`[backfill] ingest failed (${fp}): ${err.message}\n`)
+      }
+    }
+  })
+  await Promise.all(workers)
+
+  let cycle1Iters = 0
+  let prevUnclassified = countUnclassified(db)
+  while (prevUnclassified > 0 && cycle1Iters < FULL_BACKFILL_MAX_ITERS) {
+    let result
+    try {
+      result = await runCycle1(db, config?.cycle1 || {}, {})
+    } catch (err) {
+      process.stderr.write(`[backfill] cycle1 error (iter=${cycle1Iters}): ${err.message}\n`)
+      break
+    }
+    cycle1Iters += 1
+    if (Number(result?.processed ?? 0) === 0) break
+    const nextUnclassified = countUnclassified(db)
+    if (nextUnclassified >= prevUnclassified) break
+    prevUnclassified = nextUnclassified
+  }
+
+  let promoted = 0
+  try {
+    const c2 = await runCycle2(db, config?.cycle2 || {}, {})
+    promoted = Number(c2?.phase1?.added ?? 0) + Number(c2?.phase2?.promoted ?? 0)
+  } catch (err) {
+    process.stderr.write(`[backfill] cycle2 error: ${err.message}\n`)
+  }
+
+  const unclassified = countUnclassified(db)
   return {
-    scope: backfill.scope,
-    limit: backfill.limit,
-    sinceMs: resolveBackfillSinceMs(backfill.window, now),
+    window: normalizedWindow,
+    scope: normalizedScope,
+    files: selected.length,
+    ingested,
+    cycle1_iters: cycle1Iters,
+    promoted,
+    unclassified,
   }
 }
 

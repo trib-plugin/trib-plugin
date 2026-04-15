@@ -47,6 +47,7 @@ import { searchRelevantHybrid } from './lib/memory-recall-store.mjs'
 import { retrieveEntries } from './lib/memory-retrievers.mjs'
 import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
 import { computeEntryScore } from './lib/memory-score.mjs'
+import { runFullBackfill } from './lib/memory-ops-policy.mjs'
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || process.argv[2]
@@ -447,7 +448,6 @@ async function _initRuntime() {
   _startCycles()
   _initialized = true
   import('./lib/embedding-provider.mjs').then(m => m.warmupEmbeddingProvider()).catch(() => {})
-  import('./lib/reranker.mjs').then(m => m.warmupReranker()).catch(() => {})
 }
 
 function fmtDateOnly(d) {
@@ -493,7 +493,7 @@ function parsePeriod(period, hasQuery) {
 function formatTs(tsMs) {
   const n = Number(tsMs)
   if (Number.isFinite(n) && n > 1e12) {
-    return new Date(n).toISOString().slice(0, 16)
+    return new Date(n).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16) + ' KST'
   }
   return String(tsMs ?? '').slice(0, 16)
 }
@@ -643,27 +643,23 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'backfill') {
-    const limit = Math.max(1, Math.min(Number(args.limit ?? 100), 1000))
-    const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
-    if (!fs.existsSync(projectsRoot)) return { text: 'backfill: no projects directory found' }
-    const files = []
-    for (const d of fs.readdirSync(projectsRoot)) {
-      if (d.includes('tmp') || d.includes('cache') || d.includes('plugins')) continue
-      const full = path.join(projectsRoot, d)
-      try {
-        for (const f of fs.readdirSync(full)) {
-          if (!f.endsWith('.jsonl') || f.startsWith('agent-')) continue
-          const fp = path.join(full, f)
-          const mtime = fs.statSync(fp).mtimeMs
-          files.push({ path: fp, mtime })
-        }
-      } catch {}
+    const window = args.window != null ? String(args.window) : '7d'
+    const scope = args.scope != null ? String(args.scope) : 'all'
+    const limit = args.limit != null ? Math.max(1, Number(args.limit)) : null
+    const result = await runFullBackfill(db, {
+      window,
+      scope,
+      limit,
+      config,
+      ingestTranscriptFile,
+      runCycle1,
+      runCycle2,
+    })
+    setCycleLastRun('cycle1', Date.now())
+    setCycleLastRun('cycle2', Date.now())
+    return {
+      text: `backfill: window=${result.window} scope=${result.scope} files=${result.files} ingested=${result.ingested} cycle1_iters=${result.cycle1_iters} promoted=${result.promoted} unclassified=${result.unclassified}`,
     }
-    files.sort((a, b) => b.mtime - a.mtime)
-    const selected = files.slice(0, limit).map(f => f.path).reverse()
-    let total = 0
-    for (const fp of selected) total += ingestTranscriptFile(fp)
-    return { text: `backfill: ingested ${total} entries from ${selected.length} transcripts` }
   }
 
   if (action === 'remember') {
@@ -702,6 +698,46 @@ async function handleMemoryAction(args) {
     }
   }
 
+  if (action === 'forget') {
+    const rawId = args.id
+    const rawElement = args.element
+    const id = rawId != null && rawId !== '' ? Number(rawId) : null
+    const elementQuery = rawElement != null ? String(rawElement).trim() : ''
+
+    if ((id == null || !Number.isFinite(id)) && !elementQuery) {
+      return { text: 'forget requires id or element', isError: true }
+    }
+
+    if (id != null && Number.isFinite(id) && id > 0) {
+      const info = db.prepare(
+        `SELECT category, element, status, is_root FROM entries WHERE id = ?`,
+      ).get(id)
+      if (!info) return { text: `forget: no entry with id=${id}`, isError: true }
+      if (info.is_root !== 1) return { text: `forget: id=${id} is not a root`, isError: true }
+      if (info.status !== 'active') return { text: `forget: id=${id} status=${info.status ?? 'NULL'} (not active)`, isError: true }
+      const result = db.prepare(
+        `UPDATE entries SET status = 'archived' WHERE id = ? AND is_root = 1 AND status = 'active'`,
+      ).run(id)
+      if (result.changes === 0) return { text: `forget: id=${id} no change`, isError: true }
+      return { text: `forgotten (id=${id}): [${info.category ?? '-'}] ${info.element ?? ''}` }
+    }
+
+    const matches = db.prepare(
+      `SELECT id, category, element FROM entries
+       WHERE is_root = 1 AND status = 'active' AND element LIKE ?
+       ORDER BY id ASC`,
+    ).all(`%${elementQuery}%`)
+    if (matches.length === 0) return { text: `forget: no active root matches "${elementQuery}"`, isError: true }
+    if (matches.length > 1) {
+      const preview = matches.slice(0, 10).map(r => `id=${r.id} "${r.element}"`).join(', ')
+      const extra = matches.length > 10 ? ` (+${matches.length - 10} more)` : ''
+      return { text: `forget: ${matches.length} candidates — ${preview}${extra}`, isError: true }
+    }
+    const target = matches[0]
+    db.prepare(`UPDATE entries SET status = 'archived' WHERE id = ?`).run(target.id)
+    return { text: `forgotten (id=${target.id}): [${target.category}] ${target.element}` }
+  }
+
   return { text: `unknown memory action: ${action}`, isError: true }
 }
 
@@ -710,16 +746,19 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Operations',
     annotations: { title: 'Memory Operations', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory management operations on the unified entries store. Actions: status (counts/health), cycle1 (chunk + classify), cycle2/sleep (promote + cap), flush (cycle1+cycle2), rebuild (reset roots and re-classify), prune (delete old unclassified), backfill (ingest jsonl transcripts), remember (insert active root entry).',
+    description: 'Run memory management operations on the unified entries store. Actions: status (counts/health), cycle1 (chunk + classify), cycle2/sleep (promote + cap), flush (cycle1+cycle2), rebuild (reset roots and re-classify), prune (delete old unclassified), backfill (ingest transcripts within window then drain cycle1 and run cycle2), remember (insert active root entry), forget (archive an active root by id or element match).',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['status', 'cycle1', 'cycle2', 'sleep', 'flush', 'rebuild', 'prune', 'backfill', 'remember'] },
+        action: { type: 'string', enum: ['status', 'cycle1', 'cycle2', 'sleep', 'flush', 'rebuild', 'prune', 'backfill', 'remember', 'forget'] },
         element: { type: 'string', description: 'Short subject label (5-10 words). Required for remember.' },
         summary: { type: 'string', description: 'Refined summary (1-3 sentences). Required for remember.' },
         category: { type: 'string', description: 'One of: rule, constraint, decision, fact, goal, preference, task, issue. Default: fact.' },
         maxDays: { type: 'number', description: 'For prune: delete unclassified entries older than this many days (default 30).' },
-        limit: { type: 'number', description: 'For backfill: max transcript files to scan (default 100).' },
+        id: { type: 'number', description: 'For forget: target active root id.' },
+        limit: { type: 'number', description: 'For backfill: optional cap on transcript files to scan (unlimited by default).' },
+        window: { type: 'string', description: 'For backfill: time window (1d/3d/7d/30d/all). Default 7d.' },
+        scope: { type: 'string', description: 'For backfill: all or workspace. Default all.' },
       },
       required: ['action'],
     },

@@ -57,7 +57,7 @@ function openMemoryDb() {
 function formatTs(ts) {
   const n = Number(ts);
   if (Number.isFinite(n) && n > 1e12) {
-    return new Date(n).toISOString().slice(0, 16);
+    return new Date(n).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16) + ' KST';
   }
   return String(ts ?? '').slice(0, 16);
 }

@@ -202,13 +202,6 @@ export const DEFAULT_MEMORY_TUNING = Object.freeze({
       },
     },
   },
-  reranker: {
-    enabled: true,
-    model: 'Xenova/bge-reranker-large',
-    overFetch: 15,
-    minRerankerScore: -2,
-    maxCandidates: 15,
-  },
 })
 
 export function mergeMemoryTuning(overrides = {}) {

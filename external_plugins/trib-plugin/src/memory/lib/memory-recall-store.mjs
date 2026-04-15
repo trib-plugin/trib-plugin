@@ -92,8 +92,10 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   for (const { id, rrf } of scored) {
     const row = byId.get(id)
     if (!row) continue
-    let rootRow = row
-    if (row.is_root === 0 && row.chunk_root != null && row.chunk_root !== row.id) {
+    let targetRow = null
+    if (row.is_root === 1) {
+      targetRow = row
+    } else if (row.chunk_root != null && row.chunk_root !== row.id) {
       const r = db.prepare(
         `SELECT id, ts, role, content, session_id, chunk_root, is_root,
                 element, category, summary, status, score, last_seen_at
@@ -101,13 +103,13 @@ export async function searchRelevantHybrid(db, query, options = {}) {
       ).get(row.chunk_root)
       if (!r) continue
       memberHitRootIds.add(r.id)
-      rootRow = r
-    } else if (row.is_root !== 1) {
-      continue
+      targetRow = r
+    } else {
+      targetRow = row
     }
-    if (seen.has(rootRow.id)) continue
-    seen.add(rootRow.id)
-    rootIdsForReturn.push({ root: rootRow, rrf })
+    if (seen.has(targetRow.id)) continue
+    seen.add(targetRow.id)
+    rootIdsForReturn.push({ root: targetRow, rrf })
     if (rootIdsForReturn.length >= limit) break
   }
 
@@ -131,7 +133,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
 
   const results = rootIdsForReturn.map(({ root, rrf }) => {
     const out = { ...root, rrf }
-    if (includeMembers) {
+    if (includeMembers && root.is_root === 1) {
       out.members = db.prepare(
         `SELECT id, ts, role, content, session_id
          FROM entries WHERE chunk_root = ? AND is_root = 0

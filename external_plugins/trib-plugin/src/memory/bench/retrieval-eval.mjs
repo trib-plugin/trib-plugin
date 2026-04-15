@@ -5,8 +5,6 @@
  * queries → measures Hit@K, MRR.
  *
  * Usage: node retrieval-eval.mjs
- *   --reranker: enable cross-encoder reranker
- *   --profile:  embedding+reranker load/warmup/steady/post-idle profiling matrix
  *   --use-shared-data: use production DATA_DIR (default: tmpdir sandbox)
  */
 
@@ -22,16 +20,7 @@ import {
   embedText,
   getEmbeddingModelId,
   getEmbeddingDims,
-  warmupEmbeddingProvider,
-  disposeEmbeddingProvider,
 } from '../lib/embedding-provider.mjs'
-import {
-  warmupReranker,
-  rerank,
-  disposeReranker,
-  getRerankerModelId,
-} from '../lib/reranker.mjs'
-import { writeProfilePoint, getProfilePath } from '../lib/model-profile.mjs'
 import { computeEntryScore } from '../lib/memory-score.mjs'
 
 const _USE_SHARED = process.argv.includes('--use-shared-data')
@@ -95,11 +84,11 @@ const BENCH_SET = [
     summary: 'Session-unique team name main-<random4hex>; agents die with session to prevent stale members.',
     queries: ['팀 네이밍 규칙', 'session team naming'] },
   { id: 'B09',
-    content: 'reranker는 Xenova/bge-reranker-base 모델로 기본 활성화 상태 (features.reranker: true). 비활성화하려면 features.reranker를 false로 명시해야 한다.',
-    element: 'reranker enabled by default',
-    category: 'fact',
-    summary: 'bge-reranker-base enabled by default (features.reranker: true); set false to disable.',
-    queries: ['reranker 활성화 여부', 'cross-encoder reranker status'] },
+    content: '메모리 청크 요약은 S05 스타일 3문장 (context/cause/outcome) 구조로 작성한다. 첫 문장은 맥락, 둘째 문장은 원인이나 핵심 발견, 셋째 문장은 결정 또는 결과를 담는다.',
+    element: 'chunk summary S05 structure rule',
+    category: 'rule',
+    summary: 'Chunk summaries follow S05 structure: 3 sentences in fixed order — context, cause/finding, decision/outcome.',
+    queries: ['청크 요약 구조', 'summary 3 sentence rule', 'S05 context cause outcome'] },
   { id: 'B10',
     content: 'RRF (Reciprocal Rank Fusion) 합산이 이미 구현되어 있다. score = 1/(k+rank_sparse) + 1/(k+rank_dense), k=60.',
     element: 'RRF hybrid search',
@@ -236,63 +225,9 @@ function openBenchDb() {
   return db
 }
 
-async function runProfile() {
-  const embedModel = getEmbeddingModelId()
-  const rerankModel = getRerankerModelId()
-  const startTime = Date.now()
-  process.stderr.write(`[profile] starting matrix (embed=${embedModel}, reranker=${rerankModel})\n`)
-  process.stderr.write(`[profile] writing to ${getProfilePath()}\n`)
-
-  writeProfilePoint({ phase: 'cold-boot', model: embedModel, note: 'pre-init' })
-  writeProfilePoint({ phase: 'cold-boot', model: rerankModel, note: 'pre-init' })
-
-  const warmStart = Date.now()
-  await warmupEmbeddingProvider()
-  await warmupReranker()
-  writeProfilePoint({ phase: 'post-warmup', model: embedModel, wallMs: Date.now() - warmStart })
-  writeProfilePoint({ phase: 'post-warmup', model: rerankModel, wallMs: Date.now() - warmStart })
-
-  const singleStart = Date.now()
-  await embedText('commit format')
-  writeProfilePoint({ phase: 'single-query', model: embedModel, wallMs: Date.now() - singleStart })
-
-  const batchStart = Date.now()
-  const batchQueries = BENCH_SET.flatMap(item => item.queries)
-  for (const q of batchQueries) {
-    await embedText(q.slice(0, 768))
-  }
-  writeProfilePoint({ phase: 'batched', model: embedModel, wallMs: Date.now() - batchStart, docsScored: batchQueries.length })
-
-  const docItems = BENCH_SET.slice(0, 15).map(item => ({ id: item.id, content: item.content }))
-  writeProfilePoint({ phase: 'reranker-off', model: rerankModel, note: 'no inference — control snapshot' })
-  const rerankStart = Date.now()
-  try {
-    await rerank('커밋 메시지 형식', docItems, 5)
-    writeProfilePoint({ phase: 'reranker-on', model: rerankModel, wallMs: Date.now() - rerankStart, docsScored: docItems.length })
-  } catch (e) {
-    writeProfilePoint({ phase: 'reranker-on', model: rerankModel, note: `rerank failed: ${e?.message || e}` })
-  }
-
-  await disposeEmbeddingProvider()
-  await disposeReranker()
-  await new Promise(r => setTimeout(r, 50))
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-  console.log('\n══════════════════════════════════════════')
-  console.log('  Model Profile Matrix')
-  console.log('══════════════════════════════════════════')
-  console.log(`  Embed:     ${embedModel}`)
-  console.log(`  Reranker:  ${rerankModel}`)
-  console.log(`  Queries:   ${batchQueries.length} batched + 1 single`)
-  console.log(`  Output:    ${getProfilePath()}`)
-  console.log(`  Time:      ${elapsed}s`)
-  console.log('══════════════════════════════════════════\n')
-}
-
 async function run() {
   const startTime = Date.now()
-  const useReranker = process.argv.includes('--reranker')
-  process.stderr.write(`[bench] starting retrieval eval (reranker=${useReranker})\n`)
+  process.stderr.write(`[bench] starting retrieval eval\n`)
 
   const db = openBenchDb()
   const model = getEmbeddingModelId()
@@ -380,7 +315,6 @@ async function run() {
     console.log('  Retrieval Evaluation Report')
     console.log('══════════════════════════════════════════')
     console.log(`  Dataset:   ${BENCH_SET.length} items, ${allResults.length} queries`)
-    console.log(`  Reranker:  ${useReranker ? 'ON' : 'OFF (not invoked by lib)'}`)
     console.log(`  Model:     ${model}`)
     console.log('──────────────────────────────────────────')
     console.log(`  Hit@1:     ${metrics.hit_at_1}`)
@@ -409,10 +343,6 @@ async function run() {
 }
 
 async function main() {
-  if (process.argv.includes('--profile')) {
-    await runProfile()
-    return
-  }
   await run()
 }
 

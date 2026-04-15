@@ -1219,10 +1219,6 @@
               </select>
             </div>
             <div class="r">
-              <span class="r-name-wide">Model</span>
-              <select class="r-select" id="mem-cycle1-preset"></select>
-            </div>
-            <div class="r">
               <span class="r-name-wide">Timeout</span>
               <input class="r-input" id="mem-set-timeout" type="number" placeholder="30" style="flex:1">
               <span class="r-unit">sec</span>
@@ -1240,10 +1236,6 @@
               <span class="r-name-wide">Interval</span>
               <input class="r-input" id="mem-set-interval" type="text" placeholder="1h">
             </div>
-            <div class="r">
-              <span class="r-name-wide">Model</span>
-              <select class="r-select" id="mem-cycle2-preset"></select>
-            </div>
           </div>
         </div>
         <div class="sec">
@@ -1252,9 +1244,9 @@
             <div class="r">
               <span class="r-name-wide">Window</span>
               <select class="r-select" id="mem-set-backfill-window" style="flex:1">
-                <option value="1d" selected>1 day</option>
+                <option value="1d">1 day</option>
                 <option value="3d">3 days</option>
-                <option value="7d">7 days</option>
+                <option value="7d" selected>7 days</option>
                 <option value="30d">30 days</option>
                 <option value="all">Unlimited</option>
               </select>
@@ -2660,7 +2652,6 @@ async function loadMemoryData() {
   memPopulateConfig();
   memRenderAll();
   await Promise.all([memLoadFiles(), memLoadCoreMemory()]);
-  await memPopulateCycleDropdowns();
 }
 
 function memPopulateConfig() {
@@ -2733,7 +2724,7 @@ async function memSaveProviders() {
 }
 
 function memBuildConfigData() {
-  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { interval: document.getElementById('mem-set-interval').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined } };
+  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50 }, cycle2: { interval: document.getElementById('mem-set-interval').value.trim() } };
 }
 
 async function memSaveConfig() {
@@ -2746,21 +2737,6 @@ async function memRunBackfill() {
   const btn = document.getElementById('mem-btn-backfill'); const window_ = document.getElementById('mem-set-backfill-window').value;
   btn.textContent = 'Running...'; btn.disabled = true;
   try { await fetch('/memory/backfill', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({window:window_}) }); btn.textContent='\u2713 Done'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); } catch { btn.textContent='Failed'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); }
-}
-
-async function memPopulateCycleDropdowns() {
-  try {
-    const res = await fetch('/agent/presets');
-    const data = await res.json();
-    const presets = data.presets || [];
-    const options = presets.map(p => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name || p.id)} (${escapeHtml(p.model)})</option>`).join('');
-    const c1 = document.getElementById('mem-cycle1-preset');
-    const c2 = document.getElementById('mem-cycle2-preset');
-    c1.innerHTML = options;
-    c2.innerHTML = options;
-    if (memConfig.cycle1?.preset) c1.value = memConfig.cycle1.preset;
-    if (memConfig.cycle2?.preset) c2.value = memConfig.cycle2.preset;
-  } catch {}
 }
 
 async function memLoadFiles() { try{const data=await fetch('/memory/files').then(r=>r.json());document.getElementById('mem-file-bot').value=data['bot.md']||'';document.getElementById('mem-file-user-profile').value=data['user.md']||'';}catch{} }

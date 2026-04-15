@@ -3,9 +3,8 @@
  *
  * Writes one JSONL line per measurement point to
  * `history/model-profile.jsonl` (mirrors `retrieval-trace.jsonl`). Meant for
- * the embedding + reranker providers plus the `retrieval-eval --profile`
- * bench matrix. Fire-and-forget: any I/O error is swallowed so instrumentation
- * never breaks a live bridge or memory-cycle call.
+ * the embedding provider. Fire-and-forget: any I/O error is swallowed so
+ * instrumentation never breaks a live bridge or memory-cycle call.
  *
  * Schema:
  *   {
@@ -21,10 +20,6 @@
  *   - 'warmup'        (after the first forward pass)
  *   - 'steady'        (sampled steady-state per-query)
  *   - 'post-idle'     (after the idle dispose fires)
- *
- * retrieval-eval's `--profile` adds these bench-scenario phases:
- *   - 'cold-boot', 'post-warmup', 'single-query', 'batched',
- *     'reranker-on', 'reranker-off', 'post-idle-bench'.
  *
  * No behaviour change when nobody reads the JSONL — this is telemetry only.
  */
