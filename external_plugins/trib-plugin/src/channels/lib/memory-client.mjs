@@ -1,10 +1,3 @@
-/**
- * memory-client.mjs — HTTP client for memory-service.
- *
- * Replaces direct memoryStore calls in server.ts with HTTP requests
- * to the memory-service process (runs on 127.0.0.1:3350-3357).
- */
-
 import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -20,13 +13,6 @@ function getMemoryPort() {
   }
 }
 
-/**
- * Send an HTTP request to the memory service.
- * @param {string} method - GET or POST
- * @param {string} endpoint - e.g. '/episode'
- * @param {object|null} body - JSON body for POST
- * @returns {Promise<object>}
- */
 function memoryFetch(method, endpoint, body = null) {
   return new Promise((resolve, reject) => {
     const port = getMemoryPort()
@@ -44,11 +30,8 @@ function memoryFetch(method, endpoint, body = null) {
       let data = ''
       res.on('data', chunk => { data += chunk })
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(data))
-        } catch {
-          resolve({ raw: data })
-        }
+        try { resolve(JSON.parse(data)) }
+        catch { resolve({ raw: data }) }
       })
     })
     req.on('error', reject)
@@ -60,43 +43,46 @@ function memoryFetch(method, endpoint, body = null) {
 
 const BUFFER_DIR = path.join(os.tmpdir(), 'trib-plugin', 'memory-buffer')
 
-/**
- * Append an episode to the memory store.
- * On first failure: wait 2s, retry once.
- * On retry failure: buffer to a local JSON file and return { ok: false, buffered: true, path }.
- * @param {object} data - Episode fields (ts, backend, channelId, userId, userName, sessionId, role, kind, content, sourceRef)
- * @returns {Promise<{ok: boolean, id?: number, buffered?: boolean, path?: string}>}
- */
-export async function appendEpisode(data) {
-  try {
-    return await memoryFetch('POST', '/episode', data)
-  } catch (e) {
-    process.stderr.write(`[memory-client] appendEpisode failed: ${e.message}\n`)
+function normalizeTs(ts) {
+  if (typeof ts === 'number' && Number.isFinite(ts)) {
+    return ts < 1e12 ? ts * 1000 : ts
+  }
+  const parsed = Date.parse(String(ts ?? ''))
+  return Number.isFinite(parsed) ? parsed : Date.now()
+}
 
-    // Wait 2 seconds then retry once
+export async function appendEntry(data) {
+  const payload = {
+    ts: normalizeTs(data.ts),
+    role: String(data.role ?? 'user'),
+    content: String(data.content ?? ''),
+    sourceRef: String(data.sourceRef ?? `manual:${Date.now()}-${process.pid}`),
+    sessionId: data.sessionId ?? null,
+  }
+  try {
+    return await memoryFetch('POST', '/entry', payload)
+  } catch (e) {
+    process.stderr.write(`[memory-client] appendEntry failed: ${e.message}\n`)
     await new Promise(r => setTimeout(r, 2000))
     try {
-      process.stderr.write(`[memory-client] appendEpisode retrying...\n`)
-      return await memoryFetch('POST', '/episode', data)
+      process.stderr.write(`[memory-client] appendEntry retrying...\n`)
+      return await memoryFetch('POST', '/entry', payload)
     } catch (retryErr) {
-      process.stderr.write(`[memory-client] appendEpisode retry failed: ${retryErr.message}\n`)
-
-      // Buffer to local JSON file
+      process.stderr.write(`[memory-client] appendEntry retry failed: ${retryErr.message}\n`)
       try {
         fs.mkdirSync(BUFFER_DIR, { recursive: true })
         const random = Math.random().toString(36).slice(2, 10)
-        const bufferPath = path.join(BUFFER_DIR, `episode-${Date.now()}-${random}.json`)
-        fs.writeFileSync(bufferPath, JSON.stringify(data, null, 2))
-        process.stderr.write(`[memory-client] Episode buffered to ${bufferPath}\n`)
+        const bufferPath = path.join(BUFFER_DIR, `entry-${Date.now()}-${random}.json`)
+        fs.writeFileSync(bufferPath, JSON.stringify(payload, null, 2))
+        process.stderr.write(`[memory-client] Entry buffered to ${bufferPath}\n`)
         return { ok: false, buffered: true, path: bufferPath }
       } catch (bufErr) {
-        process.stderr.write(`[memory-client] Failed to buffer episode: ${bufErr.message}\n`)
+        process.stderr.write(`[memory-client] Failed to buffer entry: ${bufErr.message}\n`)
         return { ok: false }
       }
     }
   }
 }
-
 
 function cleanupStaleBufferFiles(maxAgeDays = 7) {
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000
@@ -116,36 +102,28 @@ function cleanupStaleBufferFiles(maxAgeDays = 7) {
         process.stderr.write(`[memory-client] cleanupStaleBufferFiles error for ${file}: ${e.message}\n`)
       }
     }
-  } catch { /* buffer dir does not exist */ }
+  } catch {}
   return cleaned
 }
 
-/**
- * Flush all buffered episodes that failed to send previously.
- * Reads each JSON file from the buffer directory, POSTs it via memoryFetch,
- * and deletes successfully flushed files. Cleans up stale files (>7 days).
- * @returns {Promise<{flushed: number, failed: number}>}
- */
-export async function flushBufferedEpisodes() {
+export async function flushBufferedEntries() {
   let flushed = 0
   let failed = 0
   let files
   try {
     files = fs.readdirSync(BUFFER_DIR).filter(f => f.endsWith('.json'))
   } catch {
-    // Buffer directory does not exist or is unreadable — nothing to flush
     return { flushed, failed }
   }
-
   for (const file of files) {
     const filePath = path.join(BUFFER_DIR, file)
     try {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-      await memoryFetch('POST', '/episode', data)
+      await memoryFetch('POST', '/entry', data)
       fs.unlinkSync(filePath)
       flushed++
     } catch (e) {
-      process.stderr.write(`[memory-client] flushBufferedEpisodes failed for ${file}: ${e.message}\n`)
+      process.stderr.write(`[memory-client] flushBufferedEntries failed for ${file}: ${e.message}\n`)
       failed++
     }
   }
@@ -153,11 +131,6 @@ export async function flushBufferedEpisodes() {
   return { flushed, failed }
 }
 
-/**
- * Ingest a transcript file into the memory store.
- * @param {string} filePath - Absolute path to the transcript JSONL file
- * @returns {Promise<{ok: boolean}>}
- */
 export async function ingestTranscript(filePath) {
   try {
     return await memoryFetch('POST', '/ingest-transcript', { filePath })
@@ -167,46 +140,6 @@ export async function ingestTranscript(filePath) {
   }
 }
 
-/**
- * Get all active proactive sources.
- * @returns {Promise<object[]>}
- */
-export async function getProactiveSources() {
-  try {
-    const result = await memoryFetch('GET', '/proactive/sources')
-    return Array.isArray(result) ? result : []
-  } catch {
-    return []
-  }
-}
-
-/**
- * Get recent memory context for proactive tick.
- * @returns {Promise<string>}
- */
-export async function getProactiveContext() {
-  try {
-    const result = await memoryFetch('GET', '/proactive/context')
-    return result?.context || ''
-  } catch {
-    return ''
-  }
-}
-
-/**
- * Apply source updates (add/remove/score changes).
- * @param {object} updates - { add: [], remove: [], scores: {} }
- */
-export async function applyProactiveUpdates(updates) {
-  try {
-    await memoryFetch('POST', '/proactive/updates', updates)
-  } catch { /* best effort */ }
-}
-
-/**
- * Check if the memory service is healthy.
- * @returns {Promise<boolean>}
- */
 export async function isHealthy() {
   try {
     const result = await memoryFetch('GET', '/health')

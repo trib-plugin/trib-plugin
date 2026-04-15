@@ -1,191 +1,26 @@
-import { getEmbeddingDims } from './embedding-provider.mjs'
-
-export function getEpisodesSince(store, timestamp) {
-  const ts = typeof timestamp === 'number'
-    ? new Date(timestamp).toISOString()
-    : String(timestamp)
-  return store.db.prepare(`
-    SELECT id, ts, role, kind, content
-    FROM episodes
-    WHERE ts > ?
-    ORDER BY ts, id
-  `).all(ts)
-}
-
-export function countEpisodes(store) {
-  return store.db.prepare(`SELECT count(*) AS n FROM episodes`).get().n
-}
-
-export function getUnclassifiedEpisodesForDate(store, dayKey) {
-  return store.db.prepare(`
-    SELECT e.id, e.id AS episode_id, e.ts, e.role, e.content, 0 AS score
-    FROM episodes e
-    WHERE e.day_key = ?
-      AND e.classified = 0
-      AND e.role IN ('user', 'assistant')
-      AND e.kind = 'message'
-    ORDER BY e.ts ASC
-  `).all(dayKey)
-}
-
-export function getUnclassifiedEpisodeDays(store, limit = 7, minCount = 1) {
-  return store.db.prepare(`
-    SELECT day_key, count(*) AS n
-    FROM episodes
-    WHERE classified = 0
-      AND role IN ('user', 'assistant')
-      AND kind = 'message'
-    GROUP BY day_key
-    HAVING count(*) >= ?
-    ORDER BY day_key DESC
-    LIMIT ?
-  `).all(minCount, limit)
-}
-
-export function getDecayRows(_store, _kind = 'fact') {
-  return []
-}
-
-export function resetEmbeddingIndex(store, options = {}) {
-  store.clearVectorsStmt.run()
-  try { store.db.prepare('DELETE FROM pending_embeds').run() } catch {}
-  if (store.vecEnabled) {
-    try {
-      store.db.exec('DROP TABLE IF EXISTS vec_memory')
-      store.db.exec(`CREATE VIRTUAL TABLE vec_memory USING vec0(embedding float[${getEmbeddingDims()}])`)
-    } catch {}
-  }
-  store.syncEmbeddingMetadata({
-    reason: options.reason ?? 'reset_embedding_index',
-    reindexRequired: 1,
-    reindexReason: options.reindexReason ?? 'embedding index reset',
-  })
-}
-
-export function vacuumDatabase(store) {
+export function resetEmbeddingIndex(db) {
+  db.exec('BEGIN')
   try {
-    store.db.exec('VACUUM')
-    return true
-  } catch {
-    return false
+    const res = db.prepare(
+      `UPDATE entries SET embedding = NULL, summary_hash = NULL WHERE is_root = 1`,
+    ).run()
+    db.exec(`DROP TABLE IF EXISTS vec_entries`)
+    db.exec('COMMIT')
+    return { clearedRoots: Number(res.changes ?? 0) }
+  } catch (err) {
+    try { db.exec('ROLLBACK') } catch {}
+    throw err
   }
 }
 
-export function countPendingCandidates(store, dayKey = null) {
-  if (dayKey) {
-    return store.db.prepare(`
-      SELECT count(*) AS n
-      FROM episodes
-      WHERE classified = 0
-        AND day_key = ?
-        AND role IN ('user', 'assistant')
-        AND kind = 'message'
-    `).get(dayKey).n
+export function pruneOldEntries(db, maxAgeDays) {
+  const days = Number(maxAgeDays)
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new Error(`pruneOldEntries: maxAgeDays must be positive, got ${maxAgeDays}`)
   }
-  return store.db.prepare(`
-    SELECT count(*) AS n
-    FROM episodes
-    WHERE classified = 0
-      AND role IN ('user', 'assistant')
-      AND kind = 'message'
-  `).get().n
-}
-
-export function resetClassifiedFlag(store) {
-  store.db.prepare(`UPDATE episodes SET classified = 0`).run()
-  return store.db.prepare(`SELECT count(*) AS n FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'`).get().n
-}
-
-export function resetConsolidatedMemory(store) {
-  store.clearClassificationsStmt.run()
-  store.clearClassificationsFtsStmt.run()
-  store.clearVectorsStmt.run()
-  if (store.vecEnabled) {
-    try { store.db.exec('DELETE FROM vec_memory') } catch {}
-  }
-  store.db.prepare(`UPDATE episodes SET classified = 0`).run()
-}
-
-export function resetConsolidatedMemoryForDays(store, dayKeys = []) {
-  const keys = [...new Set(dayKeys.map(key => String(key).trim()).filter(Boolean))]
-  if (keys.length === 0) return
-
-  const placeholders = keys.map(() => '?').join(', ')
-  const episodeIds = store.db.prepare(`
-    SELECT id
-    FROM episodes
-    WHERE day_key IN (${placeholders})
-  `).all(...keys).map(row => Number(row.id)).filter(Number.isFinite)
-
-  if (episodeIds.length > 0) {
-    const episodePlaceholders = episodeIds.map(() => '?').join(', ')
-
-    const classificationIds = store.db.prepare(`
-      SELECT id FROM classifications WHERE episode_id IN (${episodePlaceholders})
-    `).all(...episodeIds).map(row => Number(row.id)).filter(Number.isFinite)
-    if (classificationIds.length > 0) {
-      const clsPlaceholders = classificationIds.map(() => '?').join(', ')
-      for (const id of classificationIds) store.deleteClassificationFtsStmt.run(id)
-      store.db.prepare(`DELETE FROM classifications WHERE id IN (${clsPlaceholders})`).run(...classificationIds)
-      store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'classification' AND entity_id IN (${clsPlaceholders})`).run(...classificationIds)
-      if (store.vecEnabled) {
-        for (const id of classificationIds) {
-          const rowid = store._vecRowId('classification', id)
-          try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
-        }
-      }
-    }
-  }
-
-  store.db.prepare(`
-    UPDATE episodes
-    SET classified = 0
-    WHERE day_key IN (${placeholders})
-  `).run(...keys)
-}
-
-export function pruneConsolidatedMemoryOutsideDays(store, dayKeys = []) {
-  const keys = [...new Set(dayKeys.map(key => String(key).trim()).filter(Boolean))]
-  if (keys.length === 0) return
-
-  const placeholders = keys.map(() => '?').join(', ')
-  const keepEpisodeIds = store.db.prepare(`
-    SELECT id
-    FROM episodes
-    WHERE day_key IN (${placeholders})
-  `).all(...keys).map(row => Number(row.id)).filter(Number.isFinite)
-
-  if (keepEpisodeIds.length === 0) return
-  const keepPlaceholders = keepEpisodeIds.map(() => '?').join(', ')
-
-  const staleClassificationIds = store.db.prepare(`
-    SELECT id FROM classifications
-    WHERE episode_id IS NOT NULL
-      AND episode_id NOT IN (${keepPlaceholders})
-  `).all(...keepEpisodeIds).map(row => Number(row.id)).filter(Number.isFinite)
-  if (staleClassificationIds.length > 0) {
-    const stalePlaceholders = staleClassificationIds.map(() => '?').join(', ')
-    for (const id of staleClassificationIds) store.deleteClassificationFtsStmt.run(id)
-    store.db.prepare(`DELETE FROM classifications WHERE id IN (${stalePlaceholders})`).run(...staleClassificationIds)
-    store.db.prepare(`DELETE FROM memory_vectors WHERE entity_type = 'classification' AND entity_id IN (${stalePlaceholders})`).run(...staleClassificationIds)
-    if (store.vecEnabled) {
-      for (const id of staleClassificationIds) {
-        const rowid = store._vecRowId('classification', id)
-        try { store.db.exec(`DELETE FROM vec_memory WHERE rowid = ${rowid}`) } catch {}
-      }
-    }
-  }
-}
-
-// Mark episodes as classified after cycle1 processing.
-// The distilled value lives in classifications/core_memory.
-export function markEpisodesClassified(store, episodeIds = []) {
-  const ids = [...new Set(episodeIds.map(id => Number(id)).filter(Number.isFinite))]
-  if (ids.length === 0) return 0
-  const placeholders = ids.map(() => '?').join(', ')
-  const result = store.db.prepare(`
-    UPDATE episodes SET classified = 1
-    WHERE id IN (${placeholders})
-  `).run(...ids)
-  return Number(result.changes ?? 0)
+  const cutoffMs = Date.now() - days * 86_400_000
+  const result = db.prepare(
+    `DELETE FROM entries WHERE chunk_root IS NULL AND ts < ?`,
+  ).run(cutoffMs)
+  return { deleted: Number(result.changes ?? 0), cutoffMs }
 }

@@ -1,197 +1,149 @@
-import { embedText } from './embedding-provider.mjs'
-import { cleanMemoryText } from './memory-extraction.mjs'
-import {
-  buildFtsQuery,
-  tokenizeMemoryText,
-} from './memory-text-utils.mjs'
+import { buildFtsQuery } from './memory-text-utils.mjs'
 import { vecToHex } from './memory-vector-utils.mjs'
-import { applyMetadataFilters } from './memory-retrievers.mjs'
-export { applyMetadataFilters }
+import { computeEntryScore } from './memory-score.mjs'
 
-const RECALL_EPISODE_KIND_SQL = `'message', 'turn'`
-const DEBUG_RECALL_EPISODE_KIND_SQL = `'message', 'turn', 'transcript'`
-
-export async function verifyMemoryClaim(store, query, options = {}) {
+export async function searchRelevantHybrid(db, query, options = {}) {
   const clean = String(query ?? '').trim()
   if (!clean) return []
-  const verifyLimit = Math.max(1, Math.min(Number(options.limit ?? 3), 5))
-  const queryVector = options.queryVector ?? await embedText(clean)
-  const ftsQuery = String(options.ftsQuery ?? '').trim()
-  const matchesById = new Map()
 
-  const registerMatch = (row, extras = {}) => {
-    const id = Number(row.id ?? extras.id ?? 0)
-    if (!id) return
-    const previous = matchesById.get(id) ?? {}
-    const merged = { ...previous, ...row, ...extras, type: 'classification' }
-    const normalizedQuery = clean.toLowerCase()
-    const content = [merged.classification, merged.topic, merged.element, merged.state].filter(Boolean).join(' ')
-    const normalizedText = cleanMemoryText(merged.text ?? content ?? '').toLowerCase()
-    const queryTokens = tokenizeMemoryText(clean)
-    const lexicalHits = queryTokens.filter(token => normalizedText.includes(token)).length
-    const lexicalOverlap = queryTokens.length > 0 ? lexicalHits / queryTokens.length : 0
-    const literalMatch = normalizedText.includes(normalizedQuery)
-    const similarity = Number(merged.similarity ?? previous.similarity ?? 0)
-    const exactBoost = literalMatch ? 0.18 : 0
-    const lexicalBoost = Math.min(0.45, lexicalOverlap * 0.45)
-    const semanticBoost = Math.min(0.55, Math.max(0, similarity) * 0.55)
-    const verifyScore = Number(Math.min(1, semanticBoost + lexicalBoost + exactBoost).toFixed(3))
-    const crossLingual = lexicalOverlap < 0.1 && similarity > 0
-    const highConfidenceFound = Number(merged.confidence ?? 0) >= 0.8 && (lexicalOverlap > 0 || similarity > 0.2)
-    const accepted = literalMatch || verifyScore >= 0.55 || similarity >= 0.82 || (crossLingual && similarity >= 0.45) || (similarity >= 0.7 && lexicalOverlap >= 0.15) || highConfidenceFound
-    matchesById.set(id, {
-      ...merged,
-      content: normalizedText,
-      lexical_overlap: lexicalOverlap,
-      literal_match: literalMatch,
-      verify_score: verifyScore,
-      accepted,
-    })
-  }
+  const limit = Math.max(1, Number(options.limit ?? 8))
+  const includeMembers = Boolean(options.includeMembers)
+  const writeBackMemberHits = options.writeBackMemberHits !== false
 
-  if (store.vecEnabled && Array.isArray(queryVector) && queryVector.length > 0) {
+  const candidateIds = new Map()
+  let denseCount = 0
+  let sparseCount = 0
+
+  if (Array.isArray(options.queryVector) && options.queryVector.length > 0) {
     try {
-      const hex = vecToHex(queryVector)
-      const knnRows = store.vecReadDb.prepare(
-        `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
-      ).all(verifyLimit * 3)
-      for (const knn of knnRows) {
-        const { entityType, entityId } = store._vecRowToEntity(knn.rowid)
-        if (entityType !== 'classification') continue
-        const row = store.db.prepare(
-          `SELECT id, classification, topic, element, state, confidence, updated_at AS last_seen, status FROM classifications WHERE id = ? AND status = 'active'`
-        ).get(entityId)
-        if (row) registerMatch(row, { similarity: Number((1 - knn.distance).toFixed(3)), source: 'vector' })
-      }
-    } catch {}
+      const hex = vecToHex(options.queryVector)
+      const knnRows = db.prepare(
+        `SELECT rowid, distance FROM vec_entries WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`,
+      ).all(limit * 3)
+      knnRows.forEach((row, rank) => {
+        const id = Number(row.rowid)
+        if (!Number.isFinite(id)) return
+        if (!candidateIds.has(id)) candidateIds.set(id, { denseRank: null, sparseRank: null })
+        candidateIds.get(id).denseRank = rank + 1
+      })
+      denseCount = knnRows.length
+    } catch { /* vec_entries may be empty */ }
   }
 
-  if (ftsQuery) {
+  if (clean.length >= 3) {
     try {
-      const ftsMatches = store.db.prepare(`
-        SELECT c.id, c.classification, c.topic, c.element, c.state, c.confidence, c.updated_at AS last_seen, c.status
-        FROM classifications_fts
-        JOIN classifications c ON c.id = classifications_fts.rowid
-        WHERE classifications_fts MATCH ? AND c.status = 'active'
-        ORDER BY bm25(classifications_fts)
-        LIMIT ?
-      `).all(ftsQuery, verifyLimit * 2)
-      for (const row of ftsMatches) registerMatch(row, { source: 'fts' })
-    } catch {}
-  }
-
-  return Array.from(matchesById.values())
-    .sort((a, b) => {
-      const verifyDelta = Number(b.verify_score ?? 0) - Number(a.verify_score ?? 0)
-      if (verifyDelta !== 0) return verifyDelta
-      const lexicalDelta = Number(b.lexical_overlap ?? 0) - Number(a.lexical_overlap ?? 0)
-      if (lexicalDelta !== 0) return lexicalDelta
-      return Number(b.confidence ?? b.similarity ?? 0) - Number(a.confidence ?? a.similarity ?? 0)
-    })
-    .slice(0, verifyLimit)
-}
-
-export async function getEpisodeRecallRows(store, options = {}) {
-  const {
-    query = '',
-    startDate,
-    endDate,
-    limit = 5,
-    queryVector = null,
-    ftsQuery = '',
-    includeTranscripts = false,
-  } = options
-  const clean = String(query ?? '').trim()
-  const queryLimit = Math.max(1, Number(limit))
-  let episodes = []
-
-  if (store.vecEnabled && Array.isArray(queryVector) && queryVector.length > 0) {
+      const ftsRows = db.prepare(
+        `SELECT rowid, bm25(entries_fts) AS bm25
+         FROM entries_fts
+         WHERE entries_fts MATCH ?
+         ORDER BY bm25 LIMIT ?`,
+      ).all(buildFtsQuery(clean), limit * 3)
+      ftsRows.forEach((row, rank) => {
+        const id = Number(row.rowid)
+        if (!Number.isFinite(id)) return
+        if (!candidateIds.has(id)) candidateIds.set(id, { denseRank: null, sparseRank: null })
+        candidateIds.get(id).sparseRank = rank + 1
+      })
+      sparseCount = ftsRows.length
+    } catch { /* fts unavailable */ }
+  } else {
     try {
-      const hex = vecToHex(queryVector)
-      const knnRows = store.vecReadDb.prepare(
-        `SELECT rowid, distance FROM vec_memory WHERE embedding MATCH X'${hex}' ORDER BY distance LIMIT ?`
-      ).all(queryLimit * 5)
-      for (const knn of knnRows) {
-        const { entityType, entityId } = store._vecRowToEntity(knn.rowid)
-        if (entityType !== 'classification') continue
-        const cls = store.db.prepare(`SELECT episode_id FROM classifications WHERE id = ? AND status = 'active'`).get(entityId)
-        if (!cls?.episode_id) continue
-        const ep = store.db.prepare(`
-          SELECT id, ts, day_key, role, kind, content, source_ref, backend AS source_backend
-          FROM episodes
-          WHERE id = ? AND day_key >= ? AND day_key <= ?
-            AND kind IN (${includeTranscripts ? DEBUG_RECALL_EPISODE_KIND_SQL : RECALL_EPISODE_KIND_SQL})
-        `).get(cls.episode_id, startDate, endDate)
-        if (ep) episodes.push({ ...ep, similarity: 1 - knn.distance })
-      }
-    } catch {}
+      const likePattern = `%${clean}%`
+      const likeRows = db.prepare(
+        `SELECT id FROM entries
+         WHERE content LIKE ? OR summary LIKE ? OR element LIKE ?
+         ORDER BY ts DESC LIMIT ?`,
+      ).all(likePattern, likePattern, likePattern, limit * 3)
+      likeRows.forEach((row, rank) => {
+        const id = Number(row.id)
+        if (!Number.isFinite(id)) return
+        if (!candidateIds.has(id)) candidateIds.set(id, { denseRank: null, sparseRank: null })
+        candidateIds.get(id).sparseRank = rank + 1
+      })
+      sparseCount = likeRows.length
+    } catch { /* ignore */ }
   }
 
-  if (episodes.length === 0 && clean) {
-    try {
-      episodes = store.db.prepare(`
-        SELECT e.id, e.ts, e.day_key, e.role, e.kind, e.content, e.source_ref, e.backend AS source_backend, bm25(episodes_fts) AS score
-        FROM episodes_fts
-        JOIN episodes e ON e.id = episodes_fts.rowid
-        WHERE episodes_fts MATCH ? AND e.day_key >= ? AND e.day_key <= ?
-          AND e.kind IN (${includeTranscripts ? DEBUG_RECALL_EPISODE_KIND_SQL : RECALL_EPISODE_KIND_SQL})
-        ORDER BY score
-        LIMIT ?
-      `).all(ftsQuery, startDate, endDate, queryLimit * 2)
-    } catch {}
-  }
+  if (candidateIds.size === 0) return []
 
-  if (episodes.length === 0 && !clean) {
-    episodes = store.db.prepare(`
-      SELECT e.id, e.ts, e.day_key, e.role, e.kind, e.content, e.source_ref, e.backend AS source_backend
-      FROM episodes e
-      WHERE e.day_key >= ? AND e.day_key <= ?
-        AND e.kind IN (${includeTranscripts ? DEBUG_RECALL_EPISODE_KIND_SQL : RECALL_EPISODE_KIND_SQL})
-      ORDER BY e.ts DESC
-      LIMIT ?
-    `).all(startDate, endDate, queryLimit)
+  const K = 60
+  const scored = []
+  for (const [id, ranks] of candidateIds) {
+    const rrf = (ranks.denseRank ? 1 / (K + ranks.denseRank) : 0)
+              + (ranks.sparseRank ? 1 / (K + ranks.sparseRank) : 0)
+    scored.push({ id, rrf })
   }
+  scored.sort((a, b) => b.rrf - a.rrf)
 
+  const topIds = scored.map(s => s.id)
+  const placeholders = topIds.map(() => '?').join(',')
+  const rawRows = db.prepare(
+    `SELECT id, ts, role, content, session_id, chunk_root, is_root,
+            element, category, summary, status, score, last_seen_at
+     FROM entries WHERE id IN (${placeholders})`,
+  ).all(...topIds)
+  const byId = new Map(rawRows.map(r => [Number(r.id), r]))
+
+  const nowMs = Date.now()
+  const memberHitRootIds = new Set()
+  const rootIdsForReturn = []
   const seen = new Set()
-  return episodes.filter(row => {
-    const id = Number(row.id ?? row.entity_id ?? 0)
-    if (!id || seen.has(id)) return false
-    seen.add(id)
-    return true
-  }).slice(0, queryLimit)
-}
 
-
-export function getRecallShortcutRows(store, kind = 'all', limit = 5, options = {}) {
-  const queryLimit = Math.max(1, Number(limit))
-  const { startDate = null, endDate = null } = options
-  let rows = []
-
-  if (kind === 'all' || kind === 'episodes') {
-    rows.push(...store.db.prepare(`
-      SELECT 'episode' AS type, role AS subtype, content, ts AS last_seen
-      FROM episodes
-      WHERE kind IN (${RECALL_EPISODE_KIND_SQL})
-        AND content NOT LIKE 'You are consolidating%'
-        AND LENGTH(content) >= 10
-        ${startDate && endDate ? 'AND day_key >= ? AND day_key <= ?' : ''}
-      ORDER BY ts DESC
-      LIMIT ?
-    `).all(...(startDate && endDate ? [startDate, endDate, kind === 'all' ? Math.ceil(queryLimit / 2) : queryLimit] : [kind === 'all' ? Math.ceil(queryLimit / 2) : queryLimit])))
-  }
-  if (kind === 'all' || kind === 'classifications') {
-    rows.push(...store.db.prepare(`
-      SELECT 'classification' AS type, classification AS subtype,
-             trim(classification || ' | ' || topic || ' | ' || element || CASE WHEN state IS NOT NULL AND state != '' THEN ' | ' || state ELSE '' END) AS content,
-             confidence, updated_at AS last_seen
-      FROM classifications
-      WHERE status = 'active'
-        ${startDate && endDate ? 'AND day_key >= ? AND day_key <= ?' : ''}
-      ORDER BY confidence DESC, updated_at DESC
-      LIMIT ?
-    `).all(...(startDate && endDate ? [startDate, endDate, kind === 'all' ? Math.ceil(queryLimit / 2) : queryLimit] : [kind === 'all' ? Math.ceil(queryLimit / 2) : queryLimit])))
+  for (const { id, rrf } of scored) {
+    const row = byId.get(id)
+    if (!row) continue
+    let rootRow = row
+    if (row.is_root === 0 && row.chunk_root != null && row.chunk_root !== row.id) {
+      const r = db.prepare(
+        `SELECT id, ts, role, content, session_id, chunk_root, is_root,
+                element, category, summary, status, score, last_seen_at
+         FROM entries WHERE id = ? AND is_root = 1`,
+      ).get(row.chunk_root)
+      if (!r) continue
+      memberHitRootIds.add(r.id)
+      rootRow = r
+    } else if (row.is_root !== 1) {
+      continue
+    }
+    if (seen.has(rootRow.id)) continue
+    seen.add(rootRow.id)
+    rootIdsForReturn.push({ root: rootRow, rrf })
+    if (rootIdsForReturn.length >= limit) break
   }
 
-  return rows
-}
+  let writeBackCount = 0
+  if (writeBackMemberHits && memberHitRootIds.size > 0) {
+    const updateRoot = db.prepare(
+      `UPDATE entries SET last_seen_at = ?, score = ? WHERE id = ? AND is_root = 1`,
+    )
+    for (const rootId of memberHitRootIds) {
+      const r = rootIdsForReturn.find(x => x.root.id === rootId)?.root ?? byId.get(rootId)
+      if (!r) continue
+      const newScore = computeEntryScore(r.category, nowMs, nowMs)
+      try {
+        updateRoot.run(nowMs, newScore, rootId)
+        writeBackCount += 1
+      } catch (err) {
+        process.stderr.write(`[recall] writeback failed (root=${rootId}): ${err.message}\n`)
+      }
+    }
+  }
 
+  const results = rootIdsForReturn.map(({ root, rrf }) => {
+    const out = { ...root, rrf }
+    if (includeMembers) {
+      out.members = db.prepare(
+        `SELECT id, ts, role, content, session_id
+         FROM entries WHERE chunk_root = ? AND is_root = 0
+         ORDER BY ts ASC, id ASC`,
+      ).all(root.id)
+    }
+    return out
+  })
+
+  process.stderr.write(
+    `[recall] dense=${denseCount} sparse=${sparseCount} merged=${results.length} write_back=${writeBackCount}\n`,
+  )
+
+  return results
+}

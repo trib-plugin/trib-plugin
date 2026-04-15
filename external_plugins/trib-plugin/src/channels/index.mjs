@@ -49,11 +49,8 @@ import {
 import { PLUGIN_ROOT } from "./lib/config.mjs";
 const memoryClientModulePath = pathToFileURL(path.join(PLUGIN_ROOT, "src/channels/lib/memory-client.mjs")).href;
 const {
-  appendEpisode: memoryAppendEpisode,
+  appendEntry: memoryAppendEntry,
   ingestTranscript: memoryIngestTranscript,
-  getProactiveSources,
-  getProactiveContext,
-  applyProactiveUpdates
 } = await import(memoryClientModulePath);
 const DEFAULT_PLUGIN_VERSION = "0.0.1";
 function localTimestamp() {
@@ -812,12 +809,12 @@ function injectAndRecord(channelId, name, content, options, kind, prefix) {
   if (options?.instruction) meta.instruction = options.instruction;
   if (options?.type) meta.type = options.type;
   sendNotifyToParent("notifications/claude/channel", { content, meta });
-  void memoryAppendEpisode({
-    ts, backend: backend.name, channelId,
-    userId: "system", userName: `${prefix}:${name}`,
-    sessionId: null, role: "user", kind,
+  void memoryAppendEntry({
+    ts,
+    role: "user",
     content: options?.instruction || content,
-    sourceRef: `${prefix}:${name}:${ts}`
+    sourceRef: `${prefix}:${name}:${ts}`,
+    sessionId: `${prefix}:${name}`,
   });
 }
 scheduler.setInjectHandler((channelId, name, content, options) => {
@@ -825,31 +822,15 @@ scheduler.setInjectHandler((channelId, name, content, options) => {
 });
 scheduler.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
-  void memoryAppendEpisode({
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    backend: backend.name,
-    channelId,
-    userId: "assistant",
-    userName: "assistant",
-    sessionId: null,
+  const nowMs = Date.now();
+  void memoryAppendEntry({
+    ts: nowMs,
     role: "assistant",
-    kind: "schedule-send",
     content: text,
-    sourceRef: `schedule-send:${channelId}:${Date.now()}`
+    sourceRef: `schedule-send:${channelId}:${nowMs}`,
+    sessionId: `schedule:${channelId}`,
   });
 });
-scheduler.setProactiveHandlers(
-  async () => {
-    const [memory, sources] = await Promise.all([
-      getProactiveContext(),
-      getProactiveSources()
-    ]);
-    return { memory, sources };
-  },
-  (updates) => {
-    void applyProactiveUpdates(updates);
-  }
-);
 function wireWebhookHandlers() {
   if (!webhookServer) return;
   webhookServer.setEventPipeline(eventPipeline);
@@ -861,17 +842,13 @@ eventQueue.setInjectHandler((channelId, name, content, options) => {
 });
 eventQueue.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
-  void memoryAppendEpisode({
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    backend: backend.name,
-    channelId,
-    userId: "assistant",
-    userName: "assistant",
-    sessionId: null,
+  const nowMs = Date.now();
+  void memoryAppendEntry({
+    ts: nowMs,
     role: "assistant",
-    kind: "event-send",
     content: text,
-    sourceRef: `event-send:${channelId}:${Date.now()}`
+    sourceRef: `event-send:${channelId}:${nowMs}`,
+    sessionId: `event:${channelId}`,
   });
 });
 eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
@@ -1878,17 +1855,12 @@ ${messageBody}`;
     content: notificationContent,
     meta: notificationMeta
   });
-  void memoryAppendEpisode({
+  void memoryAppendEntry({
     ts: msg.ts,
-    backend: backend.name,
-    channelId: route.targetChatId,
-    userId: msg.userId,
-    userName: msg.user,
-    sessionId: options.sessionId ?? null,
     role: "user",
-    kind: voiceAtts.length > 0 ? "voice" : "message",
     content: messageBody,
-    sourceRef: `${backend.name}:${msg.messageId}:user`
+    sourceRef: `${backend.name}:${msg.messageId}:user`,
+    sessionId: `${backend.name}:${route.targetChatId}`,
   });
 }
 async function init(_sharedMcp) {

@@ -918,7 +918,6 @@
     <div class="panel" id="panel-autotalk">
       <div class="hdr">
         <h1>Proactive</h1>
-        <button class="hdr-btn" onclick="addProactiveItem()">+ New Topic</button>
       </div>
       <div class="sec">
         <div class="sec-title">Settings</div>
@@ -942,15 +941,6 @@
             <span class="r-name-wide">Model <span class="tip">?<span class="tip-text">Model preset for source research (e.g. GPT5.4-MINI)</span></span></span>
             <select class="r-select" id="proactive-model"></select>
           </div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span>Topics</span>
-          <button class="hdr-btn" style="font-size:11px;padding:3px 10px" onclick="addProactiveItem()">+ Add</button>
-        </div>
-        <div class="sec-body" id="proactive-items">
-          <div class="r" id="proactive-empty" style="padding:12px 14px;color:var(--text-4);font-size:12px">No topics yet — click + Add to create one</div>
         </div>
       </div>
       <div class="sec">
@@ -1929,77 +1919,6 @@ function setMainChannel(radio) {
   radio.classList.add('on');
 }
 
-// -- Proactive sources CRUD (DB-backed) --
-function loadProactiveSources() {
-  const sec = document.getElementById('proactive-items');
-  sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">Loading...</div>';
-  fetch('/proactive-sources').then(r => r.json()).then(data => {
-    sec.innerHTML = '';
-    const sources = data.sources || [];
-    const active = sources.filter(s => s.status === 'active');
-    const inactive = sources.filter(s => s.status !== 'active');
-    if (active.length === 0 && inactive.length === 0) {
-      sec.innerHTML = '<div id="proactive-empty" style="padding:12px 14px;color:var(--text-4);font-size:12px">No topics yet — click + Add to create one</div>';
-      return;
-    }
-    active.forEach(s => sec.appendChild(buildSourceRow(s)));
-    if (inactive.length > 0) {
-      const hdr = document.createElement('div');
-      hdr.style.cssText = 'padding:6px 14px;font-size:11px;color:var(--text-4);border-top:1px solid var(--border)';
-      hdr.textContent = `Inactive (${inactive.length})`;
-      sec.appendChild(hdr);
-      inactive.forEach(s => sec.appendChild(buildSourceRow(s)));
-    }
-  }).catch(() => {
-    sec.innerHTML = '<div style="padding:12px 14px;color:var(--text-4);font-size:12px">Could not load sources (memory DB unavailable)</div>';
-  });
-}
-
-function buildSourceRow(s) {
-  const div = document.createElement('div');
-  div.className = 'r';
-  div.style.cssText = 'gap:8px;align-items:center' + (s.status !== 'active' ? ';opacity:0.5' : '');
-  const scoreColor = s.score >= 0.7 ? '#3fb950' : s.score >= 0.3 ? '#d29922' : '#e5534b';
-  div.innerHTML = `
-    <span style="font-size:10px;color:var(--text-4);min-width:40px">${s.category}</span>
-    <span style="flex:1;font-size:13px">${s.topic}</span>
-    <span style="font-size:10px;color:${scoreColor};min-width:30px;text-align:right">${s.score?.toFixed(1) ?? '—'}</span>
-    <span style="font-size:10px;color:var(--text-4);min-width:35px;text-align:right">${s.hit_count ?? 0}/${(s.hit_count ?? 0) + (s.skip_count ?? 0)}</span>
-    ${s.status === 'active'
-      ? `<span style="cursor:pointer;color:#e5534b;font-size:12px;padding:2px 6px;border-radius:4px;background:rgba(229,83,75,0.1)" onclick="removeProactiveSource(${s.id})">Remove</span>`
-      : `<span style="cursor:pointer;color:#3fb950;font-size:12px;padding:2px 6px;border-radius:4px;background:rgba(63,185,80,0.1)" onclick="restoreProactiveSource(${s.id})">Restore</span>`
-    }
-  `;
-  return div;
-}
-
-function removeProactiveSource(id) {
-  fetch('/proactive-sources', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'remove', id }),
-  }).then(() => loadProactiveSources());
-}
-
-function restoreProactiveSource(id) {
-  fetch('/proactive-sources', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'restore', id }),
-  }).then(() => loadProactiveSources());
-}
-
-function addProactiveItem(topic) {
-  const name = topic || prompt('Topic name:');
-  if (!name) return;
-  const category = prompt('Category (e.g. news, work, casual):', 'custom') || 'custom';
-  fetch('/proactive-sources', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'add', topic: name, category }),
-  }).then(() => loadProactiveSources());
-}
-
 function populateProactiveFeedback(cfg) {
   const sec = document.getElementById('proactive-feedback');
   const feedbackPath = cfg?.promptsDir ? cfg.promptsDir + '/proactive-feedback.md' : null;
@@ -2062,7 +1981,6 @@ function proactiveIntervalChanged() {
 }
 
 function buildProactiveData() {
-  // Sources are managed via DB (proactive_sources table), not config items.
   const interval = getProactiveInterval();
   return {
     interval,
@@ -2390,7 +2308,6 @@ async function populateChannels(cfg) {
       customInput.style.display = '';
     }
   }
-  loadProactiveSources();
   populateProactiveFeedback(cfg);
 
   // Schedules
@@ -2858,22 +2775,23 @@ async function memSaveFiles() {
   try{await fetch('/memory/files',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({'bot.md':document.getElementById('mem-file-bot').value,'user.md':document.getElementById('mem-file-user-profile').value})});btn.textContent='\u2713 Saved';btn.classList.add('done');setTimeout(()=>{btn.textContent='Save';btn.classList.remove('done');btn.disabled=false},1500);}catch{warn.textContent='Save failed';btn.textContent='Save';btn.disabled=false;}
 }
 
-async function memLoadCoreMemory() { try{const r=await fetch('/memory/core-memory').then(r=>r.json());memRenderCoreMemory(r.items||[]);}catch{document.getElementById('mem-core-memory-list').innerHTML='<div class="empty">Failed to load</div>';} }
+async function memLoadCoreMemory() { try{const r=await fetch('/api/memory/entries/active').then(r=>r.json());memRenderCoreMemory(r.items||[]);}catch{document.getElementById('mem-core-memory-list').innerHTML='<div class="empty">Failed to load</div>';} }
 
 function memRenderCoreMemory(items) {
   const list=document.getElementById('mem-core-memory-list');
-  const activeItems=items.filter(i=>i.status==='active');
-  if(activeItems.length===0){list.innerHTML='<div class="empty" id="mem-core-empty">No core memory entries yet — click + Add to create one</div>';return;}
-  list.innerHTML=activeItems.map(item=>`<div class="r" style="flex-direction:column;align-items:stretch;padding:10px 14px;gap:6px">
+  if(items.length===0){list.innerHTML='<div class="empty" id="mem-core-empty">No core memory entries yet — click + Add to create one</div>';return;}
+  list.innerHTML=items.map(item=>`<div class="r" style="flex-direction:column;align-items:stretch;padding:10px 14px;gap:6px">
     <div style="display:flex;align-items:center;gap:8px">
-      <input class="r-input" value="${escapeAttr(item.topic)}" style="flex:1;font-weight:600" data-cm-id="${item.id}" data-cm-f="topic">
+      <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:rgba(100,100,200,0.15);color:var(--text-3);font-weight:600;text-transform:uppercase">${escapeHtml(item.category||'')}</span>
+      <span style="flex:1;font-weight:600">${escapeHtml(item.element||'')}</span>
+      <span style="font-size:10px;color:var(--text-4)">${Number(item.score||0).toFixed(2)}</span>
       <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="memDeleteCoreMemory(${item.id})">Delete</span>
     </div>
-    <textarea class="r-input" style="height:120px;resize:vertical;font-size:11px;line-height:1.5" data-cm-id="${item.id}" data-cm-f="element">${escapeHtml(item.element)}</textarea>
+    <div style="font-size:11px;line-height:1.5;color:var(--text-2);padding:4px 2px">${escapeHtml(item.summary||'')}</div>
   </div>`).join('');
 }
 
-async function memDeleteCoreMemory(id) { try{await fetch('/memory/core-memory/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status:'archived'})});await memLoadCoreMemory();}catch{alert('Failed to delete');} }
+async function memDeleteCoreMemory(id) { try{await fetch('/api/memory/entries/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'archived'})});await memLoadCoreMemory();}catch{alert('Failed to delete');} }
 
 function memAddCoreMemory() {
   const list=document.getElementById('mem-core-memory-list');
@@ -2884,16 +2802,40 @@ function memAddCoreMemory() {
   div.style.cssText='flex-direction:column;align-items:stretch;padding:10px 14px;gap:6px';
   div.innerHTML=`
     <div style="display:flex;align-items:center;gap:8px">
-      <input class="r-input" placeholder="Topic" style="flex:1;font-weight:600" data-cm-f="topic" data-cm-new="1">
-      <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="this.closest('.r').remove();isDirty=true">Delete</span>
+      <select class="r-input" style="width:110px;font-size:11px" data-cm-new="1" data-cm-f="category">
+        <option value="rule">rule</option>
+        <option value="constraint">constraint</option>
+        <option value="decision">decision</option>
+        <option value="fact" selected>fact</option>
+        <option value="goal">goal</option>
+        <option value="preference">preference</option>
+        <option value="task">task</option>
+        <option value="issue">issue</option>
+      </select>
+      <input class="r-input" placeholder="Element (5-10 words)" style="flex:1;font-weight:600" data-cm-new="1" data-cm-f="element">
+      <span style="cursor:pointer;color:var(--text-3);font-size:12px;font-weight:600;padding:4px 10px;border-radius:4px;background:rgba(100,200,100,0.15)" onclick="memSaveNewEntry(this)">Save</span>
+      <span style="cursor:pointer;color:#e5534b;font-size:13px;font-weight:600;padding:4px 8px;border-radius:4px;background:rgba(229,83,75,0.1);white-space:nowrap" onclick="this.closest('.r').remove()">Cancel</span>
     </div>
-    <textarea class="r-input" style="height:120px;resize:vertical;font-size:11px;line-height:1.5" placeholder="Memory content..." data-cm-f="element" data-cm-new="1"></textarea>
+    <textarea class="r-input" style="height:80px;resize:vertical;font-size:11px;line-height:1.5" placeholder="Summary (1-3 sentences)..." data-cm-new="1" data-cm-f="summary"></textarea>
   `;
   list.appendChild(div);
-  isDirty=true;
 }
 
-async function memSetCoreMemoryStatus(id, status) { try{await fetch('/memory/core-memory/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status})});await memLoadCoreMemory();}catch{alert('Failed to update status');} }
+async function memSaveNewEntry(btn) {
+  const row=btn.closest('.r');
+  const category=row.querySelector('[data-cm-f="category"]').value;
+  const element=row.querySelector('[data-cm-f="element"]').value.trim();
+  const summary=row.querySelector('[data-cm-f="summary"]').value.trim();
+  if(!element||!summary){alert('Element and summary required');return;}
+  try{
+    const r=await fetch('/api/memory/entries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({element,summary,category})});
+    const j=await r.json();
+    if(!j.ok){alert('Save failed: '+(j.error||'unknown'));return;}
+    await memLoadCoreMemory();
+  }catch(e){alert('Save failed: '+e.message);}
+}
+
+async function memSetCoreMemoryStatus(id, status) { try{await fetch('/api/memory/entries/'+id+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});await memLoadCoreMemory();}catch{alert('Failed to update status');} }
 
 // ============================================================
 // SEARCH MODULE

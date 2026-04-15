@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
 import { DEFAULT_MAINTENANCE } from '../src/agent/orchestrator/config.mjs';
+import { syncRootEmbedding } from '../src/memory/lib/memory-cycle.mjs';
 
 let DatabaseSync;
 try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
@@ -389,9 +390,6 @@ function mergeAgentConfig(existing, data) {
   if (data.bridge && typeof data.bridge === 'object') {
     config.bridge = { ...(config.bridge || {}), ...data.bridge };
   }
-  if (data.semanticCache && typeof data.semanticCache === 'object') {
-    config.semanticCache = { ...(config.semanticCache || {}), ...data.semanticCache };
-  }
   return config;
 }
 
@@ -629,58 +627,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
-  }
-
-  // Proactive sources CRUD (reads from memory.sqlite proactive_sources table)
-  if (path === '/proactive-sources') {
-    const sendErr = (code, msg) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: msg })); };
-    if (!DatabaseSync || !existsSync(MEMORY_DB_PATH)) {
-      sendErr(503, 'memory DB not available');
-      return;
-    }
-    try {
-      const db = new DatabaseSync(MEMORY_DB_PATH, { readOnly: req.method === 'GET' });
-      if (req.method === 'GET') {
-        const rows = db.prepare('SELECT id, category, topic, query, score, status, hit_count, skip_count, pinned FROM proactive_sources ORDER BY status ASC, score DESC').all();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ sources: rows }));
-        db.close();
-        return;
-      }
-      if (req.method === 'POST') {
-        const body = await readBody(req);
-        if (body.action === 'add' && body.topic) {
-          db.prepare('INSERT INTO proactive_sources (category, topic, query, score, status) VALUES (?, ?, ?, 1.0, ?)').run(
-            body.category || 'custom', body.topic, body.query || body.topic, 'active'
-          );
-        } else if (body.action === 'remove' && body.id) {
-          db.prepare("UPDATE proactive_sources SET status = 'removed', pinned = 1, updated_at = unixepoch() WHERE id = ?").run(body.id);
-        } else if (body.action === 'update' && body.id) {
-          const sets = [];
-          const vals = [];
-          if (body.topic !== undefined) { sets.push('topic = ?'); vals.push(body.topic); }
-          if (body.category !== undefined) { sets.push('category = ?'); vals.push(body.category); }
-          if (body.query !== undefined) { sets.push('query = ?'); vals.push(body.query); }
-          if (body.score !== undefined) { sets.push('score = ?'); vals.push(body.score); }
-          if (body.status !== undefined) { sets.push('status = ?'); vals.push(body.status); }
-          if (sets.length > 0) {
-            sets.push('updated_at = unixepoch()');
-            vals.push(body.id);
-            db.prepare(`UPDATE proactive_sources SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-          }
-        } else if (body.action === 'restore' && body.id) {
-          db.prepare("UPDATE proactive_sources SET status = 'active', pinned = 0, updated_at = unixepoch() WHERE id = ?").run(body.id);
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-        db.close();
-        return;
-      }
-      db.close();
-    } catch (err) {
-      sendErr(500, err.message);
-      return;
-    }
   }
 
   if (req.method === 'GET' && path === '/') {
@@ -1110,42 +1056,94 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && path === '/memory/core-memory') {
+  if (req.method === 'GET' && path === '/api/memory/entries/active') {
     try {
       const db = openMemoryDb(true);
       const rows = db.prepare(`
-        SELECT id, topic, element, importance, final_score, status, mention_count, last_seen_at
-        FROM core_memory
-        ORDER BY
-          CASE status WHEN 'active' THEN 0 WHEN 'pending' THEN 1 WHEN 'demoted' THEN 2 WHEN 'archived' THEN 3 ELSE 4 END,
-          final_score DESC
+        SELECT id, element, category, summary, score, last_seen_at
+        FROM entries
+        WHERE is_root = 1 AND status = 'active'
+        ORDER BY score DESC
       `).all();
       db.close();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, items: rows }));
     } catch (e) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, items: [] }));
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: e.message }));
     }
     return;
   }
 
-  if (req.method === 'POST' && path === '/memory/core-memory/status') {
-    const data = await readBody(req);
-    const { id, status } = data;
-    const VALID_STATUSES = ['active', 'pending', 'demoted', 'archived'];
-    if (!id || !VALID_STATUSES.includes(status)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'id and valid status required' }));
+  {
+    const statusMatch = req.method === 'POST' && path.match(/^\/api\/memory\/entries\/(\d+)\/status$/);
+    if (statusMatch) {
+      const id = Number(statusMatch[1]);
+      const data = await readBody(req);
+      const VALID = ['active', 'pending', 'demoted', 'processed', 'archived'];
+      const status = String(data.status ?? '').trim().toLowerCase();
+      if (!Number.isInteger(id) || id <= 0 || !VALID.includes(status)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'valid id and status required' }));
+        return;
+      }
+      try {
+        const db = openMemoryDb();
+        const result = db.prepare(
+          'UPDATE entries SET status = ? WHERE id = ? AND is_root = 1'
+        ).run(status, id);
+        db.close();
+        console.log(`  Entry #${id} → ${status} (changes=${result.changes})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, changes: Number(result.changes ?? 0) }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
       return;
     }
+  }
+
+  if (req.method === 'POST' && path === '/api/memory/entries') {
+    const data = await readBody(req);
+    const element = String(data.element ?? '').trim();
+    const summary = String(data.summary ?? '').trim();
+    const category = String(data.category ?? 'fact').trim().toLowerCase();
+    const VALID_CATS = ['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'];
+    if (!element || !summary || !VALID_CATS.includes(category)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'element, summary, and valid category required' }));
+      return;
+    }
+    const GRADE = { rule: 2.0, constraint: 1.9, decision: 1.8, fact: 1.6, goal: 1.5, preference: 1.4, task: 1.1, issue: 1.0 };
+    const nowMs = Date.now();
+    const sourceRef = `manual:${nowMs}-${process.pid}`;
     try {
       const db = openMemoryDb();
-      db.prepare('UPDATE core_memory SET status = ? WHERE id = ?').run(status, id);
-      db.close();
-      console.log(`  Core memory #${id} -> ${status}`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      db.exec('BEGIN');
+      try {
+        const result = db.prepare(`
+          INSERT INTO entries(ts, role, content, source_ref, session_id)
+          VALUES (?, 'system', ?, ?, NULL)
+        `).run(nowMs, element + ' — ' + summary, sourceRef);
+        const newId = Number(result.lastInsertRowid);
+        db.prepare(`
+          UPDATE entries
+          SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
+              status = 'active', score = ?, last_seen_at = ?
+          WHERE id = ?
+        `).run(newId, element, category, summary, GRADE[category], nowMs, newId);
+        db.exec('COMMIT');
+        await syncRootEmbedding(db, newId);
+        console.log(`  Remembered entry #${newId}: [${category}] ${element}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, id: newId }));
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw e;
+      } finally {
+        db.close();
+      }
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: e.message }));

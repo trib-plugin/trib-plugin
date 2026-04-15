@@ -154,7 +154,6 @@ export function loadConfig() {
                 // Top-level extension blocks preserved through save/load so
                 // future keys round-trip without schema updates here.
                 bridge: raw.bridge && typeof raw.bridge === 'object' ? raw.bridge : {},
-                semanticCache: raw.semanticCache && typeof raw.semanticCache === 'object' ? raw.semanticCache : {},
             };
         }
         catch { /* fall through */ }
@@ -170,7 +169,6 @@ export function loadConfig() {
         trajectory: { enabled: true },
         skillSuggest: { autoDetect: true },
         bridge: {},
-        semanticCache: {},
     };
 }
 /**
@@ -213,7 +211,6 @@ export function saveConfig(config) {
         trajectory: config.trajectory || {},
         skillSuggest: config.skillSuggest || {},
         bridge: config.bridge || {},
-        semanticCache: config.semanticCache || {},
     };
     const tmp = path + '.tmp';
     writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');

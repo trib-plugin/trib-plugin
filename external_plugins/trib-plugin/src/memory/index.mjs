@@ -1,18 +1,6 @@
 #!/usr/bin/env node
-// Suppress experimental warnings (they go to stdout and break MCP stdio)
 process.removeAllListeners('warning')
 process.on('warning', () => {})
-/**
- * memory-service.mjs — MCP server + HTTP hybrid memory service.
- *
- * Single Node.js process providing:
- *   MCP (stdio)  — search_memories, memory tools for Claude Code
- *   MCP (http)   — /mcp endpoint (Streamable HTTP transport, stateless)
- *   HTTP (tcp)   — /episode, /health, /api/tool for hooks + internal use
- *
- * Owns the MemoryStore singleton exclusively.
- * Port: 3350-3357 (written to $TMPDIR/trib-memory/memory-port)
- */
 
 import http from 'node:http'
 import os from 'node:os'
@@ -30,12 +18,12 @@ function readPluginVersion() {
 }
 const PLUGIN_VERSION = readPluginVersion()
 
-// ── CPU throttle: prevent inference from hogging all cores ──
 try { os.setPriority(os.constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
 try {
   const { env } = await import('@huggingface/transformers')
   env.backends.onnx.wasm.numThreads = 1
 } catch {}
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -43,35 +31,26 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { getMemoryStore } from './lib/memory.mjs'
-import { configureEmbedding, embedText } from './lib/embedding-provider.mjs'
-import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
-import { callLLM, resolveMaintenancePreset } from '../shared/llm/index.mjs'
-import {
-  runCycle2,
-  memoryFlush,
-  rebuildRecent,
-  rebuildClassifications,
-  pruneToRecent,
-  getCycleStatus,
-  runCycle1,
-  readMainConfig,
-  parseInterval,
-} from './lib/memory-cycle.mjs'
-import { localNow } from './lib/memory-text-utils.mjs'
-import { cleanMemoryText } from './lib/memory-extraction.mjs'
-import {
-  readMemoryOpsPolicy,
-  buildStartupBackfillOptions,
-  shouldRunCycleCatchUp,
-} from './lib/memory-ops-policy.mjs'
 
-// ── Configuration ────────────────────────────────────────────────────
+import {
+  openDatabase,
+  closeDatabase,
+  isBootstrapComplete,
+  getMetaValue,
+  setMetaValue,
+  cleanMemoryText,
+} from './lib/memory.mjs'
+import { configureEmbedding, embedText, getEmbeddingDims } from './lib/embedding-provider.mjs'
+import { startLlmWorker, stopLlmWorker } from './lib/llm-worker-host.mjs'
+import { runCycle1, runCycle2, parseInterval, syncRootEmbedding } from './lib/memory-cycle.mjs'
+import { searchRelevantHybrid } from './lib/memory-recall-store.mjs'
+import { retrieveEntries } from './lib/memory-retrievers.mjs'
+import { resetEmbeddingIndex, pruneOldEntries } from './lib/memory-maintenance-store.mjs'
+import { computeEntryScore } from './lib/memory-score.mjs'
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || process.argv[2]
   || (() => {
-    // Fallback: find plugin data dir by convention
     const candidates = [
       path.join(os.homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin'),
     ]
@@ -86,7 +65,6 @@ if (!DATA_DIR) {
 }
 process.stderr.write(`[memory-service] DATA_DIR=${DATA_DIR}\n`)
 
-// ── Singleton guard: prevent multiple instances ─────────────────────
 import { execFileSync } from 'child_process'
 const LOCK_FILE = path.join(DATA_DIR, '.memory-service.lock')
 
@@ -96,7 +74,16 @@ const PORT_FILE = path.join(RUNTIME_DIR, 'memory-port')
 const BASE_PORT = 3350
 const MAX_PORT = 3357
 
-// ── Health check: is a primary server already running? ───────────────
+const MEMORY_INSTRUCTIONS_TEXT = [
+  'CRITICAL: invoke the `search_memories` tool at session start and before any reference to prior context.',
+  'Order: search_memories (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip search_memories when past context may apply.',
+  'When in doubt, call search_memories first — cost is near zero, missing context is expensive.',
+].join('\n')
+
+const PROXY_TOOL_DEFS = [
+  { name: 'memory', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
+  { name: 'search_memories', description: 'Search past context and memory.', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: [] } },
+]
 
 function readPortFile() {
   try {
@@ -114,20 +101,16 @@ async function isExistingServerHealthy() {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal })
     clearTimeout(timer)
     if (res.ok) return port
-  } catch { /* not reachable */ }
+  } catch {}
   return null
 }
 
-// ── Proxy mode: forward stdio MCP to existing HTTP server ───────────
-
 async function runProxyMode(port) {
   process.stderr.write(`[memory-service] Healthy server on port ${port}, entering proxy mode\n`)
-
   const proxyMcp = new Server(
     { name: 'trib-memory', version: PLUGIN_VERSION },
     { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
   )
-
   proxyMcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: PROXY_TOOL_DEFS }))
   proxyMcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
@@ -145,23 +128,16 @@ async function runProxyMode(port) {
       return { content: [{ type: 'text', text: `proxy error: ${err.message}` }], isError: true }
     }
   })
-
   const transport = new StdioServerTransport()
   await proxyMcp.connect(transport)
-  // connect() resolves after transport.start(), not after close.
-  // Block until the MCP connection closes (stdin EOF).
   await new Promise((resolve) => { proxyMcp.onclose = resolve })
 }
-
-// ── Primary mode: full server startup ───────────────────────────────
 
 function killPreviousServer(pid) {
   if (pid <= 0 || pid === process.pid) return
   if (process.platform === 'win32') {
     try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
-        encoding: 'utf8', timeout: 5000, stdio: 'ignore'
-      })
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', timeout: 5000, stdio: 'ignore' })
       process.stderr.write(`[memory-service] Killed previous server PID ${pid}\n`)
     } catch {}
   } else {
@@ -173,11 +149,9 @@ function killPreviousServer(pid) {
 function acquireLock() {
   try {
     if (fs.existsSync(LOCK_FILE)) {
-      const content = fs.readFileSync(LOCK_FILE, 'utf8').trim()
-      const lockedPid = Number(content)
+      const lockedPid = Number(fs.readFileSync(LOCK_FILE, 'utf8').trim())
       if (lockedPid > 0 && lockedPid !== process.pid) {
         killPreviousServer(lockedPid)
-        process.stderr.write(`[memory-service] Removed stale lock (PID ${lockedPid})\n`)
       }
     }
     fs.writeFileSync(LOCK_FILE, String(process.pid), 'utf8')
@@ -193,33 +167,33 @@ function releaseLock() {
   } catch {}
 }
 
-// Forward-declared constants used by proxy mode (full defs below)
-const MEMORY_INSTRUCTIONS_TEXT = [
-  'CRITICAL: invoke the `search_memories` tool at session start and before any reference to prior context.',
-  'Order: search_memories (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip search_memories when past context may apply.',
-  'When in doubt, call search_memories first — cost is near zero, missing context is expensive.',
-].join('\n')
-const PROXY_TOOL_DEFS = [
-  { name: 'memory', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },
-  { name: 'search_memories', description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.', inputSchema: { type: 'object', properties: { query: { type: 'string' }, mode: { type: 'string', enum: ['search', 'reason'] } }, required: [] } },
-]
+function readMainConfig() {
+  const memoryConfigPath = path.join(DATA_DIR, 'memory-config.json')
+  try {
+    const raw = JSON.parse(fs.readFileSync(memoryConfigPath, 'utf8'))
+    if (raw.enabled !== undefined || raw.cycle1 || raw.cycle2) return raw
+  } catch {}
+  const mainConfigPath = path.join(DATA_DIR, 'config.json')
+  try {
+    const raw = JSON.parse(fs.readFileSync(mainConfigPath, 'utf8'))
+    if (raw.memory && (raw.memory.cycle1 || raw.memory.enabled !== undefined)) return raw.memory
+    return raw
+  } catch { return {} }
+}
 
-// ── Module-level state (initialized by init() or standalone startup) ──
-let store = null
+let db = null
 let mainConfig = null
-let opsPolicy = null
-let WORKSPACE_PATH = null
-let _rebuildLock = false
 let _cycleInterval = null
 let _startupTimeout = null
 let _initialized = false
-let _bootTimestamp = null  // timestamp at boot — episodes after this are current session
+let _bootTimestamp = null
+let _transcriptOffsets = new Map()
 
-// ── Shared init logic (used by both standalone and unified modes) ─────
+const TRANSCRIPT_OFFSETS_KEY = 'state.transcript_offsets'
+const CYCLE_LAST_RUN_KEY = 'state.cycle_last_run'
 
 async function _initStore() {
   mainConfig = readMainConfig()
-  opsPolicy = readMemoryOpsPolicy(mainConfig)
   const embeddingConfig = mainConfig?.embedding
   if (embeddingConfig?.provider || embeddingConfig?.ollamaModel || embeddingConfig?.dtype) {
     configureEmbedding({
@@ -228,120 +202,113 @@ async function _initStore() {
       dtype: embeddingConfig.dtype,
     })
   }
-
-  store = getMemoryStore(DATA_DIR)
-  store.syncHistoryFromFiles()
+  const dims = Number(getEmbeddingDims())
+  db = openDatabase(DATA_DIR, dims)
+  if (!isBootstrapComplete(db)) {
+    throw new Error('memory-service: bootstrap not complete after openDatabase')
+  }
   startLlmWorker()
-
-  // Capture boot timestamp in local time (same format as episode ts)
-  _bootTimestamp = new Date().toLocaleString('sv-SE').replace(' ', 'T')
-
-  WORKSPACE_PATH = process.env.TRIB_MEMORY_WORKSPACE || process.cwd()
+  _bootTimestamp = Date.now()
+  loadTranscriptOffsets()
 }
 
-function getUnclassifiedEpisodeCount() {
+function loadTranscriptOffsets() {
   try {
-    return store.getUnclassifiedEpisodeDays(100, 1).reduce((sum, item) => sum + Number(item?.n ?? 0), 0)
+    const raw = getMetaValue(db, TRANSCRIPT_OFFSETS_KEY, '{}')
+    const obj = JSON.parse(raw)
+    _transcriptOffsets = new Map(Object.entries(obj))
   } catch {
-    return 0
+    _transcriptOffsets = new Map()
   }
 }
 
-function _runStartupBackfill() {
-  const startupBackfill = buildStartupBackfillOptions(opsPolicy, store)
-  if (startupBackfill) {
-    try {
-      const n = startupBackfill.scope === 'workspace'
-        ? store.backfillProject(WORKSPACE_PATH, startupBackfill)
-        : store.backfillAllProjects(startupBackfill)
-      if (n > 0) {
-        process.stderr.write(
-          `[memory-service] startup backfill (${startupBackfill.scope}/${startupBackfill.sinceMs ? 'windowed' : 'all'}): ${n} episodes\n`,
-        )
-      }
-    } catch (e) {
-      process.stderr.write(`[memory-service] startup backfill failed: ${e.message}\n`)
-    }
+function persistTranscriptOffsets() {
+  try {
+    const obj = Object.fromEntries(_transcriptOffsets)
+    setMetaValue(db, TRANSCRIPT_OFFSETS_KEY, JSON.stringify(obj))
+  } catch (e) {
+    process.stderr.write(`[memory] persist transcript offsets failed: ${e.message}\n`)
   }
 }
-
-// ── Cycle schedulers (last-run based, not wall-clock) ────────────────
 
 function getCycleLastRun() {
   try {
-    const state = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'memory-cycle.json'), 'utf8'))
-    return {
-      cycle1: Number(state?.lastCycle1At) || 0,
-      cycle2: Number(state?.lastSleepAt) || 0,
-    }
+    const raw = getMetaValue(db, CYCLE_LAST_RUN_KEY, '{}')
+    const obj = JSON.parse(raw)
+    return { cycle1: Number(obj.cycle1) || 0, cycle2: Number(obj.cycle2) || 0 }
   } catch { return { cycle1: 0, cycle2: 0 } }
 }
 
-async function checkCycles(options = {}) {
-  if (_rebuildLock) return
-  if (mainConfig?.enabled === false) return
-
-  const cycle1Config = mainConfig?.cycle1 ?? {}
-  const cycle1Ms = parseInterval(cycle1Config.interval || '5m')
-  const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h')
-
-  const startup = options.startup === true
-  const now = Date.now()
-  const last = getCycleLastRun()
-  const unclassifiedEpisodes = getUnclassifiedEpisodeCount()
-  const cycle1Due = now - last.cycle1 >= cycle1Ms
-  const cycle2Due = now - last.cycle2 >= cycle2Ms
-
-  if (
-    startup
-      ? shouldRunCycleCatchUp('cycle1', opsPolicy, {
-          due: cycle1Due,
-          lastRunAt: last.cycle1 || null,
-          unclassifiedEpisodes,
-        })
-      : cycle1Due
-  ) {
-    try {
-      const result = await runCycle1(WORKSPACE_PATH, mainConfig, { maxItems: 50, maxAgeDays: 30 })
-      process.stderr.write(
-        `[cycle1] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''} extracted=${Number(result?.extracted ?? 0)} classifications=${Number(result?.classifications ?? 0)}\n`,
-      )
-    } catch (e) {
-      process.stderr.write(`[cycle1] error: ${e.message}\n`)
-    }
-  }
-
-  if (
-    startup
-      ? shouldRunCycleCatchUp('cycle2', opsPolicy, {
-          due: cycle2Due,
-          lastRunAt: last.cycle2 || null,
-          unclassifiedEpisodes,
-        })
-      : cycle2Due
-  ) {
-    try {
-      await runCycle2(WORKSPACE_PATH)
-      process.stderr.write(`[cycle2] completed at ${localNow()}${startup ? ' [startup-catchup]' : ''}\n`)
-    } catch (e) {
-      process.stderr.write(`[cycle2] error: ${e.message}\n`)
-    }
-  }
+function setCycleLastRun(kind, ts) {
+  const cur = getCycleLastRun()
+  cur[kind] = ts
+  setMetaValue(db, CYCLE_LAST_RUN_KEY, JSON.stringify(cur))
 }
 
-function _startCycles() {
-  if (_cycleInterval) return  // already running
-  _cycleInterval = setInterval(() => { void checkCycles() }, opsPolicy.scheduler.checkIntervalMs)
-  const startupDelayMs = Math.max(
-    Number(opsPolicy.startup.cycle1CatchUp.delayMs ?? 0),
-    Number(opsPolicy.startup.cycle2CatchUp.delayMs ?? 0),
-  )
-  _startupTimeout = setTimeout(() => { void checkCycles({ startup: true }) }, startupDelayMs)
+function ingestTranscriptFile(transcriptPath) {
+  if (!fs.existsSync(transcriptPath)) return 0
+  const stat = fs.statSync(transcriptPath)
+  const sessionUuid = path.basename(transcriptPath, '.jsonl')
+  const prev = _transcriptOffsets.get(transcriptPath) ?? { bytes: 0, lineIndex: 0 }
+  if (stat.size < prev.bytes) {
+    prev.bytes = 0
+    prev.lineIndex = 0
+  }
+  if (stat.size <= prev.bytes) return 0
+
+  const fd = fs.openSync(transcriptPath, 'r')
+  const buf = Buffer.alloc(stat.size - prev.bytes)
+  fs.readSync(fd, buf, 0, buf.length, prev.bytes)
+  fs.closeSync(fd)
+  prev.bytes = stat.size
+  const lines = buf.toString('utf8').split('\n').filter(Boolean)
+
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+
+  let count = 0
+  let index = prev.lineIndex
+  for (const line of lines) {
+    index += 1
+    let parsed
+    try { parsed = JSON.parse(line) } catch { continue }
+    const role = parsed.message?.role
+    if (role !== 'user' && role !== 'assistant') continue
+    const content = firstTextContent(parsed.message?.content)
+    if (!content || !content.trim()) continue
+    const cleaned = cleanMemoryText(content)
+    if (!cleaned) continue
+    const tsMs = parseTsToMs(parsed.timestamp ?? parsed.ts ?? Date.now())
+    const sourceRef = `transcript:${sessionUuid}#${index}`
+    try {
+      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid)
+      if (result.changes > 0) count += 1
+    } catch (e) {
+      process.stderr.write(`[transcript-watch] insert error (${sourceRef}): ${e.message}\n`)
+    }
+  }
+  prev.lineIndex = index
+  _transcriptOffsets.set(transcriptPath, prev)
+  persistTranscriptOffsets()
+  return count
 }
 
-function _stopCycles() {
-  if (_cycleInterval) { clearInterval(_cycleInterval); _cycleInterval = null }
-  if (_startupTimeout) { clearTimeout(_startupTimeout); _startupTimeout = null }
+function firstTextContent(content) {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  for (const item of content) {
+    if (typeof item === 'string') return item
+    if (item?.type === 'text' && typeof item.text === 'string') return item.text
+  }
+  return ''
+}
+
+function parseTsToMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value
+  const parsed = Date.parse(String(value))
+  return Number.isFinite(parsed) ? parsed : Date.now()
 }
 
 function _initTranscriptWatcher() {
@@ -365,9 +332,9 @@ function _initTranscriptWatcher() {
       const prev = watchedFiles.get(fp)
       if (prev && prev >= mtime) return
       watchedFiles.set(fp, mtime)
-      const n = store.ingestTranscriptFile(fp)
+      const n = ingestTranscriptFile(fp)
       if (n > 0) {
-        process.stderr.write(`[transcript-watch] ingested ${n} episodes from ${path.basename(fp)}\n`)
+        process.stderr.write(`[transcript-watch] ingested ${n} entries from ${path.basename(fp)}\n`)
       }
     } catch (e) {
       process.stderr.write(`[transcript-watch] ingest error: ${e.message}\n`)
@@ -385,9 +352,9 @@ function _initTranscriptWatcher() {
   }
 
   function discoverActiveTranscripts() {
+    if (!fs.existsSync(projectsRoot)) return []
+    const files = []
     try {
-      if (!fs.existsSync(projectsRoot)) return []
-      const files = []
       for (const d of fs.readdirSync(projectsRoot)) {
         if (d.includes('tmp') || d.includes('cache') || d.includes('plugins')) continue
         const full = path.join(projectsRoot, d)
@@ -400,9 +367,9 @@ function _initTranscriptWatcher() {
           }
         } catch {}
       }
-      const cutoff = Date.now() - 30 * 60_000
-      return files.filter(f => f.mtime > cutoff)
-    } catch { return [] }
+    } catch {}
+    const cutoff = Date.now() - 30 * 60_000
+    return files.filter(f => f.mtime > cutoff)
   }
 
   function safetySweep() {
@@ -433,54 +400,65 @@ function _initTranscriptWatcher() {
   }
 }
 
-function _runStartupMigrations() {
-  // Drop legacy memory_candidates table + clean up episode vectors
-  try {
-    store.db.exec('DROP TABLE IF EXISTS memory_candidates')
-    store.db.prepare("DELETE FROM memory_vectors WHERE entity_type = 'episode'").run()
-    process.stderr.write(`[migration] memory_candidates table dropped, episode vectors cleaned\n`)
-  } catch (e) {
-    process.stderr.write(`[migration] cleanup error: ${e.message}\n`)
+async function checkCycles() {
+  if (mainConfig?.enabled === false) return
+
+  const cycle1Ms = parseInterval(mainConfig?.cycle1?.interval || '10m')
+  const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h')
+
+  const now = Date.now()
+  const last = getCycleLastRun()
+
+  if (now - last.cycle1 >= cycle1Ms) {
+    try {
+      const result = await runCycle1(db, mainConfig?.cycle1 || {}, {})
+      setCycleLastRun('cycle1', Date.now())
+      process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
+    } catch (e) {
+      process.stderr.write(`[cycle1] error: ${e.message}\n`)
+    }
   }
 
-  // Chunk sync
-  try {
-    const synced = store.syncChunksFromClassifications()
-    if (synced > 0) process.stderr.write(`[memory-service] synced ${synced} chunks from classifications\n`)
-  } catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
-
-  // context.md and recent.md are no longer generated — the SessionStart hook
-  // reads core_memory / episodes directly from sqlite at boot.
+  if (now - last.cycle2 >= cycle2Ms) {
+    try {
+      await runCycle2(db, mainConfig?.cycle2 || {}, {})
+      setCycleLastRun('cycle2', Date.now())
+      process.stderr.write(`[cycle2] completed\n`)
+    } catch (e) {
+      process.stderr.write(`[cycle2] error: ${e.message}\n`)
+    }
+  }
 }
 
-// ── Full runtime init (store + backfill + cycles + watcher + migrations) ──
+function _startCycles() {
+  if (_cycleInterval) return
+  _cycleInterval = setInterval(() => { void checkCycles() }, 60_000)
+  _startupTimeout = setTimeout(() => { void checkCycles() }, 30_000)
+}
+
+function _stopCycles() {
+  if (_cycleInterval) { clearInterval(_cycleInterval); _cycleInterval = null }
+  if (_startupTimeout) { clearTimeout(_startupTimeout); _startupTimeout = null }
+}
 
 async function _initRuntime() {
   await _initStore()
-  _runStartupBackfill()
   _initTranscriptWatcher()
-  _runStartupMigrations()
   _startCycles()
   _initialized = true
-  // Background warmup: preload models so first cycle doesn't spike
-  store.warmupEmbeddings().catch(() => {})
+  import('./lib/embedding-provider.mjs').then(m => m.warmupEmbeddingProvider()).catch(() => {})
   import('./lib/reranker.mjs').then(m => m.warmupReranker()).catch(() => {})
-  // Session recap is built on demand by hooks/session-start.cjs (reads
-  // memory.sqlite directly), so no boot-time recap generation is needed.
 }
 
-// ══════════════════════════════════════════════════════════════════════
-//  SHARED HELPERS (used by both MCP and HTTP)
-// ══════════════════════════════════════════════════════════════════════
-
-// ── Period parser ────────────────────────────────────────────────────
+function fmtDateOnly(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 function parsePeriod(period, hasQuery) {
   if (!period && hasQuery) period = '30d'
   if (!period) return null
   if (period === 'all') return null
   if (period === 'last') return { mode: 'last' }
-  // Relative: 24h, 3d, 7d, 30d
   const relMatch = period.match(/^(\d+)(h|d)$/)
   if (relMatch) {
     const n = parseInt(relMatch[1])
@@ -488,477 +466,260 @@ function parsePeriod(period, hasQuery) {
     const now = new Date()
     if (unit === 'h') {
       const start = new Date(now.getTime() - n * 3600_000)
-      return { start: fmt(start), end: fmt(now) }
+      return { startMs: start.getTime(), endMs: now.getTime() }
     }
     const start = new Date(now)
     start.setDate(start.getDate() - n)
-    return { start: fmt(start), end: fmt(now) }
+    return { startMs: start.getTime(), endMs: now.getTime() }
   }
-  // Date range: 2026-04-01~2026-04-05
   const rangeMatch = period.match(/^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/)
-  if (rangeMatch) return { start: rangeMatch[1], end: rangeMatch[2] }
-  // Single date: 2026-04-05
+  if (rangeMatch) {
+    return {
+      startMs: Date.parse(rangeMatch[1] + 'T00:00:00'),
+      endMs:   Date.parse(rangeMatch[2] + 'T23:59:59.999'),
+    }
+  }
   const dateMatch = period.match(/^(\d{4}-\d{2}-\d{2})$/)
-  if (dateMatch) return { start: dateMatch[1], end: dateMatch[1], exact: true }
+  if (dateMatch) {
+    return {
+      startMs: Date.parse(dateMatch[1] + 'T00:00:00'),
+      endMs:   Date.parse(dateMatch[1] + 'T23:59:59.999'),
+      exact: true,
+    }
+  }
   return null
 }
 
-function fmt(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+function formatTs(tsMs) {
+  const n = Number(tsMs)
+  if (Number.isFinite(n) && n > 1e12) {
+    return new Date(n).toISOString().slice(0, 16)
+  }
+  return String(tsMs ?? '').slice(0, 16)
 }
 
-// ── Recall handler ──────────────────────────────────────────────────
-
-async function handleGrep(query, options) {
-  const { sort, offset, limit, temporal: searchTemporal } = options
-
-  const queryVector = await embedText(query)
-  const skipReranker = sort === 'date'
-  const results = await store.searchRelevantHybrid(query, limit * 2, {
-    temporal: searchTemporal,
-    recordRetrieval: true,
-    queryVector,
-    skipReranker,
-  })
-
-  // Score and sort
-  const { computeFinalScore } = await import('./lib/memory-score-utils.mjs')
-  let items = results.map(item => {
-    const baseScore = item.base_score ?? 0
-    item._finalScore = computeFinalScore(baseScore, item, query)
-    return item
-  })
-
-  if (sort === 'importance') {
-    items.sort((a, b) => b._finalScore - a._finalScore)
-  } else {
-    items.sort((a, b) => {
-      const tsA = a.source_ts || a.updated_at || ''
-      const tsB = b.source_ts || b.updated_at || ''
-      return tsB.localeCompare(tsA)
-    })
-  }
-
-  items = items.slice(offset, offset + limit)
-
-  // Render results — chunks and classifications inline, episodes with context
-  const lines = []
-  const renderedEpisodes = new Set()
-
-  for (const item of items) {
-    const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
-
-    if (item.type === 'chunk' || item.type === 'classification') {
-      const topic = item.classification_topic ? ` [${item.classification_topic}]` : ''
-      const imp = item.importance ? ` (${item.importance})` : ''
-      lines.push(`[${ts}]${topic}${imp} ${String(item.content || '').slice(0, 500)}`)
-    } else if (item.type === 'episode' && !renderedEpisodes.has(Number(item.entity_id))) {
-      // Show episode with surrounding context (±3 messages)
-      const epId = Number(item.entity_id)
-      renderedEpisodes.add(epId)
-      try {
-        const rows = store.db.prepare(`
-          SELECT id, ts, role, content FROM episodes
-          WHERE id BETWEEN ? AND ? AND kind IN ('message', 'turn')
-          ORDER BY id ASC
-        `).all(epId - 3, epId + 3)
-        if (rows.length > 0) {
-          const tsStart = String(rows[0].ts || '').slice(0, 16)
-          const tsEnd = String(rows[rows.length - 1].ts || '').slice(0, 16)
-          lines.push(`\n[${tsStart}~${tsEnd}]`)
-          for (const ep of rows) {
-            const prefix = ep.role === 'user' ? 'u' : 'a'
-            const marker = ep.id === epId ? '→' : ' '
-            renderedEpisodes.add(Number(ep.id))
-            lines.push(`${marker} ${prefix}: ${String(ep.content || '').slice(0, 500)}`)
-          }
-        }
-      } catch {
-        lines.push(`[${ts}] ${String(item.content || '').slice(0, 500)}`)
-      }
-    }
-  }
-
-  if (lines.length === 0) {
-    for (const item of items) {
-      const ts = String(item.source_ts || item.updated_at || '').slice(0, 16)
-      lines.push(`[${ts}] ${String(item.content || '').slice(0, 500)}`)
-    }
-  }
-
-  return { text: lines.join('\n') || '(no results)' }
-}
-
-async function handleRead(options) {
-  const { offset, limit, sort, temporal } = options
-
-  let whereClause = "kind IN ('message', 'turn')"
-  const params = []
-
-  if (temporal?.mode === 'last') {
-    // Exclude current session — only show data before boot
-    if (_bootTimestamp) {
-      whereClause += " AND e.ts < ?"
-      params.push(_bootTimestamp)
-    }
-
-    // period=last: unified timeline — classification upgrades where available, episode fallback
-    const rows = store.db.prepare(`
-      SELECT e.ts, e.role, e.content AS episode_content,
-             c.classification, c.topic, c.element, c.state
-      FROM episodes e
-      LEFT JOIN classifications c ON c.episode_id = e.id AND c.status = 'active'
-      WHERE e.kind IN ('message', 'turn')${_bootTimestamp ? " AND e.ts < ?" : ""}
-      ORDER BY e.ts DESC, e.id DESC
-      LIMIT ? OFFSET ?
-    `).all(...(_bootTimestamp ? [_bootTimestamp] : []), limit, offset)
-
-    const lines = rows.map(r => {
-      const ts = String(r.ts || '').slice(0, 16)
-      if (r.topic) {
-        const cls = [r.classification, r.topic, r.element, r.state].filter(Boolean).join(' | ')
-        return `[${ts}] ${cls.slice(0, 500)}`
-      }
-      const prefix = r.role === 'user' ? 'u' : 'a'
-      return `[${ts}] ${prefix}: ${cleanMemoryText(String(r.episode_content)).slice(0, 300)}`
-    })
-    return { text: lines.join('\n') || '(no results found)' }
-  }
-
-  if (temporal?.start) {
-    if (temporal.end && temporal.end !== temporal.start) {
-      whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
-      params.push(temporal.start, temporal.end)
-    } else {
-      whereClause += " AND ts >= ? AND ts < date(?, '+1 day')"
-      params.push(temporal.start, temporal.start)
-    }
-  }
-
-  if (sort === 'importance') {
-    // Importance mode: mix classifications (by confidence) + episodes (by recency)
-    const halfLimit = Math.ceil(limit / 2)
-    let classWhereDate = ''
-    const classParams = []
-    if (temporal?.start) {
-      classWhereDate = ' AND day_key >= ? AND day_key <= ?'
-      classParams.push(temporal.start, temporal.end ?? temporal.start)
-    }
-    const classifications = store.db.prepare(`
-      SELECT 'classification' AS type, classification AS subtype,
-             trim(classification || ' | ' || topic || ' | ' || element || CASE WHEN state IS NOT NULL AND state != '' THEN ' | ' || state ELSE '' END) AS content,
-             confidence, retrieval_count, updated_at
-      FROM classifications
-      WHERE status = 'active'${classWhereDate}
-      ORDER BY (CAST(confidence AS REAL) + CAST(COALESCE(retrieval_count, 0) AS REAL) * 0.1) DESC
-      LIMIT ? OFFSET ?
-    `).all(...classParams, halfLimit, offset)
-
-    const episodeLimit = Math.max(1, limit - classifications.length)
-    const episodes = store.db.prepare(`
-      SELECT ts, role, content FROM episodes
-      WHERE ${whereClause}
-      ORDER BY ts DESC, id DESC
-      LIMIT ? OFFSET ?
-    `).all(...params, episodeLimit, offset)
-
-    const lines = []
-    for (const c of classifications) {
-      const raw = Number(c.updated_at || 0)
-      const ts = raw > 1e9 ? new Date(raw * 1000).toLocaleString('sv-SE').replace(' ', 'T').slice(0, 16) : String(c.updated_at || '').slice(0, 10)
-      lines.push(`[${ts}] ${String(c.content || '').slice(0, 500)}`)
-    }
-    for (const ep of episodes) {
-      const prefix = ep.role === 'user' ? 'u' : 'a'
-      lines.push(`[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 500)}`)
-    }
-    return { text: lines.join('\n') || '(no results found)' }
-  }
-
-  // Date mode: newest first
-  const episodes = store.db.prepare(`
-    SELECT ts, role, content FROM episodes
-    WHERE ${whereClause}
-    ORDER BY ts DESC, id DESC
-    LIMIT ? OFFSET ?
-  `).all(...params, limit, offset)
-
-  const lines = episodes.map(ep => {
-    const prefix = ep.role === 'user' ? 'u' : 'a'
-    return `[${String(ep.ts || '').slice(0, 16)}] ${prefix}: ${String(ep.content).slice(0, 500)}`
-  })
-
-  return { text: lines.join('\n') || '(no episodes found)' }
-}
-
-function handleTagQuery(tag, limit = 20) {
-  const rows = store.db.prepare(`
-    SELECT topic, element, importance, updated_at FROM classifications
-    WHERE status = 'active' AND importance LIKE ?
-    ORDER BY updated_at DESC
-    LIMIT ?
-  `).all(`%${tag}%`, limit)
-  if (rows.length === 0) return { text: `(no ${tag} classifications found)` }
-  const lines = rows.map(r => {
-    const date = String(r.updated_at || '').slice(0, 10)
-    return `[${date}] ${r.topic} — ${r.element}`
-  })
-  return { text: `${tag} (${rows.length}):\n${lines.join('\n')}` }
-}
-
-function handleStats() {
-  const episodes = store.db.prepare('SELECT COUNT(*) as c FROM episodes').get().c
-  const classifications = store.db.prepare('SELECT COUNT(*) as c FROM classifications').get().c
-  const pending = store.db.prepare("SELECT COUNT(*) as c FROM episodes WHERE classified = 0 AND role IN ('user','assistant') AND kind = 'message'").get().c
-  const tags = store.db.prepare(`
-    SELECT importance, COUNT(*) as c FROM classifications
-    WHERE importance IS NOT NULL AND importance != ''
-    GROUP BY importance ORDER BY c DESC
-  `).all()
-  const lastCycle = (() => {
-    try {
-      const state = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'memory-cycle.json'), 'utf8'))
-      const ago = Date.now() - (state.lastCycle1At || 0)
-      return `${Math.round(ago / 60000)}m ago`
-    } catch { return 'unknown' }
-  })()
-
-  let coreStats = ''
-  try {
-    const coreRows = store.db.prepare(
-      `SELECT status, COUNT(*) as c FROM core_memory GROUP BY status ORDER BY c DESC`
-    ).all()
-    coreStats = coreRows.map(r => `${r.status}:${r.c}`).join(', ') || 'empty'
-  } catch { coreStats = 'n/a' }
-
-  const lines = [
-    `episodes: ${episodes}`,
-    `classifications: ${classifications} (${tags.map(t => `${t.importance}:${t.c}`).join(', ')})`,
-    `core_memory: ${coreStats}`,
-    `unclassified: ${pending}`,
-    `last_cycle1: ${lastCycle}`,
-  ]
-  return { text: lines.join('\n') }
-}
-
-async function handleRecall(args) {
+async function handleSearch(args) {
   const query = String(args.query ?? '').trim()
   const period = String(args.period ?? '').trim() || undefined
-  const explicitSort = args.sort != null ? String(args.sort) : null
+  const limit = Math.max(1, Number(args.limit ?? 30))
   const offset = Math.max(0, Number(args.offset ?? 0))
-  const limit = Math.max(1, Number(args.limit ?? 20))
-  const mode = String(args.mode ?? 'search')
-
-  // Dialectic / reason mode: synthesize an answer from stored knowledge
-  if (mode === 'reason' && query) {
-    return handleReason(query, { period, limit: 20, preset: args.preset })
-  }
-
-  // Shortcut queries
-  if (query === 'stats') return handleStats()
-  if (query === 'rules') return handleTagQuery('rule', limit)
-  if (query === 'decisions') return handleTagQuery('decision', limit)
-  if (query === 'goals') return handleTagQuery('goal', limit)
-  if (query === 'preferences') return handleTagQuery('preference', limit)
-  if (query === 'incidents') return handleTagQuery('incident', limit)
-  if (query === 'directives') return handleTagQuery('directive', limit)
-
+  const sort = args.sort != null ? String(args.sort) : 'importance'
+  const includeMembers = Boolean(args.includeMembers)
   const temporal = parsePeriod(period, Boolean(query))
 
-  // Default sort: "date" when period="last", "importance" otherwise
-  const sort = explicitSort ?? (temporal?.mode === 'last' ? 'date' : 'importance')
-
   if (query) {
-    // Semantic search mode (handleGrep)
-    const searchTemporal = temporal
-      ? (temporal.mode === 'last' ? null : { start: temporal.start, end: temporal.end, exact: temporal.exact })
-      : null
-    return handleGrep(query, { sort, offset, limit, temporal: searchTemporal })
+    const queryVector = await embedText(query).catch(() => null)
+    const results = await searchRelevantHybrid(db, query, {
+      limit: limit + offset,
+      queryVector: Array.isArray(queryVector) ? queryVector : null,
+      includeMembers,
+    })
+    let filtered = results
+    if (temporal?.startMs != null) {
+      filtered = filtered.filter(r => Number(r.ts) >= temporal.startMs && Number(r.ts) <= temporal.endMs)
+    }
+    if (sort === 'date') {
+      filtered.sort((a, b) => Number(b.ts) - Number(a.ts))
+    } else {
+      filtered.sort((a, b) => (Number(b.score ?? 0) - Number(a.score ?? 0)) || ((b.rrf ?? 0) - (a.rrf ?? 0)))
+    }
+    const sliced = filtered.slice(offset, offset + limit)
+    return { text: renderEntryLines(sliced) }
   }
 
-  // Browse mode (handleRead) — no query
-  return handleRead({ offset, limit, sort, temporal: temporal ?? { mode: 'last' } })
+  const filters = { limit: limit + offset }
+  if (temporal?.startMs != null) { filters.ts_from = temporal.startMs; filters.ts_to = temporal.endMs }
+  if (temporal?.mode === 'last' && _bootTimestamp) {
+    filters.ts_to = _bootTimestamp - 1
+  }
+  if (includeMembers) filters.includeMembers = true
+  const rows = retrieveEntries(db, filters)
+  const sliced = rows.slice(offset, offset + limit)
+  return { text: renderEntryLines(sliced) }
 }
 
-async function handleReason(query, options = {}) {
-  // 1. Normal search to get relevant memories (with temporal scope if period given)
-  const temporal = options.period ? parsePeriod(options.period, true) : null
-  let searchResult
-  if (temporal?.mode === 'last') {
-    // period=last: use handleRead with session_id filtering instead of semantic search
-    searchResult = await handleRead({ sort: 'date', offset: 0, limit: options.limit ?? 20, temporal })
-  } else {
-    const searchTemporal = temporal
-      ? { start: temporal.start, end: temporal.end, exact: temporal.exact }
-      : null
-    searchResult = await handleGrep(query, { sort: 'importance', offset: 0, limit: options.limit ?? 20, temporal: searchTemporal })
+function renderEntryLines(rows) {
+  if (!rows || rows.length === 0) return '(no results)'
+  const lines = []
+  for (const r of rows) {
+    const ts = formatTs(r.ts)
+    const cat = r.category ? `[${r.category}] ` : ''
+    const element = r.element ?? ''
+    const summary = r.summary ?? ''
+    const head = element || summary
+      ? `${cat}${element}${summary ? ' — ' + summary : ''}`
+      : (cleanMemoryText(String(r.content ?? '')).slice(0, 300))
+    lines.push(`[${ts}] ${head.slice(0, 500)}`)
+    if (Array.isArray(r.members) && r.members.length > 0) {
+      for (const m of r.members) {
+        const mTs = formatTs(m.ts)
+        const prefix = m.role === 'user' ? 'u' : m.role === 'assistant' ? 'a' : (m.role || '?')
+        lines.push(`  [${mTs}] ${prefix}: ${cleanMemoryText(String(m.content ?? '')).slice(0, 200)}`)
+      }
+    }
   }
-
-  // 2. Compose prompt
-  const prompt = [
-    'Based on the following stored knowledge about the user, answer this question.',
-    '',
-    `Question: ${query}`,
-    '',
-    'Core Memories:',
-    searchResult.text || '(none)',
-    '',
-    'Synthesize a concise answer. If the knowledge is insufficient, say so. Include confidence level (high/medium/low).',
-  ].join('\n')
-
-  // 4. Call LLM (use explicit preset override if provided, otherwise cycle2 default)
-  try {
-    const config = readMainConfig()
-    const presetId = options.preset || resolveMaintenancePreset('cycle2')
-    const answer = await callLLM(prompt, presetId, { mode: 'maintenance', timeout: 60000, cacheScope: 'reason' })
-    return { text: answer }
-  } catch (e) {
-    return { text: `[reason] LLM call failed: ${e.message}\n\nFallback search results:\n${searchResult.text}` }
-  }
+  return lines.join('\n')
 }
 
-// ── Cycle handler ────────────────────────────────────────────────────
+function entryStats() {
+  const total = db.prepare(`SELECT COUNT(*) c FROM entries`).get().c
+  const roots = db.prepare(`SELECT COUNT(*) c FROM entries WHERE is_root = 1`).get().c
+  const unclassified = db.prepare(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`).get().c
+  const byStatus = db.prepare(`
+    SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status
+  `).all()
+  const byCategory = db.prepare(`
+    SELECT category, COUNT(*) c FROM entries
+    WHERE is_root = 1 AND status = 'active'
+    GROUP BY category ORDER BY c DESC
+  `).all()
+  return { total, roots, unclassified, byStatus, byCategory }
+}
 
-async function handleCycle(args) {
+async function handleMemoryAction(args) {
   const action = String(args.action ?? '')
-  const ws = WORKSPACE_PATH
   const config = readMainConfig()
 
-  if (action === 'health') {
-    try {
-      const h = store.getHealthStatus()
-      return { text: JSON.stringify(h, null, 2) }
-    } catch (e) {
-      return { text: JSON.stringify({ status: 'error', error: e?.message }), isError: true }
-    }
-  }
   if (action === 'status') {
-    return { text: JSON.stringify(getCycleStatus(), null, 2) }
+    const stats = entryStats()
+    const last = getCycleLastRun()
+    const dims = Number(getMetaValue(db, 'embedding.current_dims', '0'))
+    const vecReady = Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE name='vec_entries'`).get())
+    const lastCycle1Ago = last.cycle1 ? `${Math.round((Date.now() - last.cycle1) / 60000)}m ago` : 'never'
+    const lastCycle2Ago = last.cycle2 ? `${Math.round((Date.now() - last.cycle2) / 60000)}m ago` : 'never'
+    const lines = [
+      `entries: total=${stats.total} roots=${stats.roots} unclassified=${stats.unclassified}`,
+      `status: ${stats.byStatus.map(r => `${r.status ?? 'NULL'}:${r.c}`).join(', ') || 'empty'}`,
+      `categories(active): ${stats.byCategory.map(r => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'}`,
+      `vec_entries: ${vecReady ? 'ready' : 'missing'} dims=${dims}`,
+      `bootstrap: ${isBootstrapComplete(db) ? 'complete' : 'incomplete'}`,
+      `last_cycle1: ${lastCycle1Ago}`,
+      `last_cycle2: ${lastCycle2Ago}`,
+    ]
+    return { text: lines.join('\n') }
   }
-  if (action === 'sleep' || action === 'cycle2') {
-    await runCycle2(ws)
-    return { text: 'Cycle2 completed.' }
-  }
-  if (action === 'flush') {
-    await memoryFlush(ws, { maxDays: Number(args.maxDays ?? 1) })
-    return { text: 'Memory flush completed.' }
-  }
-  if (action === 'rebuild') {
-    _rebuildLock = true
-    try {
-      const maxDays = Number(args.maxDays ?? 2)
-      const window = args.window || undefined
-      await rebuildRecent(ws, { maxDays, window })
-      store.syncChunksFromClassifications()
-      return { text: `Memory rebuild completed (maxDays=${maxDays}).` }
-    } finally { _rebuildLock = false }
-  }
-  if (action === 'prune') {
-    await pruneToRecent(ws, { maxDays: Number(args.maxDays ?? 5) })
-    return { text: 'Memory prune completed.' }
-  }
+
   if (action === 'cycle1') {
-    const force = Boolean(args.force)
-    const maxItems = args.maxItems ? Number(args.maxItems) : undefined
-    const maxAgeDays = args.maxAgeDays ? Number(args.maxAgeDays) : undefined
-    const c1result = await runCycle1(ws, config, { force, maxItems, maxAgeDays })
-    return { text: `Cycle1 completed: extracted=${Number(c1result?.extracted ?? 0)} classifications=${Number(c1result?.classifications ?? 0)}` }
+    const result = await runCycle1(db, config?.cycle1 || {}, {})
+    setCycleLastRun('cycle1', Date.now())
+    return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
   }
-  if (action === 'rebuild_classifications') {
-    const maxAgeDays = args.maxAgeDays ? Number(args.maxAgeDays) : undefined
-    const window = args.window || undefined
-    const result = await rebuildClassifications(ws, { maxAgeDays, window })
-    return { text: `Rebuild classifications completed: total=${result.total} batches=${result.batches} classifications=${result.classifications}` }
+
+  if (action === 'cycle2' || action === 'sleep') {
+    const result = await runCycle2(db, config?.cycle2 || {}, {})
+    setCycleLastRun('cycle2', Date.now())
+    return { text: `cycle2: ${JSON.stringify(result)}` }
   }
+
+  if (action === 'flush') {
+    const r1 = await runCycle1(db, config?.cycle1 || {}, {})
+    setCycleLastRun('cycle1', Date.now())
+    const r2 = await runCycle2(db, config?.cycle2 || {}, {})
+    setCycleLastRun('cycle2', Date.now())
+    return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
+  }
+
+  if (action === 'rebuild') {
+    db.prepare(`UPDATE entries SET chunk_root = NULL, is_root = 0 WHERE chunk_root = id`).run()
+    db.prepare(`UPDATE entries SET chunk_root = NULL WHERE is_root = 0`).run()
+    db.prepare(`
+      UPDATE entries
+      SET element = NULL, category = NULL, summary = NULL,
+          status = NULL, score = NULL, last_seen_at = NULL,
+          embedding = NULL, summary_hash = NULL
+      WHERE is_root = 1 OR (chunk_root IS NULL)
+    `).run()
+    const r1 = await runCycle1(db, config?.cycle1 || {}, {})
+    const r2 = await runCycle2(db, config?.cycle2 || {}, {})
+    setCycleLastRun('cycle1', Date.now())
+    setCycleLastRun('cycle2', Date.now())
+    return { text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
+  }
+
+  if (action === 'prune') {
+    const days = Math.max(1, Number(args.maxDays ?? 30))
+    const result = pruneOldEntries(db, days)
+    return { text: `prune: deleted ${result.deleted} unclassified entries older than ${days} days` }
+  }
+
   if (action === 'backfill') {
-    const backfillLimit = Math.max(1, Math.min(Number(args.limit ?? 100), 500))
-    // Find unclassified episodes
-    const uncovered = store.db.prepare(`
-      SELECT e.id, e.ts, e.day_key, e.role, e.content
-      FROM episodes e
-      WHERE e.classified = 0
-        AND e.kind IN ('message', 'turn')
-        AND e.role IN ('user', 'assistant')
-        AND LENGTH(e.content) >= 10
-        AND e.content NOT LIKE 'You are consolidating%'
-        AND e.content NOT LIKE 'You are improving%'
-      ORDER BY e.ts DESC
-      LIMIT ?
-    `).all(backfillLimit)
-
-    if (uncovered.length === 0) {
-      return { text: 'Backfill: no unclassified episodes found.' }
+    const limit = Math.max(1, Math.min(Number(args.limit ?? 100), 1000))
+    const projectsRoot = path.join(os.homedir(), '.claude', 'projects')
+    if (!fs.existsSync(projectsRoot)) return { text: 'backfill: no projects directory found' }
+    const files = []
+    for (const d of fs.readdirSync(projectsRoot)) {
+      if (d.includes('tmp') || d.includes('cache') || d.includes('plugins')) continue
+      const full = path.join(projectsRoot, d)
+      try {
+        for (const f of fs.readdirSync(full)) {
+          if (!f.endsWith('.jsonl') || f.startsWith('agent-')) continue
+          const fp = path.join(full, f)
+          const mtime = fs.statSync(fp).mtimeMs
+          files.push({ path: fp, mtime })
+        }
+      } catch {}
     }
-
-    // Run cycle1 with force to process them
-    const c1result = await runCycle1(ws, config, { force: true })
-    return { text: `Backfill: ${uncovered.length} unclassified episodes. Cycle1: ${JSON.stringify(c1result)}` }
+    files.sort((a, b) => b.mtime - a.mtime)
+    const selected = files.slice(0, limit).map(f => f.path).reverse()
+    let total = 0
+    for (const fp of selected) total += ingestTranscriptFile(fp)
+    return { text: `backfill: ingested ${total} entries from ${selected.length} transcripts` }
   }
+
   if (action === 'remember') {
-    const topic = String(args.topic ?? '').trim()
     const element = String(args.element ?? '').trim()
-    if (!topic || !element) {
-      return { text: 'remember requires topic and element', isError: true }
+    const category = String(args.category ?? args.importance ?? 'fact').trim().toLowerCase()
+    const summary = String(args.summary ?? args.element ?? '').trim()
+    if (!element || !summary) {
+      return { text: 'remember requires element and summary', isError: true }
     }
-    const ts = new Date().toISOString()
-    const dayKey = ts.slice(0, 10)
-    const importance = String(args.importance ?? 'fact')
-
-    // 1. Create episode
-    const epResult = store.db.prepare(`
-      INSERT INTO episodes (ts, day_key, kind, role, content)
-      VALUES (?, ?, 'message', 'user', ?)
-    `).run(ts, dayKey, `[user_inject] ${topic}: ${element}`)
-    const episodeId = epResult.lastInsertRowid
-
-    // 2. Create classification
-    const clsResult = store.db.prepare(`
-      INSERT INTO classifications (episode_id, ts, day_key, classification, topic, element, state, confidence, importance, status)
-      VALUES (?, ?, ?, 'fact', ?, ?, 'user_inject', 1.0, ?, 'active')
-    `).run(episodeId, ts, dayKey, topic, element, importance)
-    const classificationId = clsResult.lastInsertRowid
-
-    // 3. Insert into core_memory
-    store.db.prepare(`
-      INSERT INTO core_memory (classification_id, topic, element, importance, final_score, promoted_at, last_seen_at, status)
-      VALUES (?, ?, ?, ?, 1.0, ?, ?, 'active')
-      ON CONFLICT(classification_id) DO UPDATE SET
-        topic = excluded.topic, element = excluded.element,
-        importance = excluded.importance, last_seen_at = excluded.last_seen_at, status = 'active'
-    `).run(classificationId, topic, element, importance, ts, ts)
-
-    return { text: `Remembered: [${topic}] ${element}` }
+    const VALID = new Set(['rule', 'constraint', 'decision', 'fact', 'goal', 'preference', 'task', 'issue'])
+    if (!VALID.has(category)) {
+      return { text: `remember: invalid category "${category}". Valid: ${[...VALID].join(', ')}`, isError: true }
+    }
+    const nowMs = Date.now()
+    const sourceRef = `manual:${nowMs}-${process.pid}`
+    db.exec('BEGIN')
+    try {
+      const result = db.prepare(`
+        INSERT INTO entries(ts, role, content, source_ref, session_id)
+        VALUES (?, 'system', ?, ?, NULL)
+      `).run(nowMs, element + ' — ' + summary, sourceRef)
+      const newId = Number(result.lastInsertRowid)
+      const score = computeEntryScore(category, nowMs, nowMs)
+      db.prepare(`
+        UPDATE entries
+        SET chunk_root = ?, is_root = 1, element = ?, category = ?, summary = ?,
+            status = 'active', score = ?, last_seen_at = ?
+        WHERE id = ?
+      `).run(newId, element, category, summary, score, nowMs, newId)
+      db.exec('COMMIT')
+      await syncRootEmbedding(db, newId)
+      return { text: `remembered (id=${newId}): [${category}] ${element} — ${summary.slice(0, 200)}` }
+    } catch (e) {
+      try { db.exec('ROLLBACK') } catch {}
+      return { text: `remember failed: ${e.message}`, isError: true }
+    }
   }
+
   return { text: `unknown memory action: ${action}`, isError: true }
 }
-
-// ══════════════════════════════════════════════════════════════════════
-//  MCP SERVER (stdio transport — Claude Code tools)
-// ══════════════════════════════════════════════════════════════════════
-
-const mcp = new Server(
-  { name: 'trib-memory', version: PLUGIN_VERSION },
-  { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
-)
-
-// ── Shared tool definitions & handler ────────────────────────────────
 
 const TOOL_DEFS = [
   {
     name: 'memory',
-    title: 'Memory Cycle',
-    annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory management operations: cycle2/sleep (core memory promotion + dedup), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (classify old episodes then run cycle1), status.',
+    title: 'Memory Operations',
+    annotations: { title: 'Memory Operations', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: 'Run memory management operations on the unified entries store. Actions: status (counts/health), cycle1 (chunk + classify), cycle2/sleep (promote + cap), flush (cycle1+cycle2), rebuild (reset roots and re-classify), prune (delete old unclassified), backfill (ingest jsonl transcripts), remember (insert active root entry).',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['sleep', 'cycle2', 'flush', 'rebuild', 'rebuild_classifications', 'prune', 'cycle1', 'backfill', 'status', 'remember'], description: 'Memory operation to run. remember: inject into core memory.' },
-        topic: { type: 'string', description: 'Topic for remember action (e.g. "user preference", "project rule")' },
-        element: { type: 'string', description: 'Content for remember action (e.g. "prefers dark mode")' },
-        importance: { type: 'string', description: 'Importance level for remember action (default: fact)' },
-        maxDays: { type: 'number', description: 'Max days to process (default varies by action)' },
-        window: { type: 'string', description: 'Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all' },
-        limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
+        action: { type: 'string', enum: ['status', 'cycle1', 'cycle2', 'sleep', 'flush', 'rebuild', 'prune', 'backfill', 'remember'] },
+        element: { type: 'string', description: 'Short subject label (5-10 words). Required for remember.' },
+        summary: { type: 'string', description: 'Refined summary (1-3 sentences). Required for remember.' },
+        category: { type: 'string', description: 'One of: rule, constraint, decision, fact, goal, preference, task, issue. Default: fact.' },
+        maxDays: { type: 'number', description: 'For prune: delete unclassified entries older than this many days (default 30).' },
+        limit: { type: 'number', description: 'For backfill: max transcript files to scan (default 100).' },
       },
       required: ['action'],
     },
@@ -967,16 +728,16 @@ const TOOL_DEFS = [
     name: 'search_memories',
     title: 'Search Memories',
     annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.',
+    description: 'Search past context and memory. Returns root entries by default. Use when user references prior work, decisions, or preferences. Storage is automatic — only retrieval is manual.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search text. Triggers semantic hybrid search.' },
-        period: { type: 'string', description: 'Time scope: "last" (previous session), "24h"/"3d"/"7d"/"30d" (relative), "all" (no limit), "2026-04-05" (single date), "2026-04-01~2026-04-05" (date range). Default: 30d when query is set, latest entries when no query.' },
-        sort: { type: 'string', enum: ['date', 'importance'], description: 'Sort order: "date" (newest first, reranker skipped) or "importance" (final score, reranker enabled). Default: "date" when period="last", "importance" otherwise.' },
-        limit: { type: 'number', default: 30, description: 'Max results to return.' },
-        offset: { type: 'number', default: 0, description: 'Skip N results for pagination.' },
-        mode: { type: 'string', enum: ['search', 'reason'], description: 'search: normal retrieval. reason: synthesize an answer from stored knowledge using LLM.' },
+        query: { type: 'string', description: 'Search text. Triggers hybrid search (vec_entries KNN + entries_fts BM25).' },
+        period: { type: 'string', description: 'Time scope: "last" (before this session), "24h"/"3d"/"7d"/"30d" (relative), "all", "2026-04-05" (single day), "2026-04-01~2026-04-05" (range). Default: 30d when query set, latest entries otherwise.' },
+        sort: { type: 'string', enum: ['date', 'importance'], description: 'date (newest first) or importance (score desc).' },
+        limit: { type: 'number', default: 30 },
+        offset: { type: 'number', default: 0 },
+        includeMembers: { type: 'boolean', description: 'Include chunk member entries inline.' },
       },
       required: [],
     },
@@ -986,59 +747,36 @@ const TOOL_DEFS = [
 async function handleToolCall(name, args) {
   try {
     if (name === 'search_memories') {
-      const result = await handleRecall(args)
-      return {
-        content: [{ type: 'text', text: result.text }],
-        isError: result.isError || false,
-      }
+      const result = await handleSearch(args || {})
+      return { content: [{ type: 'text', text: result.text }], isError: result.isError || false }
     }
-
     if (name === 'memory') {
-      const result = await handleCycle(args)
-      return {
-        content: [{ type: 'text', text: result.text }],
-        isError: result.isError || false,
-      }
+      const result = await handleMemoryAction(args || {})
+      return { content: [{ type: 'text', text: result.text }], isError: result.isError || false }
     }
-
-    return {
-      content: [{ type: 'text', text: `unknown tool: ${name}` }],
-      isError: true,
-    }
+    return { content: [{ type: 'text', text: `unknown tool: ${name}` }], isError: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return {
-      content: [{ type: 'text', text: `${name} failed: ${msg}` }],
-      isError: true,
-    }
+    return { content: [{ type: 'text', text: `${name} failed: ${msg}` }], isError: true }
   }
 }
 
-// MCP adapter: unwrap req envelope for the shared handleToolCall
-function _mcpToolHandler(req) {
-  return handleToolCall(req.params.name, req.params.arguments ?? {})
-}
-
-// ── Register handlers on primary (stdio) MCP server ─────────────────
-
+const mcp = new Server(
+  { name: 'trib-memory', version: PLUGIN_VERSION },
+  { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
+)
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
-mcp.setRequestHandler(CallToolRequestSchema, _mcpToolHandler)
-
-// ── Factory: create a short-lived MCP server for HTTP requests ──────
+mcp.setRequestHandler(CallToolRequestSchema, (req) => handleToolCall(req.params.name, req.params.arguments ?? {}))
 
 function createHttpMcpServer() {
   const s = new Server(
     { name: 'trib-memory', version: PLUGIN_VERSION },
-    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT},
+    { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT },
   )
   s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
-  s.setRequestHandler(CallToolRequestSchema, _mcpToolHandler)
+  s.setRequestHandler(CallToolRequestSchema, (req) => handleToolCall(req.params.name, req.params.arguments ?? {}))
   return s
 }
-
-// ══════════════════════════════════════════════════════════════════════
-//  HTTP SERVER (tcp — hooks + internal use)
-// ══════════════════════════════════════════════════════════════════════
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -1046,16 +784,12 @@ function readBody(req) {
     req.on('data', c => chunks.push(c))
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8').trim()
-      if (!raw) {
-        resolve({})
-        return
-      }
-      try {
-        resolve(JSON.parse(raw))
-      } catch (error) {
-        const parseError = new Error(`invalid JSON body: ${error instanceof Error ? error.message : String(error)}`)
-        parseError.statusCode = 400
-        reject(parseError)
+      if (!raw) { resolve({}); return }
+      try { resolve(JSON.parse(raw)) }
+      catch (error) {
+        const e = new Error(`invalid JSON body: ${error.message}`)
+        e.statusCode = 400
+        reject(e)
       }
     })
     req.on('error', reject)
@@ -1063,7 +797,7 @@ function readBody(req) {
 }
 
 function sendJson(res, data, status = 200) {
-  const body = JSON.stringify(data, null, 0)
+  const body = JSON.stringify(data)
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
@@ -1076,100 +810,42 @@ function sendError(res, msg, status = 500) {
 }
 
 const httpServer = http.createServer(async (req, res) => {
-  // GET /proactive/sources
-  if (req.method === 'GET' && req.url === '/proactive/sources') {
-    try {
-      store.seedProactiveSources()
-      sendJson(res, store.getProactiveSources('active'))
-    } catch (e) {
-      sendError(res, e.message)
-    }
-    return
-  }
-
-  // GET /proactive/context — recent memory for proactive tick
-  if (req.method === 'GET' && req.url === '/proactive/context') {
-    try {
-      const recent = store.db.prepare(`
-        SELECT ts, user_name, role, substr(content, 1, 200) as content
-        FROM episodes
-        WHERE kind = 'message' AND role IN ('user', 'assistant')
-        ORDER BY ts DESC LIMIT 20
-      `).all()
-      const lines = recent.reverse().map(r =>
-        `[${r.ts}] ${r.role === 'user' ? 'u' : 'a'}: ${r.content}`
-      ).join('\n')
-      sendJson(res, { context: lines })
-    } catch (e) {
-      sendError(res, e.message)
-    }
-    return
-  }
-
-  // POST /proactive/updates — apply source add/remove/score changes
-  if (req.method === 'POST' && req.url === '/proactive/updates') {
-    try {
-      const updates = await readBody(req)
-      if (Array.isArray(updates.add)) {
-        for (const s of updates.add) {
-          store.addProactiveSource(s.category, s.topic, s.query || '')
-        }
-      }
-      if (Array.isArray(updates.remove)) {
-        const sources = store.getProactiveSources('active')
-        for (const topic of updates.remove) {
-          const found = sources.find(s => s.topic === topic)
-          if (found && !found.pinned) store.removeProactiveSource(found.id)
-        }
-      }
-      if (updates.scores && typeof updates.scores === 'object') {
-        const sources = store.getProactiveSources('active')
-        for (const [topic, delta] of Object.entries(updates.scores)) {
-          const found = sources.find(s => s.topic === topic)
-          if (found) store.updateProactiveScore(found.id, delta > 0)
-        }
-      }
-      sendJson(res, { ok: true })
-    } catch (e) {
-      sendError(res, e.message, Number(e?.statusCode) || 500)
-    }
-    return
-  }
-
-  // POST /session-reset — update boot timestamp (called by SessionStart hook on /clear, /resume)
   if (req.method === 'POST' && req.url === '/session-reset') {
-    _bootTimestamp = new Date().toLocaleString('sv-SE').replace(' ', 'T')
-    process.stderr.write(`[memory] session-reset: _bootTimestamp updated to ${_bootTimestamp}\n`)
+    _bootTimestamp = Date.now()
     sendJson(res, { ok: true, bootTimestamp: _bootTimestamp })
     return
   }
-
-  // GET /health
-  if (req.method === 'GET' && req.url === '/health') {
-    try {
-      const episodeCount = store.countEpisodes()
-      const classificationCount = store.db.prepare('SELECT COUNT(*) AS n FROM classifications WHERE status = ?').get('active')?.n ?? 0
-      sendJson(res, { status: 'ok', episodeCount, classificationCount })
-    } catch (e) {
-      sendError(res, e.message)
-    }
+  if (req.method === 'POST' && req.url === '/rebind') {
+    _bootTimestamp = Date.now()
+    sendJson(res, { ok: true })
     return
   }
 
-  // ── Tool proxy endpoint (used by proxy-mode instances) ──
+  if (req.method === 'GET' && req.url === '/health') {
+    try {
+      const stats = entryStats()
+      sendJson(res, {
+        status: 'ok',
+        bootstrap: isBootstrapComplete(db),
+        entries: stats.total,
+        roots: stats.roots,
+        unclassified: stats.unclassified,
+      })
+    } catch (e) { sendError(res, e.message) }
+    return
+  }
+
   if (req.method === 'POST' && req.url === '/api/tool') {
     try {
       const body = await readBody(req)
       const result = await handleToolCall(body.name, body.arguments ?? {})
       sendJson(res, result)
     } catch (e) {
-      const status = Number(e?.statusCode) || 500
-      sendJson(res, { content: [{ type: 'text', text: `api/tool error: ${e.message}` }], isError: true }, status)
+      sendJson(res, { content: [{ type: 'text', text: `api/tool error: ${e.message}` }], isError: true }, Number(e?.statusCode) || 500)
     }
     return
   }
 
-  // ── Streamable HTTP MCP endpoint ──
   if (req.url === '/mcp') {
     try {
       if (req.method === 'POST') {
@@ -1185,12 +861,6 @@ const httpServer = http.createServer(async (req, res) => {
         await httpMcp.connect(httpTransport)
         const body = await readBody(req)
         await httpTransport.handleRequest(req, res, body)
-      } else if (req.method === 'GET') {
-        // SSE stream — not needed for stateless mode
-        sendJson(res, { error: 'SSE not supported in stateless mode' }, 405)
-      } else if (req.method === 'DELETE') {
-        // Session termination — not applicable in stateless mode
-        sendJson(res, { error: 'No session management in stateless mode' }, 405)
       } else {
         sendJson(res, { error: 'Method not allowed' }, 405)
       }
@@ -1207,43 +877,35 @@ const httpServer = http.createServer(async (req, res) => {
   }
 
   let body
-  try {
-    body = await readBody(req)
-  } catch (e) {
-    sendError(res, e.message, Number(e?.statusCode) || 500)
-    return
-  }
+  try { body = await readBody(req) }
+  catch (e) { sendError(res, e.message, Number(e?.statusCode) || 500); return }
 
   try {
-
-    // POST /episode
-    if (req.url === '/episode') {
-      const id = store.appendEpisode({
-        ts: body.ts || localNow(),
-        backend: body.backend || 'trib-memory',
-        channelId: body.channelId || null,
-        userId: body.userId || null,
-        userName: body.userName || null,
-        sessionId: body.sessionId || null,
-        role: body.role || 'user',
-        kind: body.kind || 'message',
-        content: body.content || '',
-        sourceRef: body.sourceRef || null,
-      })
-      sendJson(res, { ok: true, id })
+    if (req.url === '/entry') {
+      const role = String(body.role ?? 'user')
+      const content = String(body.content ?? '')
+      const sourceRef = String(body.sourceRef ?? `manual:${Date.now()}-${process.pid}`)
+      const sessionId = body.sessionId ?? null
+      const tsMs = parseTsToMs(body.ts ?? Date.now())
+      if (!content) { sendJson(res, { error: 'content required' }, 400); return }
+      try {
+        const result = db.prepare(`
+          INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(tsMs, role, content, sourceRef, sessionId)
+        sendJson(res, { ok: true, id: Number(result.lastInsertRowid), changes: Number(result.changes) })
+      } catch (e) {
+        sendJson(res, { error: e.message }, 500)
+      }
       return
     }
 
-    // POST /ingest-transcript
     if (req.url === '/ingest-transcript') {
       const filePath = body.filePath
-      if (!filePath) {
-        sendJson(res, { error: 'filePath required' }, 400)
-        return
-      }
+      if (!filePath) { sendJson(res, { error: 'filePath required' }, 400); return }
       try {
-        store.ingestTranscriptFile(filePath)
-        sendJson(res, { ok: true })
+        const n = ingestTranscriptFile(filePath)
+        sendJson(res, { ok: true, ingested: n })
       } catch (e) {
         sendJson(res, { error: e.message }, 500)
       }
@@ -1257,50 +919,32 @@ const httpServer = http.createServer(async (req, res) => {
   }
 })
 
-// ── Module exports (for unified server) ──────────────────────────────
-
-export { TOOL_DEFS }
+export { TOOL_DEFS, handleToolCall }
 export { MEMORY_INSTRUCTIONS_TEXT as instructions }
 
 export async function init() {
   if (_initialized) return
   await _initRuntime()
-  // Start HTTP server for episode append, proactive endpoints (channels depends on it)
   await _startHttpServer()
-  // Signal worker ready after actual init completion
   if (process.env.TRIB_WORKER_MODE === '1' && process.send) {
     process.send({ type: 'ready' })
   }
-  process.stderr.write('[memory-service] init() complete (unified mode)\n')
-  try {
-    const h = store.getHealthStatus()
-    process.stderr.write(`[memory] health=${h.status} vec=${h.vec_enabled ? (h.vec_ready ? 'ready' : 'not-ready') : 'off'} embed=${h.embedding.model_id || 'n/a'}:${h.embedding.dims || '?'}d reranker=${h.reranker.model_id || 'n/a'}@${h.reranker.device || '?'} reindex=${h.reindex_required ? 'yes' : 'no'} episodes=${h.counts.episodes} vectors=${h.counts.vectors_total} unclassified=${h.unclassified_episodes}\n`)
-  } catch {}
+  process.stderr.write(`[memory-service] init() complete (entries unified mode, version=${PLUGIN_VERSION})\n`)
 }
 
-export { handleToolCall }
-
-export async function start() {
-  _startCycles()
-}
+export async function start() { _startCycles() }
 
 export async function stop() {
   _stopCycles()
   void stopLlmWorker().catch(() => {})
-  if (httpServer) {
-    await new Promise(resolve => httpServer.close(resolve))
-  }
+  if (httpServer) await new Promise(resolve => httpServer.close(resolve))
+  closeDatabase(DATA_DIR)
+  releaseLock()
+  removePortFile()
 }
 
-// ══════════════════════════════════════════════════════════════════════
-//  STARTUP (standalone mode)
-// ══════════════════════════════════════════════════════════════════════
-
-// ── HTTP port binding ────────────────────────────────────────────────
-
 function writePortFile(port) {
-  const dir = path.dirname(PORT_FILE)
-  try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+  try { fs.mkdirSync(path.dirname(PORT_FILE), { recursive: true }) } catch {}
   fs.writeFileSync(PORT_FILE, String(port))
 }
 
@@ -1319,13 +963,11 @@ function _startHttpServer() {
         resolve(activePort)
       })
     }
-
     httpServer.on('error', (err) => {
       if (err.code === 'EADDRINUSE' && activePort < MAX_PORT) {
         activePort++
         tryListen()
       } else if (err.code === 'EADDRINUSE') {
-        process.stderr.write(`[memory-service] ports ${BASE_PORT}-${MAX_PORT} all busy, using OS-assigned port\n`)
         activePort = 0
         tryListen()
       } else {
@@ -1333,12 +975,10 @@ function _startHttpServer() {
         reject(err)
       }
     })
-
     tryListen()
   })
 }
 
-// ── IPC worker mode ──────────────────────────────────────────────
 if (process.env.TRIB_WORKER_MODE === '1' && process.send) {
   process.on('message', async (msg) => {
     if (msg.type !== 'call' || !msg.callId) return
@@ -1349,8 +989,29 @@ if (process.env.TRIB_WORKER_MODE === '1' && process.send) {
       process.send({ type: 'result', callId: msg.callId, error: e.message })
     }
   })
-  // Worker must self-init — init() sends ready after _initRuntime() + _startHttpServer()
   init().catch(e => {
     process.stderr.write(`[memory-worker] init failed: ${e.message}\n`)
+  })
+}
+
+if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}`) {
+  ;(async () => {
+    const existing = await isExistingServerHealthy()
+    if (existing) {
+      await runProxyMode(existing)
+      process.exit(0)
+    }
+    acquireLock()
+    process.on('exit', releaseLock)
+    process.on('SIGINT', () => { stop().finally(() => process.exit(0)) })
+    process.on('SIGTERM', () => { stop().finally(() => process.exit(0)) })
+    await init()
+    const transport = new StdioServerTransport()
+    await mcp.connect(transport)
+    await new Promise((resolve) => { mcp.onclose = resolve })
+    await stop()
+  })().catch((err) => {
+    process.stderr.write(`[memory-service] startup failed: ${err.stack || err.message}\n`)
+    process.exit(1)
   })
 }

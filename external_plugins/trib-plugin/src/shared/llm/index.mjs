@@ -5,7 +5,6 @@
  */
 import { runClaude, runCodex, runGemini } from './cli-runner.mjs'
 import { runHTTP, runOllamaHTTP } from './http-runner.mjs'
-import { semanticCacheLookup, semanticCacheStore } from './semantic-cache.mjs'
 import { DEFAULT_MAINTENANCE } from '../../agent/orchestrator/config.mjs'
 import { readFileSync, appendFileSync } from 'fs'
 import { join } from 'path'
@@ -51,7 +50,7 @@ function resolveApiKey(providerKey, agentConfig) {
  * @returns {Promise<string>}
  */
 export async function callLLM(prompt, presetOrId, options = {}) {
-  const { mode = 'maintenance', timeout = 180000, systemPrompt, cacheScope } = options
+  const { mode = 'maintenance', timeout = 180000, systemPrompt } = options
   const agentConfig = loadAgentConfig()
 
   const preset = typeof presetOrId === 'string'
@@ -63,24 +62,6 @@ export async function callLLM(prompt, presetOrId, options = {}) {
   const providerKey = preset.provider
   const presetName = preset.id || preset.name || 'unknown'
   const startMs = Date.now()
-
-  // Semantic cache lookup — allow-listed scopes only. Bridge agentLoop /
-  // provider send / tool execution never pass cacheScope by policy so they
-  // skip this path entirely. A hit short-circuits the provider call.
-  if (cacheScope) {
-    try {
-      const hit = await semanticCacheLookup(cacheScope, prompt, model)
-      if (hit?.response != null) {
-        const durationMs = Date.now() - startMs
-        process.stderr.write(
-          `[llm] ${presetName} (${model}) ${durationMs}ms cache-hit=${hit.hit}${hit.similarity ? ` sim=${hit.similarity.toFixed(3)}` : ''}\n`,
-        )
-        return hit.response
-      }
-    } catch (err) {
-      process.stderr.write(`[llm] semantic-cache lookup error: ${err?.message || err}\n`)
-    }
-  }
 
   let result
 
@@ -150,15 +131,6 @@ export async function callLLM(prompt, presetOrId, options = {}) {
     })
     appendFileSync(logPath, entry + '\n')
   } catch {}
-
-  // Persist to semantic cache for future hits (same scope contract as lookup).
-  if (cacheScope && text) {
-    try {
-      await semanticCacheStore(cacheScope, prompt, model, text)
-    } catch (err) {
-      process.stderr.write(`[llm] semantic-cache store error: ${err?.message || err}\n`)
-    }
-  }
 
   return text
 }
