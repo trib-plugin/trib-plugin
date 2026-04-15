@@ -79,8 +79,8 @@ export function alignBoundaryForward(messages, idx) {
     return i;
 }
 /**
- * Estimator shared with the compaction path. Very rough: ~4 chars per token.
- * Exported so compaction.mjs can budget without re-implementing the same
+ * Estimator shared with the compressor path. Very rough: ~4 chars per token.
+ * Exported so compressor.mjs can budget without re-implementing the same
  * heuristic.
  */
 export function estimateTokensShared(text) {

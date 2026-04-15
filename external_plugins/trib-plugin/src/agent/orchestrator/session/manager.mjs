@@ -1,6 +1,4 @@
 import { getProvider } from '../providers/registry.mjs';
-import { trimMessages } from './trim.mjs';
-import { compress as compactMessages } from './compaction.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
@@ -59,25 +57,6 @@ function guessContextWindow(model) {
     if (model.includes('llama') || model.includes('mistral') || model.includes('phi'))
         return 8192;
     return 128000;
-}
-// Pull the Hermes-style summary body out of a compacted message list so the
-// next compaction pass can do an iterative update instead of re-summarizing
-// from scratch. Matches the `[Context summary from earlier turns` preamble
-// emitted by compaction._formatSummaryBody.
-function _extractSummaryBody(messages) {
-    if (!Array.isArray(messages)) return null;
-    for (const m of messages) {
-        const text = typeof m?.content === 'string' ? m.content : '';
-        const marker = '[Context summary from earlier turns';
-        const idx = text.indexOf(marker);
-        if (idx >= 0) {
-            // Preamble ends with ']\n\n'; keep only the structured summary.
-            const close = text.indexOf(']', idx);
-            if (close > 0) return text.slice(close + 1).trim();
-            return text;
-        }
-    }
-    return null;
 }
 // --- create_session ---
 // opts can pass either a `preset` object (from config.presets) or raw provider/model.
@@ -142,7 +121,6 @@ export function createSession(opts) {
         // Hermes-style in-flight compressor state
         compressionCount: 0,
         previousSummary: null,
-        lastCompressionAttemptAt: null,
     };
     saveSession(session);
     return session;
@@ -315,25 +293,15 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.messages.push({ role: 'assistant', content: 'Noted.' });
             }
             const beforeCount = session.messages.length + 1;
-            const budget = Math.floor(session.contextWindow * 0.25);
+            // Soft warning only; real size management (compaction primary,
+            // byte-budget trim as safety net) lives in agentLoop. Selecting a
+            // 25% pre-trim here would starve compaction's 50% threshold.
+            const softBudget = Math.floor(session.contextWindow * 0.25);
             const promptTokenEstimate = prompt.length * 0.5; // conservative for CJK
-            if (promptTokenEstimate > budget * 0.7) {
-                process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${budget} budget)\n`);
+            if (promptTokenEstimate > softBudget * 0.7) {
+                process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${softBudget} soft budget)\n`);
             }
-            const candidate = [...session.messages, { role: 'user', content: prompt }];
-            // Single-path: compaction is always-on. compactMessages itself
-            // short-circuits to the unchanged input when below threshold or
-            // in summary cooldown. trimMessages then runs as the byte-budget
-            // safety pass on whatever compaction produced.
-            const compacted = await compactMessages(candidate, {
-                contextWindow: session.contextWindow,
-                previousSummary: session.compactionSummary || null,
-            });
-            if (compacted !== candidate) {
-                session.compactionSummary = _extractSummaryBody(compacted);
-            }
-            const outgoing = trimMessages(compacted, budget);
-            const messagesDropped = beforeCount - outgoing.length;
+            const outgoing = [...session.messages, { role: 'user', content: prompt }];
             const effectiveCwd = cwdOverride || session.cwd;
             const result = await _api_call_with_interrupt(sessionId, (signal) =>
                 agentLoop(provider, outgoing, session.model, session.tools, onToolCall, effectiveCwd, {
@@ -353,7 +321,9 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             if (currentRuntime?.closed || currentRuntime?.generation !== askGeneration) {
                 throw new SessionClosedError(sessionId, 'closed during call');
             }
-            // Update and save
+            // Update and save. outgoing is mutated in place by agentLoop
+            // (compaction + safety trim), so its length reflects post-loop state.
+            const messagesDropped = Math.max(0, beforeCount - outgoing.length);
             session.messages = outgoing;
             if (result.content) {
                 session.messages.push({ role: 'assistant', content: result.content });
@@ -443,7 +413,6 @@ export function resumeSession(sessionId, preset) {
     // Backfill compressor state for sessions created before the feature landed.
     if (typeof session.compressionCount !== 'number') session.compressionCount = 0;
     if (session.previousSummary === undefined) session.previousSummary = null;
-    if (session.lastCompressionAttemptAt === undefined) session.lastCompressionAttemptAt = null;
     // Refresh tools (MCP connections may have changed)
     const oldTools = session.tools || [];
     const skills = collectSkillsCached(session.cwd);

@@ -3,13 +3,14 @@ import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
 import { traceBridgeLoop, traceBridgeTool, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
+import { trimMessages } from './trim.mjs';
 import {
     shouldCompress,
     compress,
     estimateMessagesTokensRough,
     THRESHOLD_PERCENT,
-    SUMMARY_FAILURE_COOLDOWN_SECONDS,
 } from './compressor.mjs';
+const SAFETY_TRIM_PERCENT = 0.90;
 const MAX_ITERATIONS = 100;
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 /**
@@ -93,17 +94,13 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         // --- Hermes-style in-flight compression (before each provider.send) ---
         // Only runs when we have a session ref (i.e. called from askSession).
         // Threshold: messages token estimate >= contextWindow * THRESHOLD_PERCENT.
+        // Failure cooldown is handled inside compressor.mjs via its per-process
+        // _summaryFailureCooldownUntil gate — no session-level gate here.
         if (sessionRef && typeof sessionRef.contextWindow === 'number') {
             try {
                 const currentTokens = estimateMessagesTokensRough(messages);
                 const thresholdTokens = Math.round(sessionRef.contextWindow * THRESHOLD_PERCENT);
-                const lastAttempt = Number(sessionRef.lastCompressionAttemptAt) || 0;
-                const cooldownActive = lastAttempt > 0
-                    && (Date.now() - lastAttempt) < SUMMARY_FAILURE_COOLDOWN_SECONDS * 1000
-                    && (sessionRef.compressionCount || 0) === sessionRef._lastCompressionCountSnapshot;
-                if (!cooldownActive && shouldCompress(messages, currentTokens, thresholdTokens)) {
-                    sessionRef.lastCompressionAttemptAt = Date.now();
-                    sessionRef._lastCompressionCountSnapshot = sessionRef.compressionCount || 0;
+                if (shouldCompress(messages, currentTokens, thresholdTokens)) {
                     const result = await compress(messages, {
                         provider,
                         sendOpts: { ...opts, model },
@@ -119,11 +116,20 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                         messages.push(...result.messages);
                         sessionRef.previousSummary = result.summary || sessionRef.previousSummary || null;
                         sessionRef.compressionCount = (sessionRef.compressionCount || 0) + 1;
-                        sessionRef._lastCompressionCountSnapshot = sessionRef.compressionCount;
                     }
                 }
             } catch (err) {
                 process.stderr.write(`[loop] compressor error: ${err?.message || err}\n`);
+            }
+            // Safety net: hard-limit byte trim after compaction (or when
+            // compaction declined). Compaction is primary; this only drops
+            // messages when the total still exceeds SAFETY_TRIM_PERCENT of the
+            // context window — prevents sending bodies past provider limits.
+            const safetyBudget = Math.floor(sessionRef.contextWindow * SAFETY_TRIM_PERCENT);
+            const trimmed = trimMessages(messages, safetyBudget);
+            if (trimmed.length !== messages.length) {
+                messages.length = 0;
+                messages.push(...trimmed);
             }
         }
         const nextIteration = iterations + 1;

@@ -1159,27 +1159,26 @@
       </div>
 
       <div class="sec">
-        <div class="sec-title">Agent Learning Cycle</div>
-        <div class="sec-desc">Periodic trajectory analysis and skill pattern detection.</div>
+        <div class="sec-title">Agent Maintenance Cycle</div>
+        <div class="sec-desc">Periodic agent trajectory analysis and maintenance tasks.</div>
         <div class="sec-body">
           <div class="r toggle-row">
             <span class="r-name-wide">Enabled</span>
             <label class="toggle">
-              <input type="checkbox" id="c3-enabled" onchange="saveLearningConfig()">
+              <input type="checkbox" id="am-enabled" onchange="saveLearningConfig()">
               <span class="toggle-track"></span>
             </label>
           </div>
           <div class="r">
             <span class="r-name-wide">Interval</span>
-            <select class="r-select" id="c3-interval" onchange="c3IntervalChanged()">
-              <option value="5m">5 min</option>
-              <option value="10m">10 min</option>
+            <select class="r-select" id="am-interval" onchange="amIntervalChanged()">
               <option value="15m">15 min</option>
-              <option value="30m" selected>30 min</option>
-              <option value="1h">1 hour</option>
+              <option value="30m">30 min</option>
+              <option value="1h" selected>1 hour</option>
+              <option value="2h">2 hour</option>
               <option value="custom">Custom</option>
             </select>
-            <input class="r-input" id="c3-interval-custom" type="text" placeholder="e.g. 20m, 2h" style="flex:1;display:none;margin-left:8px" onchange="saveLearningConfig()">
+            <input class="r-input" id="am-interval-custom" type="text" placeholder="e.g. 20m, 2h" style="flex:1;display:none;margin-left:8px" onchange="saveLearningConfig()">
           </div>
         </div>
       </div>
@@ -1271,27 +1270,6 @@
               </select>
               <button class="save" id="mem-btn-backfill" onclick="memRunBackfill()" style="width:auto;height:34px;padding:0 16px;margin-left:8px;font-size:12px">Run</button>
             </div>
-          </div>
-        </div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Session Recap</div>
-        <div class="sec-desc">Generate a summary of the previous session and inject into CLAUDE.md on startup.</div>
-        <div class="sec-body">
-          <div class="r toggle-row">
-            <span class="r-name-wide">Enabled</span>
-            <label class="toggle">
-              <input type="checkbox" id="mem-recap-enabled" checked>
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Model</span>
-            <select class="r-select" id="mem-recap-preset"></select>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Query</span>
-            <input class="r-input" id="mem-recap-query" type="text" placeholder="직전 세션에서 무엇을 작업했고 어디까지 진행했는지">
           </div>
         </div>
       </div>
@@ -2778,8 +2756,6 @@ function memPopulateConfig() {
   if (memConfig.cycle1?.timeout) document.getElementById('mem-set-timeout').value = memConfig.cycle1.timeout;
   if (memConfig.cycle1?.batchSize) document.getElementById('mem-set-batch-size').value = memConfig.cycle1.batchSize;
   if (memConfig.cycle2?.interval) document.getElementById('mem-set-interval').value = memConfig.cycle2.interval;
-  document.getElementById('mem-recap-enabled').checked = memConfig.sessionRecap?.enabled !== false;
-  document.getElementById('mem-recap-query').value = memConfig.sessionRecap?.query || '';
 }
 
 function memToggleMemory() {
@@ -2840,7 +2816,7 @@ async function memSaveProviders() {
 }
 
 function memBuildConfigData() {
-  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { interval: document.getElementById('mem-set-interval').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined }, sessionRecap: { enabled: document.getElementById('mem-recap-enabled').checked, preset: document.getElementById('mem-recap-preset')?.value||undefined, query: document.getElementById('mem-recap-query').value.trim()||undefined } };
+  return { enabled: document.getElementById('mem-set-enabled').checked, user: { name: document.getElementById('mem-set-user-name').value.trim(), title: document.getElementById('mem-set-user-title').value.trim() }, cycle1: { interval: document.getElementById('mem-set-retention').value, timeout: parseInt(document.getElementById('mem-set-timeout').value)||30, batchSize: parseInt(document.getElementById('mem-set-batch-size').value)||50, preset: document.getElementById('mem-cycle1-preset')?.value||undefined }, cycle2: { interval: document.getElementById('mem-set-interval').value.trim(), preset: document.getElementById('mem-cycle2-preset')?.value||undefined } };
 }
 
 async function memSaveConfig() {
@@ -2867,11 +2843,6 @@ async function memPopulateCycleDropdowns() {
     c2.innerHTML = options;
     if (memConfig.cycle1?.preset) c1.value = memConfig.cycle1.preset;
     if (memConfig.cycle2?.preset) c2.value = memConfig.cycle2.preset;
-    const recap = document.getElementById('mem-recap-preset');
-    if (recap) {
-      recap.innerHTML = options;
-      recap.value = memConfig.sessionRecap?.preset || 'sonnet-mid';
-    }
   } catch {}
 }
 
@@ -3118,10 +3089,10 @@ async function loadLearningConfig() {
     const res = await fetch('/agent/learning');
     const data = await res.json();
     document.getElementById('traj-enabled').checked = data.trajectory?.enabled !== false;
-    document.getElementById('c3-enabled').checked = data.cycle3?.enabled === true;
-    const interval = data.cycle3?.interval || '30m';
-    const sel = document.getElementById('c3-interval');
-    const customInput = document.getElementById('c3-interval-custom');
+    document.getElementById('am-enabled').checked = data.agentMaintenance?.enabled === true;
+    const interval = data.agentMaintenance?.interval || '1h';
+    const sel = document.getElementById('am-interval');
+    const customInput = document.getElementById('am-interval-custom');
     if ([...sel.options].some(o => o.value === interval)) {
       sel.value = interval;
       customInput.style.display = 'none';
@@ -3134,9 +3105,9 @@ async function loadLearningConfig() {
   } catch {}
 }
 
-function c3IntervalChanged() {
-  const sel = document.getElementById('c3-interval');
-  const customInput = document.getElementById('c3-interval-custom');
+function amIntervalChanged() {
+  const sel = document.getElementById('am-interval');
+  const customInput = document.getElementById('am-interval-custom');
   if (sel.value === 'custom') {
     customInput.style.display = '';
     customInput.focus();
@@ -3146,10 +3117,10 @@ function c3IntervalChanged() {
   }
 }
 
-function getC3Interval() {
-  const sel = document.getElementById('c3-interval');
+function getAmInterval() {
+  const sel = document.getElementById('am-interval');
   if (sel.value === 'custom') {
-    return document.getElementById('c3-interval-custom').value.trim() || '30m';
+    return document.getElementById('am-interval-custom').value.trim() || '1h';
   }
   return sel.value;
 }
@@ -3161,9 +3132,9 @@ async function saveLearningConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         trajectory: { enabled: document.getElementById('traj-enabled').checked },
-        cycle3: {
-          enabled: document.getElementById('c3-enabled').checked,
-          interval: getC3Interval(),
+        agentMaintenance: {
+          enabled: document.getElementById('am-enabled').checked,
+          interval: getAmInterval(),
         },
         skillSuggest: { autoDetect: document.getElementById('skill-auto').checked },
       }),
@@ -3175,16 +3146,17 @@ async function saveLearningConfig() {
 const AG_MAINT_TASKS = [
   { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
   { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (daily)' },
-  { id: 'cycle3', label: 'Cycle 3', desc: 'Trajectory analysis (periodic)' },
   { id: 'reason', label: 'Reason', desc: 'Memory-based reasoning synthesis' },
 ];
 let agMaintenance = {};
+let agMaintenanceDefaults = {};
 
 async function loadAgMaintenance() {
   try {
     const r = await fetch('/agent/maintenance').then(r => r.json());
     agMaintenance = r.maintenance || {};
-  } catch { agMaintenance = {}; }
+    agMaintenanceDefaults = r.defaults || {};
+  } catch { agMaintenance = {}; agMaintenanceDefaults = {}; }
   renderAgMaintenance();
 }
 
@@ -3194,10 +3166,12 @@ function renderAgMaintenance() {
   container.innerHTML = '';
   for (const task of AG_MAINT_TASKS) {
     const current = agMaintenance[task.id] || '';
+    const taskDefault = agMaintenanceDefaults[task.id] || '';
+    const defaultLabel = taskDefault ? `(${taskDefault})` : '(Default)';
     container.innerHTML += `<div class="r">
       <span class="r-name">${task.label}</span>
       <select class="r-select" id="ag-maint-${task.id}" style="width:200px;flex:0 0 200px">
-        <option value="">(Default)</option>
+        <option value="">${escapeAttr(defaultLabel)}</option>
         ${agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === current ? ' selected' : ''}>${p.name || p.id}</option>`).join('')}
       </select>
       <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">${task.desc}</span>
@@ -3206,7 +3180,8 @@ function renderAgMaintenance() {
   const defEl = document.getElementById('ag-maint-default');
   if (!defEl) return;
   const defVal = agMaintenance.defaultPreset || '';
-  defEl.innerHTML = `<option value="">(sonnet-mid)</option>` +
+  const fallbackLabel = agMaintenanceDefaults.defaultPreset || 'Default';
+  defEl.innerHTML = `<option value="">(${escapeAttr(fallbackLabel)})</option>` +
     agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === defVal ? ' selected' : ''}>${p.name || p.id}</option>`).join('');
 }
 

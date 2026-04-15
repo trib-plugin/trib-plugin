@@ -104,10 +104,7 @@ function buildContext() {
 function buildRecap() {
   let db = null;
   try {
-    const memCfg = readJson(path.join(DATA_DIR, 'memory-config.json'));
-    const recapCfg = memCfg.sessionRecap || {};
-    if (recapCfg.enabled === false) return '';
-    const limit = recapCfg.limit || 20;
+    const limit = 20;
 
     db = openMemoryDb();
     if (!db) return '';

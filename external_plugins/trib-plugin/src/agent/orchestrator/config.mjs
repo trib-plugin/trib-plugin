@@ -36,6 +36,14 @@ const ENV_KEY_MAP = {
     openrouter: 'OPENROUTER_API_KEY',
     xai: 'XAI_API_KEY',
 };
+// Canonical maintenance defaults. Single source of truth — imported by
+// llm/index.mjs and setup-server.mjs so UI/runtime cannot drift from config.
+export const DEFAULT_MAINTENANCE = Object.freeze({
+    defaultPreset: 'gpt5.4-mini',
+    cycle1: 'gpt5.4-mini',
+    cycle2: 'GPT5.4',
+    reason: 'sonnet-mid',
+});
 function buildDefaultConfig() {
     const providers = {};
     // API providers — enabled if env key exists
@@ -121,11 +129,6 @@ export function loadConfig() {
             }
             // user-workflow.json is managed by setup UI; no auto-seeding here
             const defaults = buildDefaultConfig();
-            // Migrate legacy cycle3 → agentMaintenance
-            if (raw.cycle3 && !raw.agentMaintenance) {
-                raw.agentMaintenance = raw.cycle3;
-                delete raw.cycle3;
-            }
             // Deep-merge provider subkeys: unknown per-provider values are
             // preserved through save/load so future fields round-trip
             // without schema updates here.
@@ -144,10 +147,10 @@ export function loadConfig() {
                 mcpServers: raw.mcpServers || {},
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
                 default: raw.default || null,
-                // New feature config with defaults
+                maintenance: { ...DEFAULT_MAINTENANCE, ...raw.maintenance },
+                agentMaintenance: { enabled: true, interval: '1h', ...raw.agentMaintenance },
                 trajectory: { enabled: true, ...raw.trajectory },
-                skillSuggest: { autoDetect: false, ...raw.skillSuggest },
-                agentMaintenance: { enabled: false, interval: '30m', ...raw.agentMaintenance },
+                skillSuggest: { autoDetect: true, ...raw.skillSuggest },
                 // Top-level extension blocks preserved through save/load so
                 // future keys round-trip without schema updates here.
                 bridge: raw.bridge && typeof raw.bridge === 'object' ? raw.bridge : {},
@@ -162,9 +165,10 @@ export function loadConfig() {
         mcpServers: {},
         presets: [],
         default: null,
+        maintenance: { ...DEFAULT_MAINTENANCE },
+        agentMaintenance: { enabled: true, interval: '1h' },
         trajectory: { enabled: true },
-        skillSuggest: { autoDetect: false },
-        agentMaintenance: { enabled: false, interval: '30m' },
+        skillSuggest: { autoDetect: true },
         bridge: {},
         semanticCache: {},
     };
@@ -204,9 +208,10 @@ export function saveConfig(config) {
         mcpServers: config.mcpServers || {},
         presets: Array.isArray(config.presets) ? config.presets : [],
         default: config.default || null,
+        maintenance: config.maintenance || {},
+        agentMaintenance: config.agentMaintenance || {},
         trajectory: config.trajectory || {},
         skillSuggest: config.skillSuggest || {},
-        agentMaintenance: config.agentMaintenance || {},
         bridge: config.bridge || {},
         semanticCache: config.semanticCache || {},
     };

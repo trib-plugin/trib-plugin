@@ -6,6 +6,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
+import { DEFAULT_MAINTENANCE } from '../src/agent/orchestrator/config.mjs';
 
 let DatabaseSync;
 try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
@@ -902,8 +903,9 @@ const server = http.createServer(async (req, res) => {
   // -- Agent maintenance presets --
   if (req.method === 'GET' && path === '/agent/maintenance') {
     const cfg = readAgentConfig();
+    const merged = { ...DEFAULT_MAINTENANCE, ...(cfg.maintenance || {}) };
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ maintenance: cfg.maintenance || {} }));
+    res.end(JSON.stringify({ maintenance: merged, defaults: { ...DEFAULT_MAINTENANCE } }));
     return;
   }
 
@@ -962,8 +964,8 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       trajectory: { enabled: true, ...cfg.trajectory },
-      skillSuggest: { autoDetect: false, ...cfg.skillSuggest },
-      cycle3: { enabled: false, interval: '30m', ...cfg.cycle3 },
+      skillSuggest: { autoDetect: true, ...cfg.skillSuggest },
+      agentMaintenance: { enabled: true, interval: '1h', ...cfg.agentMaintenance },
     }));
     return;
   }
@@ -973,7 +975,7 @@ const server = http.createServer(async (req, res) => {
     const existing = readAgentConfig();
     if (data.trajectory) existing.trajectory = { ...(existing.trajectory || {}), ...data.trajectory };
     if (data.skillSuggest) existing.skillSuggest = { ...(existing.skillSuggest || {}), ...data.skillSuggest };
-    if (data.cycle3) existing.cycle3 = { ...(existing.cycle3 || {}), ...data.cycle3 };
+    if (data.agentMaintenance) existing.agentMaintenance = { ...(existing.agentMaintenance || {}), ...data.agentMaintenance };
     writeAgentConfig(existing);
     console.log('  Config saved: agent learning');
     res.writeHead(200, { 'Content-Type': 'application/json' });

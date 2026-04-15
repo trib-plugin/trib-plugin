@@ -66,6 +66,19 @@ const PLUGIN_VERSION = JSON.parse(
 const LOG_FILE = join(PLUGIN_DATA, 'mcp-debug.log')
 const log = msg => appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`)
 
+// ── Crash handlers ──────────────────────────────────────────────────
+// Leave a trace on silent hangs. Previously only child workers
+// (channels/memory) installed these; the main MCP entry had none, so
+// unhandled errors died without writing a stack.
+const CRASH_FILE = join(PLUGIN_DATA, 'crash.log')
+const logCrash = (kind, err) => {
+  const stack = err?.stack || String(err)
+  try { appendFileSync(CRASH_FILE, `[${new Date().toISOString()}] ${kind}\n${stack}\n\n`) } catch {}
+  try { log(`${kind}: ${err?.message || err}`) } catch {}
+}
+process.on('uncaughtException', (err) => { logCrash('uncaughtException', err); process.exit(1) })
+process.on('unhandledRejection', (reason) => { logCrash('unhandledRejection', reason) })
+
 // ── Bridge orphan cleanup ───────────────────────────────────────────
 try {
   const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/cli-runner.mjs')).href)

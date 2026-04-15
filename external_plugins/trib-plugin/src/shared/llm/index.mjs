@@ -6,6 +6,7 @@
 import { runClaude, runCodex, runGemini } from './cli-runner.mjs'
 import { runHTTP, runOllamaHTTP } from './http-runner.mjs'
 import { semanticCacheLookup, semanticCacheStore } from './semantic-cache.mjs'
+import { DEFAULT_MAINTENANCE } from '../../agent/orchestrator/config.mjs'
 import { readFileSync, appendFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -164,12 +165,13 @@ export async function callLLM(prompt, presetOrId, options = {}) {
 
 /**
  * Resolve maintenance preset ID for a given task from agent-config.
- * Falls back to default maintenance preset, then 'sonnet-mid'.
+ * Falls back to canonical defaults (DEFAULT_MAINTENANCE from config.mjs).
  */
 export function resolveMaintenancePreset(task, agentConfig) {
   const cfg = agentConfig || loadAgentConfig()
   const maint = cfg?.maintenance || {}
-  const presetId = maint[task] || maint.defaultPreset || 'sonnet-mid'
+  const presetId = maint[task] || maint.defaultPreset
+    || DEFAULT_MAINTENANCE[task] || DEFAULT_MAINTENANCE.defaultPreset
   const presets = cfg?.presets || []
   if (presets.some(p => p.id === presetId || p.name === presetId)) return presetId
   return { id: '_fallback', type: 'native', model: 'sonnet', effort: 'medium' }
