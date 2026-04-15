@@ -33,11 +33,19 @@ function requestOpen() {
 const alive = await ping();
 
 if (!alive) {
+  // Pass launcher's parent PID (Claude Code CLI process) so setup-server can
+  // self-terminate when that parent dies — prevents Windows zombies after the
+  // MCP host exits (v0.6.0 zombie fix covered workers only; this is the
+  // detached-process equivalent).
   const child = spawn(process.execPath, [server], {
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore'],
     cwd: dirname(__dirname),
-    env: { ...process.env, TRIB_SETUP_OPEN_ON_START: '1' },
+    env: {
+      ...process.env,
+      TRIB_SETUP_OPEN_ON_START: '1',
+      TRIB_SETUP_PARENT_PID: String(process.ppid || ''),
+    },
     windowsHide: true,
     shell: false,
   });

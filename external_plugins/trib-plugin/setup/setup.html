@@ -1317,23 +1317,6 @@
           </div>
         </div>
       </div>
-      <div class="sec">
-        <div class="sec-title">User Model</div>
-        <div class="sec-desc">Build structured user profile from conversation patterns. Includes confidence decay.</div>
-        <div class="sec-body">
-          <div class="r toggle-row">
-            <span class="r-name-wide">Enabled</span>
-            <label class="toggle">
-              <input type="checkbox" id="um-enabled" checked onchange="saveMemUserModel()">
-              <span class="toggle-track"></span>
-            </label>
-          </div>
-          <div class="r">
-            <span class="r-name-wide">Decay Period (days)</span>
-            <input class="r-input" id="um-decay" type="number" value="30" min="7" max="365" style="flex:1" onchange="saveMemUserModel()">
-          </div>
-        </div>
-      </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-mem-settings"></div>
         <button class="save" onclick="memSaveConfig()">Save</button>
@@ -1859,7 +1842,6 @@ window.addEventListener('load', async () => {
     genLoadConfig(),
     wfLoadConfig(),
     loadLearningConfig(),
-    loadMemUserModel(),
   ]);
   results.forEach((r, i) => { if (r.status === 'rejected') console.error('[trib] loader', i, 'failed:', r.reason); });
 
@@ -3214,31 +3196,6 @@ async function saveLearningConfig() {
           interval: getC3Interval(),
         },
         skillSuggest: { autoDetect: document.getElementById('skill-auto').checked },
-      }),
-    });
-  } catch {}
-}
-
-// ============================================================
-// MEMORY USER MODEL CONFIG
-// ============================================================
-async function loadMemUserModel() {
-  try {
-    const res = await fetch('/memory/user-model');
-    const data = await res.json();
-    document.getElementById('um-enabled').checked = data.enabled !== false;
-    document.getElementById('um-decay').value = data.decayDays || 30;
-  } catch {}
-}
-
-async function saveMemUserModel() {
-  try {
-    await fetch('/memory/user-model', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        enabled: document.getElementById('um-enabled').checked,
-        decayDays: parseInt(document.getElementById('um-decay').value) || 30,
       }),
     });
   } catch {}

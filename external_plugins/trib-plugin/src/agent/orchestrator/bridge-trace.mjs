@@ -98,7 +98,7 @@ function traceBridgeSse({ sessionId, sseParseMs }) {
     });
 }
 
-function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, model }) {
+function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, model, responseId }) {
     appendBridgeTrace({
         sessionId,
         iteration,
@@ -107,6 +107,9 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         output_tokens: outputTokens,
         cached_tokens: cachedTokens,
         model: model || null,
+        // Phase 3a: correlation id for stateful continuation (optional — only
+        // populated by openai-oauth when Codex SSE exposes response.id).
+        response_id: responseId || null,
     });
 }
 

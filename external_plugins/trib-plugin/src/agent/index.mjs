@@ -1,6 +1,3 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initProviders } from './orchestrator/providers/registry.mjs';
 import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError } from './orchestrator/session/manager.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
@@ -9,25 +6,7 @@ import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflo
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
 import { writeFileSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? dirname(fileURLToPath(import.meta.url));
-
-function readPluginVersion() {
-  try {
-    const manifestPath = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json');
-    return JSON.parse(readFileSync(manifestPath, 'utf8')).version || '0.0.1';
-  } catch {
-    return '0.0.1';
-  }
-}
-
-const PLUGIN_VERSION = readPluginVersion();
-
-function getServerElicitFn() {
-  return typeof server.elicitInput === 'function' ? (opts) => server.elicitInput(opts) : null;
-}
+import { join } from 'path';
 
 function buildInstructions() {
   const lines = [
@@ -95,11 +74,6 @@ const _promptStore = {
   },
 };
 
-const server = new Server(
-  { name: 'trib-agent', version: PLUGIN_VERSION },
-  { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: INSTRUCTIONS },
-);
-
 // --- Helpers ---
 
 function ok(data) {
@@ -109,18 +83,6 @@ function ok(data) {
 function fail(err) {
   const msg = err instanceof Error ? err.message : String(err);
   return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
-}
-
-function notify(text) {
-  server.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content: text,
-      meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
-    },
-  }).catch((err) => {
-    process.stderr.write(`[agent-notify] failed: ${err instanceof Error ? err.message : String(err)}\n`);
-  });
 }
 
 // Format token counts in Claude Code style: <1000 as-is, >=1000 as "9.9k".
@@ -221,19 +183,6 @@ const TOOLS = [
   },
 ];
 
-// --- Handlers ---
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const name = req.params.name;
-  const args = req.params.arguments ?? {};
-  return handleToolCall(name, args, {
-    notifyFn: notify,
-    elicitFn: getServerElicitFn(),
-  });
-});
-
 // ── Module exports (for unified server) ──────────────────────────────
 
 export { TOOLS as TOOL_DEFS };
@@ -255,7 +204,7 @@ export async function init() {
  * @param {{ notifyFn?: (text: string) => void, elicitFn?: (opts: object) => Promise<object> }} [opts]
  */
 export async function handleToolCall(name, args, opts = {}) {
-  const notifyFn = typeof opts.notifyFn === 'function' ? opts.notifyFn : notify;
+  const notifyFn = typeof opts.notifyFn === 'function' ? opts.notifyFn : null;
   const elicit = typeof opts.elicitFn === 'function' ? opts.elicitFn : null;
 
   try {
@@ -331,10 +280,9 @@ export async function handleToolCall(name, args, opts = {}) {
           return { const: String(i), title: parts.join(' · ') };
         });
         const currentIdx = current ? presets.findIndex((p) => p.name === current.name) : 0;
-        const elicitFn = elicit || getServerElicitFn();
-        if (elicitFn) {
+        if (elicit) {
           try {
-            const result = await elicitFn({
+            const result = await elicit({
               message: `Current: ${currentLabel}\nSelect a model preset:`,
               requestedSchema: {
                 type: 'object',
@@ -460,7 +408,7 @@ export async function handleToolCall(name, args, opts = {}) {
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const scopeLabel = args.scope || 'default';
         const modelLabel = preset.model || preset.name;
-        const emit = notifyFn;
+        const emit = notifyFn || (() => {});
 
         (async () => {
           const t0 = Date.now();

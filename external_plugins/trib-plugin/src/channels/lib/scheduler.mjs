@@ -639,7 +639,7 @@ Write a natural, casual conversation starter in Korean (2-4 sentences).
     logSchedule("proactive: firing LLM\n");
     const presetId = this.proactive?.model || 'sonnet-mid';
     try {
-      const raw = await callLLM(task, presetId, { mode: 'active', timeout: 90000 });
+      const raw = await callLLM(task, presetId, { mode: 'active', timeout: 90000, cacheScope: 'proactive' });
       let result;
       try {
         const jsonMatch = raw.match(/\{[\s\S]*\}/);

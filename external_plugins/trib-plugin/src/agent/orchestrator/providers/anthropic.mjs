@@ -1,9 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadConfig } from '../config.mjs';
 
+// Single-path: 5-minute ephemeral cache only. The 1h extended-TTL beta is
+// not exposed — `cacheTtl` config key was removed for v0.6.10.
+const EPHEMERAL_CACHE_CONTROL = { type: 'ephemeral' };
+
 function withEphemeralCacheControl(block) {
     if (!block || typeof block !== 'object' || block.cache_control) return block;
-    return { ...block, cache_control: { type: 'ephemeral' } };
+    return { ...block, cache_control: EPHEMERAL_CACHE_CONTROL };
 }
 
 function appendAnthropicCacheControl(content) {
@@ -164,6 +168,8 @@ export class AnthropicProvider {
         const useModel = model || 'claude-sonnet-4-0';
         const maxTokens = MAX_TOKENS[useModel] || 8192;
         const opts = sendOpts || {};
+        // Single-path: 5-minute ephemeral cache_control on system + last few
+        // chat messages. The 1h extended-TTL beta has been removed for v0.6.10.
         const systemMsgs = messages.filter(m => m.role === 'system');
         const chatMsgs = messages.filter(m => m.role !== 'system');
         const systemText = systemMsgs.map(m => m.content).join('\n\n') || undefined;
@@ -172,7 +178,9 @@ export class AnthropicProvider {
         const params = {
             model: useModel,
             max_tokens: maxTokens,
-            system: systemText ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }] : undefined,
+            system: systemText
+                ? [{ type: 'text', text: systemText, cache_control: EPHEMERAL_CACHE_CONTROL }]
+                : undefined,
             messages: anthropicMessages,
         };
         if (tools?.length) {
@@ -183,11 +191,10 @@ export class AnthropicProvider {
             params.thinking = { type: 'enabled', budget_tokens: EFFORT_BUDGET[opts.effort] };
         }
         // Fast mode → speed: "fast" (Opus 4.6 only, infrastructure priority routing)
-        const extraHeaders = {};
         if (opts.fast === true) {
             params.speed = 'fast';
         }
-        const requestOpts = { headers: extraHeaders };
+        const requestOpts = {};
         if (opts.signal) requestOpts.signal = opts.signal;
         const response = await this.client.messages.create(params, requestOpts);
         const textBlock = response.content.find(b => b.type === 'text');

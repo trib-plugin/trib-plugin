@@ -5,13 +5,30 @@
  * Usage: node retrieval-eval.mjs [--full-pipeline]
  *   --full-pipeline: run cycle1 LLM classification (slow, realistic)
  *   --reranker: enable cross-encoder reranker (bge-reranker-base)
+ *   --profile:   embedding+reranker load/warmup/steady/post-idle profiling
+ *                matrix (cold boot → post-warmup → single → batched →
+ *                reranker on/off → post-idle); appends to
+ *                history/model-profile.jsonl. Retrieval metrics not printed.
  *   default: manual classification + embedding (fast, isolates retrieval)
  */
 
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import { MemoryStore } from '../lib/memory.mjs'
-import { embedText, getEmbeddingModelId } from '../lib/embedding-provider.mjs'
+import {
+  embedText,
+  getEmbeddingModelId,
+  warmupEmbeddingProvider,
+  disposeEmbeddingProvider,
+} from '../lib/embedding-provider.mjs'
+import {
+  warmupReranker,
+  rerank,
+  disposeReranker,
+  getRerankerModelId,
+} from '../lib/reranker.mjs'
+import { writeProfilePoint, getProfilePath } from '../lib/model-profile.mjs'
 import { cleanMemoryText } from '../lib/memory-extraction.mjs'
 import { hashEmbeddingInput } from '../lib/memory-vector-utils.mjs'
 
@@ -249,6 +266,101 @@ function calcMetrics(results) {
 
 // ── Main ──
 
+async function runProfile() {
+  const embedModel = getEmbeddingModelId()
+  const rerankModel = getRerankerModelId()
+  const startTime = Date.now()
+  process.stderr.write(`[profile] starting matrix (embed=${embedModel}, reranker=${rerankModel})\n`)
+  process.stderr.write(`[profile] writing to ${getProfilePath()}\n`)
+
+  // 1. Cold boot: snapshot before any ONNX module loads. (baseline/load/
+  //    warmup/steady points are emitted from inside the providers; this
+  //    bench-scenario phase records the pre-anything RSS.)
+  writeProfilePoint({ phase: 'cold-boot', model: embedModel, note: 'pre-init' })
+  writeProfilePoint({ phase: 'cold-boot', model: rerankModel, note: 'pre-init' })
+
+  // 2. Post-warmup: both models loaded + one forward pass.
+  const warmStart = Date.now()
+  await warmupEmbeddingProvider()
+  await warmupReranker()
+  writeProfilePoint({
+    phase: 'post-warmup',
+    model: embedModel,
+    wallMs: Date.now() - warmStart,
+  })
+  writeProfilePoint({
+    phase: 'post-warmup',
+    model: rerankModel,
+    wallMs: Date.now() - warmStart,
+  })
+
+  // 3. Single query: one embedText call.
+  const singleStart = Date.now()
+  await embedText('commit format')
+  writeProfilePoint({
+    phase: 'single-query',
+    model: embedModel,
+    wallMs: Date.now() - singleStart,
+  })
+
+  // 4. Batched: embed all BENCH_SET queries sequentially.
+  const batchStart = Date.now()
+  const batchQueries = BENCH_SET.flatMap(item => item.queries)
+  for (const q of batchQueries) {
+    await embedText(q.slice(0, 768))
+  }
+  writeProfilePoint({
+    phase: 'batched',
+    model: embedModel,
+    wallMs: Date.now() - batchStart,
+    docsScored: batchQueries.length,
+  })
+
+  // 5. Reranker on vs off: run the same small doc set through rerank() with
+  //    fresh items (skip reranker for the 'off' control — nothing to time).
+  const docItems = BENCH_SET.slice(0, 15).map(item => ({ id: item.id, content: item.episode }))
+  writeProfilePoint({
+    phase: 'reranker-off',
+    model: rerankModel,
+    note: 'no inference — control snapshot',
+  })
+  const rerankStart = Date.now()
+  try {
+    await rerank('커밋 메시지 형식', docItems, 5)
+    writeProfilePoint({
+      phase: 'reranker-on',
+      model: rerankModel,
+      wallMs: Date.now() - rerankStart,
+      docsScored: docItems.length,
+    })
+  } catch (e) {
+    writeProfilePoint({
+      phase: 'reranker-on',
+      model: rerankModel,
+      note: `rerank failed: ${e?.message || e}`,
+    })
+  }
+
+  // 6. Post-idle: forced dispose instead of waiting out the 15-minute idle
+  //    timer. Both providers emit their own 'post-idle' point from their
+  //    dispose paths, so this block just triggers them.
+  await disposeEmbeddingProvider()
+  await disposeReranker()
+  // Give any pending async JSONL appends a moment to flush.
+  await new Promise(r => setTimeout(r, 50))
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+  console.log('\n══════════════════════════════════════════')
+  console.log('  Model Profile Matrix')
+  console.log('══════════════════════════════════════════')
+  console.log(`  Embed:     ${embedModel}`)
+  console.log(`  Reranker:  ${rerankModel}`)
+  console.log(`  Queries:   ${batchQueries.length} batched + 1 single`)
+  console.log(`  Output:    ${getProfilePath()}`)
+  console.log(`  Time:      ${elapsed}s`)
+  console.log('══════════════════════════════════════════\n')
+}
+
 async function run() {
   const startTime = Date.now()
   const fullPipeline = process.argv.includes('--full-pipeline')
@@ -406,7 +518,29 @@ async function run() {
   }
 }
 
-run().catch(e => {
-  console.error('Bench failed:', e.message)
-  process.exit(1)
-})
+async function main() {
+  if (process.argv.includes('--profile')) {
+    await runProfile()
+    return
+  }
+  await run()
+}
+
+// CLI guard: only execute when invoked directly via `node retrieval-eval.mjs`.
+// Importing this module (e.g. from tests or other tooling) must not trigger
+// the benchmark — that previously inserted 25+ synthetic `__bench__*` rows
+// into the user's memory.sqlite simply by loading the file.
+const _invokedDirectly = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return false;
+  }
+})();
+if (_invokedDirectly) {
+  main().catch(e => {
+    console.error('Bench failed:', e.message)
+    process.exit(1)
+  })
+}

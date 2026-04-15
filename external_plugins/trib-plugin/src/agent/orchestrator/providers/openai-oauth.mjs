@@ -41,7 +41,7 @@ function loadTokens() {
         }
         catch { /* fall through */ }
     }
-    // Fall back to Codex CLI auth.json (initial bootstrap only)
+    // Otherwise read Codex CLI auth.json (initial bootstrap only)
     const codexPath = join(homedir(), '.codex', 'auth.json');
     if (existsSync(codexPath)) {
         try {
@@ -124,6 +124,10 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
     let buffer = '';
     let idleTimedOut = false;
     let idleTimer = null;
+    // Phase 3a: Codex SSE emits `event.response.id` on response.created and
+    // again on response.completed. We keep the last seen id for use as
+    // `previous_response_id` on the next iteration (stateful continuation).
+    let responseId = '';
     const pendingCalls = new Map();
     const resetIdleTimer = () => {
         if (idleTimer) clearTimeout(idleTimer);
@@ -163,8 +167,9 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                         content += event.delta || '';
                         try { onStreamDelta?.(); } catch {}
                     }
-                    if (event.type === 'response.created' && event.response?.model) {
-                        model = event.response.model;
+                    if (event.type === 'response.created') {
+                        if (event.response?.model) model = event.response.model;
+                        if (event.response?.id) responseId = event.response.id;
                     }
                     if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
                         pendingCalls.set(event.item.id || '', {
@@ -194,6 +199,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                             raw: u,
                         };
                         if (!model && event.response.model) model = event.response.model;
+                        if (!responseId && event.response.id) responseId = event.response.id;
                         if (!content && event.response.output) {
                             for (const item of event.response.output) {
                                 if (item.type === 'message') {
@@ -207,7 +213,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                 } catch { /* skip malformed events */ }
             }
         }
-        return { content, model, toolCalls: toolCalls.length ? toolCalls : undefined, usage };
+        return { content, model, toolCalls: toolCalls.length ? toolCalls : undefined, usage, responseId: responseId || undefined };
     } finally {
         if (idleTimer) clearTimeout(idleTimer);
         if (signal) signal.removeEventListener('abort', onAbort);
@@ -215,30 +221,27 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
     }
 }
 // --- Build Responses API request ---
-function buildRequestBody(messages, model, tools, sendOpts) {
-    // Extract system/instructions
-    const systemMsgs = messages.filter(m => m.role === 'system');
-    const instructions = systemMsgs.map(m => m.content).join('\n\n') || 'You are a helpful assistant.';
-    // Convert messages to Responses API input format
-    const input = [];
+/**
+ * Convert a message slice to Responses API input items. Shared by both the
+ * stateless full-transcript path and the stateful delta path so the two stay
+ * in sync on tool-call / function_call_output encoding rules.
+ */
+function convertMessagesToResponsesInput(messages) {
+    const out = [];
     for (const m of messages) {
-        if (m.role === 'system')
-            continue;
+        if (!m || m.role === 'system') continue;
         if (m.role === 'tool') {
-            input.push({
+            out.push({
                 type: 'function_call_output',
                 call_id: m.toolCallId || '',
                 output: m.content,
             });
             continue;
         }
-        if (m.role === 'assistant' && m.toolCalls?.length) {
-            // Assistant with tool calls → function_call items
-            if (m.content) {
-                input.push({ role: 'assistant', content: m.content });
-            }
+        if (m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length) {
+            if (m.content) out.push({ role: 'assistant', content: m.content });
             for (const tc of m.toolCalls) {
-                input.push({
+                out.push({
                     type: 'function_call',
                     call_id: tc.id,
                     name: tc.name,
@@ -247,20 +250,70 @@ function buildRequestBody(messages, model, tools, sendOpts) {
             }
             continue;
         }
-        input.push({
+        out.push({
             role: m.role === 'assistant' ? 'assistant' : 'user',
             content: m.content,
         });
     }
+    return out;
+}
+/**
+ * Extract the delta input emitted since the most recent assistant message.
+ * Used by the stateful-continuation path: once `previous_response_id` carries
+ * the prior turn, we send only what was added since — tool_results AND any
+ * new user prompts in cross-ask continuation. Without including user role
+ * here, a fresh ask after a stateful turn would silently drop the new user
+ * message. Single-path policy: if no assistant turn exists in history the
+ * call cannot form a valid delta and we throw; there is no recovery path.
+ */
+function extractDeltaSinceLastAssistant(messages) {
+    let cutoff = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]?.role === 'assistant') { cutoff = i; break; }
+    }
+    if (cutoff < 0) {
+        throw new StaleStatefulStateError('stateful continuation requires assistant turn in history');
+    }
+    return convertMessagesToResponsesInput(messages.slice(cutoff + 1));
+}
+
+/**
+ * Error class signalling that the local message history cannot form a valid
+ * stateful delta (no prior assistant turn). v0.6.10 single-path policy: this
+ * surfaces to the caller unchanged — no silent recovery, no stateless retry.
+ */
+class StaleStatefulStateError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'StaleStatefulStateError';
+    }
+}
+function buildRequestBody(messages, model, tools, sendOpts) {
+    // Extract system/instructions
+    const systemMsgs = messages.filter(m => m.role === 'system');
+    const instructions = systemMsgs.map(m => m.content).join('\n\n') || 'You are a helpful assistant.';
     const opts = sendOpts || {};
+    // Phase 3a single-path: stateful continuation is always on. First call
+    // has no previousResponseId → full transcript. Subsequent calls carry
+    // `store: true` + `previous_response_id` with the delta since the last
+    // assistant turn. If the local history can't form a valid delta,
+    // `extractDeltaSinceLastAssistant` throws and the error surfaces to the
+    // caller (no recovery, no retry).
+    const previousResponseId = opts.providerState?.previousResponseId || null;
+    const input = previousResponseId
+        ? extractDeltaSinceLastAssistant(messages)
+        : convertMessagesToResponsesInput(messages);
     const body = {
         model,
         instructions,
         input,
-        store: false,
+        store: true,
         stream: true,
         reasoning: { effort: opts.effort || 'medium' },
     };
+    if (previousResponseId) {
+        body.previous_response_id = previousResponseId;
+    }
     if (opts.sessionId) {
         body.prompt_cache_key = String(opts.sessionId);
     }
@@ -283,7 +336,9 @@ export class OpenAIOAuthProvider {
     name = 'openai-oauth';
     tokens = null;
     _refreshPromise = null;
-    constructor(_config) {
+    config;
+    constructor(config) {
+        this.config = config || {};
         this.tokens = loadTokens();
     }
     async ensureAuth() {
@@ -337,6 +392,8 @@ export class OpenAIOAuthProvider {
         const externalSignal = opts.signal || null;
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.4';
+        // Single-path: no build-time recovery. If extractDeltaSinceLastAssistant
+        // throws StaleStatefulStateError the error surfaces to the caller.
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
         const sessionId = opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
@@ -392,7 +449,64 @@ export class OpenAIOAuthProvider {
                 throw err;
             }
         };
-        let { response, controller, cancelHandler } = await doRequest(auth);
+        // Retry on transient 5xx / connect errors before SSE stream begins.
+        // Codex /backend-api/codex/responses 503 has been observed to terminate
+        // bridge sessions; once SSE parsing starts we commit and never retry.
+        const isTransientStatus = s => s === 502 || s === 503 || s === 504;
+        const isTransientErr = err => {
+            if (!err) return false;
+            const code = err.code || err.cause?.code || '';
+            if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return true;
+            const msg = err.message || '';
+            if (msg.includes('initial response timed out')) return true;
+            return false;
+        };
+        const sleep = ms => new Promise(r => {
+            const t = setTimeout(r, ms);
+            if (externalSignal) {
+                const onAbort = () => { clearTimeout(t); r(); };
+                if (externalSignal.aborted) return onAbort();
+                externalSignal.addEventListener('abort', onAbort, { once: true });
+            }
+        });
+        const MAX_ATTEMPTS = 5;
+        const BACKOFF_MS = [0, 1000, 2000, 4000, 8000];
+        let response, controller, cancelHandler;
+        let lastStatus = null;
+        let attempt = 0;
+        while (attempt < MAX_ATTEMPTS) {
+            if (externalSignal?.aborted) {
+                const reason = externalSignal.reason;
+                throw reason instanceof Error ? reason : new Error('Codex request aborted by session close');
+            }
+            if (attempt > 0) {
+                process.stderr.write(`[openai-oauth] retry attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${lastStatus || 'network error'}\n`);
+                await sleep(BACKOFF_MS[attempt]);
+                if (externalSignal?.aborted) {
+                    const reason = externalSignal.reason;
+                    throw reason instanceof Error ? reason : new Error('Codex request aborted by session close');
+                }
+            }
+            try {
+                ({ response, controller, cancelHandler } = await doRequest(auth));
+            } catch (err) {
+                if (externalSignal?.aborted) throw err;
+                if (isTransientErr(err) && attempt < MAX_ATTEMPTS - 1) {
+                    lastStatus = err.code || err.message || 'network error';
+                    attempt++;
+                    continue;
+                }
+                throw err;
+            }
+            if (isTransientStatus(response.status) && attempt < MAX_ATTEMPTS - 1) {
+                try { await response.text(); } catch {}
+                if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+                lastStatus = response.status;
+                attempt++;
+                continue;
+            }
+            break;
+        }
         if (response.status === 401) {
             process.stderr.write(`[openai-oauth] Got 401, forcing token refresh and retrying...\n`);
             if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
@@ -423,9 +537,17 @@ export class OpenAIOAuthProvider {
                 outputTokens: result.usage?.outputTokens || 0,
                 cachedTokens: result.usage?.cachedTokens || 0,
                 model: result.model || useModel,
+                responseId: result.responseId || null,
             });
             process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
-            return result;
+            // Strip the transport-level responseId from the return shape and
+            // re-expose it through the opaque `providerState` contract. Loop
+            // forwards this as-is on the next iteration without inspection.
+            const { responseId, ...out } = result;
+            if (responseId) {
+                out.providerState = { previousResponseId: responseId };
+            }
+            return out;
         } finally {
             if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
         }

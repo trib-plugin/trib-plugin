@@ -2,6 +2,7 @@ import { createRequire } from 'module'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
 import { AutoTokenizer, AutoModelForSequenceClassification, env as hfEnv } from '@huggingface/transformers'
+import { writeProfilePoint } from './model-profile.mjs'
 
 const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
 const INTRA_OP_THREADS = 4
@@ -36,6 +37,9 @@ let _model = null
 let _loading = null
 let _device = 'cpu'
 let _idleTimer = null
+let _configuredDtype = 'q4'
+let _rerankCallCount = 0
+const RERANK_STEADY_SAMPLE_EVERY = 20
 const _scoreCache = new Map()
 const SCORE_CACHE_LIMIT = 2000
 const MAX_QUERY_CHARS = 512
@@ -57,9 +61,17 @@ function resetIdleTimer() {
       _tokenizer = null
       _model = null
       _loading = null
+      const prevDevice = _device
       _device = 'cpu'
       _scoreCache.clear()
       process.stderr.write('[reranker] idle timeout — model disposed\n')
+      writeProfilePoint({
+        phase: 'post-idle',
+        model: getRerankerModelId(),
+        device: prevDevice,
+        dtype: _configuredDtype,
+        note: 'idle dispose',
+      })
     }
     _idleTimer = null
   }, IDLE_TIMEOUT_MS)
@@ -100,6 +112,15 @@ async function ensureModel() {
   if (_model && _tokenizer) return
   if (_loading) return _loading
   _loading = (async () => {
+    // Baseline snapshot before tokenizer/model hit RSS.
+    writeProfilePoint({
+      phase: 'baseline',
+      model: modelId,
+      device: _device,
+      dtype: _configuredDtype,
+      note: 'pre-load',
+    })
+    const startMs = Date.now()
     patchOrtThreads()
     try { mkdirSync(MODEL_CACHE_DIR, { recursive: true }) } catch {}
     hfEnv.cacheDir = MODEL_CACHE_DIR
@@ -124,6 +145,13 @@ async function ensureModel() {
       process.stderr.write(`[reranker] loaded ${modelId} on CPU (forced)\n`)
     }
 
+    writeProfilePoint({
+      phase: 'load',
+      model: modelId,
+      device: _device,
+      dtype: _configuredDtype,
+      wallMs: Date.now() - startMs,
+    })
     _loading = null
   })()
   return _loading
@@ -137,6 +165,22 @@ async function scoreOne(queryText, docText) {
 
 export async function warmupReranker() {
   await ensureModel()
+  // Issue one cheap forward pass so the tokenizer + graph are actually
+  // exercised (ensureModel only loads them). Without this the "warmup" phase
+  // metric lines up with nothing.
+  try {
+    const t0 = Date.now()
+    await scoreOne('warmup', 'warmup')
+    writeProfilePoint({
+      phase: 'warmup',
+      model: getRerankerModelId(),
+      device: _device,
+      dtype: _configuredDtype,
+      wallMs: Date.now() - t0,
+    })
+  } catch {
+    // best-effort telemetry — never throw from warmup
+  }
   resetIdleTimer()
 }
 
@@ -155,6 +199,8 @@ export async function rerank(query, items, topK) {
   resetIdleTimer()
 
   const scored = []
+  const rerankStart = Date.now()
+  let freshInferences = 0
   for (const entry of entries) {
     const cached = getCachedScore(queryText, entry.text)
     if (cached != null) {
@@ -164,8 +210,22 @@ export async function rerank(query, items, topK) {
     const score = await scoreOne(queryText, entry.text)
     setCachedScore(queryText, entry.text, score)
     scored.push({ ...entry.item, reranker_score: score })
+    freshInferences++
     // yield CPU after each inference to prevent sustained 100% burst (skip on GPU)
     if (_device === 'cpu') await new Promise(r => setTimeout(r, 10))
+  }
+
+  _rerankCallCount++
+  if (freshInferences > 0 && _rerankCallCount % RERANK_STEADY_SAMPLE_EVERY === 0) {
+    writeProfilePoint({
+      phase: 'steady',
+      model: getRerankerModelId(),
+      device: _device,
+      dtype: _configuredDtype,
+      wallMs: Date.now() - rerankStart,
+      docsScored: freshInferences,
+      note: `sample@${_rerankCallCount}`,
+    })
   }
 
   return scored.sort((a, b) => Number(b.reranker_score) - Number(a.reranker_score)).slice(0, limit)
@@ -173,6 +233,8 @@ export async function rerank(query, items, topK) {
 
 export async function disposeReranker() {
   if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
+  const hadModel = _model !== null
+  const prevDevice = _device
   if (_model) {
     try { await _model.dispose() } catch {}
   }
@@ -180,6 +242,15 @@ export async function disposeReranker() {
   _model = null
   _loading = null
   _scoreCache.clear()
+  if (hadModel) {
+    writeProfilePoint({
+      phase: 'post-idle',
+      model: getRerankerModelId(),
+      device: prevDevice,
+      dtype: _configuredDtype,
+      note: 'forced dispose',
+    })
+  }
 }
 
 export function isRerankerAvailable() {

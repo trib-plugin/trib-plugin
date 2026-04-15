@@ -450,7 +450,7 @@ function _runStartupMigrations() {
   } catch (e) { process.stderr.write(`[memory-service] chunk sync error: ${e.message}\n`) }
 
   // context.md and recent.md are no longer generated — the SessionStart hook
-  // reads core_memory / user_model / episodes directly from sqlite at boot.
+  // reads core_memory / episodes directly from sqlite at boot.
 }
 
 // ── Full runtime init (store + backfill + cycles + watcher + migrations) ──
@@ -794,14 +794,7 @@ async function handleReason(query, options = {}) {
     searchResult = await handleGrep(query, { sort: 'importance', offset: 0, limit: options.limit ?? 20, temporal: searchTemporal })
   }
 
-  // 2. Load user model
-  let userModelLines = []
-  try {
-    const userModel = store.getUserModel(0.5)
-    userModelLines = userModel.map(m => `- [${m.category}] ${m.hypothesis} (confidence: ${m.confidence.toFixed(2)})`)
-  } catch {}
-
-  // 3. Compose prompt
+  // 2. Compose prompt
   const prompt = [
     'Based on the following stored knowledge about the user, answer this question.',
     '',
@@ -810,9 +803,6 @@ async function handleReason(query, options = {}) {
     'Core Memories:',
     searchResult.text || '(none)',
     '',
-    ...(userModelLines.length > 0
-      ? ['User Model:', ...userModelLines, '']
-      : []),
     'Synthesize a concise answer. If the knowledge is insufficient, say so. Include confidence level (high/medium/low).',
   ].join('\n')
 
@@ -820,7 +810,7 @@ async function handleReason(query, options = {}) {
   try {
     const config = readMainConfig()
     const presetId = options.preset || resolveMaintenancePreset('cycle2')
-    const answer = await callLLM(prompt, presetId, { mode: 'maintenance', timeout: 60000 })
+    const answer = await callLLM(prompt, presetId, { mode: 'maintenance', timeout: 60000, cacheScope: 'reason' })
     return { text: answer }
   } catch (e) {
     return { text: `[reason] LLM call failed: ${e.message}\n\nFallback search results:\n${searchResult.text}` }

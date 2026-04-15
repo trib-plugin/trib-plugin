@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { GoogleAICacheManager } from '@google/generative-ai/server';
 import { loadConfig } from '../config.mjs';
-import { estimateGeminiTokens, warnBridgeOnce } from '../bridge-trace.mjs';
+import { estimateGeminiTokens } from '../bridge-trace.mjs';
 
 const MODELS = [
     { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', contextWindow: 1000000 },
@@ -99,18 +99,48 @@ function parseToolCalls(parts) {
     }));
 }
 
-function buildGeminiCacheFingerprint({ model, systemInstruction, tools, prefixContents }) {
+function buildGeminiCacheShapeFingerprint({ model, systemInstruction, tools }) {
+    // Shape fingerprint covers the stable context identity (model + system +
+    // tools). When this changes the cache is incompatible. Separated from the
+    // prefix snapshot so extension-only sends can reuse the cache.
     try {
         return JSON.stringify({
             model,
             systemInstruction: systemInstruction || null,
             tools: tools || null,
-            prefixContents,
         });
     }
     catch {
         return '';
     }
+}
+
+function buildGeminiPrefixSnapshot(prefixContents) {
+    // Per-content snapshots let us check "new prefix extends old prefix" via
+    // elementwise equality instead of full-string compare. Serializing each
+    // entry once keeps the check O(cached.length).
+    const out = new Array(prefixContents.length);
+    for (let i = 0; i < prefixContents.length; i++) {
+        try {
+            out[i] = JSON.stringify(prefixContents[i]);
+        } catch {
+            out[i] = null;
+        }
+    }
+    return out;
+}
+
+function isPrefixExtension(prevSnapshot, nextSnapshot) {
+    // True when nextSnapshot is prevSnapshot (equal) or starts with it (extension).
+    // Strict equality each slot — single null makes the slot ineligible.
+    if (!Array.isArray(prevSnapshot) || !Array.isArray(nextSnapshot)) return false;
+    if (prevSnapshot.length === 0) return false;
+    if (nextSnapshot.length < prevSnapshot.length) return false;
+    for (let i = 0; i < prevSnapshot.length; i++) {
+        if (prevSnapshot[i] === null || nextSnapshot[i] === null) return false;
+        if (prevSnapshot[i] !== nextSnapshot[i]) return false;
+    }
+    return true;
 }
 
 const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -162,44 +192,49 @@ export class GeminiProvider {
         if (prefixTokenEstimate < GEMINI_CACHE_MIN_TOKENS) return null;
 
         const now = Date.now();
-        const fingerprint = buildGeminiCacheFingerprint({
+        const shapeFingerprint = buildGeminiCacheShapeFingerprint({
             model: useModel,
             systemInstruction,
             tools: geminiTools,
-            prefixContents,
         });
+        const prefixSnapshot = buildGeminiPrefixSnapshot(prefixContents);
         const existing = this._geminiSessionCaches.get(sessionId);
-        if (existing && existing.fingerprint === fingerprint && (now - existing.createdAt) < GEMINI_CACHE_TTL_MS) {
+        // Reuse when (a) shape unchanged, (b) cache still within TTL, and
+        // (c) the new prefix equals or extends the cached prefix. Extension
+        // is the common append-only bridge case — previously every new turn
+        // invalidated; now only real divergence does.
+        if (
+            existing
+            && existing.shapeFingerprint === shapeFingerprint
+            && (now - existing.createdAt) < GEMINI_CACHE_TTL_MS
+            && isPrefixExtension(existing.prefixSnapshot, prefixSnapshot)
+        ) {
             return this.genAI.getGenerativeModelFromCachedContent(existing.cachedContent);
         }
 
-        try {
-            const cachedContent = await this.cacheManager.create({
-                model: useModel,
-                contents: prefixContents,
-                ttlSeconds: 300,
-                ...(geminiTools ? { tools: geminiTools } : {}),
-                ...(systemInstruction ? { systemInstruction } : {}),
-                displayName: `trib-bridge-${sessionId}`,
-            });
-            if (signal?.aborted) {
-                const reason = signal.reason;
-                throw reason instanceof Error ? reason : new Error('Gemini cache creation aborted by session close');
-            }
-            this._geminiSessionCaches.set(sessionId, {
-                cachedContent,
-                fingerprint,
-                createdAt: now,
-            });
-            return this.genAI.getGenerativeModelFromCachedContent(cachedContent);
-        } catch (err) {
-            this._geminiSessionCaches.delete(sessionId);
-            warnBridgeOnce(
-                `gemini-cache:${sessionId}`,
-                `[bridge-cache] gemini cache disabled for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            return null;
+        // Single-path policy: cache create failure is not silently swallowed.
+        // Enable flag is gated by the caller (_doSend) — if we reach here,
+        // the operator asked for cache, so propagate the error instead of
+        // silently degrading to an uncached request.
+        const cachedContent = await this.cacheManager.create({
+            model: useModel,
+            contents: prefixContents,
+            ttlSeconds: 300,
+            ...(geminiTools ? { tools: geminiTools } : {}),
+            ...(systemInstruction ? { systemInstruction } : {}),
+            displayName: `trib-bridge-${sessionId}`,
+        });
+        if (signal?.aborted) {
+            const reason = signal.reason;
+            throw reason instanceof Error ? reason : new Error('Gemini cache creation aborted by session close');
         }
+        this._geminiSessionCaches.set(sessionId, {
+            cachedContent,
+            shapeFingerprint,
+            prefixSnapshot,
+            createdAt: now,
+        });
+        return this.genAI.getGenerativeModelFromCachedContent(cachedContent);
     }
 
     async _doSend(messages, model, tools, sendOpts) {
@@ -231,6 +266,9 @@ export class GeminiProvider {
         let requestContents = contents;
 
         const sessionId = opts.sessionId || null;
+        // v0.6.10: single-path, always-on cache. `_getCachedGeminiModel`
+        // throws on cache-create failure — the error propagates through
+        // send() to the caller with no silent fallback.
         if (sessionId && contents.length > 1) {
             const prefixContents = contents.slice(0, -1);
             const cachedModel = await this._getCachedGeminiModel(
@@ -243,7 +281,15 @@ export class GeminiProvider {
             );
             if (cachedModel) {
                 genModel = cachedModel;
-                requestContents = [contents[contents.length - 1]];
+                // Send everything past the cached prefix as the delta. For
+                // exact-match cached prefix (cachedLen === contents.length-1)
+                // this is just the last message; for prefix-extension reuse
+                // (cachedLen < contents.length-1) it includes the messages
+                // added since the cache was created — without this slice the
+                // model would never see those intermediate turns.
+                const cached = this._geminiSessionCaches.get(sessionId);
+                const cachedLen = cached?.prefixSnapshot?.length ?? prefixContents.length;
+                requestContents = contents.slice(cachedLen);
             }
         }
 

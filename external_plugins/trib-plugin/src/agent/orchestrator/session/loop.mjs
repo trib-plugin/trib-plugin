@@ -48,6 +48,11 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const opts = sendOpts || {};
     const sessionId = opts.sessionId || null;
     const signal = opts.signal || null;
+    // Phase 3a stateful continuation: carry opaque providerState between
+    // iterations. Loop never inspects it; only the originating provider does.
+    // Seed from initial sendOpts.providerState (set by manager when restoring
+    // a stateful session); undefined otherwise.
+    let providerState = opts.providerState ?? undefined;
     const throwIfAborted = () => {
         if (signal?.aborted) {
             const reason = signal.reason instanceof Error ? signal.reason : null;
@@ -59,8 +64,12 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         throwIfAborted();
         const nextIteration = iterations + 1;
         opts.iteration = nextIteration;
+        opts.providerState = providerState;
         const sendStartedAt = Date.now();
         response = await provider.send(messages, model, tools.length ? tools : undefined, opts);
+        // Capture opaque state for the next turn (may be undefined — that's
+        // the stateless contract for providers that don't use continuation).
+        providerState = response?.providerState ?? undefined;
         iterations = nextIteration;
         traceBridgeLoop({
             sessionId,
@@ -136,5 +145,6 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         usage: lastUsage || response.usage,
         iterations,
         toolCallsTotal,
+        providerState,
     };
 }

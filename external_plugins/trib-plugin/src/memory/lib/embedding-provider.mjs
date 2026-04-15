@@ -6,6 +6,7 @@ import { createRequire } from 'module'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
 import { cpus } from 'os'
+import { writeProfilePoint } from './model-profile.mjs'
 
 const MODEL_ID = 'Xenova/bge-m3'
 const DEFAULT_DIMS = 1024
@@ -21,6 +22,8 @@ let configuredDtype = DEFAULT_DTYPE
 let _device = 'cpu'
 let _idleTimer = null
 let ortPatched = false
+let _embedCallCount = 0
+const EMBED_STEADY_SAMPLE_EVERY = 20
 const queryEmbeddingCache = new Map()
 const QUERY_EMBEDDING_CACHE_LIMIT = 1000
 
@@ -63,8 +66,16 @@ function resetIdleTimer() {
       extractorPromise.then(ext => { try { ext.dispose() } catch {} }).catch(() => {})
       extractorPromise = null
       cachedDims = null
+      const prevDevice = _device
       _device = 'cpu'
       process.stderr.write('[embed] idle timeout — model disposed\n')
+      writeProfilePoint({
+        phase: 'post-idle',
+        model: MODEL_ID,
+        device: prevDevice,
+        dtype: configuredDtype,
+        note: 'idle dispose',
+      })
     }
     _idleTimer = null
   }, IDLE_TIMEOUT_MS)
@@ -95,6 +106,14 @@ function patchOrtThreads() {
 async function loadExtractor() {
   if (!extractorPromise) {
     extractorPromise = (async () => {
+      // Baseline snapshot before any ONNX/transformers import land in RSS.
+      writeProfilePoint({
+        phase: 'baseline',
+        model: MODEL_ID,
+        device: _device,
+        dtype: configuredDtype,
+        note: 'pre-load',
+      })
       patchOrtThreads()
       const { pipeline, env } = await import('@huggingface/transformers')
       env.allowLocalModels = false
@@ -121,7 +140,15 @@ async function loadExtractor() {
         extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'cpu' })
         _device = 'cpu'
       }
-      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} device=${_device} threads=${INTRA_OP_THREADS} in ${Date.now() - startMs}ms\n`)
+      const loadMs = Date.now() - startMs
+      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} device=${_device} threads=${INTRA_OP_THREADS} in ${loadMs}ms\n`)
+      writeProfilePoint({
+        phase: 'load',
+        model: MODEL_ID,
+        device: _device,
+        dtype: configuredDtype,
+        wallMs: loadMs,
+      })
       return extractor
     })()
   }
@@ -144,10 +171,42 @@ export function consumeProviderSwitchEvent() {
 
 export async function warmupEmbeddingProvider() {
   const extractor = await loadExtractor()
+  const t0 = Date.now()
   await extractor('warmup', { pooling: 'mean', normalize: true })
   cachedDims = DEFAULT_DIMS
+  writeProfilePoint({
+    phase: 'warmup',
+    model: MODEL_ID,
+    device: _device,
+    dtype: configuredDtype,
+    wallMs: Date.now() - t0,
+  })
   resetIdleTimer()
   return true
+}
+
+// Force dispose the embedding extractor without waiting for the idle timer.
+// Used by the --profile bench's post-idle step; regular callers continue to
+// rely on `resetIdleTimer()` in `embedText()` / `warmupEmbeddingProvider()`.
+export async function disposeEmbeddingProvider() {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
+  if (extractorPromise) {
+    const prevDevice = _device
+    try {
+      const ext = await extractorPromise
+      try { ext.dispose() } catch {}
+    } catch {}
+    extractorPromise = null
+    cachedDims = null
+    _device = 'cpu'
+    writeProfilePoint({
+      phase: 'post-idle',
+      model: MODEL_ID,
+      device: prevDevice,
+      dtype: configuredDtype,
+      note: 'forced dispose',
+    })
+  }
 }
 
 export async function embedText(text) {
@@ -159,9 +218,24 @@ export async function embedText(text) {
   if (cached) return [...cached]
 
   const extractor = await loadExtractor()
+  const t0 = Date.now()
   const output = await extractor(clean, { pooling: 'mean', normalize: true })
+  const wallMs = Date.now() - t0
   cachedDims = output.data?.length || DEFAULT_DIMS
   const vector = Array.from(output.data ?? [])
   cacheEmbedding(cacheKey, vector)
+  _embedCallCount++
+  // Sampled steady-state snapshot; cheap enough to always compute but still
+  // avoid flooding the JSONL with one entry per call.
+  if (_embedCallCount % EMBED_STEADY_SAMPLE_EVERY === 0) {
+    writeProfilePoint({
+      phase: 'steady',
+      model: MODEL_ID,
+      device: _device,
+      dtype: configuredDtype,
+      wallMs,
+      note: `sample@${_embedCallCount}`,
+    })
+  }
   return vector
 }

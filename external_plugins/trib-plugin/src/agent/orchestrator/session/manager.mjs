@@ -1,5 +1,6 @@
 import { getProvider } from '../providers/registry.mjs';
 import { trimMessages } from './trim.mjs';
+import { compress as compactMessages } from './compaction.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
@@ -60,6 +61,25 @@ function guessContextWindow(model) {
     if (model.includes('llama') || model.includes('mistral') || model.includes('phi'))
         return 8192;
     return 128000;
+}
+// Pull the Hermes-style summary body out of a compacted message list so the
+// next compaction pass can do an iterative update instead of re-summarizing
+// from scratch. Matches the `[Context summary from earlier turns` preamble
+// emitted by compaction._formatSummaryBody.
+function _extractSummaryBody(messages) {
+    if (!Array.isArray(messages)) return null;
+    for (const m of messages) {
+        const text = typeof m?.content === 'string' ? m.content : '';
+        const marker = '[Context summary from earlier turns';
+        const idx = text.indexOf(marker);
+        if (idx >= 0) {
+            // Preamble ends with ']\n\n'; keep only the structured summary.
+            const close = text.indexOf(']', idx);
+            if (close > 0) return text.slice(close + 1).trim();
+            return text;
+        }
+    }
+    return null;
 }
 // --- create_session ---
 // opts can pass either a `preset` object (from config.presets) or raw provider/model.
@@ -301,7 +321,19 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             if (promptTokenEstimate > budget * 0.7) {
                 process.stderr.write(`[session] Warning: prompt is very large (est. ${Math.round(promptTokenEstimate)} tokens vs ${budget} budget)\n`);
             }
-            const outgoing = trimMessages([...session.messages, { role: 'user', content: prompt }], budget);
+            const candidate = [...session.messages, { role: 'user', content: prompt }];
+            // Single-path: compaction is always-on. compactMessages itself
+            // short-circuits to the unchanged input when below threshold or
+            // in summary cooldown. trimMessages then runs as the byte-budget
+            // safety pass on whatever compaction produced.
+            const compacted = await compactMessages(candidate, {
+                contextWindow: session.contextWindow,
+                previousSummary: session.compactionSummary || null,
+            });
+            if (compacted !== candidate) {
+                session.compactionSummary = _extractSummaryBody(compacted);
+            }
+            const outgoing = trimMessages(compacted, budget);
             const messagesDropped = beforeCount - outgoing.length;
             const effectiveCwd = cwdOverride || session.cwd;
             const result = await _api_call_with_interrupt(sessionId, (signal) =>
@@ -310,6 +342,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     fast: session.fast === true,
                     sessionId,
                     signal,
+                    providerState: session.providerState ?? undefined,
                     onStageChange: (stage) => updateSessionStage(sessionId, stage),
                     onStreamDelta: () => markSessionStreamDelta(sessionId),
                 }),
@@ -329,6 +362,12 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             if (result.usage) {
                 session.totalInputTokens += result.usage.inputTokens;
                 session.totalOutputTokens += result.usage.outputTokens;
+            }
+            // Stateful continuation (Phase 3a): persist opaque providerState
+            // so a restart can resume server-side conversation. Field stays
+            // undefined for stateless providers — harmless on JSON round-trip.
+            if (result.providerState !== undefined) {
+                session.providerState = result.providerState;
             }
             saveSession(session, { expectedGeneration: askGeneration });
             // Async state packet extraction — skip for bridge sessions (short-lived, not reused)

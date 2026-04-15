@@ -375,11 +375,21 @@ function mergeAgentConfig(existing, data) {
   if (!config.providers) config.providers = {};
   if (data.providers) {
     for (const [name, val] of Object.entries(data.providers)) {
+      if (!val || typeof val !== 'object') continue;
       if (!config.providers[name]) config.providers[name] = {};
-      if (val.apiKey !== undefined) config.providers[name].apiKey = val.apiKey;
-      if (val.enabled !== undefined) config.providers[name].enabled = val.enabled;
-      if (val.baseURL !== undefined) config.providers[name].baseURL = val.baseURL;
+      // Preserve any per-provider subkey from the setup payload so future
+      // schema additions round-trip through the UI without being dropped.
+      for (const [k, v] of Object.entries(val)) {
+        if (v === undefined) continue;
+        config.providers[name][k] = v;
+      }
     }
+  }
+  if (data.bridge && typeof data.bridge === 'object') {
+    config.bridge = { ...(config.bridge || {}), ...data.bridge };
+  }
+  if (data.semanticCache && typeof data.semanticCache === 'object') {
+    config.semanticCache = { ...(config.semanticCache || {}), ...data.semanticCache };
   }
   return config;
 }
@@ -995,24 +1005,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && path === '/memory/user-model') {
-    const cfg = readMemoryConfig();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ enabled: true, decayDays: 30, ...cfg.userModel }));
-    return;
-  }
-
-  if (req.method === 'POST' && path === '/memory/user-model') {
-    const data = await readBody(req);
-    const existing = readMemoryConfig();
-    existing.userModel = { ...(existing.userModel || {}), ...data };
-    writeMemoryConfig(existing);
-    console.log('  Config saved: memory user-model');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-
   if (req.method === 'GET' && path === '/memory/auth') {
     const cfg = readMemoryConfig();
     const result = await detectAuth(cfg);
@@ -1398,3 +1390,22 @@ server.listen(PORT, () => {
     setTimeout(() => { openAppWindow(); }, 0);
   }
 });
+
+// Parent-PID watchdog: setup-server is launched detached/unref'd (see
+// setup/launch.mjs), so losing Claude Code does not reap it. Poll the
+// launcher's parent PID (the Claude Code CLI) and exit when it dies. This is
+// the detached-process equivalent of the run-mcp.mjs stdin-close pattern
+// applied to memory/channels workers in v0.6.0.
+(() => {
+  const parentPid = parseInt(process.env.TRIB_SETUP_PARENT_PID || '', 10);
+  if (!Number.isFinite(parentPid) || parentPid <= 0) return;
+  const tick = () => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      process.exit(0);
+    }
+  };
+  const timer = setInterval(tick, 5000);
+  if (typeof timer.unref === 'function') timer.unref();
+})();

@@ -256,3 +256,51 @@ Facts in the memory database can have the following status values:
 | `stale` | Not seen recently — excluded from active queries |
 | `superseded` | Replaced by a newer fact (via semantic dedup, similarity > 0.75) |
 | `deprecated` | Explicitly deprecated — excluded from all searches |
+
+---
+
+## v0.6.10 Always-On Features (no toggles, single-path)
+
+v0.6.10 ships these features active by default. There are **no enable/disable toggles, no silent fallbacks, no recovery retry**. Failures surface to the caller as exceptions or trip per-task cooldowns. Operators wanting different behaviour change the code, not config.
+
+> Note: transport-level retries that already existed before v0.6.10 (e.g. OpenAI OAuth 502/503 before the SSE stream starts) are preserved. "No recovery retry" above refers to silent re-issuance after a feature-level failure (stale `previous_response_id`, cache-create failure, summary failure) — those now surface rather than being masked.
+
+### Anthropic ephemeral cache_control (5m, always-on)
+- The provider always sets `cache_control: { type: 'ephemeral' }` on the system block and the last few non-system messages. The 1h extended-TTL beta is not exposed.
+- The `providers.anthropic.cacheTtl` key is removed.
+
+### OpenAI OAuth stateful continuation (Phase 3a, always-on)
+- Every call uses Codex Responses with `store: true`. After the first turn captures `response.id`, subsequent turns send `previous_response_id` + the delta since the last assistant message.
+- If the local history can't form a valid delta (no prior assistant turn), `extractDeltaSinceLastAssistant` throws `StaleStatefulStateError` and the caller sees the error — no silent recovery, no stateless retry.
+- If the server rejects `previous_response_id`, the API error propagates unchanged.
+- The `providers.openai-oauth.statefulContinuation` key is removed.
+
+### Gemini context cache (always-on)
+- The provider always creates and reuses `cachedContent` per session (TTL 5m, min 1024 prefix tokens).
+- Cache-create failure throws — no silent non-cached fallback.
+- The `providers.gemini.cache.enabled` key is removed.
+
+### Bridge context compaction (LLM-summarized, always-on)
+- `compactMessages` runs every turn. It self-skips when prompt tokens are below `0.50 × context_length` or when the summary cooldown is active. On LLM summary failure: trip a 600s per-process cooldown and pass the messages through unchanged.
+- After compaction, `trimMessages` runs as the byte-budget safety pass.
+- All compaction tunables (`thresholdPercent`, `protectFirstN`, `protectLastN`, `summaryTargetRatio`, `tailTokenBudget`, `summaryModel`, `failureCooldownMs`) are hardcoded constants.
+- The `bridge.compaction.*` keys (including `enabled` and `toolPrune`) are removed.
+
+### Semantic cache (allow-list scopes, always-on)
+- Lookup + store run automatically for any `callLLM(..., { cacheScope })` call when the scope is in the hardcoded allow-list:
+  `classify` / `core-promote-phase1` / `core-promote-phase2` / `core-promote-phase3` / `reason` / `skill-suggest` (cosine similarity ≥ per-scope threshold) and `proactive` (exact hash only).
+- Bridge `agentLoop`, provider `send()`, and tool execution never pass `cacheScope` by policy and are excluded.
+- All tunables (per-scope `threshold`, `exactOnly`, `ttlDays`, `maxEntries`) are hardcoded constants.
+- The `semanticCache.*` keys (including `enabled` and per-scope `enabled`) are removed.
+
+### Memory cycle (single preset, no cascade)
+- Each maintenance task uses one preset. On exception or empty output the per-task 600s cooldown trips and the error surfaces.
+- The `cycle.cascade` key is **deprecated and ignored**. A stderr warning is emitted once per process if the key is present.
+
+### Trim Pass 0 — old tool result pruning (always-on)
+- `pruneOldToolResults` always runs as Pass 0 of `trimMessages`, replacing old `role: 'tool'` bodies (>200 chars) with a short stub. Message count is preserved.
+
+### Verification Metrics
+- `bridge-trace.jsonl`: kinds `loop` / `tool` / `fetch` / `sse` / `usage`. Stateful continuation adds a `response_id` field on `usage` events for correlation across iterations.
+- `model-profile.jsonl`: 4 phases per model (`baseline`, `load`, `warmup`, `steady`), plus `post-idle` on dispose.
+- `history/semantic-cache.jsonl`: per-lookup `hit` (`exact` / `semantic` / `null`), optional `similarity`, and estimated `savedTokens` from the cached response length. One line appended per allow-listed scope lookup.

@@ -79,6 +79,12 @@ export function detectPatterns(trajectoryDb) {
 
 /**
  * Use an LLM to generate a SKILL.md from a detected pattern.
+ *
+ * The caller controls the LLM call via `llmCallFn` so it can apply semantic
+ * cache at the wiring layer — pass `callLLM(prompt, preset, { cacheScope:
+ * 'skill-suggest' })` inside the adapter function. This function itself
+ * stays transport-agnostic.
+ *
  * @param {{scope: string, totalCalls: number, avgDuration: number, topToolChains: string[], samplePrompts: string[]}} pattern
  * @param {(systemPrompt: string, userPrompt: string) => Promise<string>} llmCallFn
  * @returns {Promise<string>} Generated markdown content

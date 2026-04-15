@@ -72,7 +72,7 @@ function openMemoryDb() {
   }
 }
 
-// --- Build context (core memory + user model) directly from sqlite ---
+// --- Build context (core memory) directly from sqlite ---
 function buildContext() {
   let db = null;
   try {
@@ -89,19 +89,6 @@ function buildContext() {
     if (coreItems.length > 0) {
       const lines = coreItems.map(r => `- ${r.topic} — ${r.element}`);
       parts.push(`## Core Memory\n${lines.join('\n')}`);
-    }
-
-    const userModel = db.prepare(`
-      SELECT category, hypothesis, confidence
-      FROM user_model
-      WHERE status = 'active' AND confidence >= 0.5
-      ORDER BY confidence DESC
-    `).all();
-    if (userModel.length > 0) {
-      const lines = userModel.map(m =>
-        `- [${m.category}] ${m.hypothesis} (confidence: ${Number(m.confidence).toFixed(2)})`
-      );
-      parts.push(`## User Model\n${lines.join('\n')}`);
     }
 
     return parts.join('\n\n').trim();

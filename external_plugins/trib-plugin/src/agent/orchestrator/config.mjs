@@ -126,8 +126,21 @@ export function loadConfig() {
                 raw.agentMaintenance = raw.cycle3;
                 delete raw.cycle3;
             }
+            // Deep-merge provider subkeys: unknown per-provider values are
+            // preserved through save/load so future fields round-trip
+            // without schema updates here.
+            const mergedProviders = { ...defaults.providers };
+            if (raw.providers && typeof raw.providers === 'object') {
+                for (const [name, val] of Object.entries(raw.providers)) {
+                    if (val && typeof val === 'object') {
+                        mergedProviders[name] = { ...(mergedProviders[name] || {}), ...val };
+                    } else {
+                        mergedProviders[name] = val;
+                    }
+                }
+            }
             return {
-                providers: { ...defaults.providers, ...raw.providers },
+                providers: mergedProviders,
                 mcpServers: raw.mcpServers || {},
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
                 default: raw.default || null,
@@ -136,6 +149,10 @@ export function loadConfig() {
                 statePacket: { enabled: true, threshold: 20, ttlMinutes: 30, ...raw.statePacket },
                 skillSuggest: { autoDetect: false, ...raw.skillSuggest },
                 agentMaintenance: { enabled: false, interval: '30m', ...raw.agentMaintenance },
+                // Top-level extension blocks preserved through save/load so
+                // future keys round-trip without schema updates here.
+                bridge: raw.bridge && typeof raw.bridge === 'object' ? raw.bridge : {},
+                semanticCache: raw.semanticCache && typeof raw.semanticCache === 'object' ? raw.semanticCache : {},
             };
         }
         catch { /* fall through */ }
@@ -150,6 +167,8 @@ export function loadConfig() {
         statePacket: { enabled: true, threshold: 20, ttlMinutes: 30 },
         skillSuggest: { autoDetect: false },
         agentMaintenance: { enabled: false, interval: '30m' },
+        bridge: {},
+        semanticCache: {},
     };
 }
 /**
@@ -160,17 +179,23 @@ export function loadConfig() {
 export function saveConfig(config) {
     const path = getConfigPath();
     mkdirSync(dirname(path), { recursive: true });
-    // Strip ephemeral defaults from providers to keep file minimal
+    // Strip ephemeral defaults from providers but preserve any unknown
+    // per-provider subkey so future schema additions round-trip through
+    // the setup UI without changes here.
+    const KNOWN_PROVIDER_KEYS = new Set(['apiKey', 'enabled', 'baseURL']);
     const persistedProviders = {};
     if (config.providers) {
         for (const [name, val] of Object.entries(config.providers)) {
+            if (!val || typeof val !== 'object') continue;
             const slim = {};
-            if (val.apiKey)
-                slim.apiKey = val.apiKey;
-            if (typeof val.enabled === 'boolean')
-                slim.enabled = val.enabled;
-            if (val.baseURL)
-                slim.baseURL = val.baseURL;
+            if (val.apiKey) slim.apiKey = val.apiKey;
+            if (typeof val.enabled === 'boolean') slim.enabled = val.enabled;
+            if (val.baseURL) slim.baseURL = val.baseURL;
+            for (const [k, v] of Object.entries(val)) {
+                if (KNOWN_PROVIDER_KEYS.has(k)) continue;
+                if (v === undefined) continue;
+                slim[k] = v;
+            }
             if (Object.keys(slim).length)
                 persistedProviders[name] = slim;
         }
@@ -185,6 +210,8 @@ export function saveConfig(config) {
         statePacket: config.statePacket || {},
         skillSuggest: config.skillSuggest || {},
         agentMaintenance: config.agentMaintenance || {},
+        bridge: config.bridge || {},
+        semanticCache: config.semanticCache || {},
     };
     const tmp = path + '.tmp';
     writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');

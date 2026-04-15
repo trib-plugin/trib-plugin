@@ -287,6 +287,42 @@ async function prepareConsolidationCandidates(candidates, maxPerBatch, dayEpisod
   return prepared
 }
 
+// Hermes-style per-task failure cooldown. If an LLM call throws or returns
+// empty output, the task (keyed by `options.mode`) is parked for
+// COOLDOWN_MS before we'll touch the provider again. Prevents cost explosion
+// during prolonged provider outages. Reset on first successful call.
+const COOLDOWN_MS = 600_000
+const _cooldownUntil = new Map()
+function _cooldownKey(options) {
+  return String(options?.mode || 'cycle')
+}
+function _inCooldown(key) {
+  const until = _cooldownUntil.get(key)
+  return typeof until === 'number' && Date.now() < until
+}
+function _tripCooldown(key, reason) {
+  _cooldownUntil.set(key, Date.now() + COOLDOWN_MS)
+  process.stderr.write(`[memory-cycle] cooldown ${key} for ${Math.round(COOLDOWN_MS / 1000)}s (${reason})\n`)
+}
+function _clearCooldown(key) {
+  if (_cooldownUntil.has(key)) _cooldownUntil.delete(key)
+}
+
+// Single-path policy: no cascade. One preset per task. Failure trips cooldown
+// and throws. `cycle.cascade` config key is intentionally ignored now — see
+// deprecation warning below.
+let _cascadeDeprecationWarned = false
+function _warnCascadeDeprecatedOnce() {
+  if (_cascadeDeprecationWarned) return
+  try {
+    const cfg = readMainConfig()
+    if (Array.isArray(cfg?.cycle?.cascade) && cfg.cycle.cascade.length > 0) {
+      process.stderr.write(`[memory-cycle] warning: cycle.cascade is deprecated and ignored. Set a single maintenance preset instead.\n`)
+    }
+  } catch { /* best effort */ }
+  _cascadeDeprecationWarned = true
+}
+
 async function resolveCycleLlmOutput(prompt, ws, options = {}) {
   if (typeof options.llm === 'function') {
     return await options.llm({
@@ -300,8 +336,32 @@ async function resolveCycleLlmOutput(prompt, ws, options = {}) {
       candidates: options.candidates ?? [],
     })
   }
+  _warnCascadeDeprecatedOnce()
+  const cooldownKey = _cooldownKey(options)
+  if (_inCooldown(cooldownKey)) {
+    process.stderr.write(`[memory-cycle] skipping ${cooldownKey}: in cooldown\n`)
+    return null
+  }
   const preset = options.preset || resolveMaintenancePreset('cycle1')
-  return await callLLM(prompt, preset, { mode: 'maintenance', timeout: options.timeout ?? 180000 })
+  const timeout = options.timeout ?? 180000
+  // Forward semantic-cache scope from the caller so cycle1 / cycle2 phase
+  // calls can reuse deterministic LLM output. Undefined here = no cache.
+  const cacheScope = options.cacheScope || null
+  try {
+    const raw = await callLLM(prompt, preset, { mode: 'maintenance', timeout, cacheScope })
+    if (raw == null || (typeof raw === 'string' && raw.trim().length === 0)) {
+      // Single-path: empty output is a real failure. Trip cooldown and return
+      // the raw value so the caller's existing null-safe parse continues to
+      // degrade gracefully (no throw at this layer keeps callers simple).
+      _tripCooldown(cooldownKey, 'empty output')
+      return raw
+    }
+    _clearCooldown(cooldownKey)
+    return raw
+  } catch (err) {
+    _tripCooldown(cooldownKey, err?.message || String(err))
+    throw err
+  }
 }
 
 // ── Public API ──
@@ -454,12 +514,6 @@ async function runCycle2Impl(ws) {
     await coreMemoryPromote(store, ws, mainConfig)
   } catch (e) {
     process.stderr.write(`[memory-cycle2] core-promote error: ${e.message}\n`)
-  }
-
-  // 3. User model decay — reduce confidence on stale hypotheses
-  const decayConfig = readMainConfig()
-  if (decayConfig.userModel?.enabled !== false) {
-    try { store.decayUserModel(decayConfig.userModel?.decayDays || 30) } catch {}
   }
 
   // context.md generation removed — SessionStart hook reads core_memory
@@ -881,6 +935,7 @@ async function runCycle1Impl(ws, config, options = {}) {
         candidates,
         preset,
         timeout,
+        cacheScope: 'classify',
       })
     } catch (e) {
       process.stderr.write(`[cycle1] batch ${batchIndex} LLM error: ${e.message}\n`)
@@ -967,18 +1022,6 @@ async function runCycle1Impl(ws, config, options = {}) {
       }
 
       store.upsertClassifications(classificationRows, ts, null)
-
-      // Update user model for preference/constraint classifications
-      const umConfig = readMainConfig()
-      if (umConfig.userModel?.enabled !== false) {
-        for (const row of classificationRows) {
-          if (['preference', 'constraint'].includes(row.importance)) {
-            try {
-              store.upsertUserModel(row.importance, row.element, row.confidence ?? 0.6, row.episode_id)
-            } catch {}
-          }
-        }
-      }
 
       // Save chunks to memory_chunks table + FTS
       for (const row of classificationRows) {
@@ -1226,7 +1269,8 @@ async function coreMemoryPromote(store, ws, config) {
 
     try {
       const raw = await resolveCycleLlmOutput(phase1Prompt, ws, {
-        mode: 'core-promote', preset, timeout: 180000,
+        mode: 'core-promote-phase1', preset, timeout: 180000,
+        cacheScope: 'core-promote-phase1',
       })
       const parsed = extractJsonObject(raw)
       if (parsed?.actions && Array.isArray(parsed.actions)) {
@@ -1272,7 +1316,8 @@ async function coreMemoryPromote(store, ws, config) {
 
     try {
       const raw = await resolveCycleLlmOutput(phase2Prompt, ws, {
-        mode: 'core-promote', preset, timeout: 180000,
+        mode: 'core-promote-phase2', preset, timeout: 180000,
+        cacheScope: 'core-promote-phase2',
       })
       const parsed = extractJsonObject(raw)
       if (parsed?.actions && Array.isArray(parsed.actions)) {
@@ -1307,7 +1352,8 @@ async function coreMemoryPromote(store, ws, config) {
 
     try {
       const raw = await resolveCycleLlmOutput(phase3Prompt, ws, {
-        mode: 'core-promote', preset, timeout: 180000,
+        mode: 'core-promote-phase3', preset, timeout: 180000,
+        cacheScope: 'core-promote-phase3',
       })
       const parsed = extractJsonObject(raw)
       if (parsed?.actions && Array.isArray(parsed.actions)) {
