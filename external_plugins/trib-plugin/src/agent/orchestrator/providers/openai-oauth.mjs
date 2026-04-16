@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getPluginData } from '../config.mjs';
+import { enrichModels } from './model-catalog.mjs';
 import {
     extractCachedTokens,
     traceBridgeFetch,
@@ -584,8 +585,9 @@ export class OpenAIOAuthProvider {
             const data = await res.json();
             const items = Array.isArray(data?.models) ? data.models : [];
             const normalized = items.map(m => _normalizeCodexModel(m));
-            await _saveCodexModelCache(normalized);
-            return normalized;
+            const enriched = await enrichModels(normalized);
+            await _saveCodexModelCache(enriched);
+            return enriched;
         } catch (err) {
             process.stderr.write(`[openai-oauth] listModels fetch failed (${err.message})\n`);
             // No fallback catalog — empty list signals the UI to show a

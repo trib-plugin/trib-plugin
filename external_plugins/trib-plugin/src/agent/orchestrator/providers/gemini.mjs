@@ -321,7 +321,7 @@ export class GeminiProvider {
             const data = await res.json();
             const items = Array.isArray(data?.models) ? data.models : [];
             // Filter to Gemini family; skip embedding/imagen endpoints.
-            return items
+            const normalized = items
                 .filter(m => (m?.name || '').includes('gemini'))
                 .filter(m => !/embedding|aqa|imagen/.test(m?.name || ''))
                 .map(m => {
@@ -342,6 +342,9 @@ export class GeminiProvider {
                         description: m.description || '',
                     };
                 });
+            // LiteLLM catalog overlays pricing and updated metadata.
+            const { enrichModels } = await import('./model-catalog.mjs');
+            return await enrichModels(normalized);
         } catch (err) {
             process.stderr.write(`[gemini] listModels fetch failed (${err.message})\n`);
             return MODELS;

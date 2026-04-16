@@ -16,6 +16,7 @@ import {
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { writeFileSync, existsSync as _existsSync } from 'fs';
 import { getPluginData } from '../config.mjs';
+import { enrichModels } from './model-catalog.mjs';
 
 // --- Model catalog cache helpers ---
 // Disk-backed cache so repeated process starts (cron, tool calls) don't
@@ -746,8 +747,10 @@ export class AnthropicOAuthProvider {
                 .map(m => _normalizeAnthropicModel(m))
                 .filter(Boolean);
             _markLatestByFamily(normalized);
-            await _saveModelCache(normalized);
-            return normalized;
+            // Enrich with LiteLLM catalog metadata (context, pricing, capabilities)
+            const enriched = await enrichModels(normalized);
+            await _saveModelCache(enriched);
+            return enriched;
         } catch (err) {
             process.stderr.write(`[anthropic-oauth] listModels fetch failed (${err.message})\n`);
             // Family-only fallback — no specific versions. These tokens resolve
