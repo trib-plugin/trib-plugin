@@ -445,15 +445,16 @@ export class OpenAIOAuthProvider {
                         'chatgpt-account-id': token.account_id || '',
                         'originator': 'codex_cli_rs',
                         'OpenAI-Beta': 'responses=experimental',
-                        // Empirical (ri / Codex CLI 2026-02-25): the Codex
-                        // Responses endpoint keys prompt caching on a stable
-                        // `session_id` HTTP header. The body-level
-                        // `prompt_cache_key` alone is accepted but never
-                        // produces non-zero `input_tokens_details.cached_tokens`
-                        // — the header is the primary lever. Official clients
-                        // send both; we do the same, using the agent
-                        // session id as a conversation-stable key.
-                        ...(sessionId ? { 'session_id': String(sessionId) } : {}),
+                        // Codex Responses caches on a stable conversation-scoped
+                        // HTTP header. Name is `session-id` (dash) — the
+                        // upstream Envoy gateway drops underscore headers per
+                        // standard HTTP interop (openai/codex#11732,
+                        // "fix: use dash-separated HTTP header name for
+                        // session ID"). The body-level `prompt_cache_key`
+                        // alone produces no cache hits; the dash header is
+                        // the primary lever. Value: the agent session id,
+                        // conversation-stable across turns in that session.
+                        ...(sessionId ? { 'session-id': String(sessionId) } : {}),
                     },
                     body: JSON.stringify(body),
                     signal: controller.signal,
