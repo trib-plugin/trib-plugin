@@ -1,5 +1,5 @@
 import { initProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge } from './orchestrator/session/manager.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
@@ -134,17 +134,20 @@ function fmtTokens(n) {
 const TOOLS = [
   {
     name: 'create_session',
-    description: 'Create an external AI session. Auto-injects CLAUDE.md, agent rules, skills. Registers builtin+MCP tools. Use preset: "full"/"readonly"/"mcp". Use agent: "Worker"/"Reviewer" for role rules. Pass cwd for project-scoped tool execution.',
+    description: 'Create an external AI session. Auto-injects CLAUDE.md, agent rules, skills. Registers builtin+MCP tools. Optional Smart Bridge routing via taskType/role/profileId: when provided, a profile is resolved and its cache strategy + context filters are applied automatically.',
     inputSchema: {
       type: 'object',
       properties: {
-        provider: { type: 'string', description: 'openai, openai-oauth, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
+        provider: { type: 'string', description: 'openai, openai-oauth, anthropic, anthropic-oauth, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
         model: { type: 'string', description: 'e.g., gpt-4o, claude-sonnet-4-0, gemini-2.5-pro' },
         systemPrompt: { type: 'string', description: 'Additional system prompt' },
         agent: { type: 'string', description: 'Agent template: "Worker", "Reviewer"' },
         preset: { type: 'string', enum: ['full', 'readonly', 'mcp'], description: 'Tool preset (default: full)' },
         files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
         cwd: { type: 'string', description: 'Working directory for builtin tool execution and CLAUDE.md/agents/skills lookup. Pass the project root (e.g. C:/Project). Defaults to MCP server cwd.' },
+        taskType: { type: 'string', description: 'Smart Bridge routing: "maintenance", "worker", "reviewer", "researcher", "tester", "debugger", "one-shot", "lead". Picks a profile that controls cache strategy and context filtering.' },
+        role: { type: 'string', description: 'Smart Bridge routing: user-defined role ("worker", "reviewer", etc). Mapped via user-workflow.json.' },
+        profileId: { type: 'string', description: 'Smart Bridge routing: explicit profile id (e.g. "maintenance-light", "worker-full"). Overrides taskType/role.' },
       },
       required: ['provider', 'model'],
     },
@@ -205,16 +208,17 @@ const TOOLS = [
   {
     name: 'bridge',
     title: 'Ask External Model',
-    description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Use ref instead of prompt to reference a stored prompt.',
+    description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Smart Bridge routing: scope maps to a role → profile (cache strategy, context filtering). Use taskType for explicit routing.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The prompt to send (or use ref/file instead)' },
         ref: { type: 'string', description: 'Reference key from prompt store' },
         file: { type: 'string', description: 'Read prompt from this file path' },
-        scope: { type: 'string', description: 'Agent scope: reviewer, debugger, explorer, etc.' },
+        scope: { type: 'string', description: 'Agent scope: reviewer, debugger, explorer, etc. Also drives Smart Bridge role resolution.' },
         preset: { type: 'string', description: 'Override preset name (e.g., GPT5.4, gpt5.4-mini)' },
         context: { type: 'string', description: 'Additional context to prepend' },
+        taskType: { type: 'string', description: 'Smart Bridge task type: "maintenance", "researcher", "reviewer", "one-shot", etc. Optional; scope already implies a role.' },
       },
     },
   },
@@ -239,7 +243,10 @@ export async function init() {
     const { initSmartBridge, getSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
     const userRoles = loadUserWorkflowRoles();
     const userProfiles = config.bridge?.profiles || {};
-    initSmartBridge({ userRoles, userProfiles });
+    const sb = initSmartBridge({ userRoles, userProfiles });
+    // Inject into session manager so createSession() can resolve profiles
+    // synchronously (no lazy-import race).
+    setSmartBridge(sb);
     // Keep Smart Bridge in sync with user-workflow.json edits.
     watchUserWorkflow((nextRoles) => {
       try { getSmartBridge().updateUserRoles(nextRoles); } catch {}
@@ -448,12 +455,22 @@ export async function handleToolCall(name, args, opts = {}) {
           agentId: effectiveLane === 'bridge' ? scope : undefined,
         });
 
+        // Map scope → role so Smart Bridge resolveSync can pick a profile.
+        // Scope examples: "reviewer", "reviewer-a", "debugger" — strip any "-a/-b/-c"
+        // suffix to align with user-workflow.json role names.
+        const smartRole = args.scope
+          ? String(args.scope).replace(/-[a-z0-9]+$/i, '')
+          : null;
+
         const createFreshSession = () => createSession({
           preset,
           owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
           scopeKey: runtimeSpec.scopeKey,
           lane: runtimeSpec.lane,
           cwd: process.cwd(),
+          // Smart Bridge fields — resolveSync picks a profile if the role matches.
+          role: smartRole || undefined,
+          taskType: args.taskType || undefined,
         });
         const found = findOrCreateSession(runtimeSpec.scopeKey, createFreshSession);
         // resumeSession returns null for tombstoned / unresumable sessions.

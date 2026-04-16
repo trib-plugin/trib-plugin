@@ -6,28 +6,23 @@ import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemp
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 
-// Smart Bridge is optional — load lazily & defensively so a broken smart-bridge
-// module cannot take down session creation for the whole plugin. Cached after
-// first successful import; subsequent misses short-circuit to null.
+// Smart Bridge is optional — injected via setSmartBridge() during plugin init
+// so session creation never depends on a circular import. If never injected,
+// createSession simply falls back to classic preset-only behavior.
 let _smartBridgeApi = null;
-let _smartBridgeLoadAttempted = false;
 let _smartBridgeWarned = false;
+
+/**
+ * Inject the Smart Bridge singleton. Called once by agent/index.mjs init()
+ * after initSmartBridge(). Safe to call multiple times — later calls
+ * replace the previous reference.
+ */
+export function setSmartBridge(api) {
+    _smartBridgeApi = api || null;
+}
+
 function getSmartBridgeSync() {
-    if (_smartBridgeApi) return _smartBridgeApi;
-    if (_smartBridgeLoadAttempted) return null;
-    _smartBridgeLoadAttempted = true;
-    // Kick off async import — sets _smartBridgeApi on success. The FIRST
-    // createSession call won't see a resolved bridge (fine, it just skips
-    // smart routing); subsequent calls get the cached instance.
-    import('../smart-bridge/index.mjs')
-        .then((mod) => { _smartBridgeApi = mod.getSmartBridge(); })
-        .catch((err) => {
-            if (!_smartBridgeWarned) {
-                _smartBridgeWarned = true;
-                process.stderr.write(`[session] smart-bridge unavailable: ${err.message}\n`);
-            }
-        });
-    return null;
+    return _smartBridgeApi;
 }
 
 /**
