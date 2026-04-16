@@ -311,7 +311,41 @@ export class GeminiProvider {
     }
 
     async listModels() {
-        return MODELS;
+        // Dynamic lookup via Gemini v1beta /models. Requires API key.
+        const apiKey = this.config.apiKey || process.env.GEMINI_API_KEY;
+        if (!apiKey) return MODELS; // no key — return minimal static list
+        try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`gemini list_models ${res.status}`);
+            const data = await res.json();
+            const items = Array.isArray(data?.models) ? data.models : [];
+            // Filter to Gemini family; skip embedding/imagen endpoints.
+            return items
+                .filter(m => (m?.name || '').includes('gemini'))
+                .filter(m => !/embedding|aqa|imagen/.test(m?.name || ''))
+                .map(m => {
+                    const id = (m.name || '').replace(/^models\//, '');
+                    const family = /flash-lite/.test(id) ? 'gemini-flash-lite'
+                        : /flash/.test(id) ? 'gemini-flash'
+                        : /pro/.test(id) ? 'gemini-pro'
+                        : 'gemini';
+                    return {
+                        id,
+                        display: m.displayName || id,
+                        family,
+                        provider: 'gemini',
+                        contextWindow: m.inputTokenLimit || 1000000,
+                        outputTokens: m.outputTokenLimit || 8192,
+                        tier: 'version',
+                        latest: false,
+                        description: m.description || '',
+                    };
+                });
+        } catch (err) {
+            process.stderr.write(`[gemini] listModels fetch failed (${err.message})\n`);
+            return MODELS;
+        }
     }
 
     async isAvailable() {

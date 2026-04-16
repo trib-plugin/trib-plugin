@@ -276,17 +276,41 @@ async function detectAuth(config = {}) {
 
 // -- Provider model listing --
 
+// Minimal static fallbacks — only used when the real provider can't be
+// queried (no keys, no cache, offline). Prefer getRuntimeProviderModels()
+// which calls the live provider.listModels() for accurate, auto-updating
+// catalogs. New model releases propagate within the 24h cache TTL without
+// any code change here.
 const STATIC_MODELS = {
-  anthropic: ['claude-opus-4-6','claude-opus-4-0','claude-sonnet-4-6','claude-sonnet-4-0','claude-haiku-4-5-20251001'],
-  gemini: ['gemini-3.1-pro-preview','gemini-3-flash-preview','gemini-3.1-flash-lite-preview','gemini-2.5-pro','gemini-2.5-flash'],
+  anthropic: ['claude-opus-4-6','claude-sonnet-4-6','claude-haiku-4-5-20251001'],
+  gemini: ['gemini-3.1-pro-preview','gemini-3-flash-preview','gemini-2.5-pro','gemini-2.5-flash'],
   openai: ['gpt-5.4','gpt-5.4-mini','gpt-5.4-nano'],
   'openai-oauth': ['gpt-5.4','gpt-5.4-mini','gpt-5.3-codex'],
 };
 
+// Try the live provider registry first (dynamic catalog via /v1/models,
+// Codex /backend-api/codex/models, Gemini /v1beta/models). Returns null on
+// any failure so the caller falls back to STATIC_MODELS or the direct HTTP
+// endpoint handlers below.
+async function getRuntimeProviderModels(providerId) {
+  try {
+    const { getProvider } = await import('../src/agent/orchestrator/providers/registry.mjs');
+    const provider = getProvider(providerId);
+    if (!provider) return null;
+    const models = await provider.listModels();
+    if (!Array.isArray(models) || models.length === 0) return null;
+    // Return just the ids for the current UI contract; richer metadata can
+    // be surfaced once the UI adopts the tier-aware schema.
+    return models.map(m => m.id || m.name || String(m)).filter(Boolean);
+  } catch { return null; }
+}
+
 async function listProviderModels(providerId, cfg) {
   const pcfg = cfg?.providers?.[providerId] || {};
-  if (STATIC_MODELS[providerId]) return STATIC_MODELS[providerId];
-
+  // 1. Runtime provider (dynamic catalog, cached 24h).
+  const runtime = await getRuntimeProviderModels(providerId);
+  if (runtime && runtime.length > 0) return runtime;
+  // 2. Direct HTTP model list for key-based providers.
   const KNOWN_ENDPOINTS = {
     openai: { url: 'https://api.openai.com/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
     groq: { url: 'https://api.groq.com/openai/v1/models', auth: k => ({ 'Authorization': `Bearer ${k}` }) },
@@ -299,8 +323,10 @@ async function listProviderModels(providerId, cfg) {
       const json = await httpGetJson(ep.url, ep.auth(pcfg.apiKey));
       const data = Array.isArray(json?.data) ? json.data : [];
       return data.map(m => m.id || m.name || String(m)).filter(Boolean).sort();
-    } catch { return []; }
+    } catch { /* fall through to static */ }
   }
+  // 3. Static fallback.
+  if (STATIC_MODELS[providerId]) return STATIC_MODELS[providerId];
 
   const LOCAL_DEFAULTS = { ollama: 'http://localhost:11434/v1/models', lmstudio: 'http://localhost:1234/v1/models' };
   if (LOCAL_DEFAULTS[providerId]) {

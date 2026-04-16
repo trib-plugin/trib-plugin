@@ -25,6 +25,64 @@ const REDIRECT_URI = 'http://localhost:1455/auth/callback';
 const SCOPE = 'openid profile email offline_access';
 const CODEX_API_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CALLBACK_PORT = 1455;
+// Version string baked into the models endpoint query — Codex rejects the
+// request without it. Any recent client_version works; we match the real CLI.
+const CODEX_CLIENT_VERSION = '0.34.0';
+const CODEX_MODEL_CACHE_TTL_MS = 24 * 60 * 60_000;
+
+function _codexModelCachePath() {
+    return join(getPluginData(), 'openai-oauth-models.json');
+}
+
+async function _loadCodexModelCache() {
+    const path = _codexModelCachePath();
+    if (!existsSync(path)) return null;
+    try {
+        const raw = JSON.parse(readFileSync(path, 'utf-8'));
+        if (!raw?.fetchedAt || !Array.isArray(raw.models)) return null;
+        if (Date.now() - raw.fetchedAt > CODEX_MODEL_CACHE_TTL_MS) return null;
+        return raw.models;
+    } catch { return null; }
+}
+
+async function _saveCodexModelCache(models) {
+    try {
+        writeFileSync(_codexModelCachePath(), JSON.stringify({
+            fetchedAt: Date.now(),
+            models,
+        }, null, 2));
+    } catch { /* best-effort */ }
+}
+
+function _normalizeCodexModel(m) {
+    const id = m?.slug || m?.id;
+    const family = _codexFamily(id);
+    // Codex doesn't use dated ids — everything is effectively a version alias.
+    return {
+        id,
+        name: m?.display_name || id,
+        display: m?.display_name || id,
+        family,
+        provider: 'openai-oauth',
+        contextWindow: m?.context_window || 1000000,
+        outputTokens: m?.auto_compact_token_limit || 32768,
+        tier: 'version',
+        latest: false,
+        description: m?.description || '',
+        reasoningLevels: (m?.supported_reasoning_levels || []).map(r => r.effort),
+    };
+}
+
+function _codexFamily(id) {
+    const s = String(id || '').toLowerCase();
+    if (s.includes('nano')) return 'gpt-nano';
+    if (s.includes('mini')) return 'gpt-mini';
+    if (s.includes('codex')) return 'gpt-codex';
+    if (s.startsWith('gpt-5.4')) return 'gpt-5.4';
+    if (s.startsWith('gpt-5.2')) return 'gpt-5.2';
+    if (s.startsWith('gpt-5')) return 'gpt-5';
+    return 'gpt';
+}
 function getOwnTokenPath() {
     const dir = getPluginData();
     if (!existsSync(dir))
@@ -505,13 +563,36 @@ export class OpenAIOAuthProvider {
         }
     }
     async listModels() {
-        return [
-            { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai-oauth', contextWindow: 1000000 },
-            { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', provider: 'openai-oauth', contextWindow: 1000000 },
-            { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano', provider: 'openai-oauth', contextWindow: 1000000 },
-            { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', provider: 'openai-oauth', contextWindow: 1000000 },
-            { id: 'gpt-5.2', name: 'GPT-5.2', provider: 'openai-oauth', contextWindow: 1000000 },
-        ];
+        // Dynamic lookup via Codex /backend-api/codex/models. Cached 24h.
+        // Endpoint returns rich metadata (context_window, reasoning levels,
+        // visibility) that is more detailed than /v1/models.
+        const cached = await _loadCodexModelCache();
+        if (cached) return cached;
+        try {
+            const auth = await this.ensureAuth();
+            const url = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
+            const res = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${auth.access_token}`,
+                    'OpenAI-Beta': 'responses=experimental',
+                    'originator': 'codex_cli_rs',
+                    'chatgpt-account-id': auth.account_id || '',
+                },
+            });
+            if (!res.ok) throw new Error(`codex list_models ${res.status}`);
+            const data = await res.json();
+            const items = Array.isArray(data?.models) ? data.models : [];
+            const normalized = items.map(m => _normalizeCodexModel(m));
+            await _saveCodexModelCache(normalized);
+            return normalized;
+        } catch (err) {
+            process.stderr.write(`[openai-oauth] listModels fetch failed (${err.message})\n`);
+            // No fallback catalog — empty list signals the UI to show a
+            // "catalog unavailable, retry" state. Codex has no equivalent to
+            // Anthropic's family tokens so there's no meaningful minimal list.
+            return [];
+        }
     }
     async isAvailable() {
         return this.tokens !== null;

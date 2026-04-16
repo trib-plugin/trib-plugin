@@ -6,10 +6,13 @@
  * instead of wiring to each sub-module directly.
  */
 
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { loadProfiles, getProfile } from './profiles.mjs';
 import { SmartRouter } from './router.mjs';
 import { CacheRegistry, hashContent, DEFAULT_TTL_SECONDS } from './registry.mjs';
 import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForProfile } from './cache-strategy.mjs';
+import { getPluginData } from '../config.mjs';
 
 let _sharedInstance = null;
 
@@ -211,10 +214,50 @@ const FAMILY_ENV = {
 
 export function resolveAnthropicModelForFamily(family, overrides = {}) {
     const key = String(family || '').toLowerCase();
+    // 1. Explicit override (user config / call site).
     if (overrides[key]) return overrides[key];
+    // 2. Claude Code runtime env default (set by harness when available).
     const envVar = FAMILY_ENV[key];
     if (envVar && process.env[envVar]) return process.env[envVar];
+    // 3. Cached /v1/models response — pick the most recent version alias
+    //    for this family. Stays fresh because the cache itself is refreshed
+    //    daily by listModels() against Anthropic's real catalog.
+    const fromCache = _resolveFromCatalog(key);
+    if (fromCache) return fromCache;
+    // 4. Static fallback (current-generation id baked in at plugin build time).
     return FAMILY_FALLBACK[key] || null;
+}
+
+function _resolveFromCatalog(family) {
+    try {
+        const cachePath = join(getPluginData(), 'anthropic-oauth-models.json');
+        if (!existsSync(cachePath)) return null;
+        const data = JSON.parse(readFileSync(cachePath, 'utf-8'));
+        const models = Array.isArray(data?.models) ? data.models : [];
+
+        // Preference order:
+        //   1. version-tier with latest=true (e.g., claude-sonnet-4-6)
+        //   2. highest version-tier alias by id sort
+        //   3. highest dated-tier by id sort (for families Anthropic only ships
+        //      dated ids for, e.g., haiku currently has no version alias)
+        const sameFamily = models.filter(m => m.family === family);
+        if (sameFamily.length === 0) return null;
+
+        const versioned = sameFamily.filter(m => m.tier === 'version');
+        if (versioned.length > 0) {
+            const latest = versioned.find(m => m.latest)
+                        || [...versioned].sort((a, b) => b.id.localeCompare(a.id))[0];
+            if (latest?.id) return latest.id;
+        }
+
+        const dated = sameFamily.filter(m => m.tier === 'dated');
+        if (dated.length > 0) {
+            const latestDated = [...dated].sort((a, b) => b.id.localeCompare(a.id))[0];
+            if (latestDated?.id) return latestDated.id;
+        }
+
+        return null;
+    } catch { return null; }
 }
 
 // Re-exports for convenience.

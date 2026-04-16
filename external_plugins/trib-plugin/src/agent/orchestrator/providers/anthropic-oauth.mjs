@@ -14,6 +14,102 @@ import {
     traceBridgeUsage,
 } from '../bridge-trace.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
+import { writeFileSync, existsSync as _existsSync } from 'fs';
+import { getPluginData } from '../config.mjs';
+
+// --- Model catalog cache helpers ---
+// Disk-backed cache so repeated process starts (cron, tool calls) don't
+// hammer /v1/models. 24h TTL is the same cadence Claude Code itself uses
+// for its internal model discovery.
+const MODEL_CACHE_TTL_MS = 24 * 60 * 60_000;
+
+function _modelCachePath() {
+    return join(getPluginData(), 'anthropic-oauth-models.json');
+}
+
+async function _loadModelCache() {
+    const path = _modelCachePath();
+    if (!_existsSync(path)) return null;
+    try {
+        const raw = JSON.parse(readFileSync(path, 'utf-8'));
+        if (!raw?.fetchedAt || !Array.isArray(raw.models)) return null;
+        if (Date.now() - raw.fetchedAt > MODEL_CACHE_TTL_MS) return null;
+        return raw.models;
+    } catch { return null; }
+}
+
+async function _saveModelCache(models) {
+    try {
+        writeFileSync(_modelCachePath(), JSON.stringify({
+            fetchedAt: Date.now(),
+            models,
+        }, null, 2));
+    } catch { /* cache is best-effort */ }
+}
+
+// Classify a model id into our common tier/family shape. Anthropic's catalog
+// mixes dated ids (claude-opus-4-5-20251101), versioned aliases
+// (claude-opus-4-6), and the raw family tokens resolved via env vars.
+function _normalizeAnthropicModel(raw) {
+    const id = raw?.id || raw?.name;
+    if (!id) return null;
+    const familyMatch = id.match(/^claude-(opus|sonnet|haiku)/i);
+    const family = familyMatch ? familyMatch[1].toLowerCase() : 'other';
+    // Dated: trailing -YYYYMMDD (8 digits).
+    const dated = /-\d{8}$/.test(id);
+    // Versioned alias: claude-<family>-<major>-<minor>[-...] with no dated suffix.
+    const versioned = !dated && /-\d+-\d+/.test(id);
+    const tier = dated ? 'dated' : versioned ? 'version' : 'family';
+    const releaseDate = dated
+        ? id.match(/-(\d{4})(\d{2})(\d{2})$/)
+        : null;
+    return {
+        id,
+        display: raw?.display_name || _prettyName(id, family),
+        family,
+        provider: 'anthropic-oauth',
+        contextWindow: raw?.context_window || raw?.max_context_window || _defaultContextForFamily(family),
+        tier,
+        latest: false, // assigned in a second pass once full list is known
+        releaseDate: releaseDate ? `${releaseDate[1]}-${releaseDate[2]}-${releaseDate[3]}` : null,
+    };
+}
+
+function _prettyName(id, family) {
+    const v = id.match(/-(\d+)-(\d+)/);
+    const base = family[0].toUpperCase() + family.slice(1);
+    return v ? `${base} ${v[1]}.${v[2]}` : base;
+}
+
+function _defaultContextForFamily(family) {
+    if (family === 'opus') return 200000;
+    if (family === 'sonnet') return 200000;
+    if (family === 'haiku') return 200000;
+    return 200000;
+}
+
+// Mark the highest-numbered version per family as `latest: true`. Uses a simple
+// lexicographic comparison on the numeric parts embedded in the id.
+function _markLatestByFamily(models) {
+    const byFamily = new Map();
+    for (const m of models) {
+        if (m.tier !== 'version') continue;
+        const cur = byFamily.get(m.family);
+        if (!cur || _compareVersion(m.id, cur.id) > 0) {
+            byFamily.set(m.family, m);
+        }
+    }
+    for (const m of byFamily.values()) m.latest = true;
+}
+
+function _compareVersion(a, b) {
+    const na = (a.match(/-(\d+)-(\d+)/) || []).slice(1).map(Number);
+    const nb = (b.match(/-(\d+)-(\d+)/) || []).slice(1).map(Number);
+    for (let i = 0; i < Math.max(na.length, nb.length); i++) {
+        if ((na[i] || 0) !== (nb[i] || 0)) return (na[i] || 0) - (nb[i] || 0);
+    }
+    return a.localeCompare(b);
+}
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -624,7 +720,46 @@ export class AnthropicOAuthProvider {
     }
 
     async listModels() {
-        return MODELS;
+        // Dynamic lookup via /v1/models — returns whatever Anthropic currently
+        // exposes for this OAuth account. Cached on disk with 24h TTL; falls
+        // back to the static MODELS list on any failure so the plugin still
+        // works offline or when Anthropic's /v1/models is momentarily down.
+        const cached = await _loadModelCache();
+        if (cached) return cached;
+        try {
+            const creds = this.ensureAuth();
+            const res = await fetch('https://api.anthropic.com/v1/models', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${creds.accessToken}`,
+                    'anthropic-version': ANTHROPIC_VERSION,
+                    'anthropic-beta': OAUTH_BETA_HEADERS,
+                    'anthropic-dangerous-direct-browser-access': 'true',
+                    'user-agent': `claude-cli/${resolveCliVersion()} (external, sdk-cli)`,
+                    'x-app': 'cli',
+                },
+            });
+            if (!res.ok) throw new Error(`list_models ${res.status}`);
+            const data = await res.json();
+            const items = Array.isArray(data?.data) ? data.data : [];
+            const normalized = items
+                .map(m => _normalizeAnthropicModel(m))
+                .filter(Boolean);
+            _markLatestByFamily(normalized);
+            await _saveModelCache(normalized);
+            return normalized;
+        } catch (err) {
+            process.stderr.write(`[anthropic-oauth] listModels fetch failed (${err.message})\n`);
+            // Family-only fallback — no specific versions. These tokens resolve
+            // at runtime via ANTHROPIC_DEFAULT_*_MODEL env vars, so the user
+            // gets whatever Claude Code's current default is. Better than a
+            // stale hardcoded "Opus 4.6" that might not exist tomorrow.
+            return [
+                { id: 'opus',   display: 'Opus (auto)',   family: 'opus',   provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
+                { id: 'sonnet', display: 'Sonnet (auto)', family: 'sonnet', provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
+                { id: 'haiku',  display: 'Haiku (auto)',  family: 'haiku',  provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
+            ];
+        }
     }
 
     async isAvailable() {
