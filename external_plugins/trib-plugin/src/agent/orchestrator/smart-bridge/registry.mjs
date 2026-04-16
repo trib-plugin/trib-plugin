@@ -1,13 +1,14 @@
 /**
- * Smart Bridge — Cache Registry
+ * Smart Bridge — Cache Registry (Phase D-2: provider × profile matrix)
  *
- * Persists per-profile cache warm-state to disk so MCP server restarts
- * don't invalidate in-flight provider-side caches. Anthropic/OpenAI keep
- * cache entries alive by prefix hash for minutes to hours; our registry
- * just remembers which profiles are still within their TTL so we can
- * reuse the exact same prefix after a restart.
+ * Each provider caches independently (Anthropic workspace+model shard,
+ * OpenAI prompt_cache_key, Gemini cachedContents). Tracking a single entry
+ * per profile-id — as v1 did — means a profile used across two providers
+ * silently overwrites the warm state of the other. v2 indexes by
+ * (profileId, provider), preserving per-shard hit/miss/TTL independently.
  *
- * Storage: <plugin-data>/cache-registry.json
+ * Persistence: <plugin-data>/cache-registry.json. v1 files auto-migrate
+ * on load.
  */
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
@@ -15,7 +16,7 @@ import { createHash } from 'crypto';
 import { dirname, join } from 'path';
 import { getPluginData } from '../config.mjs';
 
-const REGISTRY_VERSION = 1;
+const REGISTRY_VERSION = 2;
 
 function registryPath() {
     return join(getPluginData(), 'cache-registry.json');
@@ -24,10 +25,26 @@ function registryPath() {
 function emptyRegistry() {
     return {
         version: REGISTRY_VERSION,
-        profiles: {},   // profileId → { provider, prefixHash, createdAt, expiresAt, hitCount, missCount, systemHash }
+        // profiles: profileId → provider → entry
+        //   entry = { prefixHash, createdAt, expiresAt, hitCount, missCount, systemHash }
+        profiles: {},
         openaiKeys: {}, // cacheKey → { retention, lastUsedAt }
         updatedAt: new Date().toISOString(),
     };
+}
+
+// v1 shape: profiles[profileId] = { provider, prefixHash, createdAt, ... }
+// v2 shape: profiles[profileId][provider] = { prefixHash, createdAt, ... }
+function migrateV1ToV2(raw) {
+    const migrated = emptyRegistry();
+    migrated.openaiKeys = raw.openaiKeys || {};
+    for (const [profileId, entry] of Object.entries(raw.profiles || {})) {
+        if (!entry || typeof entry !== 'object') continue;
+        const provider = entry.provider || 'unknown';
+        const { provider: _p, ...rest } = entry;
+        migrated.profiles[profileId] = { [provider]: rest };
+    }
+    return migrated;
 }
 
 export class CacheRegistry {
@@ -53,9 +70,12 @@ export class CacheRegistry {
                     openaiKeys: raw.openaiKeys || {},
                     updatedAt: raw.updatedAt || new Date().toISOString(),
                 };
+            } else if (raw.version === 1 || raw.version === undefined) {
+                process.stderr.write(`[cache-registry] migrating v${raw.version || '?'} → v${REGISTRY_VERSION}\n`);
+                this.data = migrateV1ToV2(raw);
+                this.dirty = true;
             } else {
-                // Version mismatch — start fresh but keep a backup reference.
-                process.stderr.write(`[cache-registry] version mismatch (${raw.version} vs ${REGISTRY_VERSION}), resetting\n`);
+                process.stderr.write(`[cache-registry] unknown version ${raw.version}, resetting\n`);
                 this.data = emptyRegistry();
             }
         } catch (err) {
@@ -81,40 +101,51 @@ export class CacheRegistry {
         }
     }
 
-    // --- Profile cache warm state ---
+    _getEntry(profileId, provider) {
+        return this.data.profiles[profileId]?.[provider] || null;
+    }
+
+    _setEntry(profileId, provider, entry) {
+        if (!this.data.profiles[profileId]) this.data.profiles[profileId] = {};
+        this.data.profiles[profileId][provider] = entry;
+    }
+
+    // --- Profile × provider cache warm state ---
 
     /**
-     * Record that a profile was just written to provider cache.
-     * prefixContent should be deterministic (system + tools + context chunks)
-     * so re-hashing produces the same hash on next run.
+     * Record that a (profile, provider) shard was just written to provider
+     * cache. prefixContent should be deterministic (system + tools + context
+     * chunks) so re-hashing produces the same hash on next run. TTL seconds
+     * is provider-specific and decided by the caller.
      */
     markWarm(profileId, provider, prefixContent, ttlSeconds) {
         if (!this.loaded) this.load();
+        if (!profileId || !provider) return;
         const now = Date.now();
         const prefixHash = hashContent(prefixContent);
-        const entry = this.data.profiles[profileId] || {};
-        this.data.profiles[profileId] = {
-            provider,
+        const existing = this._getEntry(profileId, provider);
+        const samePrefix = existing && existing.prefixHash === prefixHash;
+        this._setEntry(profileId, provider, {
             prefixHash,
-            createdAt: entry.prefixHash === prefixHash ? (entry.createdAt || now) : now,
+            createdAt: samePrefix ? (existing.createdAt || now) : now,
             expiresAt: now + ttlSeconds * 1000,
-            hitCount: entry.prefixHash === prefixHash ? (entry.hitCount || 0) : 0,
-            missCount: entry.missCount || 0,
-        };
+            hitCount: samePrefix ? (existing.hitCount || 0) : 0,
+            missCount: existing?.missCount || 0,
+        });
         this.dirty = true;
     }
 
     /**
-     * Check if a profile's cache is still warm for the given prefix content.
-     * Returns { warm: bool, expiresIn: ms } — warm=true means caller can
-     * reuse exact same prefix for guaranteed cache hit.
+     * Check whether a (profile, provider) shard is still warm for the given
+     * prefix content. warm=true means the caller can reuse exact prefix for
+     * guaranteed cache hit on that provider.
      */
-    checkWarm(profileId, prefixContent) {
+    checkWarm(profileId, provider, prefixContent) {
         if (!this.loaded) this.load();
-        const entry = this.data.profiles[profileId];
+        const entry = this._getEntry(profileId, provider);
         if (!entry) return { warm: false, expiresIn: 0, reason: 'no-entry' };
         const now = Date.now();
-        if (entry.expiresAt < now) return { warm: false, expiresIn: 0, reason: 'expired' };
+        if ((entry.expiresAt || 0) < now) return { warm: false, expiresIn: 0, reason: 'expired' };
         const currentHash = hashContent(prefixContent);
         if (currentHash !== entry.prefixHash) {
             return { warm: false, expiresIn: 0, reason: 'hash-mismatch' };
@@ -122,24 +153,37 @@ export class CacheRegistry {
         return { warm: true, expiresIn: entry.expiresAt - now, reason: 'warm' };
     }
 
-    recordHit(profileId) {
-        const entry = this.data.profiles[profileId];
+    recordHit(profileId, provider) {
+        const entry = this._getEntry(profileId, provider);
         if (entry) {
             entry.hitCount = (entry.hitCount || 0) + 1;
             this.dirty = true;
         }
     }
 
-    recordMiss(profileId) {
-        const entry = this.data.profiles[profileId];
+    recordMiss(profileId, provider) {
+        const entry = this._getEntry(profileId, provider);
         if (entry) {
             entry.missCount = (entry.missCount || 0) + 1;
             this.dirty = true;
         }
     }
 
-    invalidate(profileId) {
-        if (this.data.profiles[profileId]) {
+    /**
+     * Invalidate a single provider shard when `provider` is given, or every
+     * provider shard under that profile when omitted.
+     */
+    invalidate(profileId, provider) {
+        if (!profileId || !this.data.profiles[profileId]) return;
+        if (provider) {
+            if (this.data.profiles[profileId][provider]) {
+                delete this.data.profiles[profileId][provider];
+                if (Object.keys(this.data.profiles[profileId]).length === 0) {
+                    delete this.data.profiles[profileId];
+                }
+                this.dirty = true;
+            }
+        } else {
             delete this.data.profiles[profileId];
             this.dirty = true;
         }
@@ -162,30 +206,48 @@ export class CacheRegistry {
         if (!this.loaded) return;
         const now = Date.now();
         let removed = 0;
-        for (const [id, entry] of Object.entries(this.data.profiles)) {
-            if (entry.expiresAt < now) {
-                delete this.data.profiles[id];
-                removed += 1;
+        for (const [profileId, providers] of Object.entries(this.data.profiles)) {
+            for (const [provider, entry] of Object.entries(providers)) {
+                if ((entry?.expiresAt || 0) < now) {
+                    delete providers[provider];
+                    removed += 1;
+                }
+            }
+            if (Object.keys(providers).length === 0) {
+                delete this.data.profiles[profileId];
             }
         }
         if (removed > 0) this.dirty = true;
     }
 
+    /**
+     * Matrix-shaped stats. profiles[profileId][provider] = { hitCount,
+     * missCount, hitRate, expiresIn, prefixHash }. shardCount totals every
+     * (profile, provider) pair; profileCount counts distinct profiles.
+     */
     getStats() {
         if (!this.loaded) this.load();
+        const now = Date.now();
         const profiles = {};
-        for (const [id, entry] of Object.entries(this.data.profiles)) {
-            const total = (entry.hitCount || 0) + (entry.missCount || 0);
-            profiles[id] = {
-                provider: entry.provider,
-                hitCount: entry.hitCount || 0,
-                missCount: entry.missCount || 0,
-                hitRate: total > 0 ? ((entry.hitCount || 0) / total) : 0,
-                expiresIn: Math.max(0, entry.expiresAt - Date.now()),
-            };
+        let shardCount = 0;
+        for (const [profileId, providers] of Object.entries(this.data.profiles)) {
+            profiles[profileId] = {};
+            for (const [provider, entry] of Object.entries(providers)) {
+                const total = (entry.hitCount || 0) + (entry.missCount || 0);
+                profiles[profileId][provider] = {
+                    prefixHash: entry.prefixHash || null,
+                    hitCount: entry.hitCount || 0,
+                    missCount: entry.missCount || 0,
+                    hitRate: total > 0 ? (entry.hitCount || 0) / total : 0,
+                    expiresIn: Math.max(0, (entry.expiresAt || 0) - now),
+                    createdAt: entry.createdAt || null,
+                };
+                shardCount += 1;
+            }
         }
         return {
             profileCount: Object.keys(this.data.profiles).length,
+            shardCount,
             profiles,
             openaiKeyCount: Object.keys(this.data.openaiKeys).length,
         };
@@ -217,8 +279,8 @@ export function hashContent(content) {
 }
 
 /**
- * Default TTL (seconds) for each cache layer. Aligns with the provider
- * cache TTL. Caller can override via profile.cacheStrategy.
+ * Default TTL (seconds) per cache layer. Providers pick their own; callers
+ * that don't specify land on the shortest safe default.
  */
 export const DEFAULT_TTL_SECONDS = {
     '1h': 3600,

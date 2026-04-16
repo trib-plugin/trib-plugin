@@ -119,9 +119,9 @@ export class SmartBridge {
         }
         const cachedTokens = usage?.cachedTokens ?? 0;
         if (cachedTokens > 0) {
-            this.registry.recordHit(profile.id);
+            this.registry.recordHit(profile.id, provider);
         } else if (usage?.inputTokens > 0) {
-            this.registry.recordMiss(profile.id);
+            this.registry.recordMiss(profile.id, provider);
         }
         if (this.registry.dirty) this.registry.save();
     }

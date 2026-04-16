@@ -777,9 +777,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Phase C Ship 5 — Smart Bridge cache dashboard. Per-profile warm state,
-  // hit/miss counters, and provider breakdown. Used by the General tab to
-  // surface which Pool B prefixes are currently warm and which are drifting.
+  // Phase D-2 — Smart Bridge cache dashboard (provider × profile matrix).
+  // Each profile exposes one `shards` map keyed by provider so the UI can
+  // show, for example, that `sub-task` is warm on anthropic-oauth but cold
+  // on openai-oauth without either row overwriting the other.
   if (req.method === 'GET' && path === '/bridge/stats') {
     try {
       const { CacheRegistry } = await import('../src/agent/orchestrator/smart-bridge/registry.mjs');
@@ -788,11 +789,31 @@ const server = http.createServer(async (req, res) => {
       const stats = registry.getStats();
       const now = Date.now();
       const profiles = {};
+      let warmShards = 0;
+      const packShards = (profileId) => {
+        const providers = registry.data.profiles[profileId] || {};
+        const shards = {};
+        for (const [provider, entry] of Object.entries(providers)) {
+          const hit = entry.hitCount || 0;
+          const miss = entry.missCount || 0;
+          const total = hit + miss;
+          const warm = (entry.expiresAt || 0) > now;
+          if (warm) warmShards += 1;
+          shards[provider] = {
+            prefixHash: entry.prefixHash || null,
+            hitCount: hit,
+            missCount: miss,
+            hitRate: total > 0 ? hit / total : 0,
+            warm,
+            expiresInMs: Math.max(0, (entry.expiresAt || 0) - now),
+            createdAt: entry.createdAt ? new Date(entry.createdAt).toISOString() : null,
+          };
+        }
+        return shards;
+      };
       const seen = new Set();
       for (const [id, profile] of Object.entries(BUILTIN_PROFILES)) {
         seen.add(id);
-        const s = stats.profiles[id] || {};
-        const entry = registry.data.profiles[id] || {};
         profiles[id] = {
           id,
           taskType: profile.taskType,
@@ -800,19 +821,10 @@ const server = http.createServer(async (req, res) => {
           behavior: profile.behavior || null,
           fallbackPreset: profile.fallbackPreset,
           description: profile.description,
-          provider: s.provider || entry.provider || null,
-          prefixHash: entry.prefixHash || null,
-          hitCount: s.hitCount || 0,
-          missCount: s.missCount || 0,
-          hitRate: Number.isFinite(s.hitRate) ? s.hitRate : 0,
-          warm: (entry.expiresAt || 0) > now,
-          expiresInMs: Math.max(0, (entry.expiresAt || 0) - now),
-          createdAt: entry.createdAt ? new Date(entry.createdAt).toISOString() : null,
+          shards: packShards(id),
         };
       }
-      // Also surface registry-only entries (overrides / user profiles) that
-      // don't appear in BUILTIN_PROFILES so the dashboard never hides traffic.
-      for (const [id, entry] of Object.entries(registry.data.profiles || {})) {
+      for (const id of Object.keys(registry.data.profiles || {})) {
         if (seen.has(id)) continue;
         profiles[id] = {
           id,
@@ -821,22 +833,14 @@ const server = http.createServer(async (req, res) => {
           behavior: null,
           fallbackPreset: null,
           description: '(user profile)',
-          provider: entry.provider || null,
-          prefixHash: entry.prefixHash || null,
-          hitCount: entry.hitCount || 0,
-          missCount: entry.missCount || 0,
-          hitRate: ((entry.hitCount || 0) + (entry.missCount || 0)) > 0
-            ? (entry.hitCount || 0) / ((entry.hitCount || 0) + (entry.missCount || 0))
-            : 0,
-          warm: (entry.expiresAt || 0) > now,
-          expiresInMs: Math.max(0, (entry.expiresAt || 0) - now),
-          createdAt: entry.createdAt ? new Date(entry.createdAt).toISOString() : null,
+          shards: packShards(id),
         };
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         profileCount: Object.keys(profiles).length,
-        warmCount: Object.values(profiles).filter(p => p.warm).length,
+        shardCount: stats.shardCount || 0,
+        warmShardCount: warmShards,
         openaiKeyCount: stats.openaiKeyCount || 0,
         updatedAt: registry.data.updatedAt,
         profiles,

@@ -464,31 +464,42 @@ function acquireSessionLock(sessionId) {
     });
 }
 
-// Phase C Ship 5 — Profile-level cold-cache singleflight.
+// Phase D-2 — Shard-level cold-cache singleflight.
 //
-// Two Worker/Sub asks can arrive for the same profile (e.g. sub-task) across
-// different sessions. When the provider cache for that profile is already
-// warm, both calls hit and nothing special is needed. When it is cold, both
-// calls would independently pay the cache-write premium (2× input on
-// Anthropic) — wasting money without improving cache state.
-//
-// This guard serialises the cold-state ask: the first call goes through
-// immediately (and performs the cache write); the second call waits for the
-// first to complete (bounded by COLD_FLIGHT_TIMEOUT_MS) and then finds the
-// cache warm, paying only cache-read cost. Once warm, the guard becomes a
-// no-op so concurrent warm asks stay parallel.
-const _profileColdFlight = new Map();
+// The relevant cache-concurrency unit is the provider shard, not the logical
+// profile. Anthropic's Sonnet shard and OpenAI's Codex shard are completely
+// separate caches even when both serve the same `sub-task` profile; locking
+// them under one key (v0.6.50 behaviour) either over-serialised warm warm
+// crossings or under-locked concurrent cold writes. The shard key used here
+// is `${provider}:${model}:${profileId}` — provider separates physical
+// shards, model guards against cross-model prefix reuse, and profileId
+// stands in for prefix-hash until the registry has a hash on file. The
+// first concurrent cold ask goes through and pays the write premium; peers
+// on the same shard wait up to COLD_FLIGHT_TIMEOUT_MS and then ride warm.
+const _shardColdFlight = new Map();
 const COLD_FLIGHT_TIMEOUT_MS = 60_000;
 
-function _isProfileWarm(profileId) {
-    if (!profileId || !_smartBridgeApi) return false;
-    const entry = _smartBridgeApi.registry?.data?.profiles?.[profileId];
-    return !!(entry && (entry.expiresAt || 0) > Date.now());
+function _shardKey(provider, model, profileId) {
+    if (!provider || !profileId) return null;
+    const modelPart = model || '_';
+    return `${provider}:${modelPart}:${profileId}`;
 }
 
-async function _waitForColdProfile(profileId) {
-    if (!profileId || _isProfileWarm(profileId)) return;
-    const inFlight = _profileColdFlight.get(profileId);
+function _isShardWarm(provider, model, profileId) {
+    if (!provider || !profileId || !_smartBridgeApi) return false;
+    const entry = _smartBridgeApi.registry?.data?.profiles?.[profileId]?.[provider];
+    if (!entry) return false;
+    // Registry does not yet track `model` per entry; treat model mismatch as
+    // unknown-warm rather than cold because Anthropic/OpenAI prefix caches
+    // are keyed on prompt content (which encodes the model implicitly when
+    // tools embed the model name). Good enough for singleflight gating.
+    return (entry.expiresAt || 0) > Date.now();
+}
+
+async function _waitForColdShard(provider, model, profileId) {
+    const key = _shardKey(provider, model, profileId);
+    if (!key || _isShardWarm(provider, model, profileId)) return;
+    const inFlight = _shardColdFlight.get(key);
     if (!inFlight) return;
     try {
         await Promise.race([
@@ -499,21 +510,21 @@ async function _waitForColdProfile(profileId) {
             )),
         ]);
     } catch {
-        // Timeout or in-flight failure — proceed anyway. The worst case is a
-        // second write premium, which is exactly what the guard ordinarily
-        // prevents but is acceptable as a bounded fallback.
+        // Timeout or in-flight failure — proceed anyway. Worst case we pay a
+        // second write premium, which is the bounded fallback.
     }
 }
 
-function _registerColdFlight(profileId) {
-    if (!profileId) return () => {};
+function _registerShardColdFlight(provider, model, profileId) {
+    const key = _shardKey(provider, model, profileId);
+    if (!key) return () => {};
     let resolve;
     const flight = new Promise(r => { resolve = r; });
-    _profileColdFlight.set(profileId, flight);
+    _shardColdFlight.set(key, flight);
     return () => {
         resolve();
-        if (_profileColdFlight.get(profileId) === flight) {
-            _profileColdFlight.delete(profileId);
+        if (_shardColdFlight.get(key) === flight) {
+            _shardColdFlight.delete(key);
         }
     };
 }
@@ -532,12 +543,13 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         unlock();
         throw new SessionClosedError(sessionId, 'session already closed');
     }
-    // Phase C Ship 5 — cold-cache singleflight. If this profile has no warm
-    // entry and another ask is already in flight for it, wait so the peer can
-    // complete the cache write first; we then ride warm. No-op when warm.
-    await _waitForColdProfile(preSession.profileId);
-    const releaseColdFlight = !_isProfileWarm(preSession.profileId)
-        ? _registerColdFlight(preSession.profileId)
+    // Phase D-2 — shard-level cold-cache singleflight. Serialise only when
+    // the specific (provider, model, profile) shard is cold. Same profile on
+    // a different provider holds its own warm/cold state, so Anthropic
+    // traffic never blocks OpenAI traffic or vice versa.
+    await _waitForColdShard(preSession.provider, preSession.model, preSession.profileId);
+    const releaseColdFlight = !_isShardWarm(preSession.provider, preSession.model, preSession.profileId)
+        ? _registerShardColdFlight(preSession.provider, preSession.model, preSession.profileId)
         : () => {};
     const askGeneration = typeof preSession.generation === 'number' ? preSession.generation : 0;
     const runtime = _touchRuntime(sessionId);
