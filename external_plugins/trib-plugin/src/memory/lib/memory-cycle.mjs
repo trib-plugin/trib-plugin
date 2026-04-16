@@ -103,7 +103,7 @@ export async function runCycle1(db, config = {}, options = {}) {
     SELECT id, ts, role, content
     FROM entries
     WHERE chunk_root IS NULL
-    ORDER BY ts ASC, id ASC
+    ORDER BY ts DESC, id DESC
     LIMIT ?
   `).all(batchSize)
 
@@ -325,7 +325,7 @@ export async function runCycle2(db, config = {}, options = {}) {
   const phase1Rows = db.prepare(
     `SELECT id, element, category, summary, score
      FROM entries WHERE is_root = 1 AND status IS NULL
-     ORDER BY id ASC LIMIT ?`,
+     ORDER BY id DESC LIMIT ?`,
   ).all(batchSize)
 
   if (phase1Rows.length > 0) {
@@ -345,7 +345,7 @@ export async function runCycle2(db, config = {}, options = {}) {
   const phase2Rows = db.prepare(
     `SELECT id, element, category, summary, score
      FROM entries WHERE is_root = 1 AND status IN ('pending', 'demoted')
-     ORDER BY id ASC LIMIT ?`,
+     ORDER BY id DESC LIMIT ?`,
   ).all(batchSize)
 
   if (phase2Rows.length > 0) {

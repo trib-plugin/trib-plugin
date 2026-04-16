@@ -31,9 +31,8 @@ export function retrieveEntries(db, filters = {}) {
     }
   }
 
-  if (filters.status !== null) {
-    const requested = filters.status === undefined ? 'active' : filters.status
-    const statusVal = String(requested).trim().toLowerCase()
+  if (filters.status != null) {
+    const statusVal = String(filters.status).trim().toLowerCase()
     if (VALID_STATUS_SET.has(statusVal)) {
       where.push(`status = ?`)
       params.push(statusVal)
