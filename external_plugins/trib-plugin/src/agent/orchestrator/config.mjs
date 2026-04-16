@@ -63,6 +63,19 @@ function buildDefaultConfig() {
     const hasCodexAuth = existsSync(join(homedir(), '.codex', 'auth.json'));
     const hasOwnAuth = existsSync(join(getPluginData(), 'openai-oauth.json'));
     providers['openai-oauth'] = { enabled: hasCodexAuth || hasOwnAuth };
+
+    // Anthropic OAuth (Claude Max subscription) — enabled if .credentials.json exists with inference scope
+    const hasClaudeOAuth = (() => {
+        try {
+            const credPath = join(homedir(), '.claude', '.credentials.json');
+            if (!existsSync(credPath)) return false;
+            const creds = JSON.parse(readFileSync(credPath, 'utf8'));
+            return creds?.claudeAiOauth?.accessToken &&
+                   Array.isArray(creds?.claudeAiOauth?.scopes) &&
+                   creds.claudeAiOauth.scopes.includes('user:inference');
+        } catch { return false; }
+    })();
+    providers['anthropic-oauth'] = { enabled: hasClaudeOAuth };
     // Local providers — opt-in via setup UI after HTTP ping confirms server is running
     providers.ollama = { enabled: false, baseURL: 'http://localhost:11434/v1' };
     providers.lmstudio = { enabled: false, baseURL: 'http://localhost:1234/v1' };

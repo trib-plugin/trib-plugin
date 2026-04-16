@@ -2,6 +2,7 @@ import { OpenAICompatProvider } from './openai-compat.mjs';
 import { AnthropicProvider } from './anthropic.mjs';
 import { GeminiProvider } from './gemini.mjs';
 import { OpenAIOAuthProvider } from './openai-oauth.mjs';
+import { AnthropicOAuthProvider } from './anthropic-oauth.mjs';
 import { getCopilotBearerToken } from './copilot-auth.mjs';
 const OPENAI_COMPAT_PROVIDERS = ['openai', 'groq', 'openrouter', 'xai', 'ollama', 'lmstudio', 'local'];
 /**
@@ -68,6 +69,9 @@ export async function initProviders(config) {
             }
             else if (name === 'openai-oauth') {
                 providers.set(name, new OpenAIOAuthProvider(cfg));
+            }
+            else if (name === 'anthropic-oauth') {
+                providers.set(name, new AnthropicOAuthProvider(cfg));
             }
             else if (OPENAI_COMPAT_PROVIDERS.includes(name)) {
                 providers.set(name, new OpenAICompatProvider(name, cfg));
