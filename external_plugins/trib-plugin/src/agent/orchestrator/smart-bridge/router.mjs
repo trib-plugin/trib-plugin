@@ -69,13 +69,7 @@ export class SmartRouter {
             if (p) return { profile: p, source: 'explicit' };
         }
 
-        // --- Layer 1a: explicit preset ---
-        if (request.preset) {
-            const p = findProfileForPreset(this.profiles, request.preset);
-            if (p) return { profile: p, source: 'rule-preset' };
-        }
-
-        // --- Layer 1b: user role ---
+        // --- Layer 1a: user role ---
         // Role is more specific than preset — match taskType first so profiles
         // with distinct taskType but shared preset resolve correctly (e.g., both
         // reviewer and tester use GPT5.4, but have different profiles).
@@ -87,6 +81,12 @@ export class SmartRouter {
                 const presetMatch = findProfileForPreset(this.profiles, preset);
                 if (presetMatch) return { profile: presetMatch, source: 'rule-role' };
             }
+        }
+
+        // --- Layer 1b: explicit preset ---
+        if (request.preset) {
+            const p = findProfileForPreset(this.profiles, request.preset);
+            if (p) return { profile: p, source: 'rule-preset' };
         }
 
         // --- Layer 1c: explicit taskType ---
@@ -135,10 +135,7 @@ export class SmartRouter {
             const p = getProfile(this.profiles, request.profileId);
             if (p) return { profile: p, source: 'explicit' };
         }
-        if (request.preset) {
-            const p = findProfileForPreset(this.profiles, request.preset);
-            if (p) return { profile: p, source: 'rule-preset' };
-        }
+        // Role before preset — see Layer 1a comment in resolve().
         if (request.role) {
             const taskMatch = findProfileForTaskType(this.profiles, request.role);
             if (taskMatch) return { profile: taskMatch, source: 'rule-role' };
@@ -147,6 +144,10 @@ export class SmartRouter {
                 const presetMatch = findProfileForPreset(this.profiles, preset);
                 if (presetMatch) return { profile: presetMatch, source: 'rule-role' };
             }
+        }
+        if (request.preset) {
+            const p = findProfileForPreset(this.profiles, request.preset);
+            if (p) return { profile: p, source: 'rule-preset' };
         }
         if (request.taskType) {
             const p = findProfileForTaskType(this.profiles, request.taskType);
