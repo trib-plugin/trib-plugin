@@ -6,6 +6,30 @@ import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemp
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 
+// Smart Bridge is optional — load lazily & defensively so a broken smart-bridge
+// module cannot take down session creation for the whole plugin. Cached after
+// first successful import; subsequent misses short-circuit to null.
+let _smartBridgeApi = null;
+let _smartBridgeLoadAttempted = false;
+let _smartBridgeWarned = false;
+function getSmartBridgeSync() {
+    if (_smartBridgeApi) return _smartBridgeApi;
+    if (_smartBridgeLoadAttempted) return null;
+    _smartBridgeLoadAttempted = true;
+    // Kick off async import — sets _smartBridgeApi on success. The FIRST
+    // createSession call won't see a resolved bridge (fine, it just skips
+    // smart routing); subsequent calls get the cached instance.
+    import('../smart-bridge/index.mjs')
+        .then((mod) => { _smartBridgeApi = mod.getSmartBridge(); })
+        .catch((err) => {
+            if (!_smartBridgeWarned) {
+                _smartBridgeWarned = true;
+                process.stderr.write(`[session] smart-bridge unavailable: ${err.message}\n`);
+            }
+        });
+    return null;
+}
+
 /**
  * Thrown when a session is closed while a call is in-flight. Callers (bridge
  * handler, CLI) should render this as "cancelled" rather than a hard error.
@@ -61,10 +85,49 @@ function guessContextWindow(model) {
 // --- create_session ---
 // opts can pass either a `preset` object (from config.presets) or raw provider/model.
 // Preset shape: { name, provider, model, effort?, fast?, tools? }
+//
+// Smart Bridge integration:
+//   opts.taskType / opts.role / opts.profileId — enables profile-aware routing.
+//     Rule-based SmartRouter resolves these synchronously; the resolved
+//     profile controls context filtering (skip.recap/skills/etc) and cache
+//     strategy. If no rule matches, falls back to classic preset behavior.
+//   opts.profile — pre-resolved profile (bypasses router; used by async
+//     callers who already ran SmartBridge.resolve()).
+//   opts.providerCacheOpts — pre-resolved cache options merged into ask() sendOpts.
 export function createSession(opts) {
     const presetObj = opts.preset && typeof opts.preset === 'object' ? opts.preset : null;
-    const providerName = presetObj?.provider || opts.provider;
-    const modelName = presetObj?.model || opts.model;
+
+    // --- Smart Bridge profile resolution (best-effort, sync) ---
+    let profile = opts.profile || null;
+    let providerCacheOpts = opts.providerCacheOpts || null;
+    if (!profile && (opts.taskType || opts.role || opts.profileId)) {
+        const smartBridge = getSmartBridgeSync();
+        if (smartBridge) {
+            try {
+                const resolved = smartBridge.resolveSync({
+                    taskType: opts.taskType,
+                    role: opts.role,
+                    profileId: opts.profileId,
+                    preset: presetObj?.name || (typeof opts.preset === 'string' ? opts.preset : null),
+                    provider: opts.provider || presetObj?.provider,
+                });
+                if (resolved) {
+                    profile = resolved.profile;
+                    providerCacheOpts = resolved.providerCacheOpts;
+                }
+            } catch (e) {
+                // Smart Bridge error — log once, fall back to classic behavior.
+                if (!_smartBridgeWarned) {
+                    _smartBridgeWarned = true;
+                    process.stderr.write(`[session] smart bridge resolve failed: ${e.message}\n`);
+                }
+            }
+        }
+    }
+
+    const providerName = opts.provider || presetObj?.provider
+        || (profile?.preferredProviders?.[0]);
+    const modelName = opts.model || presetObj?.model;
     const toolPreset = presetObj?.tools || (typeof opts.preset === 'string' ? opts.preset : null) || opts.tools || 'full';
     const effort = presetObj?.effort || opts.effort || null;
     const fast = presetObj?.fast === true || opts.fast === true;
@@ -85,6 +148,7 @@ export function createSession(opts) {
         claudeMd: claudeMd || undefined,
         agentTemplate: agentTemplate || undefined,
         hasSkills: skills.length > 0,
+        profile: profile || undefined,
     });
     if (systemPrompt) {
         messages.push({ role: 'system', content: systemPrompt });
@@ -121,10 +185,15 @@ export function createSession(opts) {
         // Hermes-style in-flight compressor state
         compressionCount: 0,
         previousSummary: null,
+        // Smart Bridge metadata — optional. Applied on every ask() to merge
+        // profile-driven cache settings into provider sendOpts.
+        profileId: profile?.id || null,
+        providerCacheOpts: providerCacheOpts || null,
     };
     saveSession(session);
     return session;
 }
+
 // ── Runtime liveness map ──────────────────────────────────────────────
 // In-memory only. Tracks per-session stage + stream heartbeat so list_sessions
 // can surface whether a session is actually alive vs stuck. Never persisted —
@@ -311,6 +380,10 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     signal,
                     providerState: session.providerState ?? undefined,
                     session,
+                    // Smart Bridge cache settings — merged last so session overrides
+                    // don't get overridden by defaults. When session has no profile,
+                    // providerCacheOpts is null and this spread is a no-op.
+                    ...(session.providerCacheOpts || {}),
                     onStageChange: (stage) => updateSessionStage(sessionId, stage),
                     onStreamDelta: () => markSessionStreamDelta(sessionId),
                 }),

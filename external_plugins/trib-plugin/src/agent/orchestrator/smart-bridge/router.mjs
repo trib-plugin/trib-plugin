@@ -126,6 +126,36 @@ export class SmartRouter {
     }
 
     /**
+     * Sync subset of resolve() — skips LLM fallback, rule-based only.
+     * Used by sync call sites (createSession) that can't await.
+     * Returns null if no rule matches (caller should fall back to default).
+     */
+    resolveSync(request) {
+        if (request.profileId) {
+            const p = getProfile(this.profiles, request.profileId);
+            if (p) return { profile: p, source: 'explicit' };
+        }
+        if (request.preset) {
+            const p = findProfileForPreset(this.profiles, request.preset);
+            if (p) return { profile: p, source: 'rule-preset' };
+        }
+        if (request.role) {
+            const taskMatch = findProfileForTaskType(this.profiles, request.role);
+            if (taskMatch) return { profile: taskMatch, source: 'rule-role' };
+            const preset = this.userRoles[request.role];
+            if (preset) {
+                const presetMatch = findProfileForPreset(this.profiles, preset);
+                if (presetMatch) return { profile: presetMatch, source: 'rule-role' };
+            }
+        }
+        if (request.taskType) {
+            const p = findProfileForTaskType(this.profiles, request.taskType);
+            if (p) return { profile: p, source: 'rule-task' };
+        }
+        return null;
+    }
+
+    /**
      * Invoke the LLM router.
      */
     async _llmDecide(description) {

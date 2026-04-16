@@ -5,8 +5,45 @@ import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs'
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
-import { writeFileSync, readFileSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
 import { join } from 'path';
+
+// --- user-workflow.json loader ---
+// The plugin already persists user role → preset mapping in
+//   <plugin-data>/user-workflow.json
+// Smart Bridge consumes this directly instead of introducing a duplicate
+// config key. fs.watch keeps Smart Bridge in sync when the user edits roles.
+function loadUserWorkflowRoles() {
+  const path = join(getPluginData(), 'user-workflow.json');
+  if (!existsSync(path)) return {};
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf8'));
+    const out = {};
+    if (Array.isArray(data?.roles)) {
+      for (const r of data.roles) {
+        if (r?.name && r?.preset) out[r.name] = r.preset;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+let _userWorkflowWatcher = null;
+function watchUserWorkflow(onChange) {
+  if (_userWorkflowWatcher) return;
+  const dir = getPluginData();
+  try {
+    _userWorkflowWatcher = watch(dir, { persistent: false }, (_event, filename) => {
+      if (filename === 'user-workflow.json') {
+        try { onChange(loadUserWorkflowRoles()); } catch {}
+      }
+    });
+  } catch {
+    // fs.watch can fail on some platforms — best effort only.
+  }
+}
 
 function buildInstructions() {
   const lines = [
@@ -196,12 +233,17 @@ export async function init() {
   if (config.mcpServers) await connectMcpServers(config.mcpServers);
   startAgentMaintenance();
   // Smart Bridge — unified router + cache strategy + profile system.
-  // Wires profiles/registry from config.bridge.* and user-role preset mapping.
+  // User-role preset mapping comes from user-workflow.json (existing source
+  // of truth). Profile overrides live under config.bridge.profiles.
   try {
-    const { initSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
-    const userRoles = config.bridge?.userRoles || {};
+    const { initSmartBridge, getSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
+    const userRoles = loadUserWorkflowRoles();
     const userProfiles = config.bridge?.profiles || {};
     initSmartBridge({ userRoles, userProfiles });
+    // Keep Smart Bridge in sync with user-workflow.json edits.
+    watchUserWorkflow((nextRoles) => {
+      try { getSmartBridge().updateUserRoles(nextRoles); } catch {}
+    });
   } catch (e) {
     process.stderr.write(`[smart-bridge] init skipped: ${e.message}\n`);
   }

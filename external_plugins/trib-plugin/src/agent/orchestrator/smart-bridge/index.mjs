@@ -53,6 +53,26 @@ export class SmartBridge {
     }
 
     /**
+     * Sync variant — rule-based only, no LLM fallback. Returns null if no
+     * rule matches (callers should handle by using request.provider/preset
+     * directly or falling back to default behavior).
+     *
+     * Used by sync call sites (createSession) that can't await.
+     */
+    resolveSync(request) {
+        const routed = this.router.resolveSync(request);
+        if (!routed) return null;
+        const providerName = request.provider || routed.profile.preferredProviders?.[0] || 'native';
+        const cacheOpts = buildProviderCacheOpts(routed.profile, providerName, request.sessionId);
+        return {
+            profile: routed.profile,
+            provider: providerName,
+            source: routed.source,
+            providerCacheOpts: cacheOpts,
+        };
+    }
+
+    /**
      * Called after a successful send to update the cache registry.
      * Also records whether this was a hit or miss (from usage data).
      */
