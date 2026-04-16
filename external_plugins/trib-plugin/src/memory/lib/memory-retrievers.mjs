@@ -43,7 +43,7 @@ export function retrieveEntries(db, filters = {}) {
   const offset = Math.max(0, Number(filters.offset ?? 0))
   const orderBy = 'score DESC NULLS LAST, ts DESC, id DESC'
 
-  const sql = `SELECT id, ts, role, content, source_ref, session_id,
+  const sql = `SELECT id, ts, role, content, source_ref, session_id, source_turn,
                       chunk_root, is_root, element, category, summary,
                       status, score, last_seen_at
                FROM entries
@@ -56,7 +56,7 @@ export function retrieveEntries(db, filters = {}) {
 
   if (filters.includeMembers && rows.length > 0) {
     const memberStmt = db.prepare(
-      `SELECT id, ts, role, content, session_id
+      `SELECT id, ts, role, content, session_id, source_turn
        FROM entries WHERE chunk_root = ? AND is_root = 0
        ORDER BY ts ASC, id ASC`,
     )

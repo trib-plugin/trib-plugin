@@ -27,6 +27,11 @@ export function init(db, dims) {
         content       TEXT    NOT NULL,
         source_ref    TEXT    NOT NULL,
         session_id    TEXT,
+        -- Source jsonl turn index (1-based) so search_memories results can
+        -- anchor to the originating Claude Code transcript turn. Roots have
+        -- no direct turn (their range is derived from members); leaves carry
+        -- the index embedded in source_ref as a structured column.
+        source_turn   INTEGER,
         chunk_root    INTEGER,
         is_root       INTEGER NOT NULL DEFAULT 0,
         element       TEXT,
@@ -132,7 +137,7 @@ export function init(db, dims) {
 
     const metaInsert = db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?)`)
     metaInsert.run('embedding.current_dims', String(dimCount))
-    metaInsert.run('boot.schema_version', '1')
+    metaInsert.run('boot.schema_version', '2')
     metaInsert.run('boot.schema_bootstrap_complete', '1')
 
     db.exec('COMMIT')
@@ -164,8 +169,32 @@ export function openDatabase(dataDir, dims) {
   if (isNewFile || !isBootstrapComplete(db)) {
     init(db, dims)
   }
+  migrateIfNeeded(db)
   dbs.set(key, db)
   return db
+}
+
+/**
+ * Forward-only schema migrations. Runs on every openDatabase() after the
+ * bootstrap step so already-initialised databases still get new columns.
+ * Each step is idempotent — repeated runs after failure do not corrupt
+ * state, and "duplicate column" errors on retry are swallowed so a
+ * previously-half-applied migration still lands `schema_version`.
+ */
+function migrateIfNeeded(db) {
+  const current = Number(getMetaValue(db, 'boot.schema_version', '1')) || 1
+  if (current < 2) {
+    try {
+      db.exec(`ALTER TABLE entries ADD COLUMN source_turn INTEGER`)
+    } catch (e) {
+      if (!/duplicate column name/i.test(String(e?.message))) {
+        process.stderr.write(`[memory] schema v2 migration failed: ${e.message}\n`)
+        return
+      }
+    }
+    setMetaValue(db, 'boot.schema_version', '2')
+    process.stderr.write(`[memory] schema migrated to v2 (source_turn)\n`)
+  }
 }
 
 export function isBootstrapComplete(db) {

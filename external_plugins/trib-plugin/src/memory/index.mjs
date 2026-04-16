@@ -277,8 +277,8 @@ function ingestTranscriptFile(transcriptPath) {
   const lines = buf.toString('utf8').split('\n').filter(Boolean)
 
   const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id, source_turn)
+    VALUES (?, ?, ?, ?, ?, ?)
   `)
 
   let count = 0
@@ -296,7 +296,7 @@ function ingestTranscriptFile(transcriptPath) {
     const tsMs = parseTsToMs(parsed.timestamp ?? parsed.ts ?? Date.now())
     const sourceRef = `transcript:${sessionUuid}#${index}`
     try {
-      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid)
+      const result = insertStmt.run(tsMs, role, cleaned, sourceRef, sessionUuid, index)
       if (result.changes > 0) count += 1
     } catch (e) {
       process.stderr.write(`[transcript-watch] insert error (${sourceRef}): ${e.message}\n`)
@@ -616,14 +616,37 @@ async function handleSearch(args) {
   return { text: renderEntryLines(sliced) }
 }
 
-function _renderAnchor(row) {
-  // Phase C Ship 5 — origin anchor. Surfaces the source Claude Code session
-  // (and root entry id, when present) so a reader can navigate back to the
-  // originating jsonl transcript. Short-form ids keep the output compact
-  // while remaining long enough to disambiguate within a typical workspace.
+function _turnRange(row, members) {
+  // Leaves carry their own jsonl turn index.
+  if (row.is_root !== 1 && Number.isFinite(Number(row.source_turn))) {
+    return String(row.source_turn)
+  }
+  // Roots aggregate members — emit "min-max" (or just "N" when all members
+  // collapse on one turn). Chunks that pre-date the v2 schema will have no
+  // source_turn on members and therefore no turn anchor; that is the
+  // expected fallback, not an error.
+  if (row.is_root === 1 && Array.isArray(members) && members.length > 0) {
+    const turns = members
+      .map(m => Number(m?.source_turn))
+      .filter(n => Number.isFinite(n))
+    if (turns.length > 0) {
+      const min = Math.min(...turns)
+      const max = Math.max(...turns)
+      return min === max ? String(min) : `${min}-${max}`
+    }
+  }
+  return null
+}
+
+function _renderAnchor(row, members) {
+  // Origin anchor. Surfaces source Claude Code session + entry id so a
+  // reader can navigate back to the originating jsonl transcript, plus the
+  // jsonl turn range when schema v2 data is available.
   const bits = []
   if (row.session_id) bits.push(`sid:${String(row.session_id).slice(0, 8)}`)
   if (row.id != null) bits.push(`id:${row.id}`)
+  const turn = _turnRange(row, members)
+  if (turn) bits.push(`turns:${turn}`)
   return bits.length > 0 ? `  ⟨${bits.join(' ')}⟩` : ''
 }
 
@@ -638,7 +661,7 @@ function renderEntryLines(rows) {
     const head = element || summary
       ? `${cat}${element}${summary ? ' — ' + summary : ''}`
       : (cleanMemoryText(String(r.content ?? '')).slice(0, 300))
-    lines.push(`[${ts}] ${head.slice(0, 500)}${_renderAnchor(r)}`)
+    lines.push(`[${ts}] ${head.slice(0, 500)}${_renderAnchor(r, r.members)}`)
     if (Array.isArray(r.members) && r.members.length > 0) {
       for (const m of r.members) {
         const mTs = formatTs(m.ts)

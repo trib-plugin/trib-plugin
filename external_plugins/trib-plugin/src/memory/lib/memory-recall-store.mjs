@@ -78,7 +78,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
   const topIds = scored.map(s => s.id)
   const placeholders = topIds.map(() => '?').join(',')
   const rawRows = db.prepare(
-    `SELECT id, ts, role, content, session_id, chunk_root, is_root,
+    `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
             element, category, summary, status, score, last_seen_at
      FROM entries WHERE id IN (${placeholders})`,
   ).all(...topIds)
@@ -97,7 +97,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
       targetRow = row
     } else if (row.chunk_root != null && row.chunk_root !== row.id) {
       const r = db.prepare(
-        `SELECT id, ts, role, content, session_id, chunk_root, is_root,
+        `SELECT id, ts, role, content, session_id, source_turn, chunk_root, is_root,
                 element, category, summary, status, score, last_seen_at
          FROM entries WHERE id = ? AND is_root = 1`,
       ).get(row.chunk_root)
@@ -135,7 +135,7 @@ export async function searchRelevantHybrid(db, query, options = {}) {
     const out = { ...root, rrf }
     if (includeMembers && root.is_root === 1) {
       out.members = db.prepare(
-        `SELECT id, ts, role, content, session_id
+        `SELECT id, ts, role, content, session_id, source_turn
          FROM entries WHERE chunk_root = ? AND is_root = 0
          ORDER BY ts ASC, id ASC`,
       ).all(root.id)
