@@ -34,59 +34,53 @@ function readJson(filePath) {
 }
 
 /**
- * Extract the Pool B — safe CLAUDE.md sections, per design spec §3.3.
+ * Extract Pool B — safe CLAUDE.md sections (blacklist filter).
  *
- * Whitelist-only: every section is dropped by default, kept only when its
- * heading matches. This keeps Lead-only prose (Channels / Team / Models /
- * User Rules / Workflow / Memory ops) out of the Bridge prefix, so role
- * mappings and Lead-exclusive tool rules never leak into Worker / Sub
- * prompts. The managed-block markers are stripped (contents kept) so
- * anything the plugin writes between them is still subject to the same
- * whitelist.
+ * Two things are stripped; everything else — including any custom section
+ * the user adds in the future — is kept verbatim so the Pool B prefix
+ * tracks CLAUDE.md edits automatically.
  *
- * Allowed H2: Core Rules, Writing, Non-negotiable.
- * Allowed H1: Tone (optional user-authored section for style guidance).
- *
- * Anything not matching a whitelist heading — including orphan body text
- * that precedes any heading — is discarded.
+ *   1. The plugin-managed block (marker-delimited). Its content is already
+ *      reassembled by `buildBridgeInjectionContent` and by other steps in
+ *      the Pool B pipeline; re-injecting it here would duplicate tone /
+ *      user / Lead-only prose into the Bridge prefix.
+ *   2. Lead-only headings that Claude Code auto-loads via Pool A and that
+ *      must never reach a Bridge agent:
+ *        H1: # Memory, # Channels, # Search, # Team, # Models
+ *        H2: ## Workflow, ## User Rules
+ *      Their entire section (heading + body down to the next same-or-higher
+ *      heading) is removed.
  */
-const CLAUDE_MD_INCLUDE_H2 = new Set([
-  '## Core Rules', '## Writing', '## Non-negotiable',
+const CLAUDE_MD_EXCLUDE_H1 = new Set([
+  '# Memory', '# Channels', '# Search', '# Team', '# Models',
 ]);
-const CLAUDE_MD_INCLUDE_H1 = new Set([
-  '# Tone',
+const CLAUDE_MD_EXCLUDE_H2 = new Set([
+  '## Workflow', '## User Rules',
 ]);
 
 function extractCommonClaudeMdSections(content) {
   if (!content) return '';
   const stripped = content
-    .replace(/<!-- BEGIN trib-plugin managed -->/g, '')
-    .replace(/<!-- END trib-plugin managed -->/g, '')
+    .replace(/<!-- BEGIN trib-plugin managed -->[\s\S]*?<!-- END trib-plugin managed -->/g, '')
     .trim();
   if (!stripped) return '';
   const lines = stripped.split('\n');
-  const sections = [];
-  let buffer = null;
-  const commit = () => {
-    if (buffer && buffer.lines.length > 0) sections.push(buffer.lines.join('\n').trim());
-    buffer = null;
-  };
+  const out = [];
+  let skipH1 = false;
+  let skipH2 = false;
   for (const line of lines) {
     const trimmed = line.trim();
     const isH1 = /^# [^#]/.test(trimmed);
     const isH2 = /^## [^#]/.test(trimmed);
     if (isH1) {
-      commit();
-      if (CLAUDE_MD_INCLUDE_H1.has(trimmed)) buffer = { lines: [line] };
-    } else if (isH2) {
-      commit();
-      if (CLAUDE_MD_INCLUDE_H2.has(trimmed)) buffer = { lines: [line] };
-    } else if (buffer) {
-      buffer.lines.push(line);
+      skipH2 = false;
+      skipH1 = CLAUDE_MD_EXCLUDE_H1.has(trimmed);
+    } else if (isH2 && !skipH1) {
+      skipH2 = CLAUDE_MD_EXCLUDE_H2.has(trimmed);
     }
+    if (!skipH1 && !skipH2) out.push(line);
   }
-  commit();
-  return sections.join('\n\n').trim();
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /**
