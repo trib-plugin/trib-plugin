@@ -114,15 +114,81 @@ let _mcpToolsCache = null;
 let _mcpToolsCacheTime = 0;
 const MCP_CACHE_TTL = 60000; // 1 minute
 
-function resolveToolPreset(preset, skills) {
+function _getMcpToolsCached() {
     const now = Date.now();
     if (!_mcpToolsCache || now - _mcpToolsCacheTime > MCP_CACHE_TTL) {
-        _mcpToolsCache = getMcpTools();
+        // Sort deterministically by name — protects BP_1 hash stability from
+        // listTools() ordering churn. Anthropic / OpenAI / Gemini all hash
+        // the tools array verbatim, so any reorder rewrites the prefix.
+        const raw = getMcpTools() || [];
+        _mcpToolsCache = [...raw].sort((a, b) => {
+            const an = a?.name || '';
+            const bn = b?.name || '';
+            return an < bn ? -1 : an > bn ? 1 : 0;
+        });
         _mcpToolsCacheTime = now;
     }
-    const mcp = _mcpToolsCache;
+    return _mcpToolsCache;
+}
+
+// Phase D-2 — profile.tools resolution.
+//
+// `toolSpec` may be:
+//   • Array<string>  (profile.tools) — toolset ids like "tools:filesystem",
+//                     "tools:git", "tools:mcp", "tools:search",
+//                     "tools:readonly", or the literal "full"
+//   • 'full' / 'readonly' / 'mcp'  — legacy preset.tools strings
+//   • null / undefined             — same as 'full' (historical default)
+//
+// Array form is the Phase B/D target: each profile declares its tool surface
+// explicitly, BP_1 hash differs across profiles with different tool subsets
+// (by design — sub-task profile cannot see bash; worker-full can), and
+// adding a new toolset id here is a localised change.
+function resolveSessionTools(toolSpec, skills) {
+    const mcp = _getMcpToolsCached();
     const skillTools = buildSkillToolDefs(skills);
-    switch (preset) {
+
+    if (Array.isArray(toolSpec)) {
+        if (toolSpec.length === 0) {
+            // Explicit "no tools" — skill meta tools still travel so the model
+            // can at least discover and invoke skills if that is the one
+            // dynamic surface the profile retains.
+            return [...skillTools];
+        }
+        if (toolSpec.includes('full')) {
+            return [...BUILTIN_TOOLS, ...mcp, ...skillTools];
+        }
+        const byName = new Map();
+        const add = (tool) => { if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool); };
+        const addMany = (arr) => { for (const t of arr) add(t); };
+        for (const tagRaw of toolSpec) {
+            const tag = String(tagRaw || '').trim();
+            switch (tag) {
+                case 'tools:filesystem':
+                    addMany(BUILTIN_TOOLS.filter(t => ['read', 'write', 'edit', 'grep', 'glob'].includes(t.name)));
+                    break;
+                case 'tools:readonly':
+                    addMany(BUILTIN_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name)));
+                    break;
+                case 'tools:bash':
+                case 'tools:git':
+                case 'tools:analysis':
+                    addMany(BUILTIN_TOOLS.filter(t => t.name === 'bash'));
+                    break;
+                case 'tools:mcp':
+                    addMany(mcp);
+                    break;
+                case 'tools:search':
+                    addMany(mcp.filter(t => /search/i.test(t?.name || '')));
+                    break;
+                default:
+                    process.stderr.write(`[session] unknown toolset id "${tag}" (profile.tools); skipping\n`);
+            }
+        }
+        return [...byName.values(), ...skillTools];
+    }
+
+    switch (toolSpec) {
         case 'mcp':
             return [...mcp, ...skillTools];
         case 'readonly': {
@@ -133,6 +199,11 @@ function resolveToolPreset(preset, skills) {
         default:
             return [...BUILTIN_TOOLS, ...mcp, ...skillTools];
     }
+}
+
+// Kept for backwards compatibility with callers that pass a raw string.
+function resolveToolPreset(preset, skills) {
+    return resolveSessionTools(preset, skills);
 }
 let nextId = Date.now();
 const CONTEXT_WINDOWS = {
@@ -244,7 +315,13 @@ export function createSession(opts) {
         messages.push({ role: 'user', content: `Reference files:\n\n${fileContext}` });
         messages.push({ role: 'assistant', content: 'Understood. I have the files in context.' });
     }
-    const tools = resolveToolPreset(toolPreset, skills);
+    // Profile wins over preset.tools — profile.tools carries toolset ids
+    // (['tools:filesystem','tools:search']) that expand to an explicit tool
+    // subset, which is how BP_1 actually gets shaped per Phase B spec. When
+    // no profile resolves, fall back to the preset.tools string ('full' /
+    // 'readonly' / 'mcp') so raw createSession callers still work.
+    const toolSpec = Array.isArray(profile?.tools) ? profile.tools : toolPreset;
+    const tools = resolveSessionTools(toolSpec, skills);
     const session = {
         id,
         provider: providerName,
@@ -753,10 +830,20 @@ export function resumeSession(sessionId, preset) {
     // Backfill compressor state for sessions created before the feature landed.
     if (typeof session.compressionCount !== 'number') session.compressionCount = 0;
     if (session.previousSummary === undefined) session.previousSummary = null;
-    // Refresh tools (MCP connections may have changed)
+    // Refresh tools (MCP connections may have changed).
+    // Re-resolve from profile.tools when the session stored a profileId —
+    // otherwise fall back to preset.tools. Same resolution order as
+    // createSession so resume and spawn produce identical BP_1 shapes.
     const oldTools = session.tools || [];
     const skills = collectSkillsCached(session.cwd);
-    session.tools = resolveToolPreset((preset || session.preset || 'full'), skills);
+    let toolSpec = preset || session.preset || 'full';
+    if (session.profileId && _smartBridgeApi?.getProfile) {
+        try {
+            const profile = _smartBridgeApi.getProfile(session.profileId);
+            if (Array.isArray(profile?.tools)) toolSpec = profile.tools;
+        } catch { /* ignore lookup failures, keep preset fallback */ }
+    }
+    session.tools = resolveSessionTools(toolSpec, skills);
     const newTools = session.tools;
     const missing = oldTools.filter(t => !newTools.find(n => n.name === t.name));
     if (missing.length) {

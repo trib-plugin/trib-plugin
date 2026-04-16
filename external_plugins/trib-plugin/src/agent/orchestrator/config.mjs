@@ -289,18 +289,27 @@ export function listPresets(config) {
     return Array.isArray(config?.presets) ? config.presets : [];
 }
 // --- Lane-scoped runtime spec ---
-// Converts a preset + execution context into a scopeKey for session isolation.
-//   bridge lane: "bridge:<presetName>"      — user-facing, reusable per preset
-//   bridge lane: "bridge:<agentId>:<presetName>" — per bridge agent instance
+// Phase D-2: scopeKey is (role, provider, model), not (role, preset). Spec
+// §4.5 calls for "at most one live session per Sub role × provider"; we
+// widen provider to (provider, model) because two presets on the same
+// provider that differ only in effort/fast should keep sharing a session
+// (both cache shards are identical there), while swapping the model itself
+// legitimately needs a fresh session (cache shard is model-specific). Two
+// presets mapping to the same (provider, model) therefore collapse into
+// one Bridge session, so opus-mid / opus-max no longer fragment the pool.
+//
+//   bridge lane: "bridge:<agentId>:<provider>:<model>"  — per Sub role
+//   other lane:  "bridge:<provider>:<model>"            — shared utility
 export function resolveRuntimeSpec(preset, ctx) {
     const lane = ctx.lane || 'bridge';
-    const presetName = preset.name || preset.id;
+    const provider = String(preset?.provider || '').trim() || 'unknown';
+    const model = String(preset?.model || '').trim() || '_';
     let scopeKey;
     if (lane === 'bridge') {
         if (!ctx.agentId) throw new Error('bridge lane requires agentId');
-        scopeKey = `bridge:${ctx.agentId}:${presetName}`;
+        scopeKey = `bridge:${ctx.agentId}:${provider}:${model}`;
     } else {
-        scopeKey = `bridge:${presetName}`;
+        scopeKey = `bridge:${provider}:${model}`;
     }
     return { lane, scopeKey, reuse: true, preset };
 }
