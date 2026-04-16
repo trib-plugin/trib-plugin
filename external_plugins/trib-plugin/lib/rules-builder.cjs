@@ -67,15 +67,11 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const wfLines = ['## User Rules', ''];
   if (wfDescription) wfLines.push(wfDescription, '');
   if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
-    const agentCfg = readJson(path.join(DATA_DIR, 'agent-config.json'));
-    const typeMap = {};
-    if (Array.isArray(agentCfg.presets)) {
-      for (const p of agentCfg.presets) typeMap[p.id] = p.type || 'native';
-    }
+    // Phase B §10 — all Pool B agents spawn through the Bridge MCP (the
+    // native Agent-tool path was retired in Ship 4). Label accordingly.
     wfLines.push('Roles:');
     for (const role of userWorkflow.roles) {
-      const label = (typeMap[role.preset] || 'native') === 'bridge' ? 'Bridge' : 'Native';
-      wfLines.push(`- ${role.name} → ${role.preset} (${label})`);
+      wfLines.push(`- ${role.name} → ${role.preset} (Bridge)`);
     }
   }
   parts.push(wfLines.join('\n'));

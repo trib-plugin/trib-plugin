@@ -1454,6 +1454,103 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ============================================================
+  // MD LIBRARY ROUTES (Phase B Ship 7) — Common MD + Project MD
+  // ============================================================
+
+  if (req.method === 'GET' && path === '/md/common') {
+    const p = join(getPluginData(), 'common.md');
+    let content = '';
+    try { content = readFileSync(p, 'utf8'); } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ content }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/md/common') {
+    let raw = '';
+    await new Promise((resolve, reject) => {
+      req.on('data', c => { raw += c; });
+      req.on('end', resolve);
+      req.on('error', reject);
+    });
+    let content;
+    try { content = JSON.parse(raw).content; } catch { content = raw; }
+    content = String(content ?? '');
+    const p = join(getPluginData(), 'common.md');
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, content, 'utf8');
+    console.log('  Config saved: common.md');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/md/project') {
+    const indexPath = join(getPluginData(), 'project-md-index.json');
+    let registry = { paths: [] };
+    try { registry = JSON.parse(readFileSync(indexPath, 'utf8')); } catch {}
+    const items = [];
+    for (const cwd of registry.paths || []) {
+      let content = '';
+      try { content = readFileSync(join(cwd, 'PROJECT.md'), 'utf8'); } catch {}
+      items.push({ path: cwd, content });
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ items }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/md/project') {
+    const body = await readBody(req);
+    const cwd = String(body?.path || '').trim();
+    const content = String(body?.content ?? '');
+    if (!cwd) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'path required' }));
+      return;
+    }
+    try {
+      mkdirSync(cwd, { recursive: true });
+      writeFileSync(join(cwd, 'PROJECT.md'), content, 'utf8');
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Cannot write PROJECT.md: ${err.message}` }));
+      return;
+    }
+    // Update registry
+    const indexPath = join(getPluginData(), 'project-md-index.json');
+    let registry = { paths: [] };
+    try { registry = JSON.parse(readFileSync(indexPath, 'utf8')); } catch {}
+    if (!registry.paths.includes(cwd)) registry.paths.push(cwd);
+    mkdirSync(dirname(indexPath), { recursive: true });
+    writeFileSync(indexPath, JSON.stringify(registry, null, 2), 'utf8');
+    console.log(`  Config saved: project MD (${cwd})`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'DELETE' && path === '/md/project') {
+    const qs = new URL(req.url, 'http://x').searchParams;
+    const cwd = String(qs.get('path') || '').trim();
+    if (!cwd) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'path required' }));
+      return;
+    }
+    const indexPath = join(getPluginData(), 'project-md-index.json');
+    let registry = { paths: [] };
+    try { registry = JSON.parse(readFileSync(indexPath, 'utf8')); } catch {}
+    registry.paths = (registry.paths || []).filter(p => p !== cwd);
+    mkdirSync(dirname(indexPath), { recursive: true });
+    writeFileSync(indexPath, JSON.stringify(registry, null, 2), 'utf8');
+    console.log(`  Config removed from registry: ${cwd} (PROJECT.md file kept)`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // ============================================================
   // WORKFLOW MODULE ROUTES
   // ============================================================
 

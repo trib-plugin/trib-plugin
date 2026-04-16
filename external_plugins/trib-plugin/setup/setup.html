@@ -747,6 +747,7 @@
   <div class="cat-bar">
     <div class="cat-label">General</div>
     <div class="cat-item" data-panel="general-injection" onclick="switchCat(this)">Injection Mode</div>
+    <div class="cat-item" data-panel="general-md" onclick="switchCat(this)">MD Library</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Channels</div>
     <div class="cat-item active" data-panel="connection" onclick="switchCat(this)">Connection</div>
@@ -1423,6 +1424,32 @@
       </div>
     </div>
 
+    <!-- GENERAL MD LIBRARY (Phase B Ship 7) -->
+    <div class="panel" id="panel-general-md">
+      <div class="hdr"><h1>MD Library</h1></div>
+
+      <div class="sec">
+        <div class="sec-title">Common MD</div>
+        <div class="sec-desc">Shared across every Bridge session (Tier 2 / BP_2). Applies to Worker, Sub, and Maintenance prefixes. Keep it small and stable — every edit invalidates the Pool B warm cache.</div>
+        <div class="sec-body" style="padding:0 14px">
+          <textarea id="md-common-content" class="r-input" style="width:100%;min-height:180px;font-family:monospace;font-size:12px" placeholder="Common instructions shared across all bridge sessions..."></textarea>
+        </div>
+        <div class="save-area">
+          <div class="warn-msg" id="warn-md-common"></div>
+          <button class="save" onclick="mdSaveCommon()">Save Common</button>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-title">Project MDs</div>
+        <div class="sec-desc">Per-project PROJECT.md files — injected into Tier 3 <code>#&nbsp;project-context</code> slot when the session cwd matches the path. Deleting from this list only removes the registry entry; the on-disk PROJECT.md file stays.</div>
+        <div id="md-project-list"></div>
+        <div class="save-area">
+          <button class="save" onclick="mdAddProject()">+ Add Project</button>
+        </div>
+      </div>
+    </div>
+
     <!-- CUSTOM WORKFLOW -->
     <div class="panel" id="panel-workflow-custom">
       <div class="hdr"><h1>Custom Workflow</h1></div>
@@ -1618,6 +1645,132 @@ async function genSavePanel() {
     warnEl.textContent = 'Save failed';
     btn.textContent = 'Save';
     btn.disabled = false;
+  }
+}
+
+// ============================================================
+// MD LIBRARY MODULE (Phase B Ship 7)
+// ============================================================
+
+async function mdLoadAll() {
+  try {
+    const [cr, pr] = await Promise.all([
+      fetch('/md/common').then(r => r.json()),
+      fetch('/md/project').then(r => r.json()),
+    ]);
+    const commonEl = document.getElementById('md-common-content');
+    if (commonEl) commonEl.value = cr?.content || '';
+    mdRenderProjects(pr?.items || []);
+  } catch {
+    /* ignore */
+  }
+}
+
+function mdRenderProjects(items) {
+  const host = document.getElementById('md-project-list');
+  if (!host) return;
+  host.innerHTML = '';
+  items.forEach((item, idx) => {
+    const row = document.createElement('div');
+    row.className = 'r';
+    row.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;padding:10px 14px;border-top:1px solid var(--border)';
+    row.innerHTML =
+      '<div style="display:flex;gap:6px;align-items:center">'
+      + `<input class="r-input" style="flex:1;font-family:monospace;font-size:12px" id="md-proj-path-${idx}" placeholder="e.g. C:\\Project\\GamerScroll" value="${(item.path || '').replace(/"/g, '&quot;')}" />`
+      + `<button class="r-btn" onclick="mdSaveProject(${idx})">Save</button>`
+      + `<button class="r-btn" style="color:var(--danger)" onclick="mdDeleteProject(${idx})">×</button>`
+      + '</div>'
+      + `<textarea class="r-input" style="width:100%;min-height:120px;font-family:monospace;font-size:12px" id="md-proj-content-${idx}" placeholder="PROJECT.md content for this path...">${(item.content || '').replace(/</g, '&lt;')}</textarea>`;
+    host.appendChild(row);
+  });
+}
+
+function mdAddProject() {
+  const host = document.getElementById('md-project-list');
+  if (!host) return;
+  const items = [];
+  host.querySelectorAll(':scope > .r').forEach((el, idx) => {
+    const pe = el.querySelector(`#md-proj-path-${idx}`);
+    const ce = el.querySelector(`#md-proj-content-${idx}`);
+    items.push({ path: pe?.value || '', content: ce?.value || '' });
+  });
+  items.push({ path: '', content: '' });
+  mdRenderProjects(items);
+}
+
+async function mdSaveCommon() {
+  const content = document.getElementById('md-common-content')?.value ?? '';
+  const warnEl = document.getElementById('warn-md-common');
+  if (warnEl) warnEl.textContent = '';
+  try {
+    const r = await fetch('/md/common', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    }).then(r => r.json());
+    if (!r?.ok && warnEl) warnEl.textContent = r?.error || 'Save failed';
+    else if (warnEl) warnEl.textContent = 'Saved.';
+  } catch (err) {
+    if (warnEl) warnEl.textContent = 'Save failed: ' + (err?.message || 'network error');
+  }
+}
+
+async function mdSaveProject(idx) {
+  const pathEl = document.getElementById(`md-proj-path-${idx}`);
+  const contentEl = document.getElementById(`md-proj-content-${idx}`);
+  const cwd = (pathEl?.value || '').trim();
+  const content = contentEl?.value ?? '';
+  if (!cwd) {
+    alert('Path is required.');
+    return;
+  }
+  try {
+    const r = await fetch('/md/project', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: cwd, content }),
+    }).then(r => r.json());
+    if (!r?.ok) {
+      alert('Save failed: ' + (r?.error || 'unknown'));
+      return;
+    }
+    await mdLoadAll();
+  } catch (err) {
+    alert('Save failed: ' + (err?.message || 'network error'));
+  }
+}
+
+async function mdDeleteProject(idx) {
+  const pathEl = document.getElementById(`md-proj-path-${idx}`);
+  const cwd = (pathEl?.value || '').trim();
+  if (!cwd) {
+    // Not yet registered — just drop the row locally.
+    const host = document.getElementById('md-project-list');
+    const items = [];
+    host.querySelectorAll(':scope > .r').forEach((el, i) => {
+      if (i === idx) return;
+      const pe = el.querySelector(`#md-proj-path-${i}`);
+      const ce = el.querySelector(`#md-proj-content-${i}`);
+      items.push({ path: pe?.value || '', content: ce?.value || '' });
+    });
+    mdRenderProjects(items);
+    return;
+  }
+  if (!confirm(`Remove "${cwd}" from the registry?\n\nThe PROJECT.md file on disk will NOT be deleted.`)) return;
+  try {
+    await fetch('/md/project?path=' + encodeURIComponent(cwd), { method: 'DELETE' });
+    await mdLoadAll();
+  } catch (err) {
+    alert('Delete failed: ' + (err?.message || 'network error'));
+  }
+}
+
+// Auto-load on startup so switchCat-transitions surface pre-populated content.
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mdLoadAll);
+  } else {
+    mdLoadAll();
   }
 }
 
