@@ -1,9 +1,11 @@
 'use strict';
 
-// Per-turn latency logger.
+// Per-turn latency logger. Opt-in via TRIB_PERF=1.
 // Usage: `node turn-timer.cjs start` on UserPromptSubmit,
 //        `node turn-timer.cjs stop`  on Stop.
 // Writes one JSON line per completed turn to ${CLAUDE_PLUGIN_DATA}/perf.log.
+
+if (!process.env.TRIB_PERF) process.exit(0);
 
 const fs = require('fs');
 const path = require('path');

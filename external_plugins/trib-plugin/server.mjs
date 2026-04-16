@@ -11,7 +11,7 @@
  *     because channels depends on it for episode delivery.
  *   • channels — eager init (runs background workers: Discord gateway,
  *     scheduler, webhook, event pipeline). Started after memory is ready.
- *   • search / agent — lazy init on first CallTool.
+ *   • search / agent — eager init after MCP handshake.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -273,6 +273,10 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 // ── Transport ───────────────────────────────────────────────────────
 await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
+
+// ── Eager init: search + agent (avoid first-call latency) ──────────
+loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
+loadModule('agent').catch(e => log(`eager agent init failed: ${e.message}`))
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
 // Writes static rules into the managed block. Session recap is NOT
