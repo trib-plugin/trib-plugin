@@ -246,7 +246,7 @@ export function saveConfig(config) {
 // preset shape: { id, name, type, provider?, model, effort?, fast?, tools? }
 // type: "native" (Claude Code native) or "bridge" (external model via bridge tool)
 // native presets have no provider (spawned via Agent tool with model param)
-function presetKey(p) { return p?.name || p?.id || ''; }
+function presetKey(p) { return p?.id || p?.name || ''; }
 function normalizePreset(preset) {
     if (!preset || typeof preset !== 'object')
         return null;

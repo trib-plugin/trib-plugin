@@ -401,18 +401,13 @@ function _initTranscriptWatcher() {
   }
 }
 
-async function checkCycles() {
-  if (mainConfig?.enabled === false) return
-
-  const cycle1Ms = parseInterval(mainConfig?.cycle1?.interval || '10m')
-  const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h')
-
-  const now = Date.now()
-  const last = getCycleLastRun()
-
-  // Smart Bridge maintenance LLM — routes through anthropic-oauth with 1h cache
-  // when available, falls back to native callLLM otherwise. Toggle via
-  // agent-config.json: { bridge: { smartMaintenance: false } } to disable.
+// Smart Bridge maintenance LLM — routes through anthropic-oauth with 1h cache
+// when available, falls back to native callLLM otherwise. Toggle via
+// agent-config.json: { bridge: { smartMaintenance: false } } to disable.
+// Shared between automatic checkCycles() and every manual cycle1/cycle2
+// action below — prior to v0.6.45 manual actions passed {} and silently
+// dropped to the legacy callLLM path.
+async function _buildCycleOptions() {
   const cycleOptions = {}
   try {
     const { loadConfig } = await import('../agent/orchestrator/config.mjs')
@@ -425,6 +420,19 @@ async function checkCycles() {
   } catch (e) {
     // Fallback path is the existing native callLLM — no-op.
   }
+  return cycleOptions
+}
+
+async function checkCycles() {
+  if (mainConfig?.enabled === false) return
+
+  const cycle1Ms = parseInterval(mainConfig?.cycle1?.interval || '10m')
+  const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h')
+
+  const now = Date.now()
+  const last = getCycleLastRun()
+
+  const cycleOptions = await _buildCycleOptions()
 
   if (now - last.cycle1 >= cycle1Ms) {
     try {
@@ -616,21 +624,24 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'cycle1') {
-    const result = await runCycle1(db, config?.cycle1 || {}, {})
+    const cycleOptions = await _buildCycleOptions()
+    const result = await runCycle1(db, config?.cycle1 || {}, cycleOptions)
     setCycleLastRun('cycle1', Date.now())
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
   }
 
   if (action === 'cycle2' || action === 'sleep') {
-    const result = await runCycle2(db, config?.cycle2 || {}, {})
+    const cycleOptions = await _buildCycleOptions()
+    const result = await runCycle2(db, config?.cycle2 || {}, cycleOptions)
     setCycleLastRun('cycle2', Date.now())
     return { text: `cycle2: ${JSON.stringify(result)}` }
   }
 
   if (action === 'flush') {
-    const r1 = await runCycle1(db, config?.cycle1 || {}, {})
+    const cycleOptions = await _buildCycleOptions()
+    const r1 = await runCycle1(db, config?.cycle1 || {}, cycleOptions)
     setCycleLastRun('cycle1', Date.now())
-    const r2 = await runCycle2(db, config?.cycle2 || {}, {})
+    const r2 = await runCycle2(db, config?.cycle2 || {}, cycleOptions)
     setCycleLastRun('cycle2', Date.now())
     return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
@@ -645,8 +656,9 @@ async function handleMemoryAction(args) {
           embedding = NULL, summary_hash = NULL
       WHERE is_root = 1 OR (chunk_root IS NULL)
     `).run()
-    const r1 = await runCycle1(db, config?.cycle1 || {}, {})
-    const r2 = await runCycle2(db, config?.cycle2 || {}, {})
+    const cycleOptions = await _buildCycleOptions()
+    const r1 = await runCycle1(db, config?.cycle1 || {}, cycleOptions)
+    const r2 = await runCycle2(db, config?.cycle2 || {}, cycleOptions)
     setCycleLastRun('cycle1', Date.now())
     setCycleLastRun('cycle2', Date.now())
     return { text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }

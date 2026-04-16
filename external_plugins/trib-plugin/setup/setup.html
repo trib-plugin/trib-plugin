@@ -1627,13 +1627,13 @@ async function genSavePanel() {
 
 let wfConfig = { roles: [] };
 let wfMdContent = "";
-const PRESET_OPTIONS = ["opus-max","opus-mid","sonnet-high","sonnet-mid","haiku","GPT5.4","gemma","gpt5.4-mini"];
 
 async function wfLoadConfig() {
   try {
     const [jsonRes, mdRes] = await Promise.all([
       fetch('/workflow/load'),
       fetch('/workflow/md'),
+      agPresets.length ? Promise.resolve() : agLoadPresets(),
     ]);
     const data = await jsonRes.json();
     wfConfig.roles = Array.isArray(data.roles) ? data.roles : [];
@@ -1662,11 +1662,11 @@ function wfRenderRoles() {
     const presetSelect = document.createElement('select');
     presetSelect.className = 'r-select md';
     presetSelect.style.cssText = 'width:160px;height:30px;';
-    PRESET_OPTIONS.forEach(p => {
+    agPresets.forEach(p => {
       const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
-      if (p === role.preset) opt.selected = true;
+      opt.value = p.id;
+      opt.textContent = p.name || p.id;
+      if (p.id === role.preset) opt.selected = true;
       presetSelect.appendChild(opt);
     });
     presetSelect.onchange = (e) => { wfConfig.roles[idx].preset = e.target.value; isDirty = true; };
@@ -1682,7 +1682,7 @@ function wfRenderRoles() {
 }
 
 function wfAddRole() {
-  wfConfig.roles.push({ name: '', preset: 'opus-max' });
+  wfConfig.roles.push({ name: '', preset: agPresets[0]?.id || 'opus-max' });
   isDirty = true;
   wfRenderRoles();
 }
