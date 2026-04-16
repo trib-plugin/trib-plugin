@@ -138,4 +138,64 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   return parts.join('\n\n');
 }
 
-module.exports = { buildInjectionContent };
+/**
+ * Build injection content for Pool B (Bridge sessions — Worker / Sub / Maintenance).
+ *
+ * Only common sections are included. Lead-only sections (channels, team,
+ * user-workflow, Models) live in Pool A and are excluded here so the Pool B
+ * prefix stays bit-identical across every Bridge role.
+ *
+ * Included:
+ *   - rules/memory.md       (when memory enabled)
+ *   - rules/search.md       (when search enabled)
+ *   - Common MD             (user-editable text from data/common.md, new in v0.6.47)
+ *   - history/user.md       (user persona)
+ *   - history/bot.md        (bot persona)
+ *   - User: <name> (<title>)
+ *
+ * Explicitly excluded (stay in Pool A via buildInjectionContent):
+ *   - rules/user-workflow.md, rules/channels.md, rules/team.md
+ *   - # Models block (agent-config presets)
+ *   - ## User Rules (role→preset mapping)
+ *
+ * @param {object} opts
+ * @param {string} opts.PLUGIN_ROOT — absolute path to the plugin root
+ * @param {string} opts.DATA_DIR    — absolute path to the plugin data dir
+ * @returns {string} joined content (parts joined with '\n\n')
+ */
+function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
+  const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
+  const HISTORY_DIR = path.join(DATA_DIR, 'history');
+  const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
+  const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
+  const parts = [];
+
+  if (memoryConfig.enabled) {
+    const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
+    if (memory) parts.push(memory);
+  }
+
+  if (searchConfig.enabled) {
+    const search = readOptional(path.join(RULES_DIR, 'search.md'));
+    if (search) parts.push(search);
+  }
+
+  const commonContent = readOptional(path.join(DATA_DIR, 'common.md'));
+  if (commonContent) parts.push(commonContent);
+
+  const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
+  if (userProfileContent) parts.push(userProfileContent);
+
+  const botContent = readOptional(path.join(HISTORY_DIR, 'bot.md'));
+  if (botContent) parts.push(botContent);
+
+  const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
+  const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
+  if (userName) {
+    parts.push(userTitle ? `User: ${userName} (${userTitle})` : `User: ${userName}`);
+  }
+
+  return parts.join('\n\n');
+}
+
+module.exports = { buildInjectionContent, buildBridgeInjectionContent };

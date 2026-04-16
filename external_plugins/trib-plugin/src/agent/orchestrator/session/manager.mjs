@@ -1,11 +1,42 @@
+import { createRequire } from 'module';
+import { join } from 'path';
+import { homedir } from 'os';
 import { getProvider } from '../providers/registry.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
-import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
+import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
+
+// Phase B: Pool B Tier 2 content builder (common rules only).
+// Loaded once per process via createRequire so the CJS module reaches us.
+const _require = createRequire(import.meta.url);
+const _rulesBuilder = (() => {
+    const candidates = [
+        process.env.CLAUDE_PLUGIN_ROOT && join(process.env.CLAUDE_PLUGIN_ROOT, 'lib', 'rules-builder.cjs'),
+    ].filter(Boolean);
+    for (const p of candidates) {
+        try { return _require(p); } catch { /* fall through */ }
+    }
+    // Fallback: walk up from this file's location to find lib/rules-builder.cjs.
+    try { return _require('../../../../lib/rules-builder.cjs'); } catch { return null; }
+})();
+
+function _buildBridgeRules() {
+    if (!_rulesBuilder || typeof _rulesBuilder.buildBridgeInjectionContent !== 'function') return '';
+    const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
+        || join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
+    const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+        || join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
+    try {
+        return _rulesBuilder.buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR });
+    } catch (e) {
+        process.stderr.write(`[session] bridge rules build failed: ${e.message}\n`);
+        return '';
+    }
+}
 
 // Smart Bridge is optional — injected via setSmartBridge() during plugin init
 // so session creation never depends on a circular import. If never injected,
@@ -136,18 +167,34 @@ export function createSession(opts) {
         throw new Error(`Provider "${providerName}" not found or not enabled`);
     const id = `sess_${nextId++}_${Date.now()}`;
     const messages = [];
-    const claudeMd = collectClaudeMd(opts.cwd);
     const agentTemplate = opts.agent ? loadAgentTemplate(opts.agent, opts.cwd) : null;
     const skills = collectSkillsCached(opts.cwd);
-    const systemPrompt = composeSystemPrompt({
+
+    // Phase B Tier 2 content — Pool B common prefix (bit-identical across roles).
+    const bridgeRules = _buildBridgeRules();
+    // Project MD (cwd-based, Tier 3 slot).
+    const projectContext = collectProjectMd(opts.cwd);
+    // Legacy claudeMd is retained as a fallback when bridgeRules is empty
+    // (e.g. a test harness running without plugin-data initialised).
+    const claudeMd = bridgeRules ? '' : collectClaudeMd(opts.cwd);
+
+    const { systemTier2, tier3Reminder } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
+        bridgeRules: bridgeRules || undefined,
         claudeMd: claudeMd || undefined,
         agentTemplate: agentTemplate || undefined,
         hasSkills: skills.length > 0,
         profile: profile || undefined,
+        role: opts.role || null,
+        taskBrief: opts.taskBrief || null,
+        projectContext: projectContext || null,
     });
-    if (systemPrompt) {
-        messages.push({ role: 'system', content: systemPrompt });
+    if (systemTier2) {
+        messages.push({ role: 'system', content: systemTier2 });
+    }
+    if (tier3Reminder) {
+        messages.push({ role: 'user', content: `<system-reminder>\n${tier3Reminder}\n</system-reminder>` });
+        messages.push({ role: 'assistant', content: 'Understood. Context absorbed.' });
     }
     if (opts.files?.length) {
         const fileContext = opts.files

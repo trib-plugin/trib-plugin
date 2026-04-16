@@ -186,33 +186,77 @@ export function buildSkillToolDefs(skills) {
         },
     ];
 }
-// --- Compose full system prompt ---
-// Profile-aware: if opts.profile is provided, profile.skip[] filters out
-// buckets the profile explicitly doesn't need. Backward-compatible — callers
-// without a profile get the classic "include everything" behavior.
+// --- Collect project MD (Phase B §5) ---
+/**
+ * Read <cwd>/PROJECT.md if present. Used to inject project-scoped guidance
+ * into Tier 3 `# project-context` without polluting Tier 2 (Pool B prefix).
+ */
+export function collectProjectMd(cwd) {
+    const projectDir = cwd || process.cwd();
+    const content = readSafe(join(projectDir, 'PROJECT.md'));
+    return content || '';
+}
+
+// --- Compose system prompt — Phase B Tier 2 / Tier 3 split ---
+// Returns { systemTier2, tier3Reminder } where the caller places each into
+// the right layer (system block vs messages <system-reminder>).
+//
+// Tier 2 (BP_2 cache): plugin-lifetime invariant content only.
+//   - opts.bridgeRules    : rules-builder buildBridgeInjectionContent output
+//                           (preferred; Pool B roles share bit-identical prefix)
+//   - opts.claudeMd       : fallback when caller hasn't migrated to bridgeRules
+//   - opts.userPrompt     : explicit systemPrompt override from callsite
+//
+// Tier 3 (messages, no cache_control): role / session / project variance.
+//   - opts.role           : worker / reviewer / tester / debugger / researcher / ...
+//   - opts.agentTemplate  : agents/<role>.md body when authored
+//   - opts.taskBrief      : Lead-issued task description (Sub only)
+//   - opts.hasSkills      : true → skills_list hint
+//   - opts.projectContext : cwd's PROJECT.md content (Phase B §5)
+//   - opts.memoryContext  : recap / history context (legacy — Pool B roles
+//                           generally exclude recap per §4.4)
+//
+// `profile.skip` still filters specific buckets (claudemd, skills, memory)
+// for backward compatibility with existing profiles.
 export function composeSystemPrompt(opts) {
-    const parts = [];
     const profile = opts.profile || null;
     const skip = profile?.skip || {};
 
-    if (opts.claudeMd && !skip.claudemd) {
-        parts.push('# Project Instructions\n\n' + opts.claudeMd);
-    }
-    if (opts.agentTemplate) {
-        // Agent role override is explicit — never filtered, even when profile
-        // says skip:claudemd (the caller wanted this agent specifically).
-        parts.push('# Agent Role\n\n' + opts.agentTemplate);
-    }
-    if (opts.hasSkills && !skip.skills) {
-        parts.push('# Skills\n\nCall `skills_list` to discover available skills.');
-    }
-    if (opts.memoryContext && !skip.memory) {
-        parts.push('# Memory Context\n\n' + opts.memoryContext);
+    // ── Tier 2 block ─────────────────────────────────────────────────────
+    const tier2Parts = [];
+    if (opts.bridgeRules) {
+        tier2Parts.push(opts.bridgeRules);
+    } else if (opts.claudeMd && !skip.claudemd) {
+        tier2Parts.push('# Project Instructions\n\n' + opts.claudeMd);
     }
     if (opts.userPrompt) {
-        parts.push(opts.userPrompt);
+        tier2Parts.push(opts.userPrompt);
     }
-    return parts.join('\n\n---\n\n');
+    const systemTier2 = tier2Parts.join('\n\n---\n\n');
+
+    // ── Tier 3 block ─────────────────────────────────────────────────────
+    const tier3Parts = [];
+    if (opts.role) {
+        tier3Parts.push('# role\n' + opts.role);
+    }
+    if (opts.agentTemplate) {
+        tier3Parts.push('# agent-role\n' + opts.agentTemplate);
+    }
+    if (opts.taskBrief) {
+        tier3Parts.push('# task-brief\n' + opts.taskBrief);
+    }
+    if (opts.hasSkills && !skip.skills) {
+        tier3Parts.push('# skills\nCall `skills_list` to discover available skills.');
+    }
+    if (opts.projectContext) {
+        tier3Parts.push('# project-context\n' + opts.projectContext);
+    }
+    if (opts.memoryContext && !skip.memory) {
+        tier3Parts.push('# memory-context\n' + opts.memoryContext);
+    }
+    const tier3Reminder = tier3Parts.length > 0 ? tier3Parts.join('\n\n') : '';
+
+    return { systemTier2, tier3Reminder };
 }
 // --- Helpers ---
 function readSafe(path) {
