@@ -19,6 +19,12 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA;
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 if (!DATA_DIR || !PLUGIN_ROOT) process.exit(0);
 
+// Clear active orchestrator session pointer (merged from clear-active-session.mjs)
+try {
+  const asp = path.join(DATA_DIR, 'active-session.txt');
+  if (fs.existsSync(asp)) fs.unlinkSync(asp);
+} catch {}
+
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
 }

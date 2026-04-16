@@ -1,31 +1,26 @@
 /**
- * embedding-provider.mjs — Embedding provider (Qwen3, local JS only).
+ * embedding-provider.mjs — Embedding provider with worker_threads isolation.
  */
 
-import { createRequire } from 'module'
+import { Worker } from 'worker_threads'
 import { join } from 'path'
-import { mkdirSync } from 'fs'
-import { cpus } from 'os'
+import { fileURLToPath } from 'url'
 import { writeProfilePoint } from './model-profile.mjs'
 
 const MODEL_ID = 'Xenova/bge-m3'
 const DEFAULT_DIMS = 1024
-const DEFAULT_DTYPE = 'q4'
-const INTRA_OP_THREADS = 1
-const INTER_OP_THREADS = 1
-const MODEL_CACHE_DIR = join(process.env.HOME || process.env.USERPROFILE, '.cache', 'trib-memory', 'models')
-const IDLE_TIMEOUT_MS = 15 * 60 * 1000
 
-let extractorPromise = null
+let worker = null
 let cachedDims = null
-let configuredDtype = DEFAULT_DTYPE
 let _device = 'cpu'
-let _idleTimer = null
-let ortPatched = false
 let _embedCallCount = 0
+let _msgId = 0
+const _pending = new Map()
 const EMBED_STEADY_SAMPLE_EVERY = 20
 const queryEmbeddingCache = new Map()
 const QUERY_EMBEDDING_CACHE_LIMIT = 1000
+
+const WORKER_PATH = join(fileURLToPath(import.meta.url), '..', 'embedding-worker.mjs')
 
 function cacheEmbedding(key, vector) {
   if (queryEmbeddingCache.has(key)) queryEmbeddingCache.delete(key)
@@ -44,115 +39,67 @@ function getCachedEmbedding(key) {
   return value
 }
 
+function ensureWorker() {
+  if (worker) return worker
+  worker = new Worker(WORKER_PATH, { env: { ...process.env } })
+  worker.on('message', (msg) => {
+    if (msg.type === 'profile') {
+      writeProfilePoint(msg.record)
+      return
+    }
+    if (msg.type === 'idle-dispose') {
+      cachedDims = null
+      _device = 'cpu'
+      process.stderr.write('[embed] idle timeout — model disposed\n')
+      writeProfilePoint({ phase: 'post-idle', model: MODEL_ID, device: msg.device, dtype: msg.dtype, note: 'idle dispose' })
+      return
+    }
+    const pending = _pending.get(msg.id)
+    if (!pending) return
+    _pending.delete(msg.id)
+    if (msg.type === 'error') {
+      pending.reject(new Error(msg.message))
+    } else {
+      pending.resolve(msg)
+    }
+  })
+  worker.on('error', (err) => {
+    process.stderr.write(`[embed] worker error: ${err?.message || err}\n`)
+    for (const [, p] of _pending) p.reject(err)
+    _pending.clear()
+    worker = null
+  })
+  worker.on('exit', (code) => {
+    if (code !== 0) {
+      process.stderr.write(`[embed] worker exited with code ${code}\n`)
+      for (const [, p] of _pending) p.reject(new Error(`Worker exited with code ${code}`))
+      _pending.clear()
+    }
+    worker = null
+  })
+  return worker
+}
+
+function sendToWorker(action, extra = {}) {
+  const w = ensureWorker()
+  const id = ++_msgId
+  return new Promise((resolve, reject) => {
+    _pending.set(id, { resolve, reject })
+    w.postMessage({ id, action, ...extra })
+  })
+}
+
 export function configureEmbedding(config = {}) {
-  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
-  if (config.dtype != null) {
-    const dt = String(config.dtype).trim().toLowerCase()
-    configuredDtype = ['fp32', 'fp16', 'q8', 'q4'].includes(dt) ? dt : DEFAULT_DTYPE
-  }
-  extractorPromise = null
   cachedDims = null
+  _device = 'cpu'
   queryEmbeddingCache.clear()
+  if (worker) {
+    sendToWorker('configure', { dtype: config.dtype }).catch(() => {})
+  }
 }
 
 export function clearEmbeddingCache() {
   queryEmbeddingCache.clear()
-}
-
-function resetIdleTimer() {
-  if (_idleTimer) clearTimeout(_idleTimer)
-  _idleTimer = setTimeout(() => {
-    if (extractorPromise) {
-      extractorPromise.then(ext => { try { ext.dispose() } catch {} }).catch(() => {})
-      extractorPromise = null
-      cachedDims = null
-      const prevDevice = _device
-      _device = 'cpu'
-      process.stderr.write('[embed] idle timeout — model disposed\n')
-      writeProfilePoint({
-        phase: 'post-idle',
-        model: MODEL_ID,
-        device: prevDevice,
-        dtype: configuredDtype,
-        note: 'idle dispose',
-      })
-    }
-    _idleTimer = null
-  }, IDLE_TIMEOUT_MS)
-}
-
-function patchOrtThreads() {
-  if (ortPatched) return
-  try {
-    const require = createRequire(import.meta.url)
-    const ort = require('onnxruntime-node')
-    if (!ort?.InferenceSession?.create) {
-      process.stderr.write('[embed] ORT patch skipped: InferenceSession.create not found\n')
-      return
-    }
-    const origCreate = ort.InferenceSession.create.bind(ort.InferenceSession)
-    ort.InferenceSession.create = async function (pathOrBuffer, options = {}) {
-      if (!options.intraOpNumThreads) options.intraOpNumThreads = INTRA_OP_THREADS
-      if (!options.interOpNumThreads) options.interOpNumThreads = INTER_OP_THREADS
-      return origCreate(pathOrBuffer, options)
-    }
-    ortPatched = true
-    process.stderr.write(`[embed] ORT patched OK: intra=${INTRA_OP_THREADS} inter=${INTER_OP_THREADS}\n`)
-  } catch (err) {
-    process.stderr.write(`[embed] ORT patch failed: ${err?.message || err}\n`)
-  }
-}
-
-async function loadExtractor() {
-  if (!extractorPromise) {
-    extractorPromise = (async () => {
-      // Baseline snapshot before any ONNX/transformers import land in RSS.
-      writeProfilePoint({
-        phase: 'baseline',
-        model: MODEL_ID,
-        device: _device,
-        dtype: configuredDtype,
-        note: 'pre-load',
-      })
-      patchOrtThreads()
-      const { pipeline, env } = await import('@huggingface/transformers')
-      env.allowLocalModels = false
-      try { mkdirSync(MODEL_CACHE_DIR, { recursive: true }) } catch {}
-      env.cacheDir = MODEL_CACHE_DIR
-      try { env.backends.onnx.wasm.numThreads = INTRA_OP_THREADS } catch {}
-      const opts = {}
-      if (configuredDtype && configuredDtype !== 'fp32') {
-        opts.dtype = configuredDtype
-      }
-      const startMs = Date.now()
-      let extractor
-      const preferGpu = (process.env.TRIB_MEMORY_EMBED_DEVICE || 'auto') !== 'cpu'
-      if (preferGpu) {
-        try {
-          extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'dml' })
-          _device = 'dml'
-        } catch (gpuErr) {
-          process.stderr.write(`[embed] DML failed (${gpuErr.message?.slice(0, 80)}), falling back to CPU\n`)
-          extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'cpu' })
-          _device = 'cpu'
-        }
-      } else {
-        extractor = await pipeline('feature-extraction', MODEL_ID, { ...opts, device: 'cpu' })
-        _device = 'cpu'
-      }
-      const loadMs = Date.now() - startMs
-      process.stderr.write(`[embed] loaded ${MODEL_ID} dtype=${configuredDtype} device=${_device} threads=${INTRA_OP_THREADS} in ${loadMs}ms\n`)
-      writeProfilePoint({
-        phase: 'load',
-        model: MODEL_ID,
-        device: _device,
-        dtype: configuredDtype,
-        wallMs: loadMs,
-      })
-      return extractor
-    })()
-  }
-  return extractorPromise
 }
 
 export function getEmbeddingModelId() {
@@ -170,70 +117,43 @@ export function consumeProviderSwitchEvent() {
 }
 
 export async function warmupEmbeddingProvider() {
-  const extractor = await loadExtractor()
-  const t0 = Date.now()
-  await extractor('warmup', { pooling: 'mean', normalize: true })
-  cachedDims = DEFAULT_DIMS
-  writeProfilePoint({
-    phase: 'warmup',
-    model: MODEL_ID,
-    device: _device,
-    dtype: configuredDtype,
-    wallMs: Date.now() - t0,
-  })
-  resetIdleTimer()
+  const result = await sendToWorker('warmup')
+  cachedDims = result.dims || DEFAULT_DIMS
+  _device = result.device || 'cpu'
   return true
 }
 
-// Force dispose the embedding extractor without waiting for the idle timer.
-// Used by the --profile bench's post-idle step; regular callers continue to
-// rely on `resetIdleTimer()` in `embedText()` / `warmupEmbeddingProvider()`.
 export async function disposeEmbeddingProvider() {
-  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null }
-  if (extractorPromise) {
-    const prevDevice = _device
-    try {
-      const ext = await extractorPromise
-      try { ext.dispose() } catch {}
-    } catch {}
-    extractorPromise = null
+  if (worker) {
+    const result = await sendToWorker('dispose')
+    writeProfilePoint({ phase: 'post-idle', model: MODEL_ID, device: result.prevDevice || _device, dtype: result.dtype, note: 'forced dispose' })
     cachedDims = null
     _device = 'cpu'
-    writeProfilePoint({
-      phase: 'post-idle',
-      model: MODEL_ID,
-      device: prevDevice,
-      dtype: configuredDtype,
-      note: 'forced dispose',
-    })
+    try { await worker.terminate() } catch {}
+    worker = null
   }
 }
 
 export async function embedText(text) {
   const clean = String(text ?? '').trim()
   if (!clean) return []
-  resetIdleTimer()
   const cacheKey = `${MODEL_ID}\n${clean}`
   const cached = getCachedEmbedding(cacheKey)
   if (cached) return [...cached]
 
-  const extractor = await loadExtractor()
-  const t0 = Date.now()
-  const output = await extractor(clean, { pooling: 'mean', normalize: true })
-  const wallMs = Date.now() - t0
-  cachedDims = output.data?.length || DEFAULT_DIMS
-  const vector = Array.from(output.data ?? [])
+  const result = await sendToWorker('embed', { text: clean })
+  cachedDims = result.dims || DEFAULT_DIMS
+  _device = result.device || 'cpu'
+  const vector = result.vector
   cacheEmbedding(cacheKey, vector)
   _embedCallCount++
-  // Sampled steady-state snapshot; cheap enough to always compute but still
-  // avoid flooding the JSONL with one entry per call.
   if (_embedCallCount % EMBED_STEADY_SAMPLE_EVERY === 0) {
     writeProfilePoint({
       phase: 'steady',
       model: MODEL_ID,
       device: _device,
-      dtype: configuredDtype,
-      wallMs,
+      dtype: result.dtype,
+      wallMs: result.wallMs,
       note: `sample@${_embedCallCount}`,
     })
   }
