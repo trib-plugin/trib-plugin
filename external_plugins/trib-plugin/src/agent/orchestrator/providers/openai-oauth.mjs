@@ -271,6 +271,12 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     if (opts.sessionId) {
         body.prompt_cache_key = String(opts.sessionId);
     }
+    // Extended cache retention: default 24h for session-bound calls, in_memory for one-shot.
+    // Overridable via opts.cacheRetention ("24h" | "in_memory").
+    const retention = opts.cacheRetention || (opts.sessionId ? '24h' : 'in_memory');
+    if (retention === '24h' || retention === 'in_memory') {
+        body.prompt_cache_retention = retention;
+    }
     if (opts.fast === true) {
         body.service_tier = 'priority';
     }

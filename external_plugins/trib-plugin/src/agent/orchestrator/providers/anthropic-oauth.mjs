@@ -40,7 +40,13 @@ const EFFORT_BUDGET = {
     max: 32768,
 };
 
-const EPHEMERAL_CACHE_CONTROL = { type: 'ephemeral', ttl: '1h' };
+// Layered cache TTLs — stable layers get 1h, volatile layers get 5m.
+// Anthropic requires 1h entries to appear before 5m entries in the request.
+const CACHE_TTL_STABLE = { type: 'ephemeral', ttl: '1h' };   // tools, system
+const CACHE_TTL_VOLATILE = { type: 'ephemeral' };             // messages (5m default)
+
+// Legacy alias preserved for callers that don't yet differentiate layers.
+const EPHEMERAL_CACHE_CONTROL = CACHE_TTL_STABLE;
 
 // --- Credential helpers ---
 
@@ -64,20 +70,20 @@ function loadCredentials() {
 
 // --- Message conversion (mirrors anthropic.mjs) ---
 
-function withEphemeralCacheControl(block) {
+function withCacheControl(block, ttl = CACHE_TTL_VOLATILE) {
     if (!block || typeof block !== 'object' || block.cache_control) return block;
-    return { ...block, cache_control: EPHEMERAL_CACHE_CONTROL };
+    return { ...block, cache_control: ttl };
 }
 
-function appendCacheControl(content) {
+function appendCacheControl(content, ttl = CACHE_TTL_VOLATILE) {
     if (Array.isArray(content)) {
         if (content.length === 0) return content;
         const next = [...content];
-        next[next.length - 1] = withEphemeralCacheControl(next[next.length - 1]);
+        next[next.length - 1] = withCacheControl(next[next.length - 1], ttl);
         return next;
     }
     if (typeof content === 'string') {
-        return [withEphemeralCacheControl({ type: 'text', text: content })];
+        return [withCacheControl({ type: 'text', text: content }, ttl)];
     }
     return content;
 }
@@ -98,7 +104,10 @@ function toAnthropicTools(tools) {
     }));
 }
 
-function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
+function toAnthropicMessages(messages, cacheableIndexes = new Set(), messageTtl = CACHE_TTL_VOLATILE) {
+    // messageTtl === null disables message-layer caching entirely.
+    const applyTtl = messageTtl || CACHE_TTL_VOLATILE;
+    const shouldCache = (idx) => messageTtl !== null && cacheableIndexes.has(idx);
     const result = [];
     for (let idx = 0; idx < messages.length; idx++) {
         const m = messages[idx];
@@ -115,7 +124,7 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
                     input: tc.arguments,
                 });
             }
-            if (cacheableIndexes.has(idx)) content = appendCacheControl(content);
+            if (shouldCache(idx)) content = appendCacheControl(content, applyTtl);
             result.push({ role: 'assistant', content });
             continue;
         }
@@ -129,19 +138,19 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
             };
             if (last?.role === 'user' && Array.isArray(last.content)) {
                 last.content.push(block);
-                if (cacheableIndexes.has(idx)) {
-                    last.content = appendCacheControl(last.content);
+                if (shouldCache(idx)) {
+                    last.content = appendCacheControl(last.content, applyTtl);
                 }
             } else {
                 let content = [block];
-                if (cacheableIndexes.has(idx)) content = appendCacheControl(content);
+                if (shouldCache(idx)) content = appendCacheControl(content, applyTtl);
                 result.push({ role: 'user', content });
             }
             continue;
         }
 
-        const content = cacheableIndexes.has(idx)
-            ? appendCacheControl(m.content)
+        const content = shouldCache(idx)
+            ? appendCacheControl(m.content, applyTtl)
             : m.content;
         result.push({ role: m.role, content });
     }
@@ -279,15 +288,34 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
 
 // --- Build request body ---
 
+function resolveCacheTtls(opts) {
+    // Layered cache strategy — caller may override per-layer via opts.cacheStrategy.
+    // Anthropic enforces: 1h entries must appear before 5m entries in the request.
+    const strategy = opts.cacheStrategy || {};
+    const pick = (layer, fallback) => {
+        const v = strategy[layer];
+        if (v === '1h') return CACHE_TTL_STABLE;
+        if (v === '5m') return CACHE_TTL_VOLATILE;
+        if (v === 'none') return null;
+        return fallback;
+    };
+    return {
+        tools: pick('tools', CACHE_TTL_STABLE),       // default: 1h
+        system: pick('system', CACHE_TTL_STABLE),     // default: 1h
+        messages: pick('messages', CACHE_TTL_VOLATILE), // default: 5m
+    };
+}
+
 function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
     const systemText = systemMsgs.map(m => m.content).join('\n\n') || undefined;
     const maxTokens = MAX_TOKENS[model] || 8192;
     const opts = sendOpts || {};
+    const ttls = resolveCacheTtls(opts);
 
     const cacheableIndexes = collectRecentCacheableIndexes(chatMsgs);
-    const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes);
+    const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes, ttls.messages);
 
     const body = {
         model,
@@ -297,11 +325,21 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     };
 
     if (systemText) {
-        body.system = [{ type: 'text', text: systemText, cache_control: EPHEMERAL_CACHE_CONTROL }];
+        const systemBlock = { type: 'text', text: systemText };
+        if (ttls.system) systemBlock.cache_control = ttls.system;
+        body.system = [systemBlock];
     }
 
     if (tools?.length) {
-        body.tools = toAnthropicTools(tools);
+        const converted = toAnthropicTools(tools);
+        // Place cache_control on the last tool to cache the entire tools array.
+        if (ttls.tools && converted.length > 0) {
+            converted[converted.length - 1] = {
+                ...converted[converted.length - 1],
+                cache_control: ttls.tools,
+            };
+        }
+        body.tools = converted;
     }
 
     if (opts.effort && EFFORT_BUDGET[opts.effort]) {

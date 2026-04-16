@@ -195,6 +195,16 @@ export async function init() {
   initTrajectoryStore(getPluginData());
   if (config.mcpServers) await connectMcpServers(config.mcpServers);
   startAgentMaintenance();
+  // Smart Bridge — unified router + cache strategy + profile system.
+  // Wires profiles/registry from config.bridge.* and user-role preset mapping.
+  try {
+    const { initSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
+    const userRoles = config.bridge?.userRoles || {};
+    const userProfiles = config.bridge?.profiles || {};
+    initSmartBridge({ userRoles, userProfiles });
+  } catch (e) {
+    process.stderr.write(`[smart-bridge] init skipped: ${e.message}\n`);
+  }
 }
 
 /**

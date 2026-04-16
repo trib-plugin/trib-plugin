@@ -410,9 +410,25 @@ async function checkCycles() {
   const now = Date.now()
   const last = getCycleLastRun()
 
+  // Smart Bridge maintenance LLM — routes through anthropic-oauth with 1h cache
+  // when available, falls back to native callLLM otherwise. Toggle via
+  // agent-config.json: { bridge: { smartMaintenance: false } } to disable.
+  const cycleOptions = {}
+  try {
+    const { loadConfig } = await import('../agent/orchestrator/config.mjs')
+    const agentCfg = loadConfig()
+    const smartEnabled = agentCfg?.bridge?.smartMaintenance !== false
+    if (smartEnabled) {
+      const { makeMaintenanceLlm } = await import('../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
+      cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance' })
+    }
+  } catch (e) {
+    // Fallback path is the existing native callLLM — no-op.
+  }
+
   if (now - last.cycle1 >= cycle1Ms) {
     try {
-      const result = await runCycle1(db, mainConfig?.cycle1 || {}, {})
+      const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycleOptions)
       setCycleLastRun('cycle1', Date.now())
       process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
     } catch (e) {
@@ -422,7 +438,7 @@ async function checkCycles() {
 
   if (now - last.cycle2 >= cycle2Ms) {
     try {
-      await runCycle2(db, mainConfig?.cycle2 || {}, {})
+      await runCycle2(db, mainConfig?.cycle2 || {}, cycleOptions)
       setCycleLastRun('cycle2', Date.now())
       process.stderr.write(`[cycle2] completed\n`)
     } catch (e) {

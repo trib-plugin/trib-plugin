@@ -187,16 +187,30 @@ export function buildSkillToolDefs(skills) {
     ];
 }
 // --- Compose full system prompt ---
+// Profile-aware: if opts.profile is provided, profile.skip[] filters out
+// buckets the profile explicitly doesn't need. Backward-compatible — callers
+// without a profile get the classic "include everything" behavior.
 export function composeSystemPrompt(opts) {
     const parts = [];
-    if (opts.claudeMd) {
+    const profile = opts.profile || null;
+    const skip = profile?.skip || {};
+
+    if (opts.claudeMd && !skip.claudemd) {
         parts.push('# Project Instructions\n\n' + opts.claudeMd);
     }
     if (opts.agentTemplate) {
+        // Agent role override is explicit — never filtered, even when profile
+        // says skip:claudemd (the caller wanted this agent specifically).
         parts.push('# Agent Role\n\n' + opts.agentTemplate);
     }
-    if (opts.hasSkills) {
+    if (opts.hasSkills && !skip.skills) {
         parts.push('# Skills\n\nCall `skills_list` to discover available skills.');
+    }
+    if (opts.recap && !skip.recap) {
+        parts.push('# Last Session Recap\n\n' + opts.recap);
+    }
+    if (opts.memoryContext && !skip.memory) {
+        parts.push('# Memory Context\n\n' + opts.memoryContext);
     }
     if (opts.userPrompt) {
         parts.push(opts.userPrompt);
