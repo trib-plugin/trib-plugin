@@ -575,6 +575,17 @@ async function handleSearch(args) {
   return { text: renderEntryLines(sliced) }
 }
 
+function _renderAnchor(row) {
+  // Phase C Ship 5 — origin anchor. Surfaces the source Claude Code session
+  // (and root entry id, when present) so a reader can navigate back to the
+  // originating jsonl transcript. Short-form ids keep the output compact
+  // while remaining long enough to disambiguate within a typical workspace.
+  const bits = []
+  if (row.session_id) bits.push(`sid:${String(row.session_id).slice(0, 8)}`)
+  if (row.id != null) bits.push(`id:${row.id}`)
+  return bits.length > 0 ? `  ⟨${bits.join(' ')}⟩` : ''
+}
+
 function renderEntryLines(rows) {
   if (!rows || rows.length === 0) return '(no results)'
   const lines = []
@@ -586,12 +597,12 @@ function renderEntryLines(rows) {
     const head = element || summary
       ? `${cat}${element}${summary ? ' — ' + summary : ''}`
       : (cleanMemoryText(String(r.content ?? '')).slice(0, 300))
-    lines.push(`[${ts}] ${head.slice(0, 500)}`)
+    lines.push(`[${ts}] ${head.slice(0, 500)}${_renderAnchor(r)}`)
     if (Array.isArray(r.members) && r.members.length > 0) {
       for (const m of r.members) {
         const mTs = formatTs(m.ts)
         const prefix = m.role === 'user' ? 'u' : m.role === 'assistant' ? 'a' : (m.role || '?')
-        lines.push(`  [${mTs}] ${prefix}: ${cleanMemoryText(String(m.content ?? '')).slice(0, 200)}`)
+        lines.push(`  [${mTs}] ${prefix}: ${cleanMemoryText(String(m.content ?? '')).slice(0, 200)}${_renderAnchor(m)}`)
       }
     }
   }

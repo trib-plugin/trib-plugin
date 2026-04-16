@@ -1,5 +1,5 @@
 import { initProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, resetStatelessSession } from './orchestrator/session/manager.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
@@ -603,6 +603,22 @@ export async function handleToolCall(name, args, opts = {}) {
         }
         else {
           session = found;
+        }
+        // Phase C Ship 3 — profiles marked `behavior: "stateless"` (sub-task,
+        // maintenance, etc.) carry no transcript across dispatches. Truncate
+        // the message list to the initial Pool B head so the provider cache
+        // handle (Anthropic prefix hash / OpenAI prompt_cache_key) stays warm
+        // while no prior-task transcript leaks into the next call. Role names
+        // are not inspected — the profile's behavior attribute drives the
+        // decision so user-customised role names are supported transparently.
+        // Idempotent on a freshly-created session (length already equals head).
+        if (session?.behavior === 'stateless' && session?.id) {
+          try {
+            const reset = resetStatelessSession(session.id);
+            if (reset) session = reset;
+          } catch (e) {
+            process.stderr.write(`[bridge] stateless reset failed: ${e.message}\n`);
+          }
         }
 
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;

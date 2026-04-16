@@ -15,12 +15,20 @@
 
 import { findProfileForTaskType, findProfileForPreset, getProfile } from './profiles.mjs';
 
-// Phase B §4.5 — four sub roles share a single `sub-task` profile so
-// Worker/Sub/Maintenance all ride the same Pool B prefix. Legacy per-role
-// profiles (reviewer-external, tester-runtime, debugger-deep,
-// researcher-minimal) remain for backward compatibility but the router
-// prefers `sub-task` when it exists.
-const SUB_ROLE_SET = new Set(['reviewer', 'tester', 'debugger', 'researcher']);
+// Phase C Ship 3 — role category rules (no role-name hardcoding beyond the
+// reserved worker role).
+//
+// The plugin recognises exactly two user-facing role categories:
+//   • "worker"  — the reserved, non-deletable role. Always routes to
+//                 `worker-full` (stateful, continuous).
+//   • everything else — any other role defined in user-workflow.json is a
+//                 Sub. All Subs route to `sub-task` (stateless prefix-handle
+//                 reuse). Role names are user-customisable; no code path
+//                 depends on specific names like "reviewer" or "tester".
+//
+// Maintenance profiles (cycle1 / cycle2 / scheduler-task / webhook-handler /
+// proactive-decision) are selected by taskType and are never user roles.
+const RESERVED_WORKER_ROLE = 'worker';
 
 export class SmartRouter {
     /**
@@ -57,16 +65,21 @@ export class SmartRouter {
             const p = getProfile(this.profiles, request.profileId);
             if (p) return { profile: p, source: 'explicit' };
         }
-        // Role before preset — role maps to taskType-specific profiles first,
-        // ensuring shared presets (e.g. multiple roles on GPT5.4) land on the
-        // correct per-role profile.
+        // Role category routing — reserved `worker` goes to worker-full,
+        // every other user-defined role routes to sub-task. Role names stay
+        // user-customisable because the category is decided by membership in
+        // userRoles, not by the name itself.
         if (request.role) {
-            // Sub-role aliasing: route all four sub roles to the unified
-            // `sub-task` profile when it exists.
-            if (SUB_ROLE_SET.has(request.role)) {
+            if (request.role === RESERVED_WORKER_ROLE) {
+                const workerProfile = getProfile(this.profiles, 'worker-full');
+                if (workerProfile) return { profile: workerProfile, source: 'rule-worker' };
+            } else if (this.userRoles[request.role]) {
                 const subProfile = getProfile(this.profiles, 'sub-task');
                 if (subProfile) return { profile: subProfile, source: 'rule-sub' };
             }
+            // Role is not recognised as a user-defined role — fall through to
+            // the taskType / preset resolution below so callers supplying a
+            // raw taskType string still get the correct maintenance profile.
             const taskMatch = findProfileForTaskType(this.profiles, request.role);
             if (taskMatch) return { profile: taskMatch, source: 'rule-role' };
             const preset = this.userRoles[request.role];

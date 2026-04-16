@@ -119,7 +119,22 @@ function readUserWorkflow() {
   try { return JSON.parse(readFileSync(USER_WORKFLOW_PATH, 'utf8')); }
   catch { return DEFAULT_USER_WORKFLOW; }
 }
-function writeUserWorkflow(data) { writeJsonFile(USER_WORKFLOW_PATH, data); }
+// Phase C Ship 3 — the `worker` role is reserved and non-deletable. Smart
+// Bridge's router dispatches any request with `role: "worker"` to the
+// `worker-full` profile; if the role goes missing the router has nowhere to
+// send Worker calls. Every persist path funnels through here, so reinstating
+// the role on save keeps the contract intact regardless of how the caller
+// mutated the roster (UI drag-delete, raw MD edit, direct JSON PUT).
+function writeUserWorkflow(data) {
+  const roles = Array.isArray(data?.roles) ? data.roles.slice() : [];
+  if (!roles.some(r => r?.name === 'worker')) {
+    const existing = readUserWorkflow();
+    const preservedWorker = existing?.roles?.find(r => r?.name === 'worker');
+    const seedWorker = DEFAULT_USER_WORKFLOW.roles.find(r => r?.name === 'worker');
+    roles.unshift(preservedWorker || seedWorker);
+  }
+  writeJsonFile(USER_WORKFLOW_PATH, { ...data, roles });
+}
 
 function readUserWorkflowMd() {
   if (!existsSync(USER_WORKFLOW_MD_PATH)) return DEFAULT_USER_WORKFLOW_MD;
@@ -759,6 +774,77 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && path === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(readFileSync(HTML_PATH, 'utf8'));
+    return;
+  }
+
+  // Phase C Ship 5 — Smart Bridge cache dashboard. Per-profile warm state,
+  // hit/miss counters, and provider breakdown. Used by the General tab to
+  // surface which Pool B prefixes are currently warm and which are drifting.
+  if (req.method === 'GET' && path === '/bridge/stats') {
+    try {
+      const { CacheRegistry } = await import('../src/agent/orchestrator/smart-bridge/registry.mjs');
+      const { BUILTIN_PROFILES } = await import('../src/agent/orchestrator/smart-bridge/profiles.mjs');
+      const registry = CacheRegistry.shared();
+      const stats = registry.getStats();
+      const now = Date.now();
+      const profiles = {};
+      const seen = new Set();
+      for (const [id, profile] of Object.entries(BUILTIN_PROFILES)) {
+        seen.add(id);
+        const s = stats.profiles[id] || {};
+        const entry = registry.data.profiles[id] || {};
+        profiles[id] = {
+          id,
+          taskType: profile.taskType,
+          lifecycle: profile.lifecycle,
+          behavior: profile.behavior || null,
+          fallbackPreset: profile.fallbackPreset,
+          description: profile.description,
+          provider: s.provider || entry.provider || null,
+          prefixHash: entry.prefixHash || null,
+          hitCount: s.hitCount || 0,
+          missCount: s.missCount || 0,
+          hitRate: Number.isFinite(s.hitRate) ? s.hitRate : 0,
+          warm: (entry.expiresAt || 0) > now,
+          expiresInMs: Math.max(0, (entry.expiresAt || 0) - now),
+          createdAt: entry.createdAt ? new Date(entry.createdAt).toISOString() : null,
+        };
+      }
+      // Also surface registry-only entries (overrides / user profiles) that
+      // don't appear in BUILTIN_PROFILES so the dashboard never hides traffic.
+      for (const [id, entry] of Object.entries(registry.data.profiles || {})) {
+        if (seen.has(id)) continue;
+        profiles[id] = {
+          id,
+          taskType: null,
+          lifecycle: null,
+          behavior: null,
+          fallbackPreset: null,
+          description: '(user profile)',
+          provider: entry.provider || null,
+          prefixHash: entry.prefixHash || null,
+          hitCount: entry.hitCount || 0,
+          missCount: entry.missCount || 0,
+          hitRate: ((entry.hitCount || 0) + (entry.missCount || 0)) > 0
+            ? (entry.hitCount || 0) / ((entry.hitCount || 0) + (entry.missCount || 0))
+            : 0,
+          warm: (entry.expiresAt || 0) > now,
+          expiresInMs: Math.max(0, (entry.expiresAt || 0) - now),
+          createdAt: entry.createdAt ? new Date(entry.createdAt).toISOString() : null,
+        };
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        profileCount: Object.keys(profiles).length,
+        warmCount: Object.values(profiles).filter(p => p.warm).length,
+        openaiKeyCount: stats.openaiKeyCount || 0,
+        updatedAt: registry.data.updatedAt,
+        profiles,
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(e?.message || e) }));
+    }
     return;
   }
 

@@ -278,8 +278,55 @@ export function createSession(opts) {
         // profile-driven cache settings into provider sendOpts.
         profileId: profile?.id || null,
         providerCacheOpts: providerCacheOpts || null,
+        // Profile lifecycle behavior, copied at spawn so role names remain
+        // user-configurable without leaking into reset logic. "stateless"
+        // sessions are truncated back to the initial head between dispatches.
+        behavior: profile?.behavior || null,
+        // Frozen head length covering the bit-identical Pool B prefix (system
+        // Tier 2 + Tier 3 reminder + ack, plus optional reference-files pair).
+        // resetStatelessSession() truncates messages to this length between
+        // dispatches so the provider cache handle survives while per-task
+        // transcript does not.
+        initialHeadLength: messages.length,
     };
     saveSession(session);
+    return session;
+}
+
+/**
+ * Phase C Ship 3 — reset a stateless session for the next dispatch.
+ *
+ * Profiles marked `behavior: "stateless"` (e.g. `sub-task`) carry no
+ * transcript across dispatches — only the prefix-handle is reused, per
+ * Phase B §4.5. Instead of destroying and recreating the session (which
+ * would churn the `prompt_cache_key` and force a fresh Anthropic prefix
+ * write), we truncate the message list back to the initial Pool B head
+ * and clear compressor state.
+ *
+ * Idempotent: on a freshly created session `messages.length === head`, so
+ * the slice is a no-op. Safe to call unconditionally after resume.
+ */
+export function resetStatelessSession(sessionId) {
+    const session = loadSession(sessionId);
+    if (!session) return null;
+    const head = Number.isInteger(session.initialHeadLength) ? session.initialHeadLength : 0;
+    let mutated = false;
+    if (head > 0 && session.messages.length > head) {
+        session.messages = session.messages.slice(0, head);
+        mutated = true;
+    }
+    if (session.compressionCount) {
+        session.compressionCount = 0;
+        mutated = true;
+    }
+    if (session.previousSummary) {
+        session.previousSummary = null;
+        mutated = true;
+    }
+    if (mutated) {
+        session.updatedAt = Date.now();
+        saveSession(session);
+    }
     return session;
 }
 
@@ -417,6 +464,60 @@ function acquireSessionLock(sessionId) {
     });
 }
 
+// Phase C Ship 5 — Profile-level cold-cache singleflight.
+//
+// Two Worker/Sub asks can arrive for the same profile (e.g. sub-task) across
+// different sessions. When the provider cache for that profile is already
+// warm, both calls hit and nothing special is needed. When it is cold, both
+// calls would independently pay the cache-write premium (2× input on
+// Anthropic) — wasting money without improving cache state.
+//
+// This guard serialises the cold-state ask: the first call goes through
+// immediately (and performs the cache write); the second call waits for the
+// first to complete (bounded by COLD_FLIGHT_TIMEOUT_MS) and then finds the
+// cache warm, paying only cache-read cost. Once warm, the guard becomes a
+// no-op so concurrent warm asks stay parallel.
+const _profileColdFlight = new Map();
+const COLD_FLIGHT_TIMEOUT_MS = 60_000;
+
+function _isProfileWarm(profileId) {
+    if (!profileId || !_smartBridgeApi) return false;
+    const entry = _smartBridgeApi.registry?.data?.profiles?.[profileId];
+    return !!(entry && (entry.expiresAt || 0) > Date.now());
+}
+
+async function _waitForColdProfile(profileId) {
+    if (!profileId || _isProfileWarm(profileId)) return;
+    const inFlight = _profileColdFlight.get(profileId);
+    if (!inFlight) return;
+    try {
+        await Promise.race([
+            inFlight,
+            new Promise((_, reject) => setTimeout(
+                () => reject(new Error('cold-flight timeout')),
+                COLD_FLIGHT_TIMEOUT_MS,
+            )),
+        ]);
+    } catch {
+        // Timeout or in-flight failure — proceed anyway. The worst case is a
+        // second write premium, which is exactly what the guard ordinarily
+        // prevents but is acceptable as a bounded fallback.
+    }
+}
+
+function _registerColdFlight(profileId) {
+    if (!profileId) return () => {};
+    let resolve;
+    const flight = new Promise(r => { resolve = r; });
+    _profileColdFlight.set(profileId, flight);
+    return () => {
+        resolve();
+        if (_profileColdFlight.get(profileId) === flight) {
+            _profileColdFlight.delete(profileId);
+        }
+    };
+}
+
 export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride) {
     const _askStartedAt = Date.now();
     const unlock = await acquireSessionLock(sessionId);
@@ -431,6 +532,13 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         unlock();
         throw new SessionClosedError(sessionId, 'session already closed');
     }
+    // Phase C Ship 5 — cold-cache singleflight. If this profile has no warm
+    // entry and another ask is already in flight for it, wait so the peer can
+    // complete the cache write first; we then ride warm. No-op when warm.
+    await _waitForColdProfile(preSession.profileId);
+    const releaseColdFlight = !_isProfileWarm(preSession.profileId)
+        ? _registerColdFlight(preSession.profileId)
+        : () => {};
     const askGeneration = typeof preSession.generation === 'number' ? preSession.generation : 0;
     const runtime = _touchRuntime(sessionId);
     // Fresh controller per ask — the previous ask's controller may have aborted.
@@ -571,6 +679,10 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         if (entry && entry.generation === askGeneration) {
             entry.controller = null;
         }
+        // Phase C Ship 5 — release cold-flight waiters. Called unconditionally
+        // so a failed cache write doesn't leave peers blocked until the
+        // 60s timeout.
+        try { releaseColdFlight(); } catch { /* ignore */ }
         unlock();
     }
 }
