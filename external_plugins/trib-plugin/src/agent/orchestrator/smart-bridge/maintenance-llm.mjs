@@ -34,10 +34,14 @@ export function makeMaintenanceLlm(opts = {}) {
     return async function maintenanceLlm({ prompt, mode, preset, timeout }) {
         const smartBridge = getSmartBridge();
         const request = {
-            taskType: opts.taskType || 'maintenance',
-            description: mode || 'maintenance cycle',
+            taskType: opts.taskType,
+            role: opts.role,
+            description: mode || (opts.taskType || 'maintenance') + ' task',
             sessionId: opts.sessionId,
         };
+        // Default to 'maintenance' if neither taskType nor role given — preserves
+        // legacy memory-cycle behavior.
+        if (!request.taskType && !request.role) request.taskType = 'maintenance';
         const resolved = await smartBridge.resolve(request);
         const provider = getProvider(resolved.provider);
 

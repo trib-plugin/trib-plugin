@@ -46,11 +46,28 @@ function resolveApiKey(providerKey, agentConfig) {
  * Unified LLM call.
  * @param {string} prompt
  * @param {string|object} presetOrId — preset ID string or preset object
- * @param {object} options — { mode?: 'maintenance'|'active', timeout?, systemPrompt? }
+ * @param {object} options — { mode?: 'maintenance'|'active', timeout?, systemPrompt?, taskType?, role? }
+ *   taskType / role (optional) — when provided, route through Smart Bridge for
+ *   profile-based cache + context optimization. Falls back to direct call if
+ *   Smart Bridge has no matching profile or is unavailable.
  * @returns {Promise<string>}
  */
 export async function callLLM(prompt, presetOrId, options = {}) {
-  const { mode = 'maintenance', timeout = 180000, systemPrompt } = options
+  const { mode = 'maintenance', timeout = 180000, systemPrompt, taskType, role } = options
+
+  // Smart Bridge opt-in routing. Caller indicates intent via taskType/role;
+  // we try Smart Bridge first, falling back to direct path on any failure.
+  if (taskType || role) {
+    try {
+      const { makeMaintenanceLlm } = await import('../../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
+      const smartLlm = makeMaintenanceLlm({ taskType, role })
+      return await smartLlm({ prompt, mode, preset: presetOrId, timeout })
+    } catch (err) {
+      process.stderr.write(`[llm] smart routing failed, falling back to direct: ${err.message}\n`)
+      // fall through to direct path below
+    }
+  }
+
   const agentConfig = loadAgentConfig()
 
   const preset = typeof presetOrId === 'string'
