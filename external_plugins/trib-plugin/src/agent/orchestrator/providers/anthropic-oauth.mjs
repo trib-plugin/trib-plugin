@@ -331,7 +331,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
     let content = '';
     let model = '';
     let toolCalls = [];
-    let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+    let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 };
     let buffer = '';
     let idleTimedOut = false;
     let idleTimer = null;
@@ -388,6 +388,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                         if (event.message.usage) {
                             usage.inputTokens = event.message.usage.input_tokens || 0;
                             usage.cachedTokens = event.message.usage.cache_read_input_tokens || 0;
+                            usage.cacheWriteTokens = event.message.usage.cache_creation_input_tokens || 0;
                         }
                     }
 

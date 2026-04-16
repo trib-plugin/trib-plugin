@@ -21,6 +21,7 @@
 import { getSmartBridge } from './index.mjs';
 import { getProvider } from '../providers/registry.mjs';
 import { callLLM, resolveMaintenancePreset } from '../../../shared/llm/index.mjs';
+import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
 
 /**
  * Build a maintenance-LLM callback suitable for memory-cycle.mjs.
@@ -76,6 +77,7 @@ export function makeMaintenanceLlm(opts = {}) {
             });
         }
 
+        const startedAt = Date.now();
         try {
             const result = await provider.send(messages, model, tools, sendOpts);
 
@@ -87,6 +89,25 @@ export function makeMaintenanceLlm(opts = {}) {
                 tools,
                 usage: result.usage,
             });
+            const prefixHash = smartBridge.registry?.data?.profiles?.[resolved.profile?.id]?.prefixHash || null;
+            if (result.usage) {
+                logLlmCall({
+                    ts: new Date().toISOString(),
+                    preset: resolved.presetName || null,
+                    model,
+                    provider: resolved.provider,
+                    mode: 'maintenance',
+                    duration: Date.now() - startedAt,
+                    profileId: resolved.profile?.id || null,
+                    sessionId: null,
+                    inputTokens: result.usage.inputTokens || 0,
+                    outputTokens: result.usage.outputTokens || 0,
+                    cacheReadTokens: result.usage.cachedTokens || 0,
+                    cacheWriteTokens: result.usage.cacheWriteTokens || 0,
+                    prefixHash,
+                    costUsd: result.usage.costUsd || 0,
+                }, { maintenance: true });
+            }
 
             return result.content || '';
         } catch (err) {

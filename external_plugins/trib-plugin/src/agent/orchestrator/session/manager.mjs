@@ -5,6 +5,7 @@ import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
 import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, composeSystemPrompt } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
+import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
 
 // Smart Bridge is optional — injected via setSmartBridge() during plugin init
 // so session creation never depends on a circular import. If never injected,
@@ -324,6 +325,7 @@ function acquireSessionLock(sessionId) {
 }
 
 export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride) {
+    const _askStartedAt = Date.now();
     const unlock = await acquireSessionLock(sessionId);
     // ── Synchronous pre-await setup (must happen before any await so
     //    closeSession() can't interleave between load and registration) ──
@@ -405,6 +407,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             // ask so the registry reflects all bridge traffic, not just
             // maintenance cycles. Guarded against any smart-bridge error so
             // metric recording never breaks the ask itself.
+            let prefixHashForLog = null;
             if (session.profileId && result.usage && _smartBridgeApi) {
                 try {
                     const profile = _smartBridgeApi.getProfile(session.profileId);
@@ -415,8 +418,29 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                             tools: session.tools || [],
                             usage: result.usage,
                         });
+                        const entry = _smartBridgeApi.registry?.data?.profiles?.[session.profileId];
+                        prefixHashForLog = entry?.prefixHash || null;
                     }
                 } catch {}
+            }
+            // Append to llm-usage.jsonl with the rich bridge usage fields.
+            if (result.usage) {
+                logLlmCall({
+                    ts: new Date().toISOString(),
+                    preset: session.presetName || null,
+                    model: session.model,
+                    provider: session.provider,
+                    mode: 'active',
+                    duration: Date.now() - _askStartedAt,
+                    profileId: session.profileId || null,
+                    sessionId: session.id,
+                    inputTokens: result.usage.inputTokens || 0,
+                    outputTokens: result.usage.outputTokens || 0,
+                    cacheReadTokens: result.usage.cachedTokens || 0,
+                    cacheWriteTokens: result.usage.cacheWriteTokens || 0,
+                    prefixHash: prefixHashForLog,
+                    costUsd: result.usage.costUsd || 0,
+                });
             }
             // Persist opaque providerState for future stateful providers.
             // No provider currently emits it (Codex OAuth is stateless per
