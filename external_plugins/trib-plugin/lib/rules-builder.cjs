@@ -34,24 +34,59 @@ function readJson(filePath) {
 }
 
 /**
- * Return CLAUDE.md content verbatim for Pool B injection.
+ * Extract the Pool B — safe CLAUDE.md sections, per design spec §3.3.
  *
- * Phase D hotfix rationale: the earlier heading-filter approach kept only
- * Project Instructions / Core Rules / Writing (~1422 chars ≈ 356 tokens)
- * because most common sections live inside the plugin-managed block, and
- * the managed block was getting stripped. That fell well short of every
- * provider's cache-minimum token floor (1024 OpenAI / Anthropic Sonnet+Opus,
- * 2048 Anthropic Haiku) so `prompt_cache_key` and Anthropic prefix hashes
- * were never registered. Empirical result: 0% cache hit across 295 calls.
+ * Whitelist-only: every section is dropped by default, kept only when its
+ * heading matches. This keeps Lead-only prose (Channels / Team / Models /
+ * User Rules / Workflow / Memory ops) out of the Bridge prefix, so role
+ * mappings and Lead-exclusive tool rules never leak into Worker / Sub
+ * prompts. The managed-block markers are stripped (contents kept) so
+ * anything the plugin writes between them is still subject to the same
+ * whitelist.
  *
- * Shipping CLAUDE.md verbatim (~6.6k chars ≈ 1650 tokens on the current
- * workspace) clears those thresholds in one step. Lead-only prose such as
- * "# Team" or "# Models" is informational only — tool handlers gate real
- * capabilities, so Bridge agents seeing the text cannot mistakenly invoke
- * Lead-exclusive tools. The cache win dwarfs the prose-overlap cost.
+ * Allowed H2: Core Rules, Writing, Non-negotiable.
+ * Allowed H1: Tone (optional user-authored section for style guidance).
+ *
+ * Anything not matching a whitelist heading — including orphan body text
+ * that precedes any heading — is discarded.
  */
+const CLAUDE_MD_INCLUDE_H2 = new Set([
+  '## Core Rules', '## Writing', '## Non-negotiable',
+]);
+const CLAUDE_MD_INCLUDE_H1 = new Set([
+  '# Tone',
+]);
+
 function extractCommonClaudeMdSections(content) {
-  return content ? content.trim() : '';
+  if (!content) return '';
+  const stripped = content
+    .replace(/<!-- BEGIN trib-plugin managed -->/g, '')
+    .replace(/<!-- END trib-plugin managed -->/g, '')
+    .trim();
+  if (!stripped) return '';
+  const lines = stripped.split('\n');
+  const sections = [];
+  let buffer = null;
+  const commit = () => {
+    if (buffer && buffer.lines.length > 0) sections.push(buffer.lines.join('\n').trim());
+    buffer = null;
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isH1 = /^# [^#]/.test(trimmed);
+    const isH2 = /^## [^#]/.test(trimmed);
+    if (isH1) {
+      commit();
+      if (CLAUDE_MD_INCLUDE_H1.has(trimmed)) buffer = { lines: [line] };
+    } else if (isH2) {
+      commit();
+      if (CLAUDE_MD_INCLUDE_H2.has(trimmed)) buffer = { lines: [line] };
+    } else if (buffer) {
+      buffer.lines.push(line);
+    }
+  }
+  commit();
+  return sections.join('\n\n').trim();
 }
 
 /**
@@ -188,16 +223,23 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
 
-  // Phase D hotfix — user-global CLAUDE.md common sections. v0.6.47 Ship 1
-  // split the builder but never wired this in, leaving the Pool B prefix at
-  // ~670 chars (~150 tokens) — well below every provider's cache-minimum
-  // threshold. Injecting the user's Project Instructions / Core Rules /
-  // Writing / Communication / Non-negotiable sections lifts the prefix over
-  // the threshold so `prompt_cache_key` / Anthropic prefix hash actually get
-  // recorded on the provider side.
-  const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-  const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
-  if (claudeMdCommon) parts.push(claudeMdCommon);
+  // Per design spec §3.3, Pool B order:
+  //   1. MCP instructions
+  //   2. Common MD (data/common.md)
+  //   3. rules/memory.md
+  //   4. rules/search.md
+  //   5. CLAUDE.md common sections (whitelist: Core Rules / Writing /
+  //      Non-negotiable / # Tone)
+  //   6. profile rendered as "User: <name> (<title>)"
+  // Everything the Bridge should not see (Channels / Team / Models / User
+  // Rules / Workflow / Memory ops) is filtered at step 5. Pool A still gets
+  // the full surface via buildInjectionContent + Claude Code auto-load.
+
+  const mcpInstructions = readOptional(path.join(RULES_DIR, 'mcp.md'));
+  if (mcpInstructions) parts.push(mcpInstructions);
+
+  const commonContent = readOptional(path.join(DATA_DIR, 'common.md'));
+  if (commonContent) parts.push(commonContent);
 
   if (memoryConfig.enabled) {
     const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
@@ -209,8 +251,9 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     if (search) parts.push(search);
   }
 
-  const commonContent = readOptional(path.join(DATA_DIR, 'common.md'));
-  if (commonContent) parts.push(commonContent);
+  const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+  const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
+  if (claudeMdCommon) parts.push(claudeMdCommon);
 
   const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
   if (userProfileContent) parts.push(userProfileContent);
