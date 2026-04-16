@@ -206,6 +206,37 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'bridge_spawn',
+    title: 'Spawn Bridge Agent',
+    description: 'Create a Smart Bridge agent session with a role/taskType and optionally send the first prompt. Replacement for native Agent/TeamCreate flow — no team container required, sessions are standalone. When wait=true, returns the agent\'s first response synchronously. When wait=false, returns sessionId immediately for later bridge_send calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        role: { type: 'string', description: 'Role: worker, reviewer, researcher, tester, debugger (mapped to profile via user-workflow.json).' },
+        taskType: { type: 'string', description: 'Explicit task type override (maintenance, one-shot, etc).' },
+        profileId: { type: 'string', description: 'Explicit profile id (overrides role/taskType).' },
+        prompt: { type: 'string', description: 'Initial prompt for the agent. Required when wait=true.' },
+        wait: { type: 'boolean', description: 'When true, send prompt and return the response. When false, return sessionId for later use. Default: true if prompt given, false otherwise.' },
+        provider: { type: 'string', description: 'Override provider (defaults to profile.preferredProviders[0]).' },
+        model: { type: 'string', description: 'Override model.' },
+        cwd: { type: 'string', description: 'Working directory for agent tool execution.' },
+      },
+    },
+  },
+  {
+    name: 'bridge_send',
+    title: 'Send to Bridge Agent',
+    description: 'Send a message to an existing bridge agent session. Returns the agent\'s response synchronously. Replacement for SendMessage in native team flow.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'Session id returned by bridge_spawn or create_session.' },
+        message: { type: 'string', description: 'Message content to send.' },
+      },
+      required: ['sessionId', 'message'],
+    },
+  },
+  {
     name: 'bridge',
     title: 'Ask External Model',
     description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Smart Bridge routing: scope maps to a role → profile (cache strategy, context filtering). Use taskType for explicit routing.',
@@ -278,6 +309,99 @@ export async function handleToolCall(name, args, opts = {}) {
           toolsAvailable: session.tools.length,
           toolNames: session.tools.map((t) => t.name),
         });
+      }
+
+      case 'bridge_spawn': {
+        // Smart Bridge agent spawn — replacement for native Agent tool flow.
+        // Resolves profile → creates session → optionally sends initial prompt.
+        const smartArgs = {
+          role: args.role,
+          taskType: args.taskType,
+          profileId: args.profileId,
+          cwd: args.cwd || process.cwd(),
+          owner: 'bridge',
+          lane: 'bridge',
+          systemPrompt: args.systemPrompt,
+        };
+        // Provider/model fallback: if caller didn't specify, derive from profile.
+        if (args.provider) smartArgs.provider = args.provider;
+        if (args.model) smartArgs.model = args.model;
+        // Need either role/taskType/profileId OR explicit provider+model.
+        if (!smartArgs.role && !smartArgs.taskType && !smartArgs.profileId
+            && !(smartArgs.provider && smartArgs.model)) {
+          return fail('bridge_spawn: role, taskType, profileId, or provider+model required');
+        }
+        // Fill provider/model defaults from resolved profile when missing.
+        if ((!smartArgs.provider || !smartArgs.model)
+            && (smartArgs.role || smartArgs.taskType || smartArgs.profileId)) {
+          try {
+            const { getSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
+            const resolved = getSmartBridge().resolveSync({
+              role: smartArgs.role,
+              taskType: smartArgs.taskType,
+              profileId: smartArgs.profileId,
+            });
+            if (resolved) {
+              smartArgs.provider = smartArgs.provider || resolved.provider;
+              // Map preset name to model id.
+              const PRESET_TO_MODEL = {
+                haiku: 'claude-haiku-4-5-20251001',
+                'sonnet-mid': 'claude-sonnet-4-6',
+                'sonnet-high': 'claude-sonnet-4-6',
+                'opus-max': 'claude-opus-4-6',
+                'opus-mid': 'claude-opus-4-6',
+                'GPT5.4': 'gpt-5.4',
+                'gpt5.4-mini': 'gpt-5.4-mini',
+              };
+              smartArgs.model = smartArgs.model
+                || PRESET_TO_MODEL[resolved.profile.preferredModel]
+                || resolved.profile.preferredModel;
+            }
+          } catch { /* fall through — createSession will throw if incomplete */ }
+        }
+        const session = createSession(smartArgs);
+        const shouldWait = args.wait === false ? false : !!args.prompt;
+        if (shouldWait) {
+          try {
+            const result = await askSession(session.id, args.prompt);
+            return ok({
+              sessionId: session.id,
+              profileId: session.profileId,
+              provider: session.provider,
+              model: session.model,
+              response: result.content,
+              usage: result.usage,
+            });
+          } catch (err) {
+            return fail(`bridge_spawn ask failed: ${err.message}`);
+          }
+        }
+        return ok({
+          sessionId: session.id,
+          profileId: session.profileId,
+          provider: session.provider,
+          model: session.model,
+          hint: 'Use bridge_send(sessionId, message) to converse with this agent.',
+        });
+      }
+
+      case 'bridge_send': {
+        const sessionId = args.sessionId;
+        const message = args.message;
+        if (!sessionId || !message) return fail('bridge_send: sessionId and message are required');
+        try {
+          const result = await askSession(sessionId, message);
+          return ok({
+            sessionId,
+            response: result.content,
+            usage: result.usage,
+          });
+        } catch (err) {
+          if (err instanceof SessionClosedError) {
+            return fail(`Session ${sessionId} is closed`);
+          }
+          return fail(`bridge_send failed: ${err.message}`);
+        }
       }
 
       case 'list_sessions': {

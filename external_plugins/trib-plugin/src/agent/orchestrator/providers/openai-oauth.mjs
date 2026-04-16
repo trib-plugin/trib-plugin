@@ -271,12 +271,12 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     if (opts.sessionId) {
         body.prompt_cache_key = String(opts.sessionId);
     }
-    // Extended cache retention: default 24h for session-bound calls, in_memory for one-shot.
-    // Overridable via opts.cacheRetention ("24h" | "in_memory").
-    const retention = opts.cacheRetention || (opts.sessionId ? '24h' : 'in_memory');
-    if (retention === '24h' || retention === 'in_memory') {
-        body.prompt_cache_retention = retention;
-    }
+    // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
+    // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns
+    // 400 "Unsupported parameter" when it's included. Leave cache behavior
+    // to the Codex server-side default (in-memory, 5-10 min). Callers who
+    // want extended retention should use the public OpenAI API provider
+    // instead of OAuth.
     if (opts.fast === true) {
         body.service_tier = 'priority';
     }
