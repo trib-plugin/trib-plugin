@@ -27,8 +27,10 @@ const SCOPE = 'openid profile email offline_access';
 const CODEX_API_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CALLBACK_PORT = 1455;
 // Version string baked into the models endpoint query — Codex rejects the
-// request without it. Any recent client_version works; we match the real CLI.
-const CODEX_CLIENT_VERSION = '0.34.0';
+// request without it. Keep close to the latest published Codex CLI because
+// older versions trigger a visibility-filtered catalog (e.g. only rollout
+// models). Bump when the real CLI bumps.
+const CODEX_CLIENT_VERSION = '0.107.0';
 const CODEX_MODEL_CACHE_TTL_MS = 24 * 60 * 60_000;
 
 function _codexModelCachePath() {

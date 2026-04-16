@@ -6,7 +6,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
-import { DEFAULT_MAINTENANCE } from '../src/agent/orchestrator/config.mjs';
+import { DEFAULT_MAINTENANCE, getPluginData } from '../src/agent/orchestrator/config.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
@@ -33,7 +33,13 @@ const USER_WORKFLOW_PATH = join(DATA_DIR, 'user-workflow.json');
 const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
 
 const DEFAULT_USER_WORKFLOW = {
-  roles: []
+  roles: [
+    { name: 'worker', preset: 'SONNET MID' },
+    { name: 'reviewer', preset: 'OPUS MID' },
+    { name: 'debugger', preset: 'OPUS MID' },
+    { name: 'researcher', preset: 'HAIKU' },
+    { name: 'tester', preset: 'SONNET MID' },
+  ],
 };
 
 const DEFAULT_USER_WORKFLOW_MD = "";
@@ -66,7 +72,21 @@ function syncToTribConfig() {
 const PORT = 3458;
 const APP_WIDTH = 950;
 const APP_HEIGHT = 900;
-const html = readFileSync(join(__dirname, 'setup.html'), 'utf8');
+const HTML_PATH = join(__dirname, 'setup.html');
+
+// Drop any runtime-provider model caches on boot so the Config UI always
+// re-fetches fresh catalogs. Caches can get stuck on partial/stale responses
+// (e.g. Codex /backend-api/codex/models returning just one model).
+try { rmSync(join(getPluginData(), 'openai-oauth-models.json'), { force: true }); } catch {}
+
+// Seed user-workflow.json on first launch so Smart Bridge has sensible
+// role→preset mappings out of the box. Leaves existing files untouched.
+try {
+  if (!existsSync(USER_WORKFLOW_PATH)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(USER_WORKFLOW_PATH, JSON.stringify(DEFAULT_USER_WORKFLOW, null, 2));
+  }
+} catch {}
 
 // -- Helpers --
 
@@ -291,24 +311,50 @@ const STATIC_MODELS = {
 // Try the live provider registry first (dynamic catalog via /v1/models,
 // Codex /backend-api/codex/models, Gemini /v1beta/models). Returns null on
 // any failure so the caller falls back to STATIC_MODELS or the direct HTTP
-// endpoint handlers below.
-async function getRuntimeProviderModels(providerId) {
+// endpoint handlers below. Preserves full metadata (tier, family, latest,
+// contextWindow, reasoningLevels, pricing) so the UI can build tier-grouped
+// dropdowns and adapt effort options per model.
+//
+// registry.mjs populates its provider Map only after initProviders(cfg) is
+// called, so setup-server (which never runs the agent's normal boot path)
+// must force-init before querying — otherwise getProvider() returns
+// undefined and listModels() never runs, leaving callers stuck on
+// STATIC_MODELS fallback with no metadata.
+const _RUNTIME_PROVIDER_NAMES = [
+  'anthropic', 'anthropic-oauth', 'openai', 'openai-oauth',
+  'gemini', 'groq', 'openrouter', 'xai',
+  'ollama', 'lmstudio', 'local', 'copilot',
+];
+
+async function getRuntimeProviderModels(providerId, cfg) {
   try {
-    const { getProvider } = await import('../src/agent/orchestrator/providers/registry.mjs');
+    const { initProviders, getProvider } = await import('../src/agent/orchestrator/providers/registry.mjs');
+    const initCfg = {};
+    for (const name of _RUNTIME_PROVIDER_NAMES) {
+      initCfg[name] = { ...(cfg?.providers?.[name] || {}), enabled: true };
+    }
+    await initProviders(initCfg);
     const provider = getProvider(providerId);
     if (!provider) return null;
     const models = await provider.listModels();
     if (!Array.isArray(models) || models.length === 0) return null;
-    // Return just the ids for the current UI contract; richer metadata can
-    // be surfaced once the UI adopts the tier-aware schema.
-    return models.map(m => m.id || m.name || String(m)).filter(Boolean);
+    return models
+      .map(m => {
+        if (typeof m === 'string') return { id: m };
+        const id = m?.id || m?.name;
+        if (!id) return null;
+        return { ...m, id: String(id) };
+      })
+      .filter(Boolean);
   } catch { return null; }
 }
+
+function _idOnly(id) { return id ? { id: String(id) } : null; }
 
 async function listProviderModels(providerId, cfg) {
   const pcfg = cfg?.providers?.[providerId] || {};
   // 1. Runtime provider (dynamic catalog, cached 24h).
-  const runtime = await getRuntimeProviderModels(providerId);
+  const runtime = await getRuntimeProviderModels(providerId, cfg);
   if (runtime && runtime.length > 0) return runtime;
   // 2. Direct HTTP model list for key-based providers.
   const KNOWN_ENDPOINTS = {
@@ -322,11 +368,14 @@ async function listProviderModels(providerId, cfg) {
     try {
       const json = await httpGetJson(ep.url, ep.auth(pcfg.apiKey));
       const data = Array.isArray(json?.data) ? json.data : [];
-      return data.map(m => m.id || m.name || String(m)).filter(Boolean).sort();
+      return data
+        .map(m => _idOnly(m.id || m.name))
+        .filter(Boolean)
+        .sort((a, b) => a.id.localeCompare(b.id));
     } catch { /* fall through to static */ }
   }
   // 3. Static fallback.
-  if (STATIC_MODELS[providerId]) return STATIC_MODELS[providerId];
+  if (STATIC_MODELS[providerId]) return STATIC_MODELS[providerId].map(id => ({ id }));
 
   const LOCAL_DEFAULTS = { ollama: 'http://localhost:11434/v1/models', lmstudio: 'http://localhost:1234/v1/models' };
   if (LOCAL_DEFAULTS[providerId]) {
@@ -335,7 +384,10 @@ async function listProviderModels(providerId, cfg) {
     try {
       const json = await httpGetJson(url, {});
       const data = Array.isArray(json?.data) ? json.data : [];
-      return data.map(m => m.id || m.name || String(m)).filter(Boolean).sort();
+      return data
+        .map(m => _idOnly(m.id || m.name))
+        .filter(Boolean)
+        .sort((a, b) => a.id.localeCompare(b.id));
     } catch { return []; }
   }
   return [];
@@ -706,7 +758,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html);
+    res.end(readFileSync(HTML_PATH, 'utf8'));
     return;
   }
 

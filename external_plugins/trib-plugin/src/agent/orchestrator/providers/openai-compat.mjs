@@ -263,6 +263,7 @@ export class OpenAICompatProvider {
                     name: m.id,
                     provider: this.name,
                     contextWindow: 0,
+                    created: typeof m.created === 'number' ? m.created : null,
                 });
             }
             return models;

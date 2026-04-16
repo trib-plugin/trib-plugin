@@ -139,12 +139,32 @@ function requiresSystemPrefix(model) {
     return /^claude-(opus|sonnet)/i.test(String(model || ''));
 }
 
-function applyClaudeCodeSystemPrefix(systemText, model) {
-    if (!requiresSystemPrefix(model)) return systemText || undefined;
-    const existing = typeof systemText === 'string' ? systemText.trim() : '';
-    if (!existing) return CLAUDE_CODE_SYSTEM_PREFIX;
-    if (existing.startsWith(CLAUDE_CODE_SYSTEM_PREFIX)) return existing;
-    return CLAUDE_CODE_SYSTEM_PREFIX + '\n\n' + existing;
+// OAuth rate-limit pool routing is gated by the server inspecting the first
+// system block. When it reads exactly "You are Claude Code, Anthropic's
+// official CLI for Claude." it routes into the Claude Code pool; any other
+// content (even the prefix concatenated with extra text in the same block)
+// falls into the standard pool and Opus/Sonnet return 429. Splitting into
+// two blocks — [prefix, rest] — keeps both routing and user instructions.
+function buildSystemBlocks(systemText, model, cacheControl) {
+    const stripped = typeof systemText === 'string' ? systemText.trim() : '';
+    const gated = requiresSystemPrefix(model);
+
+    if (!gated) {
+        if (!stripped) return [];
+        const block = { type: 'text', text: stripped };
+        if (cacheControl) block.cache_control = cacheControl;
+        return [block];
+    }
+
+    const prefixBlock = { type: 'text', text: CLAUDE_CODE_SYSTEM_PREFIX };
+    let rest = stripped;
+    if (rest.startsWith(CLAUDE_CODE_SYSTEM_PREFIX)) {
+        rest = rest.slice(CLAUDE_CODE_SYSTEM_PREFIX.length).trim();
+    }
+    if (!rest) return [prefixBlock];
+    const restBlock = { type: 'text', text: rest };
+    if (cacheControl) restBlock.cache_control = cacheControl;
+    return [prefixBlock, restBlock];
 }
 
 const MODELS = [
@@ -456,16 +476,16 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
     const rawSystemText = systemMsgs.map(m => m.content).join('\n\n') || '';
-    // OAuth-gated models (Opus/Sonnet) require the Claude Code system prefix.
-    const systemText = applyClaudeCodeSystemPrefix(rawSystemText, model);
     const maxTokens = resolveMaxTokens(model);
     const opts = sendOpts || {};
     const ttls = resolveCacheTtls(opts);
+    const systemBlocks = buildSystemBlocks(rawSystemText, model, ttls?.system);
 
-    // Compute available BP slots: 4 max, minus tools BP (if any) and system BP.
-    const usedSlots =
-        (ttls.tools && tools?.length ? 1 : 0) +
-        (ttls.system && systemText ? 1 : 0);
+    // Cache breakpoint budget: 4 total. The prefix-only block never carries
+    // one (fixed short string), so systemBlocks consume at most one BP via
+    // the rest block. Tools and messages claim the remainder.
+    const systemBpUsed = ttls.system && systemBlocks.some(b => b.cache_control) ? 1 : 0;
+    const usedSlots = (ttls.tools && tools?.length ? 1 : 0) + systemBpUsed;
     const msgSlots = ttls.messages ? Math.max(0, 4 - usedSlots) : 0;
     const cacheableIndexes = collectRecentCacheableIndexes(chatMsgs, msgSlots);
     const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes, ttls.messages);
@@ -477,11 +497,7 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         stream: true,
     };
 
-    if (systemText) {
-        const systemBlock = { type: 'text', text: systemText };
-        if (ttls.system) systemBlock.cache_control = ttls.system;
-        body.system = [systemBlock];
-    }
+    if (systemBlocks.length) body.system = systemBlocks;
 
     if (tools?.length) {
         const converted = toAnthropicTools(tools);

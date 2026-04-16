@@ -39,11 +39,19 @@ const ENV_KEY_MAP = {
 // Canonical maintenance defaults. Single source of truth — imported by
 // llm/index.mjs and setup-server.mjs so UI/runtime cannot drift from config.
 export const DEFAULT_MAINTENANCE = Object.freeze({
-    defaultPreset: 'gpt5.4-mini',
-    cycle1: 'gpt5.4-mini',
-    cycle2: 'GPT5.4',
-    reason: 'sonnet-mid',
+    cycle1: 'HAIKU',
+    cycle2: 'SONNET MID',
+    search: 'SONNET MID',
 });
+
+// Seed presets written when agent-config.json does not yet exist. Keyed by
+// preset.name so workflow/maintenance references stay consistent with the
+// resolve-by-name lookup in presetKey().
+export const DEFAULT_PRESETS = Object.freeze([
+    Object.freeze({ id: 'haiku', name: 'HAIKU', type: 'native', model: 'haiku', tools: 'full' }),
+    Object.freeze({ id: 'sonnet-mid', name: 'SONNET MID', type: 'native', model: 'sonnet', effort: 'medium', tools: 'full' }),
+    Object.freeze({ id: 'opus-mid', name: 'OPUS MID', type: 'native', model: 'opus', effort: 'medium', tools: 'full' }),
+]);
 function buildDefaultConfig() {
     const providers = {};
     // API providers — enabled if env key exists
@@ -155,12 +163,17 @@ export function loadConfig() {
                     }
                 }
             }
+            // Back-compat: rename maintenance.reason → search (v0.6.35+).
+            const rawMaint = { ...(raw.maintenance || {}) };
+            if (rawMaint.reason && !rawMaint.search) rawMaint.search = rawMaint.reason;
+            delete rawMaint.reason;
+            delete rawMaint.defaultPreset;
             return {
                 providers: mergedProviders,
                 mcpServers: raw.mcpServers || {},
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
                 default: raw.default || null,
-                maintenance: { ...DEFAULT_MAINTENANCE, ...raw.maintenance },
+                maintenance: { ...DEFAULT_MAINTENANCE, ...rawMaint },
                 agentMaintenance: { enabled: true, interval: '1h', ...raw.agentMaintenance },
                 trajectory: { enabled: true, ...raw.trajectory },
                 skillSuggest: { autoDetect: true, ...raw.skillSuggest },
@@ -175,7 +188,7 @@ export function loadConfig() {
     return {
         ...defaults,
         mcpServers: {},
-        presets: [],
+        presets: DEFAULT_PRESETS.map(p => ({ ...p })),
         default: null,
         maintenance: { ...DEFAULT_MAINTENANCE },
         agentMaintenance: { enabled: true, interval: '1h' },

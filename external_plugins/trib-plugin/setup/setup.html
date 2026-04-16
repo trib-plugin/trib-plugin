@@ -768,7 +768,6 @@
     <div class="cat-sep"></div>
     <div class="cat-label">Memory</div>
     <div class="cat-item" data-panel="mem-settings" onclick="switchCat(this)">Settings</div>
-    <div class="cat-item" data-panel="mem-models" onclick="switchCat(this)">Models</div>
     <div class="cat-item" data-panel="mem-files" onclick="switchCat(this)">Files</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Search</div>
@@ -1064,9 +1063,9 @@
             <span class="r-name">Model</span>
             <select class="r-select" id="ag-pf-model" disabled><option value="">Select a provider first</option></select>
           </div>
-          <div class="form-row">
+          <div class="form-row" id="ag-pf-effort-row">
             <span class="r-name">Effort</span>
-            <select class="r-select" id="ag-pf-effort"><option value="">(Provider Default)</option></select>
+            <select class="r-select" id="ag-pf-effort"></select>
           </div>
           <div class="form-row" id="ag-pf-fast-row" style="display:none">
             <span class="r-name">Fast Mode</span>
@@ -1113,16 +1112,6 @@
         <div class="sec-title">Task Presets</div>
         <div class="sec-desc">Assign which model preset handles each background maintenance task.</div>
         <div class="sec-body" id="ag-maint-tasks"></div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Default Preset</div>
-        <div class="sec-body">
-          <div class="r">
-            <span class="r-name">Fallback</span>
-            <select class="r-select" id="ag-maint-default" style="width:200px;flex:0 0 200px"></select>
-            <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">Used when a task has no explicit preset</span>
-          </div>
-        </div>
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-ag-maint"></div>
@@ -1258,23 +1247,6 @@
       <div class="save-area">
         <div class="warn-msg" id="warn-mem-settings"></div>
         <button class="save" onclick="memSaveConfig()">Save</button>
-      </div>
-    </div>
-
-    <!-- MEMORY PROVIDERS -->
-    <!-- MEMORY MODELS -->
-    <div class="panel" id="panel-mem-models">
-      <div class="hdr">
-        <h1>Models</h1>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Embedding</div>
-        <div class="readonly-info">Local ONNX &mdash; BGE-M3 (q4)</div>
-      </div>
-      <div class="sec">
-        <div class="sec-title">Reranker</div>
-        <div class="readonly-info">Local ONNX &mdash; BGE-reranker-large</div>
       </div>
     </div>
 
@@ -2431,17 +2403,29 @@ const AG_LOCAL_PROVIDERS = [
 ];
 
 const AG_EFFORT_OPTIONS = {
-  'claude-code': [{v:'',label:'(Default)'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
-  openai: [{v:'',label:'(Default)'},{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
-  'openai-oauth': [{v:'',label:'(Default)'},{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
-  anthropic: [{v:'',label:'(Default)'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
+  'claude-code': [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
+  openai: [{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
+  'openai-oauth': [{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
+  anthropic: [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
 };
-const AG_CLAUDE_CODE_EFFORT = {
-  opus: ['', 'low', 'medium', 'high', 'max'],
-  sonnet: ['', 'low', 'medium', 'high'],
+// Per-family effort profiles. Lookup order: model.reasoningLevels (provider-
+// declared) → AG_FAMILY_EFFORT[family] → AG_EFFORT_OPTIONS[provider].
+const AG_FAMILY_EFFORT = {
+  opus: ['low', 'medium', 'high', 'max'],
+  sonnet: ['low', 'medium', 'high'],
   haiku: [],
+  'gpt-5.4': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-5.2': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-5': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-mini': ['none', 'low', 'medium', 'high', 'xhigh'],
+  'gpt-nano': ['none', 'low', 'medium', 'high'],
+  'gpt-codex': ['none', 'low', 'medium', 'high'],
 };
+const AG_EFFORT_LABEL = { none: 'None', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
+// Families that don't support fast mode even when the provider does.
+const AG_FAMILY_NO_FAST = new Set(['haiku', 'gpt-nano', 'gpt-codex']);
 const AG_FAST_PROVIDERS = new Set(['claude-code', 'anthropic', 'openai', 'openai-oauth']);
+let agModelList = [];
 const AG_ACCESS_LABELS = { full: 'Read & Write', readonly: 'Read Only', mcp: 'None' };
 
 async function loadAgentData() {
@@ -2557,7 +2541,7 @@ function agOpenPresetForm(id) {
   if (id) {
     title.textContent = 'Edit Preset';
     const p = agPresets.find(x => x.id === id);
-    if (p) { document.getElementById('ag-pf-name').value = p.name || p.id; providerSel.value = p.provider; agOnProviderChange().then(() => { document.getElementById('ag-pf-model').value = p.model; document.getElementById('ag-pf-effort').value = p.effort || ''; document.getElementById('ag-pf-fast').classList.toggle('on', !!p.fast); document.querySelectorAll('#ag-pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === (p.tools || 'full'))); if (p.tools && p.tools !== 'full') { if (advToggle) advToggle.querySelector('.arrow').classList.add('open'); if (advContent) advContent.classList.add('open'); } }); return; }
+    if (p) { document.getElementById('ag-pf-name').value = p.name || p.id; const providerVal = p.provider || (p.type === 'native' ? 'claude-code' : ''); providerSel.value = providerVal; agOnProviderChange().then(() => { document.getElementById('ag-pf-model').value = p.model; agUpdateEffortAndFast(providerVal); document.getElementById('ag-pf-effort').value = p.effort || ''; document.getElementById('ag-pf-fast').classList.toggle('on', !!p.fast); document.querySelectorAll('#ag-pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === (p.tools || 'full'))); if (p.tools && p.tools !== 'full') { if (advToggle) advToggle.querySelector('.arrow').classList.add('open'); if (advContent) advContent.classList.add('open'); } }); return; }
   }
   title.textContent = 'New Preset';
   document.getElementById('ag-pf-name').value = '';
@@ -2570,40 +2554,121 @@ function agClosePresetForm() { document.getElementById('ag-preset-form-sec').sty
 
 async function agOnProviderChange() {
   const provider = document.getElementById('ag-pf-provider').value;
-  const modelSel = document.getElementById('ag-pf-model');
-  const effortSel = document.getElementById('ag-pf-effort');
-  const fastRow = document.getElementById('ag-pf-fast-row');
-  fastRow.style.display = AG_FAST_PROVIDERS.has(provider) ? 'flex' : 'none';
-  if (!AG_FAST_PROVIDERS.has(provider)) document.getElementById('ag-pf-fast').classList.remove('on');
-
-  if (provider === 'claude-code') {
-    const models = ['opus', 'sonnet', 'haiku'];
-    modelSel.disabled = false;
-    modelSel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
-    agUpdateClaudeCodeEffort();
-    modelSel.onchange = agUpdateClaudeCodeEffort;
-    return;
+  let modelSel = document.getElementById('ag-pf-model');
+  if (modelSel.tagName === 'INPUT') {
+    const sel = document.createElement('select');
+    sel.id = 'ag-pf-model';
+    sel.className = 'r-select';
+    modelSel.replaceWith(sel);
+    modelSel = sel;
   }
-  modelSel.onchange = null;
-  const opts = AG_EFFORT_OPTIONS[provider] || [{v:'',label:'(Provider Default)'}];
-  effortSel.innerHTML = opts.map(o => `<option value="${o.v}">${o.label}</option>`).join('');
-  modelSel.disabled = true;
-  modelSel.innerHTML = '<option value="">Loading...</option>';
-  try { const r = await fetch(`/agent/models?provider=${encodeURIComponent(provider)}`).then(r => r.json()); const models = r.models || []; if (models.length === 0) { modelSel.innerHTML = '<option value="">No models found</option>'; agReplaceModelWithInput(''); } else { modelSel.innerHTML = models.map(m => `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`).join(''); modelSel.disabled = false; } } catch { modelSel.innerHTML = '<option value="">Failed to fetch</option>'; agReplaceModelWithInput(''); }
+
+  let models;
+  if (provider === 'claude-code') {
+    models = [
+      { id: 'opus', family: 'opus', tier: 'family' },
+      { id: 'sonnet', family: 'sonnet', tier: 'family' },
+      { id: 'haiku', family: 'haiku', tier: 'family' },
+    ];
+  } else {
+    modelSel.disabled = true;
+    modelSel.innerHTML = '<option value="">Loading...</option>';
+    modelSel.onchange = null;
+    try {
+      const r = await fetch(`/agent/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
+      models = (r.models || []).map(m => typeof m === 'string' ? { id: m } : m).filter(m => m && m.id);
+    } catch {
+      modelSel.innerHTML = '<option value="">Failed to fetch</option>';
+      agReplaceModelWithInput('');
+      return;
+    }
+    if (!Array.isArray(models) || models.length === 0) {
+      modelSel.innerHTML = '<option value="">No models found</option>';
+      agReplaceModelWithInput('');
+      return;
+    }
+  }
+
+  agModelList = models;
+  agRenderModelOptions(modelSel, models, provider);
+  modelSel.disabled = false;
+  modelSel.onchange = () => agUpdateEffortAndFast(provider);
+  agUpdateEffortAndFast(provider);
 }
 
-function agUpdateClaudeCodeEffort() {
-  const model = document.getElementById('ag-pf-model').value;
-  const effortSel = document.getElementById('ag-pf-effort');
-  const allowed = AG_CLAUDE_CODE_EFFORT[model] || [];
-  if (allowed.length === 0) {
-    effortSel.innerHTML = '<option value="">(Not available)</option>';
-    effortSel.disabled = true;
-  } else {
-    const labels = { '': '(Default)', low: 'Low', medium: 'Medium', high: 'High', max: 'Max' };
-    effortSel.innerHTML = allowed.map(v => `<option value="${v}">${labels[v] || v}</option>`).join('');
-    effortSel.disabled = false;
+function agRenderModelOptions(sel, models, provider) {
+  // Surface only chat-capable, non-dated models. LiteLLM's `mode` covers
+  // embedding/image/audio when the id matches its catalog, but openai
+  // /v1/models exposes ids LiteLLM doesn't track (preview snapshots, legacy
+  // completions). Supplement with id-pattern rules so the dropdown stays
+  // focused on conversational models.
+  const DATED_RE = /-\d{4}(-\d{2}-\d{2})?$/;
+  const NON_CHAT_PREFIX = /^(dall-e|tts|whisper|text-embedding|text-moderation|omni-moderation|babbage|davinci|ada-|sora|chatgpt-image|codex-auto)/i;
+  const NON_CHAT_TOKEN = /-(image|audio|realtime|moderation|embedding|instruct|search|transcribe|tts)(-|$)/i;
+  let visible = models.filter(m => {
+    if (m.tier === 'dated') return false;
+    if (m.mode && m.mode !== 'chat') return false;
+    if (NON_CHAT_PREFIX.test(m.id) || NON_CHAT_TOKEN.test(m.id)) return false;
+    if (!m.tier && DATED_RE.test(m.id)) return false;
+    return true;
+  });
+  // Generic freshness trim for providers that expose a /v1/models-style
+  // `created` timestamp (openai, groq, openrouter, xai, ollama, lmstudio,
+  // local). Always sort newest-first when timestamps exist; when the catalog
+  // is large (≥10) also cap at 180 days from the newest release so old
+  // generations drop off. Curated catalogs (openai-oauth Codex, anthropic
+  // STATIC) have no `created` so they pass through untouched.
+  const withDate = visible.filter(m => typeof m.created === 'number' && m.created > 0);
+  if (withDate.length > 0) {
+    visible.sort((a, b) => (b.created || 0) - (a.created || 0));
   }
+  if (withDate.length >= 10) {
+    const newest = Math.max(...withDate.map(m => m.created));
+    const cutoff = newest - (180 * 24 * 60 * 60);
+    const trimmed = visible.filter(m => typeof m.created === 'number' && m.created >= cutoff);
+    // Fallback: if the freshness window leaves fewer than 6 models (e.g.
+    // provider released nothing recently), widen to the newest 6 so the
+    // dropdown is never empty or near-empty.
+    visible = trimmed.length >= 6 ? trimmed : visible.slice(0, 6);
+  }
+  sel.innerHTML = visible.map(m => `<option value="${escapeAttr(m.id)}">${escapeHtml(m.display || m.id)}</option>`).join('');
+}
+
+function agEffortOptionsFor(provider, model) {
+  if (Array.isArray(model?.reasoningLevels) && model.reasoningLevels.length > 0) {
+    return [...model.reasoningLevels];
+  }
+  if (model?.family && Object.prototype.hasOwnProperty.call(AG_FAMILY_EFFORT, model.family)) {
+    return AG_FAMILY_EFFORT[model.family];
+  }
+  const opts = AG_EFFORT_OPTIONS[provider];
+  if (opts) return opts.map(o => o.v);
+  return null;
+}
+
+function agUpdateEffortAndFast(provider) {
+  const modelEl = document.getElementById('ag-pf-model');
+  const effortRow = document.getElementById('ag-pf-effort-row');
+  const effortSel = document.getElementById('ag-pf-effort');
+  const fastRow = document.getElementById('ag-pf-fast-row');
+  const modelResolved = modelEl && modelEl.tagName !== 'INPUT';
+  const modelId = modelResolved ? modelEl.value : '';
+  const model = modelResolved ? (agModelList.find(m => m.id === modelId) || null) : null;
+  const allowed = modelResolved ? agEffortOptionsFor(provider, model) : null;
+
+  if (!allowed || allowed.length === 0) {
+    effortRow.style.display = 'none';
+    effortSel.innerHTML = '';
+  } else {
+    effortRow.style.display = 'flex';
+    effortSel.innerHTML = allowed.map(v => `<option value="${v}">${AG_EFFORT_LABEL[v] || v}</option>`).join('');
+  }
+
+  const providerFast = AG_FAST_PROVIDERS.has(provider);
+  const familyNoFast = model?.family && AG_FAMILY_NO_FAST.has(model.family);
+  const fastAllowed = modelResolved && providerFast && !familyNoFast;
+  fastRow.style.display = fastAllowed ? 'flex' : 'none';
+  if (!fastAllowed) document.getElementById('ag-pf-fast').classList.remove('on');
 }
 
 function agReplaceModelWithInput(value) { const old = document.getElementById('ag-pf-model'); if (old.tagName === 'INPUT') return; const inp = document.createElement('input'); inp.id = 'ag-pf-model'; inp.className = 'r-input'; inp.placeholder = 'Enter model ID manually'; inp.value = value || ''; old.replaceWith(inp); }
@@ -2626,10 +2691,11 @@ async function agSavePreset() {
   const id = agEditingPresetId || name.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
   const isWorker = provider === 'claude-code';
-  const body = { id, name, model, tools };
-  if (isWorker) { body.type = 'native'; } else { body.type = 'bridge'; body.provider = provider; }
+  const body = { id, name, model, tools, provider };
+  body.type = isWorker ? 'native' : 'bridge';
   if (effort) body.effort = effort;
-  if (fast && AG_FAST_PROVIDERS.has(provider)) body.fast = true;
+  const fastRowVisible = document.getElementById('ag-pf-fast-row').style.display !== 'none';
+  if (fast && fastRowVisible) body.fast = true;
   try { const r = await fetch('/agent/presets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()); if (!r.ok) { warn.textContent = r.error || 'Save failed'; return; } isDirty = false; agClosePresetForm(); await agLoadPresets(); } catch (err) { warn.textContent = 'Save failed: ' + (err?.message || 'network error'); }
 }
 
@@ -2828,7 +2894,6 @@ const SR_PROVIDERS = [
 const SR_AI = [
   {id:'codex',name:'Codex',hint:'OpenAI',cli:1},
   {id:'claude',name:'Claude',hint:'Anthropic',cli:1},
-  {id:'gemini',name:'Gemini',hint:'Google',cli:1},
 ];
 
 function srMakeSearchRow(p) {
@@ -3064,7 +3129,7 @@ async function saveLearningConfig() {
 const AG_MAINT_TASKS = [
   { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
   { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (every 1h)' },
-  { id: 'reason', label: 'Reason', desc: 'Memory-based reasoning synthesis' },
+  { id: 'search', label: 'Search', desc: 'Memory-based reasoning synthesis' },
 ];
 let agMaintenance = {};
 let agMaintenanceDefaults = {};
@@ -3084,23 +3149,14 @@ function renderAgMaintenance() {
   container.innerHTML = '';
   for (const task of AG_MAINT_TASKS) {
     const current = agMaintenance[task.id] || '';
-    const taskDefault = agMaintenanceDefaults[task.id] || '';
-    const defaultLabel = taskDefault ? `(${taskDefault})` : '(Default)';
     container.innerHTML += `<div class="r">
       <span class="r-name">${task.label}</span>
       <select class="r-select" id="ag-maint-${task.id}" style="width:200px;flex:0 0 200px">
-        <option value="">${escapeAttr(defaultLabel)}</option>
         ${agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === current ? ' selected' : ''}>${p.name || p.id}</option>`).join('')}
       </select>
       <span style="flex:1;font-size:11px;color:var(--text-4);margin-left:10px">${task.desc}</span>
     </div>`;
   }
-  const defEl = document.getElementById('ag-maint-default');
-  if (!defEl) return;
-  const defVal = agMaintenance.defaultPreset || '';
-  const fallbackLabel = agMaintenanceDefaults.defaultPreset || 'Default';
-  defEl.innerHTML = `<option value="">(${escapeAttr(fallbackLabel)})</option>` +
-    agPresets.map(p => `<option value="${escapeAttr(p.id)}"${p.id === defVal ? ' selected' : ''}>${p.name || p.id}</option>`).join('');
 }
 
 async function saveAgMaintenance() {
@@ -3111,8 +3167,6 @@ async function saveAgMaintenance() {
     const v = document.getElementById('ag-maint-' + task.id)?.value;
     if (v) data[task.id] = v;
   }
-  const defV = document.getElementById('ag-maint-default')?.value;
-  if (defV) data.defaultPreset = defV;
   try {
     const r = await fetch('/agent/maintenance', {
       method: 'POST',

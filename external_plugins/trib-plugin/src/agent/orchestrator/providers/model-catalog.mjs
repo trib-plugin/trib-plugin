@@ -133,6 +133,7 @@ export async function enrichModels(models) {
             supportsVision: meta.supportsVision,
             supportsFunctionCalling: meta.supportsFunctionCalling,
             supportsPromptCaching: meta.supportsPromptCaching,
+            mode: meta.mode || m.mode || null,
         };
     });
 }
