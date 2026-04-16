@@ -127,6 +127,43 @@ export const BUILTIN_PROFILES = {
         estimatedTurns: 20,
         description: 'Interactive user conversation. Full context, multi-turn.',
     },
+
+    'scheduler-task': {
+        id: 'scheduler-task',
+        taskType: 'scheduler-task',
+        lifecycle: 'recurring',
+        recurrenceIntervalMs: 60 * 60_000,  // conservative hourly default; scheduler overrides
+        contextChunks: [],
+        tools: [],
+        skip: { claudemd: true, skills: true, memory: true },
+        fallbackPreset: 'sonnet-mid',
+        estimatedTurns: 1,
+        description: 'Scheduled channel task. Cron-triggered one-shot LLM call with 1h cache when applicable.',
+    },
+
+    'proactive-decision': {
+        id: 'proactive-decision',
+        taskType: 'proactive-decision',
+        lifecycle: 'one-shot',
+        contextChunks: [],
+        tools: [],
+        skip: { claudemd: true, skills: true, memory: true },
+        fallbackPreset: 'sonnet-mid',
+        estimatedTurns: 1,
+        description: 'Proactive channel decision (fire/defer/skip). JSON-structured output, no cache.',
+    },
+
+    'webhook-handler': {
+        id: 'webhook-handler',
+        taskType: 'webhook-handler',
+        lifecycle: 'one-shot',
+        contextChunks: [],
+        tools: [],
+        skip: { claudemd: true, skills: true, memory: true },
+        fallbackPreset: 'sonnet-mid',
+        estimatedTurns: 1,
+        description: 'Webhook event analyser. One-shot external model call, no cache.',
+    },
 };
 
 export function loadProfiles(userProfiles = {}) {

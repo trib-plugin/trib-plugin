@@ -5,7 +5,10 @@ import { randomUUID } from "crypto";
 import { DATA_DIR } from "./config.mjs";
 import { appendFileSync } from "fs";
 import { runScript as execScript, ensureNopluginDir } from "./executor.mjs";
-import { callLLM } from '../../shared/llm/index.mjs';
+import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.mjs';
+
+const schedulerLlm = makeBridgeLlm({ taskType: 'scheduler-task' });
+const proactiveLlm = makeBridgeLlm({ taskType: 'proactive-decision' });
 const SCHEDULE_LOG = join(DATA_DIR, "schedule.log");
 function logSchedule(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -529,7 +532,7 @@ ${scriptResult}
     if (this.running.has(schedule.name)) return;
     this.running.add(schedule.name);
     const presetId = schedule.model || schedule.preset || 'sonnet-mid';
-    callLLM(prompt, presetId, { mode: 'active', timeout: 120000 })
+    schedulerLlm({ prompt, preset: presetId, mode: 'active', timeout: 120000 })
       .then((result) => {
         this.running.delete(schedule.name);
         if (result && this.sendFn) {
@@ -639,7 +642,7 @@ Write a natural, casual conversation starter in Korean (2-4 sentences).
     logSchedule("proactive: firing LLM\n");
     const presetId = this.proactive?.model || 'sonnet-mid';
     try {
-      const raw = await callLLM(task, presetId, { mode: 'active', timeout: 90000 });
+      const raw = await proactiveLlm({ prompt: task, preset: presetId, mode: 'active', timeout: 90000 });
       let result;
       try {
         const jsonMatch = raw.match(/\{[\s\S]*\}/);

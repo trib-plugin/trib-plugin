@@ -1,139 +1,33 @@
 /**
- * Smart Bridge — Maintenance LLM Helper
+ * Smart Bridge — Maintenance LLM Helper (thin wrapper)
  *
- * Routes memory cycle (and other maintenance) invocations through the Smart
- * Bridge router, picking the right provider + cache strategy + profile.
- *
- * Designed as a drop-in for memory-cycle.mjs's `options.llm` callback:
+ * Thin wrapper over `makeBridgeLlm` that pins taskType='maintenance',
+ * routes usage logging to llm-maintenance.jsonl, and preserves the original
+ * `makeMaintenanceLlm` signature used by memory-cycle.mjs:
  *
  *   const result = await runCycle1(db, config, {
  *     llm: makeMaintenanceLlm({ taskType: 'maintenance' })
  *   });
  *
- * The helper handles:
- *   - Profile resolution via Smart Bridge router
- *   - Provider selection (anthropic-oauth preferred for 1h cache)
- *   - Cache opts injection (profile.cacheStrategy → sendOpts)
- *   - Usage recording for cache stats
- *   - Graceful fallback to native callLLM if OAuth provider unavailable
+ * The actual provider selection, cache breakpoints, and usage recording live
+ * in bridge-llm.mjs so scheduler / webhook / any other backend callsite can
+ * share one implementation.
  */
 
-import { getSmartBridge } from './index.mjs';
-import { getProvider } from '../providers/registry.mjs';
-import { callLLM, resolveMaintenancePreset } from '../../../shared/llm/index.mjs';
-import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
+import { makeBridgeLlm } from './bridge-llm.mjs';
 
 /**
- * Build a maintenance-LLM callback suitable for memory-cycle.mjs.
- *
  * @param {object} opts
- * @param {string} opts.taskType        — e.g., 'maintenance' (maps to maintenance-light)
- * @param {string} [opts.sessionId]     — optional session id for cache routing
+ * @param {string} [opts.taskType]   — defaults to 'maintenance'
+ * @param {string} [opts.role]
+ * @param {string} [opts.sessionId]
  * @returns {(args: { prompt, mode, preset, timeout }) => Promise<string>}
  */
 export function makeMaintenanceLlm(opts = {}) {
-    return async function maintenanceLlm({ prompt, mode, preset, timeout }) {
-        const smartBridge = getSmartBridge();
-        const request = {
-            taskType: opts.taskType,
-            role: opts.role,
-            description: mode || (opts.taskType || 'maintenance') + ' task',
-            sessionId: opts.sessionId,
-        };
-        // Default to 'maintenance' if neither taskType nor role given — preserves
-        // legacy memory-cycle behavior.
-        if (!request.taskType && !request.role) request.taskType = 'maintenance';
-        const resolved = await smartBridge.resolve(request);
-        const provider = getProvider(resolved.provider);
-
-        // If the preferred provider isn't available (e.g., no OAuth), fall back
-        // to native callLLM with the original preset. This preserves behavior
-        // for users who haven't authenticated with Anthropic/OpenAI OAuth.
-        if (!provider) {
-            process.stderr.write(`[smart-bridge-maintenance] provider "${resolved.provider}" unavailable, falling back to native\n`);
-            return await callLLM(prompt, preset || resolveMaintenancePreset(mode), {
-                mode: 'maintenance',
-                timeout,
-            });
-        }
-
-        // Build messages + tools (maintenance tasks are stateless; no tools).
-        const messages = [{ role: 'user', content: prompt }];
-        const tools = [];
-        const sendOpts = {
-            sessionId: opts.sessionId,
-            effort: resolved.effort,
-            fast: resolved.fast,
-            ...resolved.providerCacheOpts,
-        };
-
-        const model = resolved.model;
-        if (!model) {
-            // Smart Bridge couldn't derive a model (no preset in config). Fall back.
-            process.stderr.write(`[smart-bridge-maintenance] no model resolved, falling back to native\n`);
-            return await callLLM(prompt, preset || resolveMaintenancePreset(mode), {
-                mode: 'maintenance',
-                timeout,
-            });
-        }
-
-        const startedAt = Date.now();
-        try {
-            const result = await provider.send(messages, model, tools, sendOpts);
-
-            // Record for cache stats (systemPrompt empty for maintenance cycles —
-            // the prompt is all in the user message, which is correct per Anthropic's
-            // "messages at 5m, system at 1h" caching model).
-            smartBridge.recordCall(resolved.profile, resolved.provider, {
-                systemPrompt: '',
-                tools,
-                usage: result.usage,
-            });
-            const prefixHash = smartBridge.registry?.data?.profiles?.[resolved.profile?.id]?.prefixHash || null;
-            if (result.usage) {
-                logLlmCall({
-                    ts: new Date().toISOString(),
-                    preset: resolved.presetName || null,
-                    model,
-                    provider: resolved.provider,
-                    mode: 'maintenance',
-                    duration: Date.now() - startedAt,
-                    profileId: resolved.profile?.id || null,
-                    sessionId: null,
-                    inputTokens: result.usage.inputTokens || 0,
-                    outputTokens: result.usage.outputTokens || 0,
-                    cacheReadTokens: result.usage.cachedTokens || 0,
-                    cacheWriteTokens: result.usage.cacheWriteTokens || 0,
-                    prefixHash,
-                    costUsd: result.usage.costUsd || 0,
-                }, { maintenance: true });
-            }
-
-            return result.content || '';
-        } catch (err) {
-            process.stderr.write(`[smart-bridge-maintenance] send failed (${resolved.provider}/${model}): ${err.message}\n`);
-            // Fall through to native as last resort.
-            return await callLLM(prompt, preset || resolveMaintenancePreset(mode), {
-                mode: 'maintenance',
-                timeout,
-            });
-        }
-    };
-}
-
-// Legacy helper (unused after E4 refactor — preset resolution now happens in
-// SmartBridge.resolve via config.presets). Kept for now, will be removed once
-// all callers migrate.
-function _legacyResolveModelForProfile(profile) {
-    const preset = profile.preferredModel;
-    const map = {
-        haiku: 'claude-haiku-4-5-20251001',
-        'sonnet-mid': 'claude-sonnet-4-6',
-        'sonnet-high': 'claude-sonnet-4-6',
-        'opus-max': 'claude-opus-4-6',
-        'opus-mid': 'claude-opus-4-6',
-        'GPT5.4': 'gpt-5.4',
-        'gpt5.4-mini': 'gpt-5.4-mini',
-    };
-    return map[preset] || preset;
+    return makeBridgeLlm({
+        ...opts,
+        taskType: opts.taskType || 'maintenance',
+        mode: 'maintenance',
+        maintenanceLog: true,
+    });
 }

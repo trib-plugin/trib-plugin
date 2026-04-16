@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { cleanMemoryText } from './memory.mjs'
-import { callLLM, resolveMaintenancePreset } from '../../shared/llm/index.mjs'
+import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
 import { computeEntryScore } from './memory-score.mjs'
 import { embedText } from './embedding-provider.mjs'
 
@@ -66,10 +66,14 @@ function extractJsonObject(text) {
 }
 
 async function invokeLlm(prompt, options, mode, preset, timeout) {
-  if (typeof options.llm === 'function') {
-    return await options.llm({ prompt, mode, preset, timeout })
+  if (typeof options.llm !== 'function') {
+    throw new Error(
+      'memory-cycle.invokeLlm: options.llm is required. '
+      + 'Maintenance cycles must route through Smart Bridge (makeMaintenanceLlm). '
+      + 'Legacy callLLM fallback has been removed in v0.6.46.'
+    )
   }
-  return await callLLM(prompt, preset, { mode: 'maintenance', timeout })
+  return await options.llm({ prompt, mode, preset, timeout })
 }
 
 function selectRootId(members) {
