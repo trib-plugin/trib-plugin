@@ -75,11 +75,14 @@ const PORT_FILE = path.join(RUNTIME_DIR, 'memory-port')
 const BASE_PORT = 3350
 const MAX_PORT = 3357
 
-const MEMORY_INSTRUCTIONS_TEXT = [
-  'CRITICAL: invoke the `search_memories` tool at session start and before any reference to prior context.',
-  'Order: search_memories (past context) → search (external info) → codebase (Grep/Glob/Read). Never skip search_memories when past context may apply.',
-  'When in doubt, call search_memories first — cost is near zero, missing context is expensive.',
-].join('\n')
+const MEMORY_INSTRUCTIONS_TEXT = (() => {
+  try {
+    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'mcp-memory.md'), 'utf8').trim()
+  } catch (e) {
+    process.stderr.write(`[memory] rules/mcp-memory.md load failed: ${e.message}\n`)
+    return ''
+  }
+})()
 
 const PROXY_TOOL_DEFS = [
   { name: 'memory', description: 'Run memory management operations.', inputSchema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] } },

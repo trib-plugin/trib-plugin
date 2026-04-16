@@ -45,12 +45,20 @@ function watchUserWorkflow(onChange) {
   }
 }
 
+const AGENT_MCP_BASE = (() => {
+  try {
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    if (!root) return '';
+    return readFileSync(join(root, 'rules', 'mcp-orchestration.md'), 'utf8').trim();
+  } catch (e) {
+    process.stderr.write(`[agent] rules/mcp-orchestration.md load failed: ${e.message}\n`);
+    return '';
+  }
+})();
+
 function buildInstructions() {
-  const lines = [
-    'External model delegation: use MCP `bridge` tool. Session-based, parallel, scope maps to preset.',
-    'Native Claude agents: use Agent tool with trib-plugin:Worker.',
-    'Orchestrator MCP tools: `bridge`, `create_session`, `list_sessions`, `close_session`, `list_models`.',
-  ];
+  const lines = [];
+  if (AGENT_MCP_BASE) lines.push(AGENT_MCP_BASE);
 
   try {
     const workflows = listWorkflows();

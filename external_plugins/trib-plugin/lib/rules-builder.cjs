@@ -229,8 +229,16 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   // Rules / Workflow / Memory ops) is filtered at step 5. Pool A still gets
   // the full surface via buildInjectionContent + Claude Code auto-load.
 
-  const mcpInstructions = readOptional(path.join(RULES_DIR, 'mcp.md'));
-  if (mcpInstructions) parts.push(mcpInstructions);
+  // MCP instructions are now authored per service so the server modules can
+  // load their own section without ping-ponging through a monolithic file.
+  // Concat agent/memory/search blocks here with an H1 header so Pool B
+  // presents them as one coherent section.
+  const mcpBlocks = ['mcp-orchestration.md', 'mcp-memory.md', 'mcp-search.md']
+    .map(f => readOptional(path.join(RULES_DIR, f)))
+    .filter(Boolean);
+  if (mcpBlocks.length > 0) {
+    parts.push(['# MCP Instructions', '', mcpBlocks.join('\n\n')].join('\n'));
+  }
 
   const commonContent = readOptional(path.join(DATA_DIR, 'common.md'));
   if (commonContent) parts.push(commonContent);

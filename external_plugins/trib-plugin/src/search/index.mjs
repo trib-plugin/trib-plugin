@@ -521,11 +521,14 @@ const toolDefinitions = [
   },
 ]
 
-const SEARCH_INSTRUCTIONS = [
-  'CRITICAL: invoke `search` skill for external information lookups. Always use trib-search instead of built-in WebSearch/WebFetch.',
-  'Scope: external/web info only. Not for codebase (Grep/Glob/Read) or past context (trib-memory recall).',
-  'Order: recall → search → codebase. Use `batch` for 2+ operations.',
-].join('\n');
+const SEARCH_INSTRUCTIONS = (() => {
+  try {
+    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'mcp-search.md'), 'utf8').trim();
+  } catch (e) {
+    process.stderr.write(`[search] rules/mcp-search.md load failed: ${e.message}\n`);
+    return '';
+  }
+})();
 
 const server = new Server(
   {
