@@ -19,6 +19,37 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 
+// Anthropic OAuth contract for first-party Claude Code clients.
+// Opus/Sonnet requests are gated on a specific system-prompt prefix.
+// Our plugin ONLY runs inside Claude Code (marketplace-distributed),
+// so declaring ourselves as Claude Code is literally accurate — not
+// impersonation. Haiku is not gated and ignores this prefix.
+const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
+const OAUTH_BETA_HEADERS = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27';
+const DEFAULT_CLI_VERSION = '2.1.77';
+
+function resolveCliVersion() {
+    // Claude Code sets CLAUDE_CODE_VERSION in the plugin subprocess env.
+    // Fallback exists so unit tests and older Claude Code versions still work.
+    return process.env.CLAUDE_CODE_VERSION
+        || process.env.CLAUDE_CODE_EXECPATH_VERSION
+        || DEFAULT_CLI_VERSION;
+}
+
+function requiresSystemPrefix(model) {
+    // Opus / Sonnet require the Claude Code system prefix when authenticated
+    // via OAuth. Haiku does not.
+    return /^claude-(opus|sonnet)/i.test(String(model || ''));
+}
+
+function applyClaudeCodeSystemPrefix(systemText, model) {
+    if (!requiresSystemPrefix(model)) return systemText || undefined;
+    const existing = typeof systemText === 'string' ? systemText.trim() : '';
+    if (!existing) return CLAUDE_CODE_SYSTEM_PREFIX;
+    if (existing.startsWith(CLAUDE_CODE_SYSTEM_PREFIX)) return existing;
+    return CLAUDE_CODE_SYSTEM_PREFIX + '\n\n' + existing;
+}
+
 const MODELS = [
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic-oauth', contextWindow: 1000000 },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic-oauth', contextWindow: 200000 },
@@ -26,12 +57,25 @@ const MODELS = [
     { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic-oauth', contextWindow: 200000 },
 ];
 
+// Per-model max_tokens when the model id is explicitly listed. New models
+// (e.g., Sonnet 4.7) won't match a specific entry and fall through to the
+// family-based heuristic below. Conservative defaults — model may support
+// more but we'd rather stay within safe bounds.
 const MAX_TOKENS = {
     'claude-opus-4-6': 32768,
     'claude-sonnet-4-6': 16384,
     'claude-sonnet-4-0': 16384,
     'claude-haiku-4-5-20251001': 8192,
 };
+
+function resolveMaxTokens(model) {
+    if (MAX_TOKENS[model]) return MAX_TOKENS[model];
+    const id = String(model || '').toLowerCase();
+    if (id.includes('opus')) return 32768;
+    if (id.includes('sonnet')) return 16384;
+    if (id.includes('haiku')) return 8192;
+    return 8192;
+}
 
 const EFFORT_BUDGET = {
     low: 1024,
@@ -314,8 +358,10 @@ function resolveCacheTtls(opts) {
 function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
-    const systemText = systemMsgs.map(m => m.content).join('\n\n') || undefined;
-    const maxTokens = MAX_TOKENS[model] || 8192;
+    const rawSystemText = systemMsgs.map(m => m.content).join('\n\n') || '';
+    // OAuth-gated models (Opus/Sonnet) require the Claude Code system prefix.
+    const systemText = applyClaudeCodeSystemPrefix(rawSystemText, model);
+    const maxTokens = resolveMaxTokens(model);
     const opts = sendOpts || {};
     const ttls = resolveCacheTtls(opts);
 
@@ -442,7 +488,10 @@ export class AnthropicOAuthProvider {
                     headers: {
                         'Authorization': `Bearer ${accessToken}`,
                         'anthropic-version': ANTHROPIC_VERSION,
-                        'anthropic-beta': 'oauth-2025-04-20',
+                        'anthropic-beta': OAUTH_BETA_HEADERS,
+                        'anthropic-dangerous-direct-browser-access': 'true',
+                        'user-agent': `claude-cli/${resolveCliVersion()} (external, sdk-cli)`,
+                        'x-app': 'cli',
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify(body),

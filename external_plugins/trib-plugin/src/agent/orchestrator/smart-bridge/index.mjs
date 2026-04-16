@@ -100,15 +100,10 @@ export class SmartBridge {
     _translateNativePreset(preset) {
         if (preset?.type !== 'native') return preset;
         // Claude Code's native preset.model is a coarse family token ("opus",
-        // "sonnet", "haiku"). Map to the concrete Anthropic model id usable
-        // by anthropic-oauth. When Anthropic releases new model versions the
-        // one place to update is here.
-        const NATIVE_TO_ANTHROPIC = {
-            opus: 'claude-opus-4-6',
-            sonnet: 'claude-sonnet-4-6',
-            haiku: 'claude-haiku-4-5-20251001',
-        };
-        const model = NATIVE_TO_ANTHROPIC[preset.model];
+        // "sonnet", "haiku"). Resolve to the concrete Anthropic model id —
+        // prefer the Claude Code runtime's current default (set via env by
+        // the harness) so new model releases propagate automatically.
+        const model = resolveAnthropicModelForFamily(preset.model);
         if (!model) return preset; // unknown family — let caller handle
         return {
             ...preset,
@@ -190,6 +185,36 @@ export function getSmartBridge() {
         _sharedInstance = new SmartBridge();
     }
     return _sharedInstance;
+}
+
+// --- Model family resolution --------------------------------------------
+// Map Claude Code's native preset family tokens to concrete Anthropic model
+// ids. Priority order:
+//   1. Claude Code runtime env var (ANTHROPIC_DEFAULT_*_MODEL) — set by the
+//      harness, updated each Claude Code release when Anthropic ships a new
+//      default model.
+//   2. Plugin config override (config.bridge.modelFamilies).
+//   3. Hardcoded current-generation fallback.
+//
+// This means we auto-pick up new Anthropic releases (e.g., Sonnet 4.7) the
+// moment Claude Code updates its env defaults — no plugin code change needed.
+const FAMILY_FALLBACK = {
+    opus: 'claude-opus-4-6',
+    sonnet: 'claude-sonnet-4-6',
+    haiku: 'claude-haiku-4-5-20251001',
+};
+const FAMILY_ENV = {
+    opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    sonnet: 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+};
+
+export function resolveAnthropicModelForFamily(family, overrides = {}) {
+    const key = String(family || '').toLowerCase();
+    if (overrides[key]) return overrides[key];
+    const envVar = FAMILY_ENV[key];
+    if (envVar && process.env[envVar]) return process.env[envVar];
+    return FAMILY_FALLBACK[key] || null;
 }
 
 // Re-exports for convenience.
