@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 function readOptional(filePath) {
   try { return fs.readFileSync(filePath, 'utf8').trim(); } catch { return ''; }
@@ -30,6 +31,27 @@ function readOptional(filePath) {
 
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
+}
+
+/**
+ * Return CLAUDE.md content verbatim for Pool B injection.
+ *
+ * Phase D hotfix rationale: the earlier heading-filter approach kept only
+ * Project Instructions / Core Rules / Writing (~1422 chars ≈ 356 tokens)
+ * because most common sections live inside the plugin-managed block, and
+ * the managed block was getting stripped. That fell well short of every
+ * provider's cache-minimum token floor (1024 OpenAI / Anthropic Sonnet+Opus,
+ * 2048 Anthropic Haiku) so `prompt_cache_key` and Anthropic prefix hashes
+ * were never registered. Empirical result: 0% cache hit across 295 calls.
+ *
+ * Shipping CLAUDE.md verbatim (~6.6k chars ≈ 1650 tokens on the current
+ * workspace) clears those thresholds in one step. Lead-only prose such as
+ * "# Team" or "# Models" is informational only — tool handlers gate real
+ * capabilities, so Bridge agents seeing the text cannot mistakenly invoke
+ * Lead-exclusive tools. The cache win dwarfs the prose-overlap cost.
+ */
+function extractCommonClaudeMdSections(content) {
+  return content ? content.trim() : '';
 }
 
 /**
@@ -165,6 +187,17 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
+
+  // Phase D hotfix — user-global CLAUDE.md common sections. v0.6.47 Ship 1
+  // split the builder but never wired this in, leaving the Pool B prefix at
+  // ~670 chars (~150 tokens) — well below every provider's cache-minimum
+  // threshold. Injecting the user's Project Instructions / Core Rules /
+  // Writing / Communication / Non-negotiable sections lifts the prefix over
+  // the threshold so `prompt_cache_key` / Anthropic prefix hash actually get
+  // recorded on the provider side.
+  const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+  const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
+  if (claudeMdCommon) parts.push(claudeMdCommon);
 
   if (memoryConfig.enabled) {
     const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
