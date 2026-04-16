@@ -401,6 +401,23 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.totalInputTokens += result.usage.inputTokens;
                 session.totalOutputTokens += result.usage.outputTokens;
             }
+            // Smart Bridge cache stats — record hit/miss after every successful
+            // ask so the registry reflects all bridge traffic, not just
+            // maintenance cycles. Guarded against any smart-bridge error so
+            // metric recording never breaks the ask itself.
+            if (session.profileId && result.usage && _smartBridgeApi) {
+                try {
+                    const profile = _smartBridgeApi.getProfile(session.profileId);
+                    if (profile) {
+                        const systemMsg = session.messages[0]?.role === 'system' ? session.messages[0].content : '';
+                        _smartBridgeApi.recordCall(profile, session.provider, {
+                            systemPrompt: systemMsg,
+                            tools: session.tools || [],
+                            usage: result.usage,
+                        });
+                    }
+                } catch {}
+            }
             // Persist opaque providerState for future stateful providers.
             // No provider currently emits it (Codex OAuth is stateless per
             // contract), so this branch is dormant — kept so a future
