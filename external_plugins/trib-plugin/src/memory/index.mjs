@@ -432,6 +432,19 @@ async function checkCycles() {
   const now = Date.now()
   const last = getCycleLastRun()
 
+  // Phase B §5 — cache-keeper health check. If cycle1 is more than one full
+  // interval past due (e.g. process was paused, network was down), emit a
+  // warning so operators notice before Pool B's Anthropic shard goes cold.
+  // The normal "run when due" branch below still fires; this is purely
+  // observability.
+  const cycle1OverdueMs = now - last.cycle1 - cycle1Ms
+  if (cycle1OverdueMs > cycle1Ms) {
+    process.stderr.write(
+      `[cycle1] overdue by ${Math.floor(cycle1OverdueMs / 60000)}min `
+      + `(last=${new Date(last.cycle1).toISOString()}). Pool B Anthropic shard may be cold.\n`
+    )
+  }
+
   const cycleOptions = await _buildCycleOptions()
 
   if (now - last.cycle1 >= cycle1Ms) {

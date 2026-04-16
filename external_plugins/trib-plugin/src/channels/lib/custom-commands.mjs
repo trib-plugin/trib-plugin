@@ -83,8 +83,7 @@ async function handleBotCommand(parsed, ctx) {
       return handleActivity(parsed, ctx);
     case "profile":
       return handleBotProfile(parsed, ctx);
-    case "sleeping":
-      return handleSleeping(parsed, ctx);
+    // "sleeping" dispatch removed in v0.6.47 (Ship 4) — use quiet.schedule for quiet hours; memory cycle2/sleep is a separate concept.
     case "display":
       return handleDisplay(parsed, ctx);
     case "status":
@@ -288,44 +287,7 @@ function handleQuiet(parsed, ctx) {
       return { text: t("unknown_action", ctx.lang, { action }) };
   }
 }
-function handleSleeping(parsed, ctx) {
-  const action = parsed.args[1] ?? "status";
-  switch (action) {
-    case "status": {
-      const config = loadBotConfig();
-      const enabled = config?.sleepEnabled !== false;
-      const time = config?.sleepTime ?? "03:00";
-      return {
-        embeds: [{
-          title: "\u{1F9E0} Sleep Cycle",
-          description: `**Status**: ${enabled ? "ON" : "OFF"}
-**Summarize Time**: ${time}`,
-          color: 5793266
-        }]
-      };
-    }
-    case "on": {
-      writeBotField("sleepEnabled", true);
-      return { text: "Sleep Cycle enabled." };
-    }
-    case "off": {
-      writeBotField("sleepEnabled", false);
-      return { text: "Sleep Cycle disabled." };
-    }
-    case "time": {
-      const time = parsed.args[2] ?? parsed.params.time;
-      if (!time) return { text: "Usage: /bot sleeping time HH:MM" };
-      writeBotField("sleepTime", time);
-      return { text: `Summarize time set to ${time}` };
-    }
-    case "now":
-    case "run": {
-      return { text: "Use `/trib-plugin memory sleep` or MCP `memory` tool to run memory summarize." };
-    }
-    default:
-      return { text: t("unknown_action", ctx.lang, { action }) };
-  }
-}
+// handleSleeping removed in v0.6.47 (Phase B Ship 4). The "sleeping" bot command and its sleepEnabled/sleepTime fields were unused; quiet.schedule covers quiet hours and memory cycle2/sleep is a separate concept that remains.
 function handleDisplay(parsed, _ctx) {
   const mode = parsed.args[1];
   if (!mode) {

@@ -2249,12 +2249,8 @@ async function populateChannels(cfg) {
   const quiet = bot.quiet || {};
   populateQuietHours(quiet.schedule);
   if (quiet.holidays) document.getElementById('bot-holidays').classList.add('on');
-  if (bot.sleepEnabled && bot.sleepTime) {
-    const sel = document.getElementById('bot-sleep-preset');
-    const presets = ['23:00', '00:00', '01:00'];
-    if (presets.includes(bot.sleepTime)) { sel.value = bot.sleepTime; }
-    else { sel.value = 'custom'; document.getElementById('bot-sleep-custom').value = bot.sleepTime; document.getElementById('bot-sleep-custom').style.display = ''; }
-  }
+  // Sleep Cycle UI removed in v0.6.47 (Ship 4). bot.sleepEnabled / bot.sleepTime
+  // are no longer persisted; use quiet.schedule for quiet hours.
   if (bot.displayMode) document.getElementById('bot-display-mode').value = bot.displayMode;
 
   // Proactive (non-preset fields)

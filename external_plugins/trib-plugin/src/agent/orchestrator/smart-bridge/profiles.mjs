@@ -128,6 +128,19 @@ export const BUILTIN_PROFILES = {
         description: 'Interactive user conversation. Full context, multi-turn.',
     },
 
+    'sub-task': {
+        id: 'sub-task',
+        taskType: 'sub',
+        lifecycle: 'continuous',
+        behavior: 'stateless',
+        contextChunks: [],
+        tools: ['tools:filesystem', 'tools:search'],
+        skip: { claudemd: false, skills: false, memory: true },
+        fallbackPreset: 'GPT5.4',
+        estimatedTurns: 3,
+        description: 'Unified sub-agent profile (reviewer / tester / debugger / researcher). Prefix-handle reuse across roles; messages reset per dispatch so task-briefs never leak between calls.',
+    },
+
     'scheduler-task': {
         id: 'scheduler-task',
         taskType: 'scheduler-task',

@@ -57,6 +57,47 @@ function getSmartBridgeSync() {
     return _smartBridgeApi;
 }
 
+// ── Phase B §6 Worker lifecycle triggers ────────────────────────────────
+// Defaults can be overridden per call via opts or via agent-config.json →
+// { workerLifecycle: { idleMs, softTokens, hardTokens } }.
+const DEFAULT_LIFECYCLE = Object.freeze({
+    idleMs: 5 * 60 * 1000,
+    softTokens: 150_000,
+    hardTokens: 180_000,
+});
+
+function _lifecycleConfig(opts = {}) {
+    return {
+        idleMs: opts.idleMs ?? DEFAULT_LIFECYCLE.idleMs,
+        softTokens: opts.softTokens ?? DEFAULT_LIFECYCLE.softTokens,
+        hardTokens: opts.hardTokens ?? DEFAULT_LIFECYCLE.hardTokens,
+    };
+}
+
+/**
+ * Classify a session against Phase B §6 close triggers.
+ *
+ * Returns one of:
+ *   null             — session still usable
+ *   'idle'           — last completed ask() older than idleMs
+ *   'hard-tokens'    — cumulative tokens ≥ hardTokens (must close)
+ *   'soft-tokens'    — cumulative tokens ≥ softTokens (schedule close)
+ *
+ * Callers (bridge_spawn / askSession wrappers) decide how to act: hard-tokens
+ * and idle trigger close-and-respawn immediately; soft-tokens may defer.
+ */
+export function isSessionStale(session, opts = {}) {
+    if (!session) return null;
+    const cfg = _lifecycleConfig(opts);
+    const now = Date.now();
+    const tokens = session.tokensCumulative || 0;
+    if (tokens >= cfg.hardTokens) return 'hard-tokens';
+    const lastUsed = session.lastUsedAt || session.updatedAt || session.createdAt || now;
+    if (now - lastUsed > cfg.idleMs) return 'idle';
+    if (tokens >= cfg.softTokens) return 'soft-tokens';
+    return null;
+}
+
 /**
  * Thrown when a session is closed while a call is in-flight. Callers (bridge
  * handler, CLI) should render this as "cancelled" rather than a hard error.
@@ -225,6 +266,11 @@ export function createSession(opts) {
         updatedAt: Date.now(),
         totalInputTokens: 0,
         totalOutputTokens: 0,
+        // Phase B §6 Worker lifecycle — refreshed on each completed ask().
+        // `isSessionStale()` reads these to decide close-and-respawn.
+        lastUsedAt: Date.now(),
+        tokensCumulative: 0,
+        role: opts.role || null,
         // Hermes-style in-flight compressor state
         compressionCount: 0,
         previousSummary: null,
@@ -446,9 +492,13 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 session.messages.push({ role: 'assistant', content: result.content });
             }
             session.updatedAt = Date.now();
+            session.lastUsedAt = Date.now();
             if (result.usage) {
                 session.totalInputTokens += result.usage.inputTokens;
                 session.totalOutputTokens += result.usage.outputTokens;
+                session.tokensCumulative = (session.tokensCumulative || 0)
+                    + (result.usage.inputTokens || 0)
+                    + (result.usage.outputTokens || 0);
             }
             // Smart Bridge cache stats — record hit/miss after every successful
             // ask so the registry reflects all bridge traffic, not just
@@ -540,7 +590,17 @@ export function findOrCreateSession(scopeKey, createFn) {
     // Synchronous lock: if another call is creating for this scope, wait
     const existing = findSessionByScopeKey(scopeKey);
     if (existing) {
-        return existing;
+        // Phase B §6.1 — Worker lifecycle triggers evaluated on reuse.
+        // Stale sessions (idle > 5min OR tokens ≥ hard threshold) are closed
+        // and a fresh session is spawned. Soft-token returns here are left
+        // to the caller to decide (defer vs immediate close).
+        const stale = isSessionStale(existing);
+        if (stale === 'idle' || stale === 'hard-tokens') {
+            try { markSessionClosed(existing.id); } catch { /* ignore */ }
+            process.stderr.write(`[session] respawn on ${stale} (scope=${scopeKey}, id=${existing.id})\n`);
+        } else {
+            return existing;
+        }
     }
     // Check again with lock to prevent race
     if (_scopeCreateLocks.has(scopeKey)) {
