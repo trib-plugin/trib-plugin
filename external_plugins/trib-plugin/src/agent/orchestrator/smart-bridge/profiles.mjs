@@ -23,7 +23,7 @@
  *                                    < 1h → use cache, >= 1h → no cache
  *   contextChunks: string[]       — rules:*, memory:* chunk ids
  *   tools: string[]               — tool-set ids ("full" / "none" / specific)
- *   skip: { recap, claudemd, skills, memory }
+ *   skip: { claudemd, skills, memory }
  *   fallbackPreset: string        — preset name if no user role mapping
  *   estimatedTurns: number
  *   description: string
@@ -38,7 +38,7 @@ export const BUILTIN_PROFILES = {
         recurrenceIntervalMs: 10 * 60_000,  // 10min cycle1; well inside 1h
         contextChunks: [],
         tools: [],
-        skip: { recap: true, claudemd: true, skills: true, memory: false },
+        skip: { claudemd: true, skills: true, memory: false },
         fallbackPreset: 'haiku',
         estimatedTurns: 1,
         description: 'Memory cycle maintenance. Minimal prompt, runs every 10min, 1h cache maximizes reuse.',
@@ -50,7 +50,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'continuous',
         contextChunks: ['rules:workflow', 'rules:commit', 'memory:stack'],
         tools: ['tools:filesystem', 'tools:git', 'tools:mcp'],
-        skip: { recap: false, claudemd: false, skills: false, memory: false },
+        skip: { claudemd: false, skills: false, memory: false },
         fallbackPreset: 'opus-max',
         estimatedTurns: 8,
         description: 'Code implementation agent. Full tool access, multi-turn, stable prefix heavy-caches.',
@@ -62,7 +62,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'one-shot',
         contextChunks: ['rules:commit', 'memory:stack'],
         tools: ['tools:filesystem'],
-        skip: { recap: true, claudemd: false, skills: true, memory: true },
+        skip: { claudemd: false, skills: true, memory: true },
         fallbackPreset: 'GPT5.4',
         estimatedTurns: 3,
         description: 'PR/code review. External perspective, read-only, no-cache (one-shot).',
@@ -74,7 +74,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'one-shot',
         contextChunks: [],
         tools: ['tools:search'],
-        skip: { recap: true, claudemd: true, skills: true, memory: true },
+        skip: { claudemd: true, skills: true, memory: true },
         fallbackPreset: 'gpt5.4-mini',
         estimatedTurns: 2,
         description: 'Web research / info lookup. Minimal context, no-cache.',
@@ -86,7 +86,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'continuous',
         contextChunks: ['rules:workflow', 'memory:stack'],
         tools: ['tools:filesystem', 'tools:mcp'],
-        skip: { recap: true, claudemd: false, skills: true, memory: true },
+        skip: { claudemd: false, skills: true, memory: true },
         fallbackPreset: 'GPT5.4',
         estimatedTurns: 5,
         description: 'Runtime testing and behavior verification.',
@@ -98,7 +98,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'continuous',
         contextChunks: ['rules:workflow', 'memory:stack'],
         tools: ['tools:filesystem', 'tools:analysis', 'tools:git'],
-        skip: { recap: true, claudemd: false, skills: true, memory: true },
+        skip: { claudemd: false, skills: true, memory: true },
         fallbackPreset: 'GPT5.4',
         estimatedTurns: 6,
         description: 'Deep bug investigation. Analysis tools, multi-turn.',
@@ -110,7 +110,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'one-shot',
         contextChunks: ['rules:writing', 'rules:comms'],
         tools: [],
-        skip: { recap: true, claudemd: true, skills: true, memory: true },
+        skip: { claudemd: true, skills: true, memory: true },
         fallbackPreset: 'haiku',
         estimatedTurns: 1,
         description: 'One-shot tasks (translate, format, summarize). No-cache, 20% cheaper.',
@@ -122,7 +122,7 @@ export const BUILTIN_PROFILES = {
         lifecycle: 'continuous',
         contextChunks: ['rules:comms', 'memory:user', 'rules:workflow', 'memory:stack'],
         tools: ['full'],
-        skip: { recap: false, claudemd: false, skills: false, memory: false },
+        skip: { claudemd: false, skills: false, memory: false },
         fallbackPreset: 'opus-max',
         estimatedTurns: 20,
         description: 'Interactive user conversation. Full context, multi-turn.',

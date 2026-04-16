@@ -206,9 +206,6 @@ export function composeSystemPrompt(opts) {
     if (opts.hasSkills && !skip.skills) {
         parts.push('# Skills\n\nCall `skills_list` to discover available skills.');
     }
-    if (opts.recap && !skip.recap) {
-        parts.push('# Last Session Recap\n\n' + opts.recap);
-    }
     if (opts.memoryContext && !skip.memory) {
         parts.push('# Memory Context\n\n' + opts.memoryContext);
     }

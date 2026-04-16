@@ -84,7 +84,7 @@ function guessContextWindow(model) {
 // Smart Bridge integration:
 //   opts.taskType / opts.role / opts.profileId — enables profile-aware routing.
 //     Rule-based SmartRouter resolves these synchronously; the resolved
-//     profile controls context filtering (skip.recap/skills/etc) and cache
+//     profile controls context filtering (skip.claudemd/skills/etc) and cache
 //     strategy. If no rule matches, falls back to classic preset behavior.
 //   opts.profile — pre-resolved profile (bypasses router; used by async
 //     callers who already ran SmartBridge.resolve()).
