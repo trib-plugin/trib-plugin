@@ -139,9 +139,9 @@ function buildRecap(db) {
         return `[${tsStr}] ${combined.slice(0, 500)}`;
       }
       const prefix = r.role === 'user' ? 'u' : r.role === 'assistant' ? 'a' : (r.role || '?');
-      return `[${tsStr}] ${prefix}: ${cleanText(String(r.content || '')).slice(0, 300)}`;
+      return `[${tsStr}] ${prefix}: ${cleanText(String(r.content || '')).slice(0, 500)}`;
     });
-    const text = lines.join('\n');
+    const text = lines.reverse().join('\n');
     return text.length > 20 ? '## Session Recap\n\n' + text : '';
   } catch (e) {
     process.stderr.write(`[session-start] recap build failed: ${e.message}\n`);
