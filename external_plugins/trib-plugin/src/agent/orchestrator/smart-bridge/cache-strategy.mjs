@@ -1,110 +1,159 @@
 /**
  * Smart Bridge — Cache Strategy
  *
- * Translates a profile's cache preferences into provider-specific options.
- * Each provider exposes different cache knobs; this module is the single
- * place that knows how to map between them.
+ * Derives provider-specific cache settings from profile.lifecycle. Profiles
+ * declare WHAT kind of workload they are (one-shot / recurring / continuous);
+ * this module decides HOW to cache given that lifecycle + provider.
  *
- * Providers:
- *   - anthropic-oauth / anthropic: 4 cache_control breakpoints, 5m/1h TTL
- *   - openai-oauth / openai: prompt_cache_key + prompt_cache_retention (in_memory/24h)
- *   - gemini: explicit cache objects (separate CRUD lifecycle)
- *   - openai-compat (Groq, Ollama, etc.): no API-level cache, engine-level only
+ * Key decisions encoded here:
+ *   - one-shot: never cache (cache write premium has no payoff when there's
+ *     no re-read in the TTL window). 20% cheaper than 5m cache for true
+ *     single-call prompts.
+ *   - recurring: depends on interval.
+ *       interval < 1h → 1h cache (fits within TTL, read discount applies).
+ *       interval >= 1h → no cache (cache expires before next call, write
+ *       premium is pure waste).
+ *   - continuous: 1h on stable layers (tools, system) + 5m on messages
+ *     sliding breakpoint for multi-turn sessions.
+ *
+ * Providers differ in what they can express:
+ *   - Anthropic: per-layer TTL via cache_control breakpoints — full control.
+ *   - OpenAI public: prompt_cache_retention (in_memory / 24h) — request-level.
+ *   - OpenAI Codex OAuth: no retention control — server-side default only.
+ *   - Gemini: explicit cache objects (separate CRUD lifecycle).
+ *   - OpenAI-compat locals (Ollama, Groq, etc.): no API-level cache.
  */
 
+const ANTHROPIC_1H_WINDOW_MS = 60 * 60_000;
+
 /**
- * Build provider-specific sendOpts from a profile's cacheStrategy.
+ * Return the layered cache policy (Anthropic-style TTL per layer) for a profile.
+ * Used directly by anthropic/anthropic-oauth; translated for other providers.
  *
- * @param {object} profile  — profile with cacheStrategy field
- * @param {string} provider — provider name
- * @param {string} sessionId
- * @returns {object} partial sendOpts to merge into the provider call
+ * Values:
+ *   '1h'   → ephemeral 1h TTL  (2x write premium, 0.1x read)
+ *   '5m'   → ephemeral 5m TTL  (1.25x write premium, 0.1x read)
+ *   'none' → no cache_control  (1x flat, no premium, no cache)
+ */
+export function resolveLifecycleCacheStrategy(profile) {
+    const lifecycle = profile?.lifecycle || 'one-shot';
+
+    if (lifecycle === 'one-shot') {
+        return { tools: 'none', system: 'none', messages: 'none' };
+    }
+
+    if (lifecycle === 'continuous') {
+        return { tools: '1h', system: '1h', messages: '5m' };
+    }
+
+    if (lifecycle === 'recurring') {
+        const interval = Number(profile?.recurrenceIntervalMs) || 0;
+        // Unknown interval: assume "short enough" (1h) as the safer default —
+        // pays write premium once but catches reuse if it happens.
+        if (interval === 0) {
+            return { tools: '1h', system: '1h', messages: 'none' };
+        }
+        // Short interval: cache fits within 1h TTL — read discount pays for
+        // write premium after ~3 calls.
+        if (interval < ANTHROPIC_1H_WINDOW_MS) {
+            return { tools: '1h', system: '1h', messages: 'none' };
+        }
+        // Long interval: cache always expires before next call — write premium
+        // is pure waste. No-cache is 50% cheaper.
+        return { tools: 'none', system: 'none', messages: 'none' };
+    }
+
+    // Unknown lifecycle — be safe.
+    return { tools: 'none', system: 'none', messages: 'none' };
+}
+
+/**
+ * Build provider-specific sendOpts from a profile + provider.
+ *
+ * @param {object} profile
+ * @param {string} provider
+ * @param {string} [sessionId]
+ * @returns {object} partial sendOpts — spread into provider.send call
  */
 export function buildProviderCacheOpts(profile, provider, sessionId) {
-    const strategy = profile?.cacheStrategy || defaultStrategy();
+    const ttls = resolveLifecycleCacheStrategy(profile);
 
     switch (provider) {
         case 'anthropic-oauth':
         case 'anthropic':
-            return {
-                cacheStrategy: {
-                    tools: strategy.tools || '1h',
-                    system: strategy.system || '1h',
-                    messages: strategy.messages || '5m',
-                },
-            };
+            // Pass the per-layer TTL map directly — the provider translates into
+            // cache_control breakpoints at render time.
+            return { cacheStrategy: ttls };
 
         case 'openai-oauth':
+            // Codex endpoint rejects prompt_cache_retention. We rely on the
+            // server-side default in_memory cache (5-10min). For one-shot
+            // profiles the server will still prefix-cache if the prefix is
+            // reused within the in-memory window, so no user action needed.
+            return {};
+
         case 'openai': {
-            // Retention: "24h" for multi-turn / repeated profiles, "in_memory" for one-shot.
-            // Rule: if any layer is "1h" or "none with short-lived messages", treat as multi-turn → 24h.
-            const multiTurn = strategy.tools === '1h' || strategy.system === '1h';
-            return {
-                cacheRetention: multiTurn ? '24h' : 'in_memory',
-                // prompt_cache_key is set by caller based on profile.id or sessionId.
-            };
+            // Public OpenAI API supports prompt_cache_retention. Map lifecycle:
+            //   one-shot → in_memory (default; 5-10min, no commitment)
+            //   recurring/continuous → 24h for extended retention
+            const lifecycle = profile?.lifecycle || 'one-shot';
+            if (lifecycle === 'one-shot') return { cacheRetention: 'in_memory' };
+            return { cacheRetention: '24h' };
         }
 
         case 'gemini':
-            // Gemini uses external cache objects. Profile-aware provisioning
-            // happens in the gemini provider itself; here we just signal intent.
+            // Gemini uses cache objects. Signal intent; the provider layer
+            // creates/updates the object separately from the message.
             return {
                 geminiCache: {
-                    enabled: strategy.system !== 'none',
-                    ttlSeconds: strategy.system === '1h' ? 3600 : 300,
-                    // The actual cache object is created/updated by the provider
-                    // when buildProviderCacheOpts is consumed.
+                    enabled: ttls.system !== 'none',
+                    ttlSeconds: ttlToSeconds(ttls.system),
                 },
             };
 
         default:
-            // OpenAI-compat providers (Groq, OpenRouter, Ollama, LMStudio, etc.)
-            // have no standardized cache-control API. We pass through any
-            // hints but the provider is free to ignore them.
+            // OpenAI-compat (Groq, OpenRouter, Ollama, LMStudio, local) —
+            // no API-level cache surface. Return empty; engines do their own
+            // KV-cache behind the scenes.
             return {};
     }
 }
 
 /**
- * Compute the prefix content that goes into the cache hash.
- * This is the stable portion of the request: tools + system prompt + context chunks.
- *
- * The user message and volatile chat history are NOT included — those vary per call
- * and must not affect whether we consider a profile's cache warm.
+ * Prefix content used to derive the cache hash for registry tracking.
+ * Excludes the volatile user message — only the stable prefix (tools,
+ * system, contextChunks) determines whether our cache is "still warm".
  */
 export function computePrefixContent(profile, systemPrompt, tools) {
     return {
-        profileId: profile.id,
+        profileId: profile?.id,
         systemPrompt: systemPrompt || '',
         tools: (tools || []).map(t => ({
             name: t.name,
             description: t.description,
-            // inputSchema included — tool shape changes invalidate the cache.
             inputSchema: t.inputSchema,
         })),
-        chunks: (profile.contextChunks || []).slice().sort(),
+        chunks: (profile?.contextChunks || []).slice().sort(),
     };
 }
 
 /**
- * Return the expected TTL in seconds for the top-level (stable) cache layer.
- * Used to update the cache registry expiry.
+ * Longest-lived layer TTL (seconds) for registry expiry tracking.
  */
 export function ttlSecondsForProfile(profile) {
-    // Pick the longest-lived layer: if any layer caches at 1h, the prefix
-    // lives at least that long. "none" doesn't count — it just means that
-    // layer doesn't participate in caching (e.g., no tools defined).
-    const strat = profile?.cacheStrategy || {};
-    const layers = [strat.tools, strat.system, strat.messages];
-    const toSeconds = (v) => {
-        if (v === '24h') return 86400;
-        if (v === '1h') return 3600;
-        if (v === '5m') return 300;
-        return 0;
-    };
-    return Math.max(...layers.map(toSeconds), 0);
+    const ttls = resolveLifecycleCacheStrategy(profile);
+    return Math.max(
+        ttlToSeconds(ttls.tools),
+        ttlToSeconds(ttls.system),
+        ttlToSeconds(ttls.messages),
+    );
 }
 
-function defaultStrategy() {
-    return { tools: '1h', system: '1h', messages: '5m' };
+// --- Helpers ---
+
+function ttlToSeconds(v) {
+    if (v === '24h') return 86400;
+    if (v === '1h') return 3600;
+    if (v === '5m') return 300;
+    return 0;
 }

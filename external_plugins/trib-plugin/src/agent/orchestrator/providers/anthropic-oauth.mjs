@@ -88,9 +88,14 @@ function appendCacheControl(content, ttl = CACHE_TTL_VOLATILE) {
     return content;
 }
 
-function collectRecentCacheableIndexes(messages) {
+function collectRecentCacheableIndexes(messages, availableSlots = 2) {
+    // Anthropic enforces a 4-breakpoint max per request. Callers reserve slots
+    // for tools[-1] and system breakpoints (typically 2); whatever remains is
+    // spread across the most-recent messages as 5m sliding breakpoints.
+    // Default 2 assumes both tools and system have breakpoints (worst case).
+    const slots = Math.max(0, Math.min(4, availableSlots));
     const marked = new Set();
-    for (let i = messages.length - 1; i >= 0 && marked.size < 3; i--) {
+    for (let i = messages.length - 1; i >= 0 && marked.size < slots; i--) {
         if (messages[i]?.role !== 'system') marked.add(i);
     }
     return marked;
@@ -314,7 +319,12 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const opts = sendOpts || {};
     const ttls = resolveCacheTtls(opts);
 
-    const cacheableIndexes = collectRecentCacheableIndexes(chatMsgs);
+    // Compute available BP slots: 4 max, minus tools BP (if any) and system BP.
+    const usedSlots =
+        (ttls.tools && tools?.length ? 1 : 0) +
+        (ttls.system && systemText ? 1 : 0);
+    const msgSlots = ttls.messages ? Math.max(0, 4 - usedSlots) : 0;
+    const cacheableIndexes = collectRecentCacheableIndexes(chatMsgs, msgSlots);
     const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes, ttls.messages);
 
     const body = {

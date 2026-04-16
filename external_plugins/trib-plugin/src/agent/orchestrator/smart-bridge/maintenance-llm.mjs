@@ -61,10 +61,21 @@ export function makeMaintenanceLlm(opts = {}) {
         const tools = [];
         const sendOpts = {
             sessionId: opts.sessionId,
+            effort: resolved.effort,
+            fast: resolved.fast,
             ...resolved.providerCacheOpts,
         };
 
-        const model = resolveModelForProfile(resolved.profile);
+        const model = resolved.model;
+        if (!model) {
+            // Smart Bridge couldn't derive a model (no preset in config). Fall back.
+            process.stderr.write(`[smart-bridge-maintenance] no model resolved, falling back to native\n`);
+            return await callLLM(prompt, preset || resolveMaintenancePreset(mode), {
+                mode: 'maintenance',
+                timeout,
+            });
+        }
+
         try {
             const result = await provider.send(messages, model, tools, sendOpts);
 
@@ -89,12 +100,11 @@ export function makeMaintenanceLlm(opts = {}) {
     };
 }
 
-/**
- * Map profile's preferredModel (preset name) to an actual model id for the provider.
- */
-function resolveModelForProfile(profile) {
+// Legacy helper (unused after E4 refactor — preset resolution now happens in
+// SmartBridge.resolve via config.presets). Kept for now, will be removed once
+// all callers migrate.
+function _legacyResolveModelForProfile(profile) {
     const preset = profile.preferredModel;
-    // Map common preset names to provider-specific model ids.
     const map = {
         haiku: 'claude-haiku-4-5-20251001',
         'sonnet-mid': 'claude-sonnet-4-6',

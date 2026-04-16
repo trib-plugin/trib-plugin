@@ -269,12 +269,13 @@ export async function init() {
   startAgentMaintenance();
   // Smart Bridge — unified router + cache strategy + profile system.
   // User-role preset mapping comes from user-workflow.json (existing source
-  // of truth). Profile overrides live under config.bridge.profiles.
+  // of truth). Preset catalog (provider/model/effort) comes from config.presets.
   try {
     const { initSmartBridge, getSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
     const userRoles = loadUserWorkflowRoles();
     const userProfiles = config.bridge?.profiles || {};
-    const sb = initSmartBridge({ userRoles, userProfiles });
+    const presets = config.presets || [];
+    const sb = initSmartBridge({ userRoles, userProfiles, presets });
     // Inject into session manager so createSession() can resolve profiles
     // synchronously (no lazy-import race).
     setSmartBridge(sb);
@@ -323,7 +324,6 @@ export async function handleToolCall(name, args, opts = {}) {
           lane: 'bridge',
           systemPrompt: args.systemPrompt,
         };
-        // Provider/model fallback: if caller didn't specify, derive from profile.
         if (args.provider) smartArgs.provider = args.provider;
         if (args.model) smartArgs.model = args.model;
         // Need either role/taskType/profileId OR explicit provider+model.
@@ -331,7 +331,8 @@ export async function handleToolCall(name, args, opts = {}) {
             && !(smartArgs.provider && smartArgs.model)) {
           return fail('bridge_spawn: role, taskType, profileId, or provider+model required');
         }
-        // Fill provider/model defaults from resolved profile when missing.
+        // Let Smart Bridge derive provider/model from profile.fallbackPreset →
+        // config.presets catalog. No hardcoded preset-to-model mapping here.
         if ((!smartArgs.provider || !smartArgs.model)
             && (smartArgs.role || smartArgs.taskType || smartArgs.profileId)) {
           try {
@@ -343,19 +344,7 @@ export async function handleToolCall(name, args, opts = {}) {
             });
             if (resolved) {
               smartArgs.provider = smartArgs.provider || resolved.provider;
-              // Map preset name to model id.
-              const PRESET_TO_MODEL = {
-                haiku: 'claude-haiku-4-5-20251001',
-                'sonnet-mid': 'claude-sonnet-4-6',
-                'sonnet-high': 'claude-sonnet-4-6',
-                'opus-max': 'claude-opus-4-6',
-                'opus-mid': 'claude-opus-4-6',
-                'GPT5.4': 'gpt-5.4',
-                'gpt5.4-mini': 'gpt-5.4-mini',
-              };
-              smartArgs.model = smartArgs.model
-                || PRESET_TO_MODEL[resolved.profile.preferredModel]
-                || resolved.profile.preferredModel;
+              smartArgs.model = smartArgs.model || resolved.model;
             }
           } catch { /* fall through — createSession will throw if incomplete */ }
         }

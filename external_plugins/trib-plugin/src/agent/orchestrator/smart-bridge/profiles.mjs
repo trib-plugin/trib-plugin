@@ -1,160 +1,134 @@
 /**
  * Smart Bridge — Profile Registry
  *
- * Profiles define stable execution contexts for the Smart Bridge router.
- * Each profile produces a deterministic prefix (system + tools + context chunks)
- * so cache hashes stay stable across sessions — the key property that makes
- * cache reuse possible.
+ * Profiles define the SHAPE of execution (lifecycle, context chunks, tools,
+ * skip flags). Model/provider selection comes from user-workflow.json + the
+ * agent-config.json preset catalog — profiles never duplicate that.
  *
- * Profiles are opinionated defaults. User settings always win at the router
- * layer; these are just starting points.
+ * Resolution at runtime:
+ *   1. Router picks profile by role / taskType / profileId
+ *   2. Smart Bridge looks up user role → preset (user-workflow.json)
+ *      → falls back to profile.fallbackPreset if no mapping
+ *   3. Preset resolves to provider + model + effort + fast (agent-config.json)
+ *   4. Cache strategy is derived from profile.lifecycle (not hardcoded)
  */
 
 /**
  * Profile schema:
  * {
- *   id: string                        — stable identifier (used in cache registry)
- *   taskType: string                  — "maintenance" | "worker" | ...
- *   preferredProviders: string[]      — ordered fallback list, first hit wins
- *   preferredModel: string            — preset name or model id
- *   contextChunks: string[]           — chunk ids to include (rules:*, memory:*)
- *   tools: string[]                   — tool-set ids ("tools:filesystem" etc)
- *                                       special: "full" = bring everything
- *                                                "none" / [] = no tools
- *   cacheStrategy: {
- *     tools: "1h" | "5m" | "none"
- *     system: "1h" | "5m" | "none"
- *     messages: "1h" | "5m" | "none"
- *   }
- *   skip: {
- *     recap: bool                     — skip session recap injection
- *     claudemd: bool                  — skip CLAUDE.md
- *     skills: bool                    — skip skills catalogue
- *     memory: bool                    — skip memory/core memory injection
- *   }
- *   estimatedTurns: number            — heuristic (affects breakpoint placement)
- *   description: string               — human-readable summary
+ *   id: string
+ *   taskType: string              — "maintenance" | "worker" | ...
+ *   lifecycle: "one-shot" | "recurring" | "continuous"
+ *   recurrenceIntervalMs?: number — hint for recurring lifecycle
+ *                                    < 1h → use cache, >= 1h → no cache
+ *   contextChunks: string[]       — rules:*, memory:* chunk ids
+ *   tools: string[]               — tool-set ids ("full" / "none" / specific)
+ *   skip: { recap, claudemd, skills, memory }
+ *   fallbackPreset: string        — preset name if no user role mapping
+ *   estimatedTurns: number
+ *   description: string
  * }
  */
 
 export const BUILTIN_PROFILES = {
-    // --- Maintenance: memory cycle, periodic tasks ---
     'maintenance-light': {
         id: 'maintenance-light',
         taskType: 'maintenance',
-        preferredProviders: ['anthropic-oauth', 'openai-oauth', 'native'],
-        preferredModel: 'haiku',
+        lifecycle: 'recurring',
+        recurrenceIntervalMs: 10 * 60_000,  // 10min cycle1; well inside 1h
         contextChunks: [],
         tools: [],
-        cacheStrategy: { tools: 'none', system: '1h', messages: 'none' },
         skip: { recap: true, claudemd: true, skills: true, memory: false },
+        fallbackPreset: 'haiku',
         estimatedTurns: 1,
-        description: 'Memory cycle maintenance. Fixed prompt, runs every 10min-1h, 1h cache maximizes reuse.',
+        description: 'Memory cycle maintenance. Minimal prompt, runs every 10min, 1h cache maximizes reuse.',
     },
 
-    // --- Worker: code implementation, full-capability agent ---
     'worker-full': {
         id: 'worker-full',
         taskType: 'worker',
-        preferredProviders: ['native', 'anthropic-oauth'],
-        preferredModel: 'opus-max',
+        lifecycle: 'continuous',
         contextChunks: ['rules:workflow', 'rules:commit', 'memory:stack'],
         tools: ['tools:filesystem', 'tools:git', 'tools:mcp'],
-        cacheStrategy: { tools: '1h', system: '1h', messages: '5m' },
         skip: { recap: false, claudemd: false, skills: false, memory: false },
+        fallbackPreset: 'opus-max',
         estimatedTurns: 8,
-        description: 'Code implementation agent. Full tool access, multi-turn, stable prefix caches heavily.',
+        description: 'Code implementation agent. Full tool access, multi-turn, stable prefix heavy-caches.',
     },
 
-    // --- Reviewer: external code review perspective ---
     'reviewer-external': {
         id: 'reviewer-external',
         taskType: 'reviewer',
-        preferredProviders: ['openai-oauth', 'anthropic-oauth'],
-        preferredModel: 'GPT5.4',
+        lifecycle: 'one-shot',
         contextChunks: ['rules:commit', 'memory:stack'],
         tools: ['tools:filesystem'],
-        cacheStrategy: { tools: '1h', system: '1h', messages: '5m' },
         skip: { recap: true, claudemd: false, skills: true, memory: true },
+        fallbackPreset: 'GPT5.4',
         estimatedTurns: 3,
-        description: 'PR/code review. External perspective (GPT5.4), read-only tools, one-shot.',
+        description: 'PR/code review. External perspective, read-only, no-cache (one-shot).',
     },
 
-    // --- Researcher: web/info lookup ---
     'researcher-minimal': {
         id: 'researcher-minimal',
         taskType: 'researcher',
-        preferredProviders: ['openai-oauth', 'anthropic-oauth'],
-        preferredModel: 'gpt5.4-mini',
+        lifecycle: 'one-shot',
         contextChunks: [],
         tools: ['tools:search'],
-        cacheStrategy: { tools: '1h', system: '1h', messages: '5m' },
         skip: { recap: true, claudemd: true, skills: true, memory: true },
+        fallbackPreset: 'gpt5.4-mini',
         estimatedTurns: 2,
-        description: 'Web research, info lookup. Minimal context, search-only tools, cheap model.',
+        description: 'Web research / info lookup. Minimal context, no-cache.',
     },
 
-    // --- Tester: runtime/behavior verification ---
     'tester-runtime': {
         id: 'tester-runtime',
         taskType: 'tester',
-        preferredProviders: ['openai-oauth', 'anthropic-oauth'],
-        preferredModel: 'GPT5.4',
+        lifecycle: 'continuous',
         contextChunks: ['rules:workflow', 'memory:stack'],
         tools: ['tools:filesystem', 'tools:mcp'],
-        cacheStrategy: { tools: '1h', system: '1h', messages: '5m' },
         skip: { recap: true, claudemd: false, skills: true, memory: true },
+        fallbackPreset: 'GPT5.4',
         estimatedTurns: 5,
-        description: 'Runtime testing and behavior verification. External perspective.',
+        description: 'Runtime testing and behavior verification.',
     },
 
-    // --- Debugger: bug investigation ---
     'debugger-deep': {
         id: 'debugger-deep',
         taskType: 'debugger',
-        preferredProviders: ['openai-oauth', 'anthropic-oauth'],
-        preferredModel: 'GPT5.4',
+        lifecycle: 'continuous',
         contextChunks: ['rules:workflow', 'memory:stack'],
         tools: ['tools:filesystem', 'tools:analysis', 'tools:git'],
-        cacheStrategy: { tools: '1h', system: '1h', messages: '5m' },
         skip: { recap: true, claudemd: false, skills: true, memory: true },
+        fallbackPreset: 'GPT5.4',
         estimatedTurns: 6,
-        description: 'Deep bug investigation. External perspective, analysis tools.',
+        description: 'Deep bug investigation. Analysis tools, multi-turn.',
     },
 
-    // --- Simple: one-shot tasks (translate, format, summarize) ---
     'simple-fast': {
         id: 'simple-fast',
         taskType: 'one-shot',
-        preferredProviders: ['anthropic-oauth', 'openai-oauth'],
-        preferredModel: 'haiku',
+        lifecycle: 'one-shot',
         contextChunks: ['rules:writing', 'rules:comms'],
         tools: [],
-        cacheStrategy: { tools: 'none', system: '5m', messages: 'none' },
         skip: { recap: true, claudemd: true, skills: true, memory: true },
+        fallbackPreset: 'haiku',
         estimatedTurns: 1,
-        description: 'One-shot simple tasks. Translation, formatting, summarization.',
+        description: 'One-shot tasks (translate, format, summarize). No-cache, 20% cheaper.',
     },
 
-    // --- User-facing lead: interactive conversation ---
     'user-facing': {
         id: 'user-facing',
         taskType: 'lead',
-        preferredProviders: ['native'],
-        preferredModel: 'opus-max',
+        lifecycle: 'continuous',
         contextChunks: ['rules:comms', 'memory:user', 'rules:workflow', 'memory:stack'],
         tools: ['full'],
-        cacheStrategy: { tools: '1h', system: '1h', messages: '5m' },
         skip: { recap: false, claudemd: false, skills: false, memory: false },
+        fallbackPreset: 'opus-max',
         estimatedTurns: 20,
-        description: 'Interactive user conversation. Full context, multi-turn, cache-heavy.',
+        description: 'Interactive user conversation. Full context, multi-turn.',
     },
 };
 
-/**
- * Merge user-defined profile overrides with builtins.
- * User can redefine a builtin profile (by id) or add entirely new ones.
- */
 export function loadProfiles(userProfiles = {}) {
     const merged = { ...BUILTIN_PROFILES };
     for (const [id, overrides] of Object.entries(userProfiles)) {
@@ -172,10 +146,6 @@ export function listProfiles(profiles) {
     return Object.values(profiles);
 }
 
-/**
- * Given a taskType, find the best matching profile (first exact match wins).
- * Returns null if no profile matches.
- */
 export function findProfileForTaskType(profiles, taskType) {
     for (const p of Object.values(profiles)) {
         if (p.taskType === taskType) return p;
@@ -184,12 +154,12 @@ export function findProfileForTaskType(profiles, taskType) {
 }
 
 /**
- * Find a profile whose preferredModel matches the requested preset.
- * Used when caller specifies a preset directly (e.g., user sets reviewer=sonnet-high).
+ * Find a profile whose fallbackPreset matches. Used when the caller specifies
+ * a preset directly but we still want profile-based cache/context decisions.
  */
 export function findProfileForPreset(profiles, presetName) {
     for (const p of Object.values(profiles)) {
-        if (p.preferredModel === presetName) return p;
+        if (p.fallbackPreset === presetName) return p;
     }
     return null;
 }
@@ -200,7 +170,7 @@ function deepMerge(base, overlay, fixed = {}) {
     if (!overlay || typeof overlay !== 'object') return base;
     const out = { ...base, ...fixed };
     for (const [k, v] of Object.entries(overlay)) {
-        if (fixed[k] !== undefined) continue; // fixed fields win
+        if (fixed[k] !== undefined) continue;
         if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object') {
             out[k] = { ...base[k], ...v };
         } else {
