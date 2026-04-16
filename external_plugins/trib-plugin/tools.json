@@ -9,48 +9,39 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
+    "description": "Send a message to a Discord channel. Supports text, reply threading, file attachments, embeds, and components.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "chat_id": {
           "type": "string",
-          "description": "Channel ID where the message will be sent"
+          "description": "Channel ID"
         },
         "text": {
           "type": "string",
-          "description": "Message text content (markdown supported)"
+          "description": "Message text (markdown)"
         },
         "reply_to": {
           "type": "string",
-          "description": "Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch."
+          "description": "Message ID to thread under"
         },
         "files": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Absolute file paths to attach (images, logs, etc). Max 10 files, 25MB each."
+          "items": { "type": "string" },
+          "description": "Absolute file paths to attach. Max 10, 25MB each."
         },
         "embeds": {
           "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
+          "items": { "type": "object" },
+          "description": "Discord embed objects."
         },
         "components": {
           "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
+          "items": { "type": "object" },
+          "description": "Discord message components."
         }
       },
-      "required": [
-        "chat_id",
-        "text"
-      ]
+      "required": ["chat_id", "text"]
     },
     "module": "channels"
   },
@@ -64,28 +55,15 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
+    "description": "Add emoji reaction to a message.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chat_id": {
-          "type": "string",
-          "description": "Channel ID containing the message"
-        },
-        "message_id": {
-          "type": "string",
-          "description": "ID of the message to react to"
-        },
-        "emoji": {
-          "type": "string",
-          "description": "Unicode emoji (e.g. \"👍\") or custom emoji in <:name:id> format"
-        }
+        "chat_id": { "type": "string", "description": "Channel ID" },
+        "message_id": { "type": "string", "description": "Message ID" },
+        "emoji": { "type": "string", "description": "Unicode or custom emoji (<:name:id>)" }
       },
-      "required": [
-        "chat_id",
-        "message_id",
-        "emoji"
-      ]
+      "required": ["chat_id", "message_id", "emoji"]
     },
     "module": "channels"
   },
@@ -99,42 +77,17 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Edit a message the bot previously sent. Supports text, embeds, and components.",
+    "description": "Edit a bot message. Supports text, embeds, components.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chat_id": {
-          "type": "string",
-          "description": "Channel ID containing the message"
-        },
-        "message_id": {
-          "type": "string",
-          "description": "ID of the bot message to edit"
-        },
-        "text": {
-          "type": "string",
-          "description": "New message text content"
-        },
-        "embeds": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Discord embed objects."
-        },
-        "components": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          },
-          "description": "Discord message components."
-        }
+        "chat_id": { "type": "string", "description": "Channel ID" },
+        "message_id": { "type": "string", "description": "Bot message ID to edit" },
+        "text": { "type": "string", "description": "New text" },
+        "embeds": { "type": "array", "items": { "type": "object" } },
+        "components": { "type": "array", "items": { "type": "object" } }
       },
-      "required": [
-        "chat_id",
-        "message_id",
-        "text"
-      ]
+      "required": ["chat_id", "message_id", "text"]
     },
     "module": "channels"
   },
@@ -148,23 +101,14 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
+    "description": "Download message attachments to local inbox. Returns file paths.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chat_id": {
-          "type": "string",
-          "description": "Channel ID containing the message"
-        },
-        "message_id": {
-          "type": "string",
-          "description": "ID of the message with attachments"
-        }
+        "chat_id": { "type": "string", "description": "Channel ID" },
+        "message_id": { "type": "string", "description": "Message ID with attachments" }
       },
-      "required": [
-        "chat_id",
-        "message_id"
-      ]
+      "required": ["chat_id", "message_id"]
     },
     "module": "channels"
   },
@@ -178,22 +122,14 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
+    "description": "Fetch recent messages from a channel. Returns oldest-first with IDs.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "channel": {
-          "type": "string",
-          "description": "Channel name label (e.g. \"main\", \"general\") as configured in channelsConfig"
-        },
-        "limit": {
-          "type": "number",
-          "description": "Max messages (default 20, capped at 100)."
-        }
+        "channel": { "type": "string", "description": "Channel name label" },
+        "limit": { "type": "number", "description": "Max messages (default 20, max 100)" }
       },
-      "required": [
-        "channel"
-      ]
+      "required": ["channel"]
     },
     "module": "channels"
   },
@@ -207,11 +143,8 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Show all configured schedules, their next fire time, and whether they are currently running.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
+    "description": "Show all schedules with next fire time and running state.",
+    "inputSchema": { "type": "object", "properties": {} },
     "module": "channels"
   },
   {
@@ -224,18 +157,13 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Manually trigger a named schedule immediately, ignoring time/day constraints. Use \"proactive\" to trigger a proactive tick with auto-selected topic.",
+    "description": "Manually fire a named schedule immediately.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "Schedule name to trigger"
-        }
+        "name": { "type": "string", "description": "Schedule name" }
       },
-      "required": [
-        "name"
-      ]
+      "required": ["name"]
     },
     "module": "channels"
   },
@@ -249,31 +177,15 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Defer or skip a schedule. Use \"defer\" to suppress for N minutes (default 30), or \"skip_today\" to suppress for the rest of the day.",
+    "description": "Defer or skip a schedule. defer: suppress N minutes. skip_today: suppress rest of day.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "Schedule name (e.g. \"mail-briefing\" or \"proactive:chat\")"
-        },
-        "action": {
-          "type": "string",
-          "enum": [
-            "defer",
-            "skip_today"
-          ],
-          "description": "Action to take"
-        },
-        "minutes": {
-          "type": "number",
-          "description": "Defer duration in minutes (default 30, only for defer action)"
-        }
+        "name": { "type": "string", "description": "Schedule name" },
+        "action": { "type": "string", "enum": ["defer", "skip_today"] },
+        "minutes": { "type": "number", "description": "Defer duration (default 30)" }
       },
-      "required": [
-        "name",
-        "action"
-      ]
+      "required": ["name", "action"]
     },
     "module": "channels"
   },
@@ -287,18 +199,13 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
+    "description": "Toggle channel bridge. Active: typing indicators, reactions, auto-forward. Inactive: manual tool calls only.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "active": {
-          "type": "boolean",
-          "description": "true to activate, false to deactivate"
-        }
+        "active": { "type": "boolean" }
       },
-      "required": [
-        "active"
-      ]
+      "required": ["active"]
     },
     "module": "channels"
   },
@@ -312,11 +219,8 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Reload config.json from disk and re-register all schedules, webhooks, and event rules. Config only — code changes require a full session restart.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
+    "description": "Reload config.json and re-register schedules, webhooks, event rules.",
+    "inputSchema": { "type": "object", "properties": {} },
     "module": "channels"
   },
   {
@@ -329,54 +233,23 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Run memory management operations: cycle2/sleep (core memory promotion + dedup), flush (consolidate pending), rebuild (recent), prune (cleanup), cycle1 (fast update), backfill (process unclassified episodes then run cycle1), status, remember (store a fact in core memory on user request).",
+    "description": "Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "action": {
           "type": "string",
-          "enum": [
-            "sleep",
-            "cycle2",
-            "flush",
-            "rebuild",
-            "rebuild_classifications",
-            "prune",
-            "cycle1",
-            "backfill",
-            "status",
-            "remember"
-          ],
-          "description": "Memory operation to run. remember: inject into core memory."
+          "enum": ["sleep", "cycle2", "flush", "rebuild", "rebuild_classifications", "prune", "cycle1", "backfill", "status", "remember"],
+          "description": "Operation to run"
         },
-        "topic": {
-          "type": "string",
-          "description": "Topic for remember action (e.g. \"user preference\", \"project rule\")"
-        },
-        "element": {
-          "type": "string",
-          "description": "Content for remember action (e.g. \"prefers dark mode\")"
-        },
-        "importance": {
-          "type": "string",
-          "description": "Importance level for remember action (default: fact)"
-        },
-        "maxDays": {
-          "type": "number",
-          "description": "Max days to process (default varies by action)"
-        },
-        "window": {
-          "type": "string",
-          "description": "Time window for rebuild/rebuild_classifications: 1d, 3d, 7d, 30d, all"
-        },
-        "limit": {
-          "type": "number",
-          "description": "Max episodes to backfill (default 100)"
-        }
+        "topic": { "type": "string", "description": "Topic for remember" },
+        "element": { "type": "string", "description": "Content for remember" },
+        "importance": { "type": "string", "description": "Importance for remember (default: fact)" },
+        "maxDays": { "type": "number" },
+        "window": { "type": "string", "description": "Time window: 1d, 3d, 7d, 30d, all" },
+        "limit": { "type": "number", "description": "Max episodes to backfill (default 100)" }
       },
-      "required": [
-        "action"
-      ]
+      "required": ["action"]
     },
     "module": "memory"
   },
@@ -390,44 +263,16 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Search past context and memory. Use when user references prior work, decisions, or preferences. Not for external info (use search tool). Storage is automatic — only retrieval is manual. Never write to MEMORY.md or use sqlite directly.",
+    "description": "Search past context and memory. Use for prior work, decisions, preferences. Not for external info (use search) or codebase (use Grep/Glob).",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "query": {
-          "type": "string",
-          "description": "Search text. Triggers semantic hybrid search."
-        },
-        "period": {
-          "type": "string",
-          "description": "Time scope: \"last\" (records before current boot, not session-scoped), \"24h\"/\"3d\"/\"7d\"/\"30d\" (relative), \"all\" (no limit), \"2026-04-05\" (single date), \"2026-04-01~2026-04-05\" (date range). Default: 30d when query is set, latest entries when no query."
-        },
-        "sort": {
-          "type": "string",
-          "enum": [
-            "date",
-            "importance"
-          ],
-          "description": "Sort order: \"date\" (newest first) or \"importance\" (by score + RRF). Default: \"date\" when period=\"last\", \"importance\" otherwise."
-        },
-        "limit": {
-          "type": "number",
-          "default": 30,
-          "description": "Max results to return."
-        },
-        "offset": {
-          "type": "number",
-          "default": 0,
-          "description": "Skip N results for pagination."
-        },
-        "mode": {
-          "type": "string",
-          "enum": [
-            "search",
-            "reason"
-          ],
-          "description": "search: normal retrieval. reason: synthesize an answer from stored knowledge using LLM."
-        }
+        "query": { "type": "string", "description": "Search text (semantic hybrid search)" },
+        "period": { "type": "string", "description": "Scope: last, 24h/3d/7d/30d, all, YYYY-MM-DD, date~date. Default: 30d with query, latest without." },
+        "sort": { "type": "string", "enum": ["date", "importance"] },
+        "limit": { "type": "number", "default": 30 },
+        "offset": { "type": "number", "default": 0 },
+        "mode": { "type": "string", "enum": ["search", "reason"], "description": "reason: LLM-synthesized answer" }
       },
       "required": []
     },
@@ -436,88 +281,27 @@
   {
     "name": "search",
     "title": "Search",
-    "description": "REQUIRED for all external web lookups. Built-in WebSearch/WebFetch must NOT be used — always use this tool. For 2+ lookups use batch tool. Not for codebase (Grep/Glob/Read) or past context (search_memories).",
+    "description": "REQUIRED for all external web lookups. For 2+ lookups use batch. Not for codebase or memory.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "keywords": {
           "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
-              },
-              "minItems": 1
-            }
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
           ],
-          "description": "Search query string or array of queries. Required for non-GitHub-read operations."
+          "description": "Query string or array"
         },
-        "site": {
-          "type": "string",
-          "description": "Restrict results to a specific domain (e.g. \"github.com\")."
-        },
-        "type": {
-          "type": "string",
-          "enum": [
-            "web",
-            "news",
-            "images"
-          ],
-          "description": "Search type. Default: web."
-        },
-        "github_type": {
-          "type": "string",
-          "enum": [
-            "repositories",
-            "code",
-            "issues",
-            "file",
-            "repo",
-            "issue",
-            "pulls"
-          ],
-          "description": "GitHub type. Search: repositories/code/issues. Read: file (read file contents), repo (repo info), issue (issue/PR detail), pulls (PR list)."
-        },
-        "owner": {
-          "type": "string",
-          "description": "GitHub owner (org or user). Required for github_type: file, repo, issue, pulls."
-        },
-        "repo": {
-          "type": "string",
-          "description": "GitHub repository name. Required for github_type: file, repo, issue, pulls."
-        },
-        "path": {
-          "type": "string",
-          "description": "File path within repo. Required for github_type: file."
-        },
-        "number": {
-          "type": "integer",
-          "description": "Issue or PR number. Required for github_type: issue."
-        },
-        "ref": {
-          "type": "string",
-          "description": "Git ref (branch, tag, SHA). Optional for github_type: file."
-        },
-        "state": {
-          "type": "string",
-          "enum": [
-            "open",
-            "closed",
-            "all"
-          ],
-          "description": "Filter state for github_type: pulls. Default: open."
-        },
-        "maxResults": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 20,
-          "description": "Maximum number of results to return (1-20)."
-        }
+        "site": { "type": "string", "description": "Restrict to domain" },
+        "type": { "type": "string", "enum": ["web", "news", "images"] },
+        "github_type": { "type": "string", "enum": ["repositories", "code", "issues", "file", "repo", "issue", "pulls"] },
+        "owner": { "type": "string" },
+        "repo": { "type": "string" },
+        "path": { "type": "string" },
+        "number": { "type": "integer" },
+        "ref": { "type": "string" },
+        "state": { "type": "string", "enum": ["open", "closed", "all"] },
+        "maxResults": { "type": "integer", "minimum": 1, "maximum": 20 }
       },
       "additionalProperties": false
     },
@@ -533,23 +317,17 @@
   {
     "name": "firecrawl_scrape",
     "title": "Scrape",
-    "description": "Fetch a single URL and extract its readable content as clean text or markdown. Use for known URLs when you need page content.",
+    "description": "Scrape URL(s) and extract readable content as text/markdown.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "urls": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "format": "uri"
-          },
-          "minItems": 1,
-          "description": "List of URLs to scrape."
+          "items": { "type": "string", "format": "uri" },
+          "minItems": 1
         }
       },
-      "required": [
-        "urls"
-      ],
+      "required": ["urls"],
       "additionalProperties": false
     },
     "annotations": {
@@ -564,33 +342,16 @@
   {
     "name": "firecrawl_map",
     "title": "Map",
-    "description": "Discover all links on a given page. Returns a list of URLs found. Use to explore site structure before scraping specific pages.",
+    "description": "Discover links on a page. Use to explore site structure before scraping.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "The page URL to discover links from."
-        },
-        "limit": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 200,
-          "description": "Maximum number of links to return (1-200)."
-        },
-        "sameDomainOnly": {
-          "type": "boolean",
-          "description": "If true, only return links on the same domain."
-        },
-        "search": {
-          "type": "string",
-          "description": "Filter discovered links by a search term."
-        }
+        "url": { "type": "string", "format": "uri" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "sameDomainOnly": { "type": "boolean" },
+        "search": { "type": "string", "description": "Filter links by term" }
       },
-      "required": [
-        "url"
-      ],
+      "required": ["url"],
       "additionalProperties": false
     },
     "annotations": {
@@ -603,52 +364,9 @@
     "module": "search"
   },
   {
-    "name": "crawl",
-    "title": "Crawl",
-    "description": "Crawl a website starting from a URL, following links up to a configured depth. Collects page summaries from each visited page. Not supported in batch mode.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "Starting URL to begin crawling from."
-        },
-        "maxPages": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 200,
-          "description": "Maximum number of pages to visit (1-200)."
-        },
-        "maxDepth": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 5,
-          "description": "Maximum link depth to follow (0-5)."
-        },
-        "sameDomainOnly": {
-          "type": "boolean",
-          "description": "If true, only follow links on the same domain."
-        }
-      },
-      "required": [
-        "url"
-      ],
-      "additionalProperties": false
-    },
-    "annotations": {
-      "title": "Crawl",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": false,
-      "openWorldHint": true
-    },
-    "module": "search"
-  },
-  {
     "name": "batch",
     "title": "Search",
-    "description": "Execute multiple search, firecrawl_scrape, and firecrawl_map actions in a single request. Each item runs in parallel. Crawl is not supported in batch.",
+    "description": "Parallel batch of search, firecrawl_scrape, firecrawl_map actions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -659,138 +377,46 @@
               {
                 "type": "object",
                 "properties": {
-                  "action": {
-                    "type": "string",
-                    "enum": [
-                      "search"
-                    ]
-                  },
+                  "action": { "type": "string", "enum": ["search"] },
                   "keywords": {
                     "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "minItems": 1
-                      }
+                      { "type": "string", "minLength": 1 },
+                      { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
                     ]
                   },
-                  "site": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "type": "string",
-                    "enum": [
-                      "web",
-                      "news",
-                      "images"
-                    ]
-                  },
-                  "github_type": {
-                    "type": "string",
-                    "enum": [
-                      "repositories",
-                      "code",
-                      "issues",
-                      "file",
-                      "repo",
-                      "issue",
-                      "pulls"
-                    ]
-                  },
-                  "owner": {
-                    "type": "string"
-                  },
-                  "repo": {
-                    "type": "string"
-                  },
-                  "path": {
-                    "type": "string"
-                  },
-                  "number": {
-                    "type": "integer"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "state": {
-                    "type": "string",
-                    "enum": [
-                      "open",
-                      "closed",
-                      "all"
-                    ]
-                  },
-                  "maxResults": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20
-                  }
+                  "site": { "type": "string" },
+                  "type": { "type": "string", "enum": ["web", "news", "images"] },
+                  "github_type": { "type": "string", "enum": ["repositories", "code", "issues", "file", "repo", "issue", "pulls"] },
+                  "owner": { "type": "string" },
+                  "repo": { "type": "string" },
+                  "path": { "type": "string" },
+                  "number": { "type": "integer" },
+                  "ref": { "type": "string" },
+                  "state": { "type": "string", "enum": ["open", "closed", "all"] },
+                  "maxResults": { "type": "integer", "minimum": 1, "maximum": 20 }
                 },
-                "required": [
-                  "action"
-                ],
+                "required": ["action"],
                 "additionalProperties": false
               },
               {
                 "type": "object",
                 "properties": {
-                  "action": {
-                    "type": "string",
-                    "enum": [
-                      "firecrawl_scrape"
-                    ]
-                  },
-                  "urls": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "format": "uri"
-                    },
-                    "minItems": 1
-                  }
+                  "action": { "type": "string", "enum": ["firecrawl_scrape"] },
+                  "urls": { "type": "array", "items": { "type": "string", "format": "uri" }, "minItems": 1 }
                 },
-                "required": [
-                  "action",
-                  "urls"
-                ],
+                "required": ["action", "urls"],
                 "additionalProperties": false
               },
               {
                 "type": "object",
                 "properties": {
-                  "action": {
-                    "type": "string",
-                    "enum": [
-                      "firecrawl_map"
-                    ]
-                  },
-                  "url": {
-                    "type": "string",
-                    "format": "uri"
-                  },
-                  "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 200
-                  },
-                  "sameDomainOnly": {
-                    "type": "boolean"
-                  },
-                  "search": {
-                    "type": "string"
-                  }
+                  "action": { "type": "string", "enum": ["firecrawl_map"] },
+                  "url": { "type": "string", "format": "uri" },
+                  "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                  "sameDomainOnly": { "type": "boolean" },
+                  "search": { "type": "string" }
                 },
-                "required": [
-                  "action",
-                  "url"
-                ],
+                "required": ["action", "url"],
                 "additionalProperties": false
               }
             ]
@@ -799,9 +425,7 @@
           "maxItems": 10
         }
       },
-      "required": [
-        "batch"
-      ],
+      "required": ["batch"],
       "additionalProperties": false
     },
     "annotations": {
@@ -814,85 +438,34 @@
     "module": "search"
   },
   {
-    "name": "setup",
-    "description": "Open interactive setup form to configure search providers, API keys, and options.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
-    "annotations": {
-      "title": "Setup"
-    },
-    "module": "search"
-  },
-  {
     "name": "create_session",
-    "description": "Create an external AI session for multi-turn interaction requiring direct tool access. Auto-injects CLAUDE.md, agent rules, skills. Registers builtin+MCP tools. Use preset: \"full\"/\"readonly\"/\"mcp\". Use agent: \"Worker\"/\"Reviewer\" for role rules. Pass cwd for project-scoped tool execution. For single-turn delegation, prefer the bridge tool.",
+    "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "provider": {
-          "type": "string",
-          "description": "openai, openai-oauth, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local"
-        },
-        "model": {
-          "type": "string",
-          "description": "e.g., gpt-4o, claude-sonnet-4-0, gemini-2.5-pro"
-        },
-        "systemPrompt": {
-          "type": "string",
-          "description": "Additional system prompt"
-        },
-        "agent": {
-          "type": "string",
-          "description": "Agent template: \"Worker\", \"Reviewer\""
-        },
-        "preset": {
-          "type": "string",
-          "enum": [
-            "full",
-            "readonly",
-            "mcp"
-          ],
-          "description": "Tool preset (default: full)"
-        },
+        "provider": { "type": "string", "description": "openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local" },
+        "model": { "type": "string" },
+        "systemPrompt": { "type": "string" },
+        "agent": { "type": "string", "description": "Agent template: Worker, Reviewer" },
+        "preset": { "type": "string", "enum": ["full", "readonly", "mcp"] },
         "files": {
           "type": "array",
           "items": {
             "type": "object",
-            "properties": {
-              "path": {
-                "type": "string"
-              },
-              "content": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "path",
-              "content"
-            ]
+            "properties": { "path": { "type": "string" }, "content": { "type": "string" } },
+            "required": ["path", "content"]
           }
         },
-        "cwd": {
-          "type": "string",
-          "description": "Working directory for builtin tool execution and CLAUDE.md/agents/skills lookup. Pass the project root (e.g. C:/Project). Defaults to MCP server cwd."
-        }
+        "cwd": { "type": "string", "description": "Working directory for tool execution" }
       },
-      "required": [
-        "provider",
-        "model"
-      ]
+      "required": ["provider", "model"]
     },
     "module": "agent"
   },
   {
     "name": "list_sessions",
-    "description": "List all active orchestrator sessions.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
+    "description": "List active orchestrator sessions.",
+    "inputSchema": { "type": "object", "properties": {} },
     "module": "agent"
   },
   {
@@ -901,102 +474,33 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "sessionId": {
-          "type": "string"
-        }
+        "sessionId": { "type": "string" }
       },
-      "required": [
-        "sessionId"
-      ]
+      "required": ["sessionId"]
     },
     "module": "agent"
   },
   {
     "name": "list_models",
-    "description": "List available models from all enabled providers.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
-    "module": "agent"
-  },
-  {
-    "name": "get_workflows",
-    "description": "List all available workflow plans (name + description).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
-    "module": "agent"
-  },
-  {
-    "name": "get_workflow",
-    "description": "Get a specific workflow plan by name. Returns full JSON with steps.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Workflow name (e.g., \"code-review\")"
-        }
-      },
-      "required": [
-        "name"
-      ]
-    },
-    "module": "agent"
-  },
-  {
-    "name": "skill_suggest",
-    "description": "Analyze trajectory data and suggest skills from repeating patterns. Returns a report of skill candidates.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {}
-    },
-    "annotations": {
-      "title": "Skill Suggest",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
+    "description": "List available models from all providers.",
+    "inputSchema": { "type": "object", "properties": {} },
     "module": "agent"
   },
   {
     "name": "bridge",
     "title": "Bridge to External Model",
-    "description": "Bridge a prompt to an external AI model. Session-based with tool access. Result delivered via notification. Scope is prefix-matched to preset names in user-workflow.json (e.g. \"reviewer\" matches \"reviewer-a\", \"reviewer-b\"). No scope uses the default model.",
+    "description": "Single-turn bridge to external AI. Session-based with tool access. Scope prefix-matches preset names in user-workflow.json.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "prompt": {
-          "type": "string",
-          "description": "The prompt to send"
-        },
-        "scope": {
-          "type": "string",
-          "description": "Agent scope: reviewer, debugger, explorer"
-        },
-        "preset": {
-          "type": "string",
-          "description": "Override preset name"
-        },
-        "context": {
-          "type": "string",
-          "description": "Additional context"
-        },
-        "ref": {
-          "type": "string",
-          "description": "Reference key from prompt store"
-        },
-        "file": {
-          "type": "string",
-          "description": "Read prompt from this file path"
-        }
+        "prompt": { "type": "string" },
+        "scope": { "type": "string", "description": "Agent scope: reviewer, debugger, explorer" },
+        "preset": { "type": "string" },
+        "context": { "type": "string" },
+        "ref": { "type": "string", "description": "Prompt store key" },
+        "file": { "type": "string", "description": "Read prompt from file" }
       },
-      "required": [
-        "prompt"
-      ]
+      "required": ["prompt"]
     },
     "module": "agent"
   }
