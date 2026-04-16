@@ -560,6 +560,10 @@ export async function handleToolCall(name, args, opts = {}) {
           preset = getDefaultPreset(config);
           if (!preset) return fail('No preset specified and no default configured');
         }
+        if (preset?.type === 'native') {
+          const { translateNativePreset } = await import('./orchestrator/smart-bridge/index.mjs');
+          preset = translateNativePreset(preset);
+        }
 
         const scope = args.scope || 'default';
         const effectiveLane = 'bridge';

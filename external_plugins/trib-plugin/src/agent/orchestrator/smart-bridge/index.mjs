@@ -101,19 +101,9 @@ export class SmartBridge {
     }
 
     _translateNativePreset(preset) {
-        if (preset?.type !== 'native') return preset;
-        // Claude Code's native preset.model is a coarse family token ("opus",
-        // "sonnet", "haiku"). Resolve to the concrete Anthropic model id —
-        // prefer the Claude Code runtime's current default (set via env by
-        // the harness) so new model releases propagate automatically.
-        const model = resolveAnthropicModelForFamily(preset.model);
-        if (!model) return preset; // unknown family — let caller handle
-        return {
-            ...preset,
-            provider: 'anthropic-oauth',
-            model,
-            // effort/fast preserved from the original preset.
-        };
+        // Delegate to the exported module function so callers outside this
+        // class (e.g. bridge tool entry point) share the same translation.
+        return translateNativePreset(preset);
     }
 
     /**
@@ -258,6 +248,23 @@ function _resolveFromCatalog(family) {
 
         return null;
     } catch { return null; }
+}
+
+/**
+ * Translate a "native" preset label (legacy Claude Code runtime tag) to its
+ * concrete anthropic-oauth provider+model pair. Native is no longer a distinct
+ * path — it's an alias for the OAuth subscription route. All entry points
+ * should funnel native presets through this before calling createSession().
+ */
+export function translateNativePreset(preset) {
+    if (preset?.type !== 'native') return preset;
+    const model = resolveAnthropicModelForFamily(preset.model);
+    if (!model) return preset;
+    return {
+        ...preset,
+        provider: 'anthropic-oauth',
+        model,
+    };
 }
 
 // Re-exports for convenience.

@@ -97,7 +97,7 @@ function buildEntriesText(entries) {
 export async function runCycle1(db, config = {}, options = {}) {
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
   const preset = options.preset || resolveMaintenancePreset('cycle1')
-  const timeout = Number(config?.cycle1?.timeout ?? 180000)
+  const timeout = Number(config?.cycle1?.timeout ?? 600000)
 
   const rows = db.prepare(`
     SELECT id, ts, role, content
@@ -288,7 +288,7 @@ async function runPromotePhase(db, phaseName, rows, activeRows, config, options,
   }
 
   const preset = options.preset || resolveMaintenancePreset('cycle2')
-  const timeout = Number(config?.cycle2?.timeout ?? 180000)
+  const timeout = Number(config?.cycle2?.timeout ?? 600000)
   const mode = `cycle2-${phaseName}`
 
   try {

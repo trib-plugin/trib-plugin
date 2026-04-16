@@ -189,7 +189,7 @@ function spawnWorker(name) {
 }
 
 let _callIdSeq = 0
-const WORKER_CALL_TIMEOUT = 30000 // 30s per tool call
+const WORKER_CALL_TIMEOUT = 600000 // 10m per tool call
 
 function callWorker(name, toolName, args) {
   return new Promise((resolve, reject) => {
