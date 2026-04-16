@@ -236,8 +236,17 @@ function getCycleLastRun() {
   try {
     const raw = getMetaValue(db, CYCLE_LAST_RUN_KEY, '{}')
     const obj = JSON.parse(raw)
-    return { cycle1: Number(obj.cycle1) || 0, cycle2: Number(obj.cycle2) || 0 }
-  } catch { return { cycle1: 0, cycle2: 0 } }
+    return {
+      cycle1: Number(obj.cycle1) || 0,
+      cycle2: Number(obj.cycle2) || 0,
+      // Phase B §2.4 auto-restart book-keeping — last time an overdue cycle1
+      // triggered an unscheduled run, rate-limited separately from the
+      // normal cycle timestamp so a long chain of failures cannot tight-loop.
+      cycle1_autoRestart: Number(obj.cycle1_autoRestart) || 0,
+    }
+  } catch {
+    return { cycle1: 0, cycle2: 0, cycle1_autoRestart: 0 }
+  }
 }
 
 function setCycleLastRun(kind, ts) {
@@ -423,6 +432,14 @@ async function _buildCycleOptions() {
   return cycleOptions
 }
 
+// Phase B §2.4 — cache-keeper health thresholds.
+// warning fires when cycle1 is overdue past HEALTH_OVERDUE_MS; an auto-
+// restart attempt fires when the warning has been emitted AND the most
+// recent unscheduled restart was more than AUTO_RESTART_COOLDOWN_MS ago.
+// Both default to 5 min per spec; caller overrides are not exposed yet.
+const CYCLE1_HEALTH_OVERDUE_MS = 5 * 60_000
+const CYCLE1_AUTO_RESTART_COOLDOWN_MS = 5 * 60_000
+
 async function checkCycles() {
   if (mainConfig?.enabled === false) return
 
@@ -432,20 +449,41 @@ async function checkCycles() {
   const now = Date.now()
   const last = getCycleLastRun()
 
-  // Phase B §5 — cache-keeper health check. If cycle1 is more than one full
-  // interval past due (e.g. process was paused, network was down), emit a
-  // warning so operators notice before Pool B's Anthropic shard goes cold.
-  // The normal "run when due" branch below still fires; this is purely
-  // observability.
-  const cycle1OverdueMs = now - last.cycle1 - cycle1Ms
-  if (cycle1OverdueMs > cycle1Ms) {
-    process.stderr.write(
-      `[cycle1] overdue by ${Math.floor(cycle1OverdueMs / 60000)}min `
-      + `(last=${new Date(last.cycle1).toISOString()}). Pool B Anthropic shard may be cold.\n`
-    )
-  }
-
   const cycleOptions = await _buildCycleOptions()
+
+  // Phase B §2.4 — cache-keeper health check + auto-restart.
+  //
+  // `last.cycle1 + cycle1Ms` is the next scheduled run time; anything beyond
+  // that by > HEALTH_OVERDUE_MS means the keeper missed its window and the
+  // Anthropic shard is drifting cold. Emit a warning, and — if we haven't
+  // retried in the last cooldown window — force an unscheduled run so the
+  // shard gets re-touched before the next Worker / Sub call pays the 2×
+  // write premium. Cooldown prevents a tight retry loop when the underlying
+  // cause (network, provider outage) is still broken.
+  const cycle1OverdueMs = Math.max(0, now - last.cycle1 - cycle1Ms)
+  if (cycle1OverdueMs > CYCLE1_HEALTH_OVERDUE_MS) {
+    const lastSeen = last.cycle1 ? new Date(last.cycle1).toISOString() : 'never'
+    process.stderr.write(
+      `[cycle1] overdue by ${Math.floor(cycle1OverdueMs / 60_000)}min `
+      + `(last=${lastSeen}). Pool B Anthropic shard may be cold.\n`
+    )
+    const lastAutoRestart = last.cycle1_autoRestart || 0
+    if (now - lastAutoRestart >= CYCLE1_AUTO_RESTART_COOLDOWN_MS) {
+      setCycleLastRun('cycle1_autoRestart', now)
+      try {
+        const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycleOptions)
+        setCycleLastRun('cycle1', Date.now())
+        process.stderr.write(
+          `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
+        )
+        return
+      } catch (e) {
+        process.stderr.write(`[cycle1] auto-restart error: ${e.message}\n`)
+        // Fall through so the normal due branch can still try on the next
+        // tick; the cooldown timestamp is already committed.
+      }
+    }
+  }
 
   if (now - last.cycle1 >= cycle1Ms) {
     try {
