@@ -118,12 +118,16 @@ Pool A injection set.
 
 ## 11. Bridge Routing
 
-- Every Bridge call requires a `role` field — exact primitive only
+- Every MCP `bridge` call requires a `role` field — exact primitive only
   (`worker`, `reviewer`, `researcher`, `debugger`, `tester`). No suffix
-  variants. No `scope`, no direct `preset` override.
+  variants, no `scope`, no direct `preset` override from the caller.
 - The role is resolved to a preset via `user-workflow.json`, which in
   turn maps to the model / provider / effort. Misspelled roles fail
   loudly; there is no fallback.
+- (Internal only) Smart Bridge, scheduler, and webhook pipelines may
+  still dispatch sessions with an explicit preset because they run
+  outside the MCP surface. Agents must not try to mimic this — stay on
+  the MCP `bridge` tool with `role`.
 - Each Bridge call carries the Pool B prefix (this file plus rules and
   CLAUDE.md common sections). The prefix is bit-identical across roles
   by design — variance lives only in the Tier 3 system-reminder.

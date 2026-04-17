@@ -47,7 +47,8 @@ function readJson(filePath) {
  *      heading) is removed.
  */
 const CLAUDE_MD_EXCLUDE_H1 = new Set([
-  '# Memory', '# Channels', '# Search', '# Team', '# Roles', '# User Workflow',
+  '# General', '# Memory', '# Channels', '# Search', '# Team',
+  '# Workflow', '# Roles', '# User Workflow',
 ]);
 const CLAUDE_MD_EXCLUDE_H2 = new Set([
   '## Workflow', '## User Rules',

@@ -1746,19 +1746,20 @@ async function wfSavePanel() {
   warnEl.textContent = '';
   const mdText = document.getElementById('wf-description').value;
   try {
-    // Strip UI-only fields (_open, md) from the payload that lands in
-    // user-workflow.json. The md body is persisted separately per role.
-    const rolesPayload = wfConfig.roles.map(r => {
+    // Drop blank-name rows entirely so nothing partially persists:
+    // user-workflow.json gets only named roles, and per-role MD posts
+    // only run for the same set. This avoids silent data loss where a
+    // user typed an MD body before naming the role.
+    const validRoles = wfConfig.roles.filter(r => (r.name || '').trim());
+    const rolesPayload = validRoles.map(r => {
       const { _open, md, ...rest } = r;
       return rest;
     });
-    const roleMdPosts = wfConfig.roles
-      .filter(r => (r.name || '').trim())
-      .map(r => fetch('/md/role', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: r.name, body: r.md || '' }),
-      }));
+    const roleMdPosts = validRoles.map(r => fetch('/md/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: r.name, body: r.md || '' }),
+    }));
     const [r1, r2, ...mdResults] = await Promise.all([
       fetch('/workflow/save', {
         method: 'POST',
