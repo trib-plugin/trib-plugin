@@ -1,0 +1,81 @@
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
+
+// Phase D Ship D — idempotent seed of plugin-owned data files so first-time
+// installs land with the Pool B surface already populated enough to edit via
+// the Config UI (instead of presenting "file not found" and forcing the user
+// to disambiguate between "empty content" vs "missing path").
+//
+// Only plugin-owned paths under `<plugin-data>/` are seeded. User-owned
+// surfaces — the bare CLAUDE.md outside the managed block, project repo
+// files, etc. — are never touched.
+//
+// Every seed is a scaffold: a commented template with edit guidance, not
+// real content. The user fills it in. `existsSync()` gates every write so
+// a second boot never overwrites user edits.
+const SEEDS = {
+    'common.md': `# Common Guidelines
+
+<!--
+This file is injected into every Bridge (Worker / Sub / Maintenance) system
+prompt. Keep it to project-wide rules that every Pool B agent should honour.
+
+Kept short because it lives inside the BP_2 cache block; long essays churn
+the Anthropic prefix hash every time you edit them. The Config UI's General
+tab edits this file directly.
+
+Example:
+  - Prefer clarity over cleverness.
+  - Ask before touching production systems.
+  - All code comments in English.
+-->
+`,
+
+    'history/user.md': `# User Profile
+
+<!--
+What Bridge agents should know about you. One short paragraph is usually
+enough — name, role, preferences the agent needs to respect across turns.
+Avoid dumping full history; use memory for that. Edit via the Config UI.
+-->
+`,
+
+    'history/bot.md': `# Bot Persona
+
+<!--
+How the agent should introduce itself and what tone to adopt. Keep concise —
+this lives in the BP_2 cache block.
+-->
+`,
+
+    'memory-config.json': JSON.stringify({
+        enabled: true,
+        user: { name: '', title: '' },
+        cycle1: { interval: '10m' },
+        cycle2: { interval: '1h' },
+    }, null, 2) + '\n',
+};
+
+export function ensureDataSeeds(dataDir) {
+    if (!dataDir) return { created: [], skipped: [] };
+    const created = [];
+    const skipped = [];
+    for (const [rel, body] of Object.entries(SEEDS)) {
+        const full = join(dataDir, rel);
+        if (existsSync(full)) {
+            skipped.push(rel);
+            continue;
+        }
+        try {
+            mkdirSync(dirname(full), { recursive: true });
+            writeFileSync(full, body, 'utf8');
+            created.push(rel);
+        } catch (e) {
+            process.stderr.write(`[seed] ${rel} create failed: ${e.message}\n`);
+        }
+    }
+    if (created.length > 0) {
+        process.stderr.write(`[seed] created ${created.length} file(s): ${created.join(', ')}\n`);
+    }
+    return { created, skipped };
+}

@@ -4,6 +4,7 @@ import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPre
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
+import { ensureDataSeeds } from '../shared/seed.mjs';
 import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
 import { join } from 'path';
@@ -81,6 +82,11 @@ function buildInstructions() {
 
 // Seed default workflows into user data dir if none exist yet.
 seedDefaults();
+
+// Seed plugin-owned scaffolding files (common.md, history/user.md,
+// history/bot.md, memory-config.json) so first-time installs land with the
+// Pool B surface populated and the Config UI has real paths to edit.
+ensureDataSeeds(getPluginData());
 
 const INSTRUCTIONS = buildInstructions();
 

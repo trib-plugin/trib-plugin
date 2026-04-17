@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import https from 'https';
 import { DEFAULT_MAINTENANCE, getPluginData } from '../src/agent/orchestrator/config.mjs';
+import { ensureDataSeeds } from '../src/shared/seed.mjs';
 import { syncRootEmbedding, runCycle1, runCycle2 } from '../src/memory/lib/memory-cycle.mjs';
 import { runFullBackfill } from '../src/memory/lib/memory-ops-policy.mjs';
 import { cleanMemoryText } from '../src/memory/lib/memory.mjs';
@@ -87,6 +88,12 @@ try {
     writeFileSync(USER_WORKFLOW_PATH, JSON.stringify(DEFAULT_USER_WORKFLOW, null, 2));
   }
 } catch {}
+
+// Seed plugin-owned scaffolding files (common.md, history/user.md,
+// history/bot.md, memory-config.json). Idempotent — ensureDataSeeds skips
+// anything that already exists, so the agent/index.mjs call and this one
+// can both run without colliding.
+try { ensureDataSeeds(DATA_DIR); } catch {}
 
 // -- Helpers --
 
