@@ -98,7 +98,7 @@ function traceBridgeSse({ sessionId, sseParseMs }) {
     });
 }
 
-function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, model, responseId }) {
+function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, model, responseId, rawUsage }) {
     appendBridgeTrace({
         sessionId,
         iteration,
@@ -111,6 +111,12 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         // openai-oauth when Codex SSE exposes response.id). Not consumed by
         // any continuation logic — the Codex OAuth path is stateless.
         response_id: responseId || null,
+        // Raw provider usage object so we can inspect every cached-token
+        // shape the server might emit (Codex has shown the value under
+        // input_tokens_details.cached_tokens, prompt_tokens_details.cached_tokens,
+        // and sometimes a separate cache_read_input_tokens field on different
+        // edges — normalising downstream consumers requires ground truth).
+        raw_usage: rawUsage || null,
     });
 }
 
