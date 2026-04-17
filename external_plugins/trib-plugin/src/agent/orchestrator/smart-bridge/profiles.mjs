@@ -32,7 +32,7 @@
  */
 
 const UNIFIED_TOOLS = ['full'];
-const UNIFIED_SKIP = { claudemd: false, skills: false, memory: false };
+const UNIFIED_SKIP = { skills: false, memory: false };
 
 function profile(id, taskType, cacheType, fallbackPreset, description, extra = {}) {
     return {

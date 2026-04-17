@@ -824,7 +824,6 @@ const server = http.createServer(async (req, res) => {
         profiles[id] = {
           id,
           taskType: profile.taskType,
-          lifecycle: profile.lifecycle,
           behavior: profile.behavior || null,
           fallbackPreset: profile.fallbackPreset,
           description: profile.description,
@@ -836,7 +835,6 @@ const server = http.createServer(async (req, res) => {
         profiles[id] = {
           id,
           taskType: null,
-          lifecycle: null,
           behavior: null,
           fallbackPreset: null,
           description: '(user profile)',

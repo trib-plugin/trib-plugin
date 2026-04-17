@@ -36,7 +36,7 @@ These baseline values confirm the cross-reviewer's concern: "Pool B permanently 
 4. **Cache assumption expressions downgraded** — Anthropic TTL-refresh-on-hit, minimum cacheable prefix, and OpenAI `prompt_cache_key` durability are now framed as Ship 0 validation targets, not established facts.
 5. **Cycle1 SPOF mitigation** — health-check, retry, and simultaneous-cold-spawn singleflight policy added.
 6. **Mid-session policies explicit** — cwd change and PROJECT.md add/edit during a Worker's lifetime are now explicitly addressed.
-7. **Gemini maintenance exclusion** — changed from "possibly unsuitable" to "excluded in Phase B" given the 5 min TTL vs 10 min cycle mismatch.
+7. **Gemini maintenance eligibility** — TTL raised to 1h, matching the 10 min cycle comfortably. Gemini is now a supported maintenance shard alongside Anthropic and OpenAI.
 8. **Supervisor plan dropped** — the v1.0 §6.7 "Supervisor Hook" is removed. The concept already exists implicitly as `router.mjs` Layer 2 LLM routing (identified during review), and that itself is being removed (see §10).
 9. **`router.mjs` Layer 2 removed** — rule-based routing only.
 10. **Native Agent tool path discontinued for Worker** — all agent spawning (Worker / Sub / Maintenance) goes through the Bridge MCP (`create_session` + `bridge_send`).
@@ -99,7 +99,7 @@ Each provider caches independently, and within a provider, caches are sharded by
 
 - **Anthropic**: one shard per workspace + model. Haiku and Sonnet are separate shards. Within a single model, the logical Pool B is one physical cache entry.
 - **OpenAI**: one shard per `prompt_cache_key`. Role-scoped stable keys (recommended) keep Worker, Sub, etc. within one shard; per-spawn keys fragment them.
-- **Gemini**: explicit `cachedContents` object keyed by content fingerprint. 5 min fixed TTL. One object per prefix shape.
+- **Gemini**: explicit `cachedContents` object keyed by content fingerprint. 1h fixed TTL. One object per prefix shape.
 
 "Permanently warm via cycle1" applies to the **Anthropic shard only**. OpenAI and Gemini behave per their own TTL and warming model.
 
@@ -448,7 +448,7 @@ Existing provider adapters already implement distinct cache mechanisms. Phase B 
 |---------------------|-----------------------------------------------------------|---------------------------------------------|----------------|
 | Anthropic (Claude)  | Explicit `cache_control` with ephemeral TTL               | `anthropic-oauth.mjs`                       | Primary warm shard. Worker / Sub / Maintenance all supported. |
 | OpenAI (GPT)        | Automatic prefix cache + `prompt_cache_key` session tag   | `openai-oauth.mjs`, `openai-compat.mjs`     | Role-scoped stable key (Option A). Cache persistence across close + spawn is a **best-effort**, not a guarantee. |
-| Google (Gemini)     | Explicit cache object via `GoogleAICacheManager`          | `gemini.mjs`                                | **Not used for maintenance in Phase B** (5 min TTL vs 10 min cycle mismatch). Permitted for Sub one-shot calls only. |
+| Google (Gemini)     | Explicit cache object via `GoogleAICacheManager`          | `gemini.mjs`                                | Maintenance-eligible (1h TTL covers the 10 min cycle). Worker / Sub / Maintenance all supported. |
 
 ### 9.1 Ship 0 deliverables
 
@@ -559,7 +559,7 @@ Ship 6 number is not used; skipping prevents confusion in tracking.
 3. **Profile `skip[]` semantics** — `composeSystemPrompt.profile.skip[]` mechanism should port to `buildBridge`. Decide which flags remain meaningful.
 4. **Pool B prefix actual token count** — Ship 0.
 5. **OpenAI `prompt_cache_key` scheme** — Option A recommended; Ship 0 to confirm persistence across close + spawn.
-6. **Gemini viability for Sub** — acceptable under 5 min TTL given Sub's one-shot nature? Ship 0 smoke test.
+6. **Gemini viability for Sub** — resolved: 1h TTL makes Gemini viable for Sub, Worker, and Maintenance roles.
 7. **Bridge.md / Worker.md safe removal** — grep for remaining `Agent(subagent_type: "trib-plugin:Bridge" / "Worker")` usages, confirm all gone before Ship 4 deletion.
 8. **Manual cycle1 Smart Bridge bypass** — `memory/index.mjs` manual cycle1 still calls legacy `callLLM` path (observed 2026-04-16 21:49 KST). Fix in Ship 0 as a prerequisite for any cache validation.
 9. **`/bridge raw` mode** — decide in Ship 2a whether to support `<scope>=raw` that skips Pool B prefix.

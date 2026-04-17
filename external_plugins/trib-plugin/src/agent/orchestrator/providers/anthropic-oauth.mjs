@@ -206,9 +206,6 @@ const EFFORT_BUDGET = {
 const CACHE_TTL_STABLE = { type: 'ephemeral', ttl: '1h' };   // tools, system
 const CACHE_TTL_VOLATILE = { type: 'ephemeral' };             // messages (5m default)
 
-// Legacy alias preserved for callers that don't yet differentiate layers.
-const EPHEMERAL_CACHE_CONTROL = CACHE_TTL_STABLE;
-
 // --- Credential helpers ---
 
 function loadCredentials() {

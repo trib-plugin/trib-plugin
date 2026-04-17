@@ -85,7 +85,7 @@ export function makeBridgeLlm(opts = {}) {
                 tools,
                 usage: result.usage,
             });
-            const prefixHash = smartBridge.registry?.data?.profiles?.[resolved.profile?.id]?.prefixHash || null;
+            const prefixHash = smartBridge.registry?.data?.profiles?.[resolved.profile?.id]?.[resolved.provider]?.prefixHash || null;
 
             if (result.usage) {
                 logLlmCall({

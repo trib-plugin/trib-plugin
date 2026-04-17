@@ -5,7 +5,7 @@ import { getProvider } from '../providers/registry.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
-import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, loadRoleTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
+import { collectSkillsCached, buildSkillToolDefs, loadAgentTemplate, loadRoleTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
@@ -228,7 +228,7 @@ function guessContextWindow(model) {
 // Smart Bridge integration:
 //   opts.taskType / opts.role / opts.profileId — enables profile-aware routing.
 //     Rule-based SmartRouter resolves these synchronously; the resolved
-//     profile controls context filtering (skip.claudemd/skills/etc) and cache
+//     profile controls context filtering (skip.skills/memory/etc) and cache
 //     strategy. If no rule matches, falls back to classic preset behavior.
 //   opts.profile — pre-resolved profile (bypasses router; used by async
 //     callers who already ran SmartBridge.resolve()).
@@ -286,9 +286,6 @@ export function createSession(opts) {
     const bridgeRules = _buildBridgeRules();
     // Project MD (cwd-based, Tier 3 slot).
     const projectContext = collectProjectMd(opts.cwd);
-    // Legacy claudeMd is retained as a fallback when bridgeRules is empty
-    // (e.g. a test harness running without plugin-data initialised).
-    const claudeMd = bridgeRules ? '' : collectClaudeMd(opts.cwd);
 
     // Role template (Phase B §4 — UI-managed). Reads <DATA_DIR>/roles/<role>.md
     // and parses frontmatter (description, permission). The template is
@@ -303,7 +300,6 @@ export function createSession(opts) {
     const { systemTier2, tier3Reminder } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
-        claudeMd: claudeMd || undefined,
         agentTemplate: agentTemplate || undefined,
         roleTemplate: roleTemplate || undefined,
         hasSkills: skills.length > 0,
@@ -723,7 +719,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                             tools: session.tools || [],
                             usage: result.usage,
                         });
-                        const entry = _smartBridgeApi.registry?.data?.profiles?.[session.profileId];
+                        const entry = _smartBridgeApi.registry?.data?.profiles?.[session.profileId]?.[session.provider];
                         prefixHashForLog = entry?.prefixHash || null;
                     }
                 } catch {}

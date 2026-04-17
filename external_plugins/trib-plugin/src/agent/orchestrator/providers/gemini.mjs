@@ -143,7 +143,7 @@ function isPrefixExtension(prevSnapshot, nextSnapshot) {
     return true;
 }
 
-const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
+const GEMINI_CACHE_TTL_MS = 60 * 60 * 1000;
 const GEMINI_CACHE_MIN_TOKENS = 1024;
 
 export class GeminiProvider {

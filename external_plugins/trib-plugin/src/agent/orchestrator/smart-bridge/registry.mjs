@@ -33,8 +33,7 @@ function emptyRegistry() {
     };
 }
 
-// v1 shape: profiles[profileId] = { provider, prefixHash, createdAt, ... }
-// v2 shape: profiles[profileId][provider] = { prefixHash, createdAt, ... }
+// shape: profiles[profileId][provider] = { prefixHash, createdAt, ... }
 function migrateV1ToV2(raw) {
     const migrated = emptyRegistry();
     migrated.openaiKeys = raw.openaiKeys || {};

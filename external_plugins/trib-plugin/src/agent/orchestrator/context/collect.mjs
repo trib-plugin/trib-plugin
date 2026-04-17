@@ -1,44 +1,6 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-// --- CLAUDE.md collection ---
-/**
- * Collect CLAUDE.md files in priority order (same as Claude Code):
- *   1. ~/.claude/CLAUDE.md (user global)
- *   2. CLAUDE.md (project root)
- *   3. .claude/CLAUDE.md
- *   4. .claude/rules/*.md
- *   5. CLAUDE.local.md
- */
-export function collectClaudeMd(cwd) {
-    const projectDir = cwd || process.cwd();
-    const parts = [];
-    const paths = [
-        join(homedir(), '.claude', 'CLAUDE.md'),
-        join(projectDir, 'CLAUDE.md'),
-        join(projectDir, '.claude', 'CLAUDE.md'),
-        join(projectDir, 'CLAUDE.local.md'),
-    ];
-    for (const p of paths) {
-        const content = readSafe(p);
-        if (content)
-            parts.push(`<!-- ${p} -->\n${content}`);
-    }
-    // .claude/rules/*.md
-    const rulesDir = join(projectDir, '.claude', 'rules');
-    if (existsSync(rulesDir)) {
-        try {
-            const files = readdirSync(rulesDir).filter(f => f.endsWith('.md')).sort();
-            for (const f of files) {
-                const content = readSafe(join(rulesDir, f));
-                if (content)
-                    parts.push(`<!-- ${f} -->\n${content}`);
-            }
-        }
-        catch { /* ignore */ }
-    }
-    return parts.join('\n\n---\n\n');
-}
 // --- Agent template loading ---
 /**
  * Load an agent MD file (Worker.md, Reviewer.md, etc.) as session instructions.
@@ -228,8 +190,7 @@ export function loadRoleTemplate(role, dataDir) {
 //
 // Tier 2 (BP_2 cache): plugin-lifetime invariant content only.
 //   - opts.bridgeRules    : rules-builder buildBridgeInjectionContent output
-//                           (preferred; Pool B roles share bit-identical prefix)
-//   - opts.claudeMd       : fallback when caller hasn't migrated to bridgeRules
+//                           (Pool B roles share bit-identical prefix)
 //   - opts.userPrompt     : explicit systemPrompt override from callsite
 //
 // Tier 3 (messages, no cache_control): role / session / project variance.
@@ -251,8 +212,6 @@ export function composeSystemPrompt(opts) {
     const tier2Parts = [];
     if (opts.bridgeRules) {
         tier2Parts.push(opts.bridgeRules);
-    } else if (opts.claudeMd && !skip.claudemd) {
-        tier2Parts.push('# Project Instructions\n\n' + opts.claudeMd);
     }
     if (opts.userPrompt) {
         tier2Parts.push(opts.userPrompt);
