@@ -747,7 +747,6 @@
   <div class="cat-bar">
     <div class="cat-label">General</div>
     <div class="cat-item" data-panel="general-injection" onclick="switchCat(this)">Injection Mode</div>
-    <div class="cat-item" data-panel="general-md" onclick="switchCat(this)">MD Library</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Channels</div>
     <div class="cat-item active" data-panel="connection" onclick="switchCat(this)">Connection</div>
@@ -1424,40 +1423,6 @@
       </div>
     </div>
 
-    <!-- GENERAL MD LIBRARY (Phase B Ship 7) -->
-    <div class="panel" id="panel-general-md">
-      <div class="hdr"><h1>MD Library</h1></div>
-
-      <div class="sec">
-        <div class="sec-title">Common MD</div>
-        <div class="sec-desc">Shared across every Bridge session (Tier 2 / BP_2). Applies to Worker, Sub, and Maintenance prefixes. Keep it small and stable — every edit invalidates the Pool B warm cache.</div>
-        <div class="sec-body" style="padding:0 14px">
-          <textarea id="md-common-content" class="r-input" style="width:100%;min-height:180px;font-family:monospace;font-size:12px" placeholder="Common instructions shared across all bridge sessions..."></textarea>
-        </div>
-        <div class="save-area">
-          <div class="warn-msg" id="warn-md-common"></div>
-          <button class="save" onclick="mdSaveCommon()">Save Common</button>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Project MDs</div>
-        <div class="sec-desc">Per-project PROJECT.md files — injected into Tier 3 <code>#&nbsp;project-context</code> slot when the session cwd matches the path. Deleting from this list only removes the registry entry; the on-disk PROJECT.md file stays.</div>
-        <div id="md-project-list"></div>
-        <div class="save-area">
-          <button class="save" onclick="mdAddProject()">+ Add Project</button>
-        </div>
-      </div>
-
-      <div class="sec">
-        <div class="sec-title">Roles</div>
-        <div class="sec-desc">Per-role MD files — injected into Tier 3 <code>#&nbsp;agent-role</code> slot. Description and permission go into the message block, never the cached prefix. Permission categories (read / read-write) are defined in <code>common.md</code> §15.</div>
-        <div id="md-role-list"></div>
-        <div class="save-area">
-          <button class="save" onclick="mdAddRole()">+ Add Role</button>
-        </div>
-      </div>
-    </div>
 
     <!-- CUSTOM WORKFLOW -->
     <div class="panel" id="panel-workflow-custom">
@@ -1657,257 +1622,9 @@ async function genSavePanel() {
   }
 }
 
-// ============================================================
-// MD LIBRARY MODULE (Phase B Ship 7)
-// ============================================================
-
-async function mdLoadAll() {
-  try {
-    const [cr, pr, rr] = await Promise.all([
-      fetch('/md/common').then(r => r.json()),
-      fetch('/md/project').then(r => r.json()),
-      fetch('/md/role').then(r => r.json()),
-    ]);
-    const commonEl = document.getElementById('md-common-content');
-    if (commonEl) commonEl.value = cr?.content || '';
-    mdRenderProjects(pr?.items || []);
-    mdRenderRoles(rr?.items || []);
-  } catch {
-    /* ignore */
-  }
-}
-
-function mdRenderProjects(items) {
-  const host = document.getElementById('md-project-list');
-  if (!host) return;
-  host.innerHTML = '';
-  items.forEach((item, idx) => {
-    const row = document.createElement('div');
-    row.className = 'r';
-    row.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;padding:10px 14px;border-top:1px solid var(--border)';
-    row.innerHTML =
-      '<div style="display:flex;gap:6px;align-items:center">'
-      + `<input class="r-input" style="flex:1;font-family:monospace;font-size:12px" id="md-proj-path-${idx}" placeholder="e.g. C:\\Project\\GamerScroll" value="${(item.path || '').replace(/"/g, '&quot;')}" />`
-      + `<button class="r-btn" onclick="mdSaveProject(${idx})">Save</button>`
-      + `<button class="r-btn" style="color:var(--danger)" onclick="mdDeleteProject(${idx})">×</button>`
-      + '</div>'
-      + `<textarea class="r-input" style="width:100%;min-height:120px;font-family:monospace;font-size:12px" id="md-proj-content-${idx}" placeholder="PROJECT.md content for this path...">${(item.content || '').replace(/</g, '&lt;')}</textarea>`;
-    host.appendChild(row);
-  });
-}
-
-function mdAddProject() {
-  const host = document.getElementById('md-project-list');
-  if (!host) return;
-  const items = [];
-  host.querySelectorAll(':scope > .r').forEach((el, idx) => {
-    const pe = el.querySelector(`#md-proj-path-${idx}`);
-    const ce = el.querySelector(`#md-proj-content-${idx}`);
-    items.push({ path: pe?.value || '', content: ce?.value || '' });
-  });
-  items.push({ path: '', content: '' });
-  mdRenderProjects(items);
-}
-
-async function mdSaveCommon() {
-  const content = document.getElementById('md-common-content')?.value ?? '';
-  const warnEl = document.getElementById('warn-md-common');
-  if (warnEl) warnEl.textContent = '';
-  try {
-    const r = await fetch('/md/common', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    }).then(r => r.json());
-    if (!r?.ok && warnEl) warnEl.textContent = r?.error || 'Save failed';
-    else if (warnEl) warnEl.textContent = 'Saved.';
-  } catch (err) {
-    if (warnEl) warnEl.textContent = 'Save failed: ' + (err?.message || 'network error');
-  }
-}
-
-async function mdSaveProject(idx) {
-  const pathEl = document.getElementById(`md-proj-path-${idx}`);
-  const contentEl = document.getElementById(`md-proj-content-${idx}`);
-  const cwd = (pathEl?.value || '').trim();
-  const content = contentEl?.value ?? '';
-  if (!cwd) {
-    alert('Path is required.');
-    return;
-  }
-  try {
-    const r = await fetch('/md/project', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: cwd, content }),
-    }).then(r => r.json());
-    if (!r?.ok) {
-      alert('Save failed: ' + (r?.error || 'unknown'));
-      return;
-    }
-    await mdLoadAll();
-  } catch (err) {
-    alert('Save failed: ' + (err?.message || 'network error'));
-  }
-}
-
-async function mdDeleteProject(idx) {
-  const pathEl = document.getElementById(`md-proj-path-${idx}`);
-  const cwd = (pathEl?.value || '').trim();
-  if (!cwd) {
-    // Not yet registered — just drop the row locally.
-    const host = document.getElementById('md-project-list');
-    const items = [];
-    host.querySelectorAll(':scope > .r').forEach((el, i) => {
-      if (i === idx) return;
-      const pe = el.querySelector(`#md-proj-path-${i}`);
-      const ce = el.querySelector(`#md-proj-content-${i}`);
-      items.push({ path: pe?.value || '', content: ce?.value || '' });
-    });
-    mdRenderProjects(items);
-    return;
-  }
-  if (!confirm(`Remove "${cwd}" from the registry?\n\nThe PROJECT.md file on disk will NOT be deleted.`)) return;
-  try {
-    await fetch('/md/project?path=' + encodeURIComponent(cwd), { method: 'DELETE' });
-    await mdLoadAll();
-  } catch (err) {
-    alert('Delete failed: ' + (err?.message || 'network error'));
-  }
-}
-
-// --- Roles (Phase B §4) ---
-
-function mdRenderRoles(items) {
-  const host = document.getElementById('md-role-list');
-  if (!host) return;
-  host.innerHTML = '';
-  items.forEach((item, idx) => {
-    const row = document.createElement('div');
-    row.className = 'r';
-    row.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;padding:10px 14px;border-top:1px solid var(--border)';
-    const nameVal = (item.name || '').replace(/"/g, '&quot;');
-    const descVal = (item.description || '').replace(/</g, '&lt;');
-    const bodyVal = (item.body || '').replace(/</g, '&lt;');
-    const perm = (item.permission || 'read').toLowerCase();
-    const isOpen = !item.name; // newly added rows start expanded
-    row.innerHTML =
-      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
-      + `<input class="r-input" style="flex:1;min-width:140px;font-family:monospace;font-size:12px" id="md-role-name-${idx}" placeholder="role-name (e.g. reviewer)" value="${nameVal}" />`
-      + `<select class="r-input" style="width:140px;font-size:12px" id="md-role-perm-${idx}">`
-      +   `<option value="read"${perm === 'read' ? ' selected' : ''}>read</option>`
-      +   `<option value="read-write"${perm === 'read-write' ? ' selected' : ''}>read-write</option>`
-      + '</select>'
-      + `<button class="r-btn" onclick="mdToggleRoleDesc(${idx})" id="md-role-toggle-${idx}">${isOpen ? 'Description ▾' : 'Description ▸'}</button>`
-      + `<button class="r-btn" onclick="mdSaveRole(${idx})">Save</button>`
-      + `<button class="r-btn" style="color:var(--danger)" onclick="mdDeleteRole(${idx})">×</button>`
-      + '</div>'
-      + `<div id="md-role-desc-wrap-${idx}" style="display:${isOpen ? 'block' : 'none'}">`
-      +   `<textarea class="r-input" style="width:100%;min-height:60px;font-family:inherit;font-size:12px;margin-top:4px" id="md-role-desc-${idx}" placeholder="Description shown to the agent in the Tier 3 system-reminder...">${descVal}</textarea>`
-      +   `<textarea class="r-input" style="width:100%;min-height:80px;font-family:monospace;font-size:12px;margin-top:4px" id="md-role-body-${idx}" placeholder="Optional extra instructions (markdown body)...">${bodyVal}</textarea>`
-      + '</div>';
-    host.appendChild(row);
-  });
-}
-
-function mdToggleRoleDesc(idx) {
-  const wrap = document.getElementById(`md-role-desc-wrap-${idx}`);
-  const btn = document.getElementById(`md-role-toggle-${idx}`);
-  if (!wrap || !btn) return;
-  const open = wrap.style.display !== 'none';
-  wrap.style.display = open ? 'none' : 'block';
-  btn.textContent = open ? 'Description ▸' : 'Description ▾';
-}
-
-function mdAddRole() {
-  const host = document.getElementById('md-role-list');
-  if (!host) return;
-  const items = [];
-  host.querySelectorAll(':scope > .r').forEach((el, idx) => {
-    const ne = el.querySelector(`#md-role-name-${idx}`);
-    const de = el.querySelector(`#md-role-desc-${idx}`);
-    const pe = el.querySelector(`#md-role-perm-${idx}`);
-    const be = el.querySelector(`#md-role-body-${idx}`);
-    items.push({
-      name: ne?.value || '',
-      description: de?.value || '',
-      permission: pe?.value || 'read',
-      body: be?.value || '',
-    });
-  });
-  items.push({ name: '', description: '', permission: 'read', body: '' });
-  mdRenderRoles(items);
-}
-
-async function mdSaveRole(idx) {
-  const ne = document.getElementById(`md-role-name-${idx}`);
-  const de = document.getElementById(`md-role-desc-${idx}`);
-  const pe = document.getElementById(`md-role-perm-${idx}`);
-  const be = document.getElementById(`md-role-body-${idx}`);
-  const name = (ne?.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  if (!name) {
-    alert('Role name is required (lowercase letters, digits, _ or -).');
-    return;
-  }
-  const description = (de?.value || '').trim();
-  const permission = (pe?.value || 'read').trim().toLowerCase();
-  const body = (be?.value || '').trim();
-  try {
-    const r = await fetch('/md/role', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description, permission, body }),
-    }).then(r => r.json());
-    if (!r?.ok) {
-      alert('Save failed: ' + (r?.error || 'unknown'));
-      return;
-    }
-    await mdLoadAll();
-  } catch (err) {
-    alert('Save failed: ' + (err?.message || 'network error'));
-  }
-}
-
-async function mdDeleteRole(idx) {
-  const ne = document.getElementById(`md-role-name-${idx}`);
-  const name = (ne?.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  if (!name) {
-    // Not yet saved — drop locally.
-    const host = document.getElementById('md-role-list');
-    const items = [];
-    host.querySelectorAll(':scope > .r').forEach((el, i) => {
-      if (i === idx) return;
-      const ne2 = el.querySelector(`#md-role-name-${i}`);
-      const de2 = el.querySelector(`#md-role-desc-${i}`);
-      const pe2 = el.querySelector(`#md-role-perm-${i}`);
-      const be2 = el.querySelector(`#md-role-body-${i}`);
-      items.push({
-        name: ne2?.value || '',
-        description: de2?.value || '',
-        permission: pe2?.value || 'read',
-        body: be2?.value || '',
-      });
-    });
-    mdRenderRoles(items);
-    return;
-  }
-  if (!confirm(`Delete role "${name}"?\n\nThis removes <data>/roles/${name}.md from disk.`)) return;
-  try {
-    await fetch('/md/role?name=' + encodeURIComponent(name), { method: 'DELETE' });
-    await mdLoadAll();
-  } catch (err) {
-    alert('Delete failed: ' + (err?.message || 'network error'));
-  }
-}
-
-// Auto-load on startup so switchCat-transitions surface pre-populated content.
-if (typeof document !== 'undefined') {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mdLoadAll);
-  } else {
-    mdLoadAll();
-  }
-}
+// MD Library module removed — role MD editing is now in the Custom
+// Workflow panel, Common MD is plugin-fixed (rules/agent.md) and not
+// user-editable, and Project MDs are no longer part of the UI.
 
 // ============================================================
 // CUSTOM WORKFLOW MODULE
@@ -1918,14 +1635,21 @@ let wfMdContent = "";
 
 async function wfLoadConfig() {
   try {
-    const [jsonRes, mdRes] = await Promise.all([
+    const [jsonRes, mdRes, rolesMdRes] = await Promise.all([
       fetch('/workflow/load'),
       fetch('/workflow/md'),
+      fetch('/md/role'),
       agPresets.length ? Promise.resolve() : agLoadPresets(),
     ]);
     const data = await jsonRes.json();
     wfConfig.roles = Array.isArray(data.roles) ? data.roles : [];
     wfMdContent = mdRes.ok ? await mdRes.text() : "";
+    const rolesMdData = rolesMdRes.ok ? await rolesMdRes.json() : { items: [] };
+    const mdByName = {};
+    for (const it of (rolesMdData.items || [])) mdByName[it.name] = it.body || '';
+    for (const r of wfConfig.roles) {
+      r.md = mdByName[(r.name || '').trim().toLowerCase()] || '';
+    }
   } catch {
     wfConfig.roles = [];
     wfMdContent = "";
@@ -1938,8 +1662,16 @@ function wfRenderRoles() {
   const host = document.getElementById('wf-roles');
   host.innerHTML = '';
   wfConfig.roles.forEach((role, idx) => {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--border);border-radius:6px;background:rgba(255,255,255,0.02);';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;gap:6px;align-items:center;padding:6px;';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.textContent = role._open ? '▼' : '▶';
+    toggleBtn.style.cssText = 'width:24px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:10px;';
+
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
     nameInput.value = role.name || '';
@@ -1947,6 +1679,7 @@ function wfRenderRoles() {
     nameInput.className = 'r-input';
     nameInput.style.cssText = 'flex:1;height:30px;';
     nameInput.oninput = (e) => { wfConfig.roles[idx].name = e.target.value; isDirty = true; };
+
     const presetSelect = document.createElement('select');
     presetSelect.className = 'r-select md';
     presetSelect.style.cssText = 'width:160px;height:30px;';
@@ -1958,26 +1691,52 @@ function wfRenderRoles() {
       presetSelect.appendChild(opt);
     });
     presetSelect.onchange = (e) => { wfConfig.roles[idx].preset = e.target.value; isDirty = true; };
+
     const delBtn = document.createElement('button');
     delBtn.textContent = '×';
     delBtn.style.cssText = 'width:30px;height:30px;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-3);cursor:pointer;font-size:14px;';
     delBtn.onclick = () => wfDeleteRole(idx);
-    row.appendChild(nameInput);
-    row.appendChild(presetSelect);
-    row.appendChild(delBtn);
-    host.appendChild(row);
+
+    header.appendChild(toggleBtn);
+    header.appendChild(nameInput);
+    header.appendChild(presetSelect);
+    header.appendChild(delBtn);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:0 6px 6px 6px;display:' + (role._open ? 'block' : 'none') + ';';
+    const mdTextarea = document.createElement('textarea');
+    mdTextarea.className = 'r-input';
+    mdTextarea.placeholder = 'Role-specific MD (injected into Tier 3 # agent-role slot)';
+    mdTextarea.style.cssText = 'width:100%;min-height:120px;font-family:monospace;font-size:12px;resize:vertical;';
+    mdTextarea.value = role.md || '';
+    mdTextarea.oninput = (e) => { wfConfig.roles[idx].md = e.target.value; isDirty = true; };
+    body.appendChild(mdTextarea);
+
+    toggleBtn.onclick = () => {
+      wfConfig.roles[idx]._open = !wfConfig.roles[idx]._open;
+      wfRenderRoles();
+    };
+
+    card.appendChild(header);
+    card.appendChild(body);
+    host.appendChild(card);
   });
 }
 
 function wfAddRole() {
-  wfConfig.roles.push({ name: '', preset: agPresets[0]?.id || 'opus-max' });
+  wfConfig.roles.push({ name: '', preset: agPresets[0]?.id || 'opus-max', md: '', _open: true });
   isDirty = true;
   wfRenderRoles();
 }
 
 function wfDeleteRole(idx) {
+  const name = (wfConfig.roles[idx].name || '').trim().toLowerCase();
   wfConfig.roles.splice(idx, 1);
   isDirty = true;
+  // Best-effort: remove the role MD file on disk too.
+  if (name) {
+    fetch('/md/role?name=' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => {});
+  }
   wfRenderRoles();
 }
 
@@ -1987,20 +1746,37 @@ async function wfSavePanel() {
   warnEl.textContent = '';
   const mdText = document.getElementById('wf-description').value;
   try {
-    const [r1, r2] = await Promise.all([
+    // Strip UI-only fields (_open, md) from the payload that lands in
+    // user-workflow.json. The md body is persisted separately per role.
+    const rolesPayload = wfConfig.roles.map(r => {
+      const { _open, md, ...rest } = r;
+      return rest;
+    });
+    const roleMdPosts = wfConfig.roles
+      .filter(r => (r.name || '').trim())
+      .map(r => fetch('/md/role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: r.name, body: r.md || '' }),
+      }));
+    const [r1, r2, ...mdResults] = await Promise.all([
       fetch('/workflow/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roles: wfConfig.roles })
+        body: JSON.stringify({ roles: rolesPayload })
       }),
       fetch('/workflow/md', {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
         body: mdText
       }),
+      ...roleMdPosts,
     ]);
     if (!r1.ok) throw new Error(await r1.text());
     if (!r2.ok) throw new Error(await r2.text());
+    for (const mr of mdResults) {
+      if (!mr.ok) throw new Error(await mr.text());
+    }
     wfMdContent = mdText;
     btn.classList.add('done');
     btn.textContent = 'Saved';

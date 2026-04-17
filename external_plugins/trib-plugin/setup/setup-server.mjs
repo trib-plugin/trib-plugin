@@ -43,7 +43,12 @@ const DEFAULT_USER_WORKFLOW = {
   ],
 };
 
-const DEFAULT_USER_WORKFLOW_MD = "";
+const DEFAULT_USER_WORKFLOW_MD = `- worker: general implementation tasks
+- reviewer: code review
+- debugger: debugging and issue investigation
+- researcher: research and exploration
+- tester: runtime testing and validation
+`;
 
 // -- Memory paths --
 const MEMORY_DATA_DIR = DATA_DIR;
@@ -80,16 +85,21 @@ const HTML_PATH = join(__dirname, 'setup.html');
 // (e.g. Codex /backend-api/codex/models returning just one model).
 try { rmSync(join(getPluginData(), 'openai-oauth-models.json'), { force: true }); } catch {}
 
-// Seed user-workflow.json on first launch so Smart Bridge has sensible
-// role→preset mappings out of the box. Leaves existing files untouched.
+// Seed user-workflow.json and user-workflow.md on first launch so Smart
+// Bridge has sensible role→preset mappings and the Lead has a baseline
+// workflow description out of the box. Leaves existing files untouched.
 try {
   if (!existsSync(USER_WORKFLOW_PATH)) {
     mkdirSync(DATA_DIR, { recursive: true });
     writeFileSync(USER_WORKFLOW_PATH, JSON.stringify(DEFAULT_USER_WORKFLOW, null, 2));
   }
+  if (!existsSync(USER_WORKFLOW_MD_PATH)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(USER_WORKFLOW_MD_PATH, DEFAULT_USER_WORKFLOW_MD);
+  }
 } catch {}
 
-// Seed plugin-owned scaffolding files (common.md, memory-config.json).
+// Seed plugin-owned scaffolding files (memory-config.json, etc.).
 // Idempotent — ensureDataSeeds skips
 // anything that already exists, so the agent/index.mjs call and this one
 // can both run without colliding.
@@ -1516,36 +1526,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ============================================================
-  // MD LIBRARY ROUTES (Phase B Ship 7) — Common MD + Project MD
+  // MD LIBRARY ROUTES — Project MD + per-role MD (Common MD moved to
+  // plugin rules/agent.md and is no longer user-editable).
   // ============================================================
-
-  if (req.method === 'GET' && path === '/md/common') {
-    const p = join(getPluginData(), 'common.md');
-    let content = '';
-    try { content = readFileSync(p, 'utf8'); } catch {}
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ content }));
-    return;
-  }
-
-  if (req.method === 'POST' && path === '/md/common') {
-    let raw = '';
-    await new Promise((resolve, reject) => {
-      req.on('data', c => { raw += c; });
-      req.on('end', resolve);
-      req.on('error', reject);
-    });
-    let content;
-    try { content = JSON.parse(raw).content; } catch { content = raw; }
-    content = String(content ?? '');
-    const p = join(getPluginData(), 'common.md');
-    mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, content, 'utf8');
-    console.log('  Config saved: common.md');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
 
   if (req.method === 'GET' && path === '/md/project') {
     const indexPath = join(getPluginData(), 'project-md-index.json');

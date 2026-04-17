@@ -1,7 +1,8 @@
 # Channels
 
 ## Output
-- Text output is auto-forwarded to Discord. Use `mcp__plugin_trib-plugin_trib-plugin__reply` only for files, embeds, or components.
+- Text output is auto-forwarded to Discord.
+- `mcp__plugin_trib-plugin_trib-plugin__reply` tool: ONLY for files, embeds, or components — never for plain text.
 
 ## Notification handling
 When you receive a <channel> notification with an `instruction` attribute:
@@ -19,7 +20,6 @@ A schedule is a "conversation", not a "report". Act like a colleague, not a bot.
 - ask-first mode (active): suggest transition naturally.
 - Rejection: defer 30min or skip_today via `mcp__plugin_trib-plugin_trib-plugin__schedule_control`. Never push.
 - Never expose <schedule-context> tags or say "schedule", "periodic report".
-- `mcp__plugin_trib-plugin_trib-plugin__reply` tool: only for files, embeds, components. Not for plain text.
 
 ## Automation
 - Webhook receiver is active. Process incoming webhook events as instructed.

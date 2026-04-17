@@ -14,22 +14,9 @@ import { dirname, join } from 'path';
 // real content. The user fills it in. `existsSync()` gates every write so
 // a second boot never overwrites user edits.
 const SEEDS = {
-    'common.md': `# Common Guidelines
+    // agent.md lives in plugin rules/ (plugin-fixed, not user-editable),
+    // so no data-dir seed for it.
 
-<!--
-This file is injected into every Bridge (Worker / Sub / Maintenance) system
-prompt. Keep it to project-wide rules that every Pool B agent should honour.
-
-Kept short because it lives inside the BP_2 cache block; long essays churn
-the Anthropic prefix hash every time you edit them. The Config UI's General
-tab edits this file directly.
-
-Example:
-  - Prefer clarity over cleverness.
-  - Ask before touching production systems.
-  - All code comments in English.
--->
-`,
 
     // Phase E: history/user.md and history/bot.md seeds removed.
     // User/bot persona now lives in user-workflow.json role configs and

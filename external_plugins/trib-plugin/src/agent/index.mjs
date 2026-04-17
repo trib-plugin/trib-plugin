@@ -164,7 +164,7 @@ function buildInstructions() {
 // Seed default workflows into user data dir if none exist yet.
 seedDefaults();
 
-// Seed plugin-owned scaffolding files (common.md, memory-config.json) so
+// Seed plugin-owned scaffolding files (memory-config.json, etc.) so
 // first-time installs land with the Pool B surface populated and the Config
 // UI has real paths to edit.
 ensureDataSeeds(getPluginData());
@@ -334,19 +334,18 @@ const TOOLS = [
   {
     name: 'bridge',
     title: 'Ask External Model',
-    description: 'Send a prompt to an external AI model. Returns immediately with jobId. Result delivered via notification. Scope determines the default preset (reviewer/debugger→GPT5.4, explorer→gpt5.4-mini). Smart Bridge routing: scope maps to a role → profile (cache strategy, context filtering). Use taskType for explicit routing.',
+    description: 'Send a prompt to an external AI model via Smart Bridge. The role field resolves to a preset via user-workflow.json, which in turn maps to model/provider. Returns immediately with jobId; result delivered via notification.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The prompt to send (or use ref/file instead)' },
+        role: { type: 'string', description: 'Role primitive only: worker, reviewer, researcher, debugger, tester. Mapped to preset via user-workflow.json. No suffix variants accepted.' },
         ref: { type: 'string', description: 'Reference key from prompt store' },
         file: { type: 'string', description: 'Read prompt from this file path' },
-        scope: { type: 'string', description: 'Agent scope: reviewer, debugger, explorer, etc. Also drives Smart Bridge role resolution.' },
-        preset: { type: 'string', description: 'Override preset name (e.g., GPT5.4, gpt5.4-mini)' },
         context: { type: 'string', description: 'Additional context to prepend' },
-        taskType: { type: 'string', description: 'Smart Bridge task type: "maintenance", "researcher", "reviewer", "one-shot", etc. Optional; scope already implies a role.' },
         cwd: { type: 'string', description: 'Working directory for agent tool execution. Defaults to MCP server cwd.' },
       },
+      required: ['prompt', 'role'],
     },
   },
 ];
@@ -678,53 +677,40 @@ export async function handleToolCall(name, args, opts = {}) {
           _promptStore.delete(args.ref);
         }
         if (!prompt) return fail('prompt, file, or ref is required');
+        if (!args.role) return fail('role is required');
 
         const config = loadConfig();
-        // Load role→preset mapping from user-workflow.json
+        // Load role→preset mapping from user-workflow.json. Role primitives only —
+        // no suffix variants, exact match required.
         const wfPath = join(getPluginData(), 'user-workflow.json');
         let rolePresets = {};
         try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
-        // Resolve scope → preset: exact match first, then prefix ("reviewer-a" → "reviewer")
-        const resolvedPreset = args.scope && (rolePresets[args.scope] || rolePresets[Object.keys(rolePresets).find((k) => args.scope.startsWith(k + '-')) || '']);
-        const presetName = args.preset || resolvedPreset || null;
+        const presetName = rolePresets[args.role];
+        if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json`);
 
-        let preset = null;
-        if (presetName) {
-          preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
-          if (!preset) return fail(`preset "${presetName}" not found`);
-        } else {
-          preset = getDefaultPreset(config);
-          if (!preset) return fail('No preset specified and no default configured');
-        }
+        let preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
+        if (!preset) return fail(`preset "${presetName}" (mapped from role "${args.role}") not found in agent-config.json`);
         if (preset?.type === 'native') {
           const { translateNativePreset } = await import('./orchestrator/smart-bridge/index.mjs');
           preset = translateNativePreset(preset);
         }
 
-        const scope = args.scope || 'default';
+        const role = args.role;
         const effectiveLane = 'bridge';
         const runtimeSpec = resolveRuntimeSpec(preset, {
           lane: effectiveLane,
-          agentId: effectiveLane === 'bridge' ? scope : undefined,
+          agentId: role,
         });
-
-        // Map scope → role so Smart Bridge resolveSync can pick a profile.
-        // Scope examples: "reviewer", "reviewer-a", "debugger" — strip any "-a/-b/-c"
-        // suffix to align with user-workflow.json role names.
-        const smartRole = args.scope
-          ? String(args.scope).replace(/-[a-z0-9]+$/i, '')
-          : null;
 
         const effectiveCwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd();
         const createFreshSession = () => createSession({
           preset,
-          owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
+          owner: 'bridge',
           scopeKey: runtimeSpec.scopeKey,
           lane: runtimeSpec.lane,
           cwd: effectiveCwd,
-          // Smart Bridge fields — resolveSync picks a profile if the role matches.
-          role: smartRole || undefined,
-          taskType: args.taskType || undefined,
+          // Smart Bridge resolveSync picks a profile from the role.
+          role,
         });
         const found = findOrCreateSession(runtimeSpec.scopeKey, createFreshSession);
         // resumeSession returns null for tombstoned / unresumable sessions.
@@ -755,7 +741,6 @@ export async function handleToolCall(name, args, opts = {}) {
         }
 
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const scopeLabel = args.scope || 'default';
         const modelLabel = preset.model || preset.name;
         const emit = notifyFn || (() => {});
 
@@ -766,7 +751,7 @@ export async function handleToolCall(name, args, opts = {}) {
           let result = null;
           const toolCallLog = [];
           updateSessionStatus(session.id, 'running');
-          emit(`[${scopeLabel}] started · ${modelLabel}`);
+          emit(`[${role}] started · ${modelLabel}`);
           try {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, effectiveCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -775,18 +760,18 @@ export async function handleToolCall(name, args, opts = {}) {
             const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
             const content = result.content || '(empty response)';
             const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
-            emit(`[${scopeLabel}] ${content}\n\n${footer}`);
+            emit(`[${role}] ${content}\n\n${footer}`);
             updateSessionStatus(session.id, 'idle');
           } catch (err) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
             if (err instanceof SessionClosedError) {
-              emit(`[${scopeLabel}] ⏹ cancelled\n\n${modelLabel}`);
+              emit(`[${role}] ⏹ cancelled\n\n${modelLabel}`);
             } else if (err instanceof StreamStalledAbortError) {
               const info = err.info || {};
               const header = `⚠ stream stalled — ${info.staleSeconds}s no delta (stage: ${info.stage || 'unknown'})`;
               const body = `last tool call: ${info.lastToolCall || 'none'}\nprovider likely hung. Retry with a shorter prompt or a different provider.`;
-              emit(`[${scopeLabel}] ${header}\n${body}\n\n${modelLabel}`);
+              emit(`[${role}] ${header}\n${body}\n\n${modelLabel}`);
               updateSessionStatus(session.id, 'error');
             } else if (err instanceof ToolLoopAbortError) {
               const info = err.info || {};
@@ -796,10 +781,10 @@ export async function handleToolCall(name, args, opts = {}) {
                 `last error: ${String(info.errorSample || '').slice(0, 200)}`,
                 `args: ${String(info.argsSample || '').slice(0, 200)}`,
               ].join('\n');
-              emit(`[${scopeLabel}] ${header}\n${body}\n\n${modelLabel}`);
+              emit(`[${role}] ${header}\n${body}\n\n${modelLabel}`);
               updateSessionStatus(session.id, 'error');
             } else {
-              emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
+              emit(`[${role}] ❌ ${errorMessage}\n\n${modelLabel}`);
               updateSessionStatus(session.id, 'error');
             }
           } finally {
@@ -808,8 +793,8 @@ export async function handleToolCall(name, args, opts = {}) {
               if (cfg.trajectory?.enabled !== false) {
                 recordTrajectory({
                   session_id: session.id,
-                  scope: scopeLabel,
-                  preset: presetName || preset.name,
+                  scope: role,
+                  preset: presetName,
                   model: modelLabel,
                   agent_type: 'bridge',
                   tool_calls_json: JSON.stringify(toolCallLog),
@@ -825,7 +810,7 @@ export async function handleToolCall(name, args, opts = {}) {
           }
         })();
 
-        return ok(`${jobId} · ${scopeLabel} · ${modelLabel}`);
+        return ok(`${jobId} · ${role} · ${modelLabel}`);
       }
 
       default:

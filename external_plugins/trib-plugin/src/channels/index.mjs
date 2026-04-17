@@ -462,8 +462,7 @@ async function startOwnerHttpServer() {
           const bridgeFile = body.file;
           const bridgePrompt = body.prompt;
           const bridgeRef = body.ref;
-          const bridgeScope = body.scope || "default";
-          const bridgePreset = body.preset;
+          const bridgeRole = body.role;
           const bridgeContext = body.context;
           let bridgePromptFinal = bridgePrompt;
           if (!bridgePromptFinal && bridgeFile) {
@@ -478,8 +477,7 @@ async function startOwnerHttpServer() {
             const toolArgs = {};
             if (bridgePromptFinal) toolArgs.prompt = bridgePromptFinal;
             if (bridgeRef) toolArgs.ref = bridgeRef;
-            if (bridgeScope) toolArgs.scope = bridgeScope;
-            if (bridgePreset) toolArgs.preset = bridgePreset;
+            if (bridgeRole) toolArgs.role = bridgeRole;
             if (bridgeContext) toolArgs.context = bridgeContext;
             const notifyFn = text => {
               sendNotifyToParent("notifications/claude/channel", {

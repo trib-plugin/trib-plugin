@@ -1,24 +1,26 @@
 'use strict';
 
 /**
- * trib-plugin rules builder (pure function extracted from hooks/session-start.cjs).
+ * trib-plugin rules builder.
  *
  * Builds the injection content string that either the SessionStart hook
  * (hook mode) or the MCP boot-time writer (claude_md mode) uses.
  *
- * Injection order for static rules (core memory snapshot and session recap
- * are injected separately by hooks/session-start.cjs from memory.sqlite):
- *   1. user-workflow.md (always)
- *   1a. user workflow (scopes from agent-config.json + description from user-workflow.md)
- *   2. memory.md     (when memory-config.json has enabled)
- *   3. channels.md   (when channel backend configured)
- *   4. search.md     (when search-config.json has enabled)
- *   5. team.md       (always)
- *   6. models        (from agent-config.json presets)
- *   7. user profile  (history/user.md, auto-wrapped as "# User Profile")
- *   8. bot persona   (history/bot.md, auto-wrapped as "# Bot Persona")
- *   9. user name     (from memory-config.json user.name)
- *  10. user title    (from memory-config.json user.title)
+ * Pool A injection order (lead):
+ *   1.  general.md        (rules/general.md)
+ *   2.  memory.md         (when memory-config.json has enabled)
+ *   3.  search.md         (when search-config.json has enabled)
+ *   4.  channels.md       (rules/channels.md)
+ *   5.  team.md           (rules/team.md)
+ *   6.  workflow.md       (rules/workflow.md)
+ *   7.  # Roles           (auto-rendered from DATA_DIR/user-workflow.json)
+ *   8.  # User Workflow   (DATA_DIR/user-workflow.md — user customizations)
+ *   9.  # User Profile    (history/user.md, auto-wrapped)
+ *  10.  # Bot Persona     (history/bot.md, auto-wrapped)
+ *  11.  User: <name>      (from memory-config.json)
+ *
+ * Core memory snapshot and session recap are injected separately by
+ * hooks/session-start.cjs from memory.sqlite.
  */
 
 const fs = require('fs');
@@ -36,23 +38,16 @@ function readJson(filePath) {
 /**
  * Extract Pool B — safe CLAUDE.md sections (blacklist filter).
  *
- * Two things are stripped; everything else — including any custom section
- * the user adds in the future — is kept verbatim so the Pool B prefix
- * tracks CLAUDE.md edits automatically.
- *
- *   1. The plugin-managed block (marker-delimited). Its content is already
- *      reassembled by `buildBridgeInjectionContent` and by other steps in
- *      the Pool B pipeline; re-injecting it here would duplicate tone /
- *      user / Lead-only prose into the Bridge prefix.
- *   2. Lead-only headings that Claude Code auto-loads via Pool A and that
- *      must never reach a Bridge agent:
- *        H1: # Memory, # Channels, # Search, # Team, # Models
- *        H2: ## Workflow, ## User Rules
+ * Stripped:
+ *   1. The plugin-managed block (marker-delimited).
+ *   2. Lead-only H1/H2 headings that must never reach a Bridge agent:
+ *        H1: # Memory, # Channels, # Search, # Team, # Roles, # User Workflow
+ *        H2: ## Workflow, ## User Rules  (legacy; kept for back-compat)
  *      Their entire section (heading + body down to the next same-or-higher
  *      heading) is removed.
  */
 const CLAUDE_MD_EXCLUDE_H1 = new Set([
-  '# Memory', '# Channels', '# Search', '# Team', '# Models',
+  '# Memory', '# Channels', '# Search', '# Team', '# Roles', '# User Workflow',
 ]);
 const CLAUDE_MD_EXCLUDE_H2 = new Set([
   '## Workflow', '## User Rules',
@@ -84,7 +79,7 @@ function extractCommonClaudeMdSections(content) {
 }
 
 /**
- * Build the injection content from rules/*.md, history/*.md, and config JSON files.
+ * Build the Pool A injection content (Lead).
  *
  * @param {object} opts
  * @param {string} opts.PLUGIN_ROOT — absolute path to the plugin root
@@ -94,38 +89,14 @@ function extractCommonClaudeMdSections(content) {
 function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
   const HISTORY_DIR = path.join(DATA_DIR, 'history');
-  const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
-  // --- Config ---
-  const config = readJson(CONFIG_FILE);
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
+  const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
 
-  // --- 1. Workflow (always) ---
-  const workflow = readOptional(path.join(RULES_DIR, 'user-workflow.md'));
-  if (workflow) parts.push(workflow);
-
-  // --- 1a. User Workflow (roles from user-workflow.json + description from user-workflow.md) ---
-  const userWorkflowPath = path.join(DATA_DIR, 'user-workflow.json');
-  const userWorkflowMdPath = path.join(DATA_DIR, 'user-workflow.md');
-  let userWorkflow = { roles: [] };
-  try {
-    if (fs.existsSync(userWorkflowPath)) {
-      userWorkflow = JSON.parse(fs.readFileSync(userWorkflowPath, 'utf8'));
-    }
-  } catch {}
-  const wfDescription = readOptional(userWorkflowMdPath);
-  const wfLines = ['## User Rules', ''];
-  if (wfDescription) wfLines.push(wfDescription, '');
-  if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
-    // Phase B §10 — all Pool B agents spawn through the Bridge MCP (the
-    // native Agent-tool path was retired in Ship 4). Label accordingly.
-    wfLines.push('Roles:');
-    for (const role of userWorkflow.roles) {
-      wfLines.push(`- ${role.name} → ${role.preset} (Bridge)`);
-    }
-  }
-  parts.push(wfLines.join('\n'));
+  // --- 1. General (always) ---
+  const general = readOptional(path.join(RULES_DIR, 'general.md'));
+  if (general) parts.push(general);
 
   // --- 2. Memory (when memory-config.json has enabled) ---
   if (memoryConfig.enabled) {
@@ -133,49 +104,57 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     if (memory) parts.push(memory);
   }
 
-  // --- 3. Channels (when backend configured) ---
-  if (config.backend) {
-    const channels = readOptional(path.join(RULES_DIR, 'channels.md'));
-    if (channels) parts.push(channels);
-  }
-
-  // --- 4. Search (when search-config.json has enabled) ---
-  const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
+  // --- 3. Search (when search-config.json has enabled) ---
   if (searchConfig.enabled) {
     const search = readOptional(path.join(RULES_DIR, 'search.md'));
     if (search) parts.push(search);
   }
 
-  // --- 5. Team (always) ---
-  const agent = readOptional(path.join(RULES_DIR, 'team.md'));
-  if (agent) parts.push(agent);
+  // --- 4. Channels (always) ---
+  const channels = readOptional(path.join(RULES_DIR, 'channels.md'));
+  if (channels) parts.push(channels);
 
-  // --- 6. Models (from agent-config.json presets) ---
-  const agentConfig = readJson(path.join(DATA_DIR, 'agent-config.json'));
-  if (agentConfig.presets && agentConfig.presets.length > 0) {
-    const lines = ['# Models'];
-    if (agentConfig.guide) lines.push('', agentConfig.guide);
-    lines.push('', '## Available presets');
-    for (const p of agentConfig.presets) {
-      const detail = [p.type, p.model, p.effort].filter(Boolean).join(', ');
-      lines.push(`- ${p.id} (${detail})`);
+  // --- 5. Team (always) ---
+  const team = readOptional(path.join(RULES_DIR, 'team.md'));
+  if (team) parts.push(team);
+
+  // --- 6. Workflow (always) ---
+  const workflow = readOptional(path.join(RULES_DIR, 'workflow.md'));
+  if (workflow) parts.push(workflow);
+
+  // --- 7. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
+  const userWorkflowJsonPath = path.join(DATA_DIR, 'user-workflow.json');
+  let userWorkflow = { roles: [] };
+  try {
+    if (fs.existsSync(userWorkflowJsonPath)) {
+      userWorkflow = JSON.parse(fs.readFileSync(userWorkflowJsonPath, 'utf8'));
     }
-    parts.push(lines.join('\n'));
+  } catch {}
+  if (Array.isArray(userWorkflow.roles) && userWorkflow.roles.length > 0) {
+    const roleLines = ['# Roles', ''];
+    for (const role of userWorkflow.roles) {
+      roleLines.push(`- ${role.name}: ${role.preset}`);
+    }
+    parts.push(roleLines.join('\n'));
   }
 
-  // Core memory / user model snapshot (context) and session recap are both
-  // injected by hooks/session-start.cjs, reading directly from memory.sqlite.
-  // This keeps them always fresh with no intermediate file.
+  // --- 8. User Workflow (DATA_DIR/user-workflow.md — user customizations) ---
+  const userWorkflowMdPath = path.join(DATA_DIR, 'user-workflow.md');
+  const userWorkflowMd = readOptional(userWorkflowMdPath);
+  if (userWorkflowMd) {
+    const startsWithHeader = /^#\s+User Workflow/i.test(userWorkflowMd);
+    parts.push(startsWithHeader ? userWorkflowMd : `# User Workflow\n\n${userWorkflowMd}`);
+  }
 
-  // --- 7. User Profile (Pool A only — history/user.md wrapped with H1) ---
+  // --- 9. User Profile (Pool A only — history/user.md wrapped with H1) ---
   const userProfile = readOptional(path.join(HISTORY_DIR, 'user.md'));
   if (userProfile) parts.push(`# User Profile\n\n${userProfile}`);
 
-  // --- 8. Bot Persona (Pool A only — history/bot.md wrapped with H1) ---
+  // --- 10. Bot Persona (Pool A only — history/bot.md wrapped with H1) ---
   const botPersona = readOptional(path.join(HISTORY_DIR, 'bot.md'));
   if (botPersona) parts.push(`# Bot Persona\n\n${botPersona}`);
 
-  // --- 9-10. User name & title (from memory-config.json) ---
+  // --- 11. User name & title (from memory-config.json) ---
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
   const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
   if (userName) {
@@ -186,22 +165,21 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 }
 
 /**
- * Build injection content for Pool B (Bridge sessions — Worker / Sub / Maintenance).
- *
- * Only common sections are included. Lead-only sections (channels, team,
- * user-workflow, Models) live in Pool A and are excluded here so the Pool B
- * prefix stays bit-identical across every Bridge role.
+ * Build the Pool B injection content (Bridge sessions — Worker / Sub / Maintenance).
  *
  * Included:
- *   - rules/memory.md       (when memory enabled)
- *   - rules/search.md       (when search enabled)
- *   - Common MD             (user-editable text from data/common.md, new in v0.6.47)
+ *   - MCP instructions (rules/mcp-*.md)
+ *   - Agent MD (rules/agent.md, plugin-fixed Pool B rules)
+ *   - rules/memory.md (when memory enabled)
+ *   - rules/search.md (when search enabled)
+ *   - CLAUDE.md common sections (user-authored custom sections outside the
+ *     managed block and outside the Lead-only H1/H2 blacklist)
  *   - User: <name> (<title>)
  *
- * Explicitly excluded (stay in Pool A via buildInjectionContent):
- *   - rules/user-workflow.md, rules/channels.md, rules/team.md
- *   - # Models block (agent-config presets)
- *   - ## User Rules (role→preset mapping)
+ * Explicitly excluded (Pool A only):
+ *   - rules/general.md / rules/channels.md / rules/team.md / rules/workflow.md
+ *   - # Roles / # User Workflow
+ *   - # User Profile / # Bot Persona
  *
  * @param {object} opts
  * @param {string} opts.PLUGIN_ROOT — absolute path to the plugin root
@@ -210,27 +188,10 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  */
 function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
-  const HISTORY_DIR = path.join(DATA_DIR, 'history');
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
 
-  // Per design spec §3.3, Pool B order:
-  //   1. MCP instructions
-  //   2. Common MD (data/common.md)
-  //   3. rules/memory.md
-  //   4. rules/search.md
-  //   5. CLAUDE.md common sections (whitelist: Core Rules / Writing /
-  //      Non-negotiable / # Tone)
-  //   6. profile rendered as "User: <name> (<title>)"
-  // Everything the Bridge should not see (Channels / Team / Models / User
-  // Rules / Workflow / Memory ops) is filtered at step 5. Pool A still gets
-  // the full surface via buildInjectionContent + Claude Code auto-load.
-
-  // MCP instructions are now authored per service so the server modules can
-  // load their own section without ping-ponging through a monolithic file.
-  // Concat agent/memory/search blocks here with an H1 header so Pool B
-  // presents them as one coherent section.
   const mcpBlocks = ['mcp-orchestration.md', 'mcp-memory.md', 'mcp-search.md']
     .map(f => readOptional(path.join(RULES_DIR, f)))
     .filter(Boolean);
@@ -238,8 +199,8 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     parts.push(['# MCP Instructions', '', mcpBlocks.join('\n\n')].join('\n'));
   }
 
-  const commonContent = readOptional(path.join(DATA_DIR, 'common.md'));
-  if (commonContent) parts.push(commonContent);
+  const agentContent = readOptional(path.join(RULES_DIR, 'agent.md'));
+  if (agentContent) parts.push(agentContent);
 
   if (memoryConfig.enabled) {
     const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
@@ -254,9 +215,6 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
   const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
   if (claudeMdCommon) parts.push(claudeMdCommon);
-
-  // Phase E: history/user.md and history/bot.md reads removed.
-  // User/bot persona now lives in agents/*.md role descriptions.
 
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
   const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
