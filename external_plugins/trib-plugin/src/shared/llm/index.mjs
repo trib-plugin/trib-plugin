@@ -1,8 +1,8 @@
 /**
  * Shared LLM helpers (post v0.6.46).
  *
- * The legacy `callLLM` / `runCodex` / `runHTTP` / `runGemini` dispatcher has
- * been removed — every LLM call now flows through `bridge-llm.mjs`
+ * The legacy `callLLM` dispatcher and direct CLI/HTTP runners have been
+ * removed — every LLM call now flows through `bridge-llm.mjs`
  * (`makeBridgeLlm({ taskType })`) and, for memory maintenance specifically,
  * through `maintenance-llm.mjs`'s thin wrapper.
  *

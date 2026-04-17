@@ -244,8 +244,9 @@ export function saveConfig(config) {
 }
 // --- Preset helpers ---
 // preset shape: { id, name, type, provider?, model, effort?, fast?, tools? }
-// type: "native" (Claude Code native) or "bridge" (external model via bridge tool)
-// native presets have no provider (spawned via Agent tool with model param)
+// type: "native" (Claude family label — routed via anthropic-oauth through bridge)
+//       or "bridge" (external model via bridge tool)
+// native presets use provider "anthropic-oauth" implicitly
 function presetKey(p) { return p?.id || p?.name || ''; }
 function normalizePreset(preset) {
     if (!preset || typeof preset !== 'object')

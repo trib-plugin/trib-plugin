@@ -413,25 +413,13 @@ function _initTranscriptWatcher() {
   }
 }
 
-// Smart Bridge maintenance LLM — routes through anthropic-oauth with 1h cache
-// when available, falls back to native callLLM otherwise. Toggle via
-// agent-config.json: { bridge: { smartMaintenance: false } } to disable.
-// Shared between automatic checkCycles() and every manual cycle1/cycle2
-// action below — prior to v0.6.45 manual actions passed {} and silently
-// dropped to the legacy callLLM path.
+// Maintenance LLM — always routes through bridge (anthropic-oauth with 1h cache).
+// The legacy `bridge.smartMaintenance` toggle has been removed; maintenance
+// always uses makeMaintenanceLlm. If loading fails, surface it immediately.
 async function _buildCycleOptions() {
   const cycleOptions = {}
-  try {
-    const { loadConfig } = await import('../agent/orchestrator/config.mjs')
-    const agentCfg = loadConfig()
-    const smartEnabled = agentCfg?.bridge?.smartMaintenance !== false
-    if (smartEnabled) {
-      const { makeMaintenanceLlm } = await import('../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
-      cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance' })
-    }
-  } catch (e) {
-    // Fallback path is the existing native callLLM — no-op.
-  }
+  const { makeMaintenanceLlm } = await import('../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
+  cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance' })
   return cycleOptions
 }
 

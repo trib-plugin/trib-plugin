@@ -81,7 +81,7 @@ process.on('unhandledRejection', (reason) => { logCrash('unhandledRejection', re
 
 // ── Bridge orphan cleanup ───────────────────────────────────────────
 try {
-  const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/cli-runner.mjs')).href)
+  const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/pid-cleanup.mjs')).href)
   const killed = cleanupOrphanedPids()
   if (killed > 0) log(`[bridge-cleanup] cleaned ${killed} orphaned processes`)
 } catch (e) {
@@ -442,7 +442,7 @@ async function shutdown(reason) {
   }
   // Kill tracked bridge CLI processes
   try {
-    const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/cli-runner.mjs')).href)
+    const { cleanupOrphanedPids } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/shared/llm/pid-cleanup.mjs')).href)
     const killed = cleanupOrphanedPids()
     if (killed > 0) log(`shutdown: cleaned ${killed} bridge CLI processes`)
   } catch {}

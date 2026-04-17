@@ -275,7 +275,7 @@ v0.6.10 ships these features active by default. There are **no enable/disable to
 - Phase 3a (stateful continuation) only applies to Responses-API providers that expose a stable `previous_response_id`. The plugin does not implement that path currently — see `docs/ROADMAP.md` Phase 3 Decision Gate.
 
 ### Gemini context cache (always-on)
-- The provider always creates and reuses `cachedContent` per session (TTL 5m, min 1024 prefix tokens).
+- The provider always creates and reuses `cachedContent` per session (TTL 1h, min 1024 prefix tokens).
 - Cache-create failure throws — no silent non-cached fallback.
 - The `providers.gemini.cache.enabled` key is removed.
 

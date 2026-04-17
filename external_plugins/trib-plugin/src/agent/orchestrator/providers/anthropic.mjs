@@ -3,11 +3,9 @@ import { loadConfig } from '../config.mjs';
 
 // Single-path: 5-minute ephemeral cache only. The 1h extended-TTL beta is
 // not exposed — `cacheTtl` config key was removed for v0.6.10.
-const EPHEMERAL_CACHE_CONTROL = { type: 'ephemeral' };
-
 function withEphemeralCacheControl(block) {
     if (!block || typeof block !== 'object' || block.cache_control) return block;
-    return { ...block, cache_control: EPHEMERAL_CACHE_CONTROL };
+    return { ...block, cache_control: { type: 'ephemeral' } };
 }
 
 function appendAnthropicCacheControl(content) {
@@ -179,7 +177,7 @@ export class AnthropicProvider {
             model: useModel,
             max_tokens: maxTokens,
             system: systemText
-                ? [{ type: 'text', text: systemText, cache_control: EPHEMERAL_CACHE_CONTROL }]
+                ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }]
                 : undefined,
             messages: anthropicMessages,
         };

@@ -1,11 +1,15 @@
 /**
- * cli-runner.mjs — Isolated CLI runners for Claude, Codex, Gemini.
- * Each runner is self-contained. No cross-provider dependencies.
+ * cli-runner.mjs — Isolated CLI runner for Claude.
+ * runCodex / runGemini removed — all LLM calls converge through bridge.
+ * cleanupOrphanedPids extracted to pid-cleanup.mjs.
  */
 import { spawn, execFileSync } from 'child_process'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
+
+// Re-export for any transitive importers (will be removed in a future pass).
+export { cleanupOrphanedPids } from './pid-cleanup.mjs'
 
 // ── PID tracking for orphan cleanup ─────────────────────────────────
 const PID_DIR = path.join(os.tmpdir(), 'trib-bridge')
@@ -27,23 +31,6 @@ function untrackPid(pid) {
     pids = pids.filter(p => p !== pid)
     fs.writeFileSync(PID_FILE, JSON.stringify(pids))
   } catch {}
-}
-
-export function cleanupOrphanedPids() {
-  let killed = 0
-  try {
-    const pids = JSON.parse(fs.readFileSync(PID_FILE, 'utf8'))
-    for (const pid of pids) {
-      try {
-        process.kill(pid, 0) // check if alive
-        process.kill(pid, 'SIGTERM')
-        process.stderr.write(`[bridge-cleanup] killed orphaned PID ${pid}\n`)
-        killed++
-      } catch {}
-    }
-    fs.writeFileSync(PID_FILE, JSON.stringify([]))
-  } catch {}
-  return killed
 }
 
 // ── Runner concurrency limiter ─────────────────────────────────────
@@ -97,7 +84,6 @@ function spawnPromise(command, args, stdin, options = {}) {
     const timer = setTimeout(() => {
       timedOut = true
       try { child.kill('SIGTERM') } catch {}
-      // Escalate: if still alive after 5s, force kill
       escalationTimer = setTimeout(() => {
         try {
           if (process.platform === 'win32' && child.pid) {
@@ -158,62 +144,6 @@ export async function runClaude(prompt, options = {}) {
     }
   } catch (e) {
     if (e.message.includes('claude returned error')) throw e
-    return { text: stdout.trim(), usage: null }
-  }
-}
-
-/**
- * Run Codex CLI (OpenAI OAuth).
- * maintenance mode: --skip-git-repo-check --full-auto --ephemeral
- * active mode: --skip-git-repo-check only
- */
-export async function runCodex(prompt, options = {}) {
-  const { model = 'gpt-5.4-mini', mode = 'maintenance', timeout = 180000, effort, fast } = options
-
-  const args = ['exec', '--json', '--model', model, '--skip-git-repo-check']
-
-  if (mode === 'maintenance') {
-    args.push('--full-auto', '--ephemeral')
-  }
-  if (effort) args.push('-c', `model_reasoning_effort=${effort}`)
-  if (fast) args.push('-c', 'service_tier=fast')
-
-  const { stdout } = await spawnPromise('codex', args, prompt, { timeout })
-
-  const lines = stdout.split('\n').filter(l => l.trim())
-  let lastText = ''
-  for (const line of lines) {
-    try {
-      const obj = JSON.parse(line)
-      if (obj.type === 'item.completed' && obj.item?.type === 'agent_message') {
-        lastText = obj.item.text
-      }
-    } catch {}
-  }
-  if (!lastText) throw new Error('Codex returned no agent_message')
-  return { text: lastText, usage: null }
-}
-
-/**
- * Run Gemini CLI.
- * Note: Gemini CLI isolation flags TBD — auth not configured yet.
- */
-export async function runGemini(prompt, options = {}) {
-  const { model = 'gemini-2.5-flash', timeout = 180000 } = options
-
-  const args = ['-p', prompt, '-o', 'json', '-m', model]
-
-  const { stdout } = await spawnPromise('gemini', args, null, { timeout })
-
-  try {
-    const parsed = JSON.parse(stdout)
-    if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error))
-    const text = parsed.response || parsed.text || parsed.result || ''
-    if (!text) throw new Error('Gemini returned empty response')
-    return { text, usage: null }
-  } catch (e) {
-    if (e.message && !e.message.includes('Unexpected')) throw e
-    if (!stdout.trim()) throw new Error('Gemini returned empty output')
     return { text: stdout.trim(), usage: null }
   }
 }
