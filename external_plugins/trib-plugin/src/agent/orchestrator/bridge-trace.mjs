@@ -165,7 +165,7 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
     appendBridgeTrace({
         sessionId,
         iteration,
-        kind: 'usage',
+        kind: 'usage_raw',
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cached_tokens: cachedTokens,
