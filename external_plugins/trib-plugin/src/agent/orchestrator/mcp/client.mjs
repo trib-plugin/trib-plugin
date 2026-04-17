@@ -5,10 +5,14 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 // --- Types ---
-/** Known auto-detect targets: port file path relative to tmpdir */
+/** Known auto-detect targets: port file path relative to tmpdir.
+ *  Note: `trib-plugin` used to self-loopback via active-instance.json's
+ *  httpPort, but that path went through channels' owner HTTP server which
+ *  only exposes a subset of tools. The plugin's own tools are now injected
+ *  in-process through agent's toolExecutor (see orchestrator/internal-tools),
+ *  so this registry is for genuinely external port-based MCP targets only. */
 const AUTO_DETECT_PORTS = {
     'trib-memory': { dir: 'trib-memory', file: 'memory-port', endpoint: '/mcp' },
-    'trib-plugin': { dir: 'trib-plugin', file: 'active-instance.json', endpoint: '/mcp', portField: 'httpPort' },
 };
 // --- State ---
 const servers = new Map();

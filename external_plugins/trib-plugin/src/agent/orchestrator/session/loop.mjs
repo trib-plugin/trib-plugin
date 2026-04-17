@@ -1,5 +1,6 @@
 import { executeMcpTool, isMcpTool } from '../mcp/client.mjs';
 import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
+import { executeInternalTool, isInternalTool } from '../internal-tools.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
 import { traceBridgeLoop, traceBridgeTool, traceToolLoopAborted, traceToolLoopDetected, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
@@ -20,6 +21,7 @@ const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute'])
 function getToolKind(name) {
     if (SKILL_TOOL_NAMES.has(name)) return 'skill';
     if (isMcpTool(name)) return 'mcp';
+    if (isInternalTool(name)) return 'internal';
     if (isBuiltinTool(name)) return 'builtin';
     return 'builtin';
 }
@@ -50,6 +52,9 @@ async function executeTool(name, args, cwd) {
     }
     if (isMcpTool(name)) {
         return executeMcpTool(name, args);
+    }
+    if (isInternalTool(name)) {
+        return executeInternalTool(name, args);
     }
     if (isBuiltinTool(name)) {
         return executeBuiltinTool(name, args, cwd);

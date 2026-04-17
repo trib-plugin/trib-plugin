@@ -235,6 +235,18 @@ function agentContext() {
       })
     },
     elicitFn: opts => server.elicitInput(opts),
+    // In-process tool bridge. External LLMs see the plugin's non-agent tools
+    // (search, search_memories, channels actions, etc.) and their tool_calls
+    // land back in dispatchTool, which routes to the same worker IPC /
+    // in-process module the MCP call handler uses. Replaces the MCP HTTP
+    // loopback path. agent-module tools are refused to prevent recursion.
+    toolExecutor: async (name, args) => {
+      if (TOOL_MODULE[name] === 'agent') {
+        throw new Error(`tool "${name}" is agent-internal and cannot be invoked via bridge`)
+      }
+      return dispatchTool(name, args)
+    },
+    internalTools: TOOL_DEFS.filter(t => t.module && t.module !== 'agent'),
   }
 }
 
@@ -251,23 +263,27 @@ async function loadModule(name) {
   return entry
 }
 
+// Shared dispatcher — used by the MCP call handler AND the agent's
+// toolExecutor passed through agentContext(). Single source of tool routing.
+async function dispatchTool(name, args) {
+  const moduleName = TOOL_MODULE[name]
+  if (!moduleName) throw new Error(`Unknown tool: ${name}`)
+
+  if (moduleName === 'memory' || moduleName === 'channels') {
+    return callWorker(moduleName, name, args ?? {})
+  }
+
+  const mod = await loadModule(moduleName)
+  if (moduleName === 'agent') return mod.handleToolCall(name, args ?? {}, agentContext())
+  return mod.handleToolCall(name, args ?? {})
+}
+
 // ── Handlers ────────────────────────────────────────────────────────
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
 
 server.setRequestHandler(CallToolRequestSchema, async req => {
   const { name, arguments: args } = req.params
-  const moduleName = TOOL_MODULE[name]
-  if (!moduleName) throw new Error(`Unknown tool: ${name}`)
-
-  // Worker-isolated modules — no fallback
-  if (moduleName === 'memory' || moduleName === 'channels') {
-    return callWorker(moduleName, name, args ?? {})
-  }
-
-  // In-process modules (search, agent — lightweight)
-  const mod = await loadModule(moduleName)
-  if (moduleName === 'agent') return mod.handleToolCall(name, args ?? {}, agentContext())
-  return mod.handleToolCall(name, args ?? {})
+  return dispatchTool(name, args)
 })
 
 // ── Transport ───────────────────────────────────────────────────────
@@ -276,7 +292,25 @@ log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
 // ── Eager init: search + agent (avoid first-call latency) ──────────
 loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
-loadModule('agent').catch(e => log(`eager agent init failed: ${e.message}`))
+loadModule('agent')
+  .then(async () => {
+    // Populate the in-process tool registry at boot so ALL session entry
+    // points (direct createSession / resumeSession, not just handleToolCall)
+    // see the bridge from the first call. handleToolCall still calls
+    // setInternalToolsProvider as an idempotent fallback, but we no longer
+    // rely on a tool call arriving first.
+    try {
+      const { setInternalToolsProvider } = await import(
+        pathToFileURL(join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'internal-tools.mjs')).href
+      )
+      const ctx = agentContext()
+      setInternalToolsProvider({ executor: ctx.toolExecutor, tools: ctx.internalTools })
+      log(`internal-tools registry populated tools=${ctx.internalTools.length}`)
+    } catch (e) {
+      log(`internal-tools registry populate failed: ${e.message}`)
+    }
+  })
+  .catch(e => log(`eager agent init failed: ${e.message}`))
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
 // Writes static rules into the managed block. Session recap is NOT

@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { getProvider } from '../providers/registry.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
+import { getInternalTools } from '../internal-tools.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
 import { collectSkillsCached, buildSkillToolDefs, loadAgentTemplate, loadRoleTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
@@ -117,11 +118,27 @@ const MCP_CACHE_TTL = 60000; // 1 minute
 function _getMcpToolsCached() {
     const now = Date.now();
     if (!_mcpToolsCache || now - _mcpToolsCacheTime > MCP_CACHE_TTL) {
+        // Merge externally-connected MCP tools with the plugin's in-process
+        // tools (registered by agent's toolExecutor bridge). Internal tools
+        // are exposed to LLMs under their bare names (search, search_memories,
+        // reply, ...) — no mcp__ prefix, since the dispatcher in server.mjs
+        // handles them directly without a transport.
+        const mcp = getMcpTools() || [];
+        const internalRaw = getInternalTools() || [];
+        const internal = internalRaw.map(t => ({
+            name: t.name,
+            description: typeof t.description === 'string' ? t.description.slice(0, 2048) : '',
+            inputSchema: t.inputSchema || { type: 'object', properties: {} },
+            // Keep annotations so the permission filter / role invariants can
+            // tell read-only from write-capable internal tools (reply, react,
+            // edit_message, schedule_*, reload_config all declare
+            // readOnlyHint:false in tools.json).
+            annotations: t.annotations || {},
+        }));
         // Sort deterministically by name — protects BP_1 hash stability from
         // listTools() ordering churn. Anthropic / OpenAI / Gemini all hash
         // the tools array verbatim, so any reorder rewrites the prefix.
-        const raw = getMcpTools() || [];
-        _mcpToolsCache = [...raw].sort((a, b) => {
+        _mcpToolsCache = [...mcp, ...internal].sort((a, b) => {
             const an = a?.name || '';
             const bn = b?.name || '';
             return an < bn ? -1 : an > bn ? 1 : 0;
@@ -157,11 +174,26 @@ function _getMcpToolsCached() {
 // actions are allowed (see "Tool Categories" in the common guide).
 const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'multi_edit', 'notebook_edit']);
 
+// A tool counts as write-capable if:
+//   (a) its bare name is a built-in writer (write/edit/…), OR
+//   (b) its tools.json annotation says readOnlyHint:false (which internal
+//       tools like reply/react/edit_message/schedule_*/reload_config set).
+// MCP tools (mcp__foo__bar) have no annotations here and are deliberately
+// excluded — per-server MCP surfaces are too varied to pattern-match; role
+// system-prompts gate them textually instead.
+function _isWriteTool(t) {
+    const name = String(t?.name || '').toLowerCase();
+    if (WRITE_TOOL_NAMES.has(name)) return true;
+    const ann = t?.annotations;
+    if (ann && typeof ann === 'object' && ann.readOnlyHint === false) return true;
+    return false;
+}
+
 function _applyPermissionFilter(tools, permission) {
     if (!Array.isArray(tools)) return tools;
     if (!permission || permission === 'full') return tools;
     if (permission === 'read') {
-        return tools.filter(t => !WRITE_TOOL_NAMES.has(String(t?.name || '').toLowerCase()));
+        return tools.filter(t => !_isWriteTool(t));
     }
     if (permission === 'read-write') {
         return tools;
@@ -375,13 +407,20 @@ export function createSession(opts) {
     // silently has Write access.
     const toolNameSet = new Set(tools.map(t => String(t?.name || '')));
     if (resolvedRole === 'researcher') {
-        const hasSearchMcp = [...toolNameSet].some(n => /search/.test(n) && /mcp/.test(n));
-        if (!hasSearchMcp) {
-            throw new Error('Phase L invariant: role=researcher requires an MCP search tool in the session tool list.');
+        // Accept either a bare in-process search (internal-tools registry) or
+        // an MCP-prefixed search tool from an external server. The old check
+        // required `mcp__…search…`, which broke after we moved search into
+        // the in-process registry with the bare name `search`.
+        const hasSearch = [...toolNameSet].some(n => n === 'search' || (/search/.test(n) && /mcp/.test(n)));
+        if (!hasSearch) {
+            throw new Error('Phase L invariant: role=researcher requires a search tool (bare "search" or an MCP search) in the session tool list.');
         }
     }
     if (resolvedRole === 'reviewer' && permission === 'read') {
-        const forbidden = [...toolNameSet].filter(n => WRITE_TOOL_NAMES.has(n.toLowerCase()));
+        // Use the same write-tool definition as the permission filter so we
+        // don't accept annotation-based write tools (reply/react/etc.) that
+        // the bare-name check would miss.
+        const forbidden = tools.filter(_isWriteTool).map(t => String(t?.name || ''));
         if (forbidden.length) {
             throw new Error(`Phase L invariant: role=reviewer permission=read must not contain write tools (found: ${forbidden.join(', ')}).`);
         }

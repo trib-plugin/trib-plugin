@@ -4,6 +4,7 @@ import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
+import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
@@ -360,32 +361,23 @@ export async function init() {
   await initProviders(config.providers);
   seedDefaults();
   initTrajectoryStore(getPluginData());
-  if (!config.mcpServers || Object.keys(config.mcpServers).length === 0) {
-    throw new Error(
-      `[mcp] FATAL: config.mcpServers is empty or missing. ` +
-      `Plugin requires MCP servers providing 'search' and 'search_memories' tools to start. ` +
-      `Add an mcpServers block to config.json.`
-    );
+  // External MCP servers only. Self-MCP loopback (mcpServers.trib-plugin)
+  // is rejected — agent exposes the plugin's own tools (search,
+  // search_memories, ...) in-process via the context injected by server.mjs;
+  // no network round-trip, no self-spawn. search/search_memories are
+  // guaranteed by the static tools.json manifest, so the prior FATAL check
+  // is obsolete.
+  const rawServers = (config.mcpServers && typeof config.mcpServers === 'object') ? config.mcpServers : {};
+  const externalServers = {};
+  for (const [name, cfg] of Object.entries(rawServers)) {
+    if (name === 'trib-plugin') {
+      process.stderr.write(`[mcp] dropping legacy self-ref mcpServers.trib-plugin entry (in-process tool bridge is used instead)\n`);
+      continue;
+    }
+    externalServers[name] = cfg;
   }
-  await connectMcpServers(config.mcpServers);
-  const { getMcpTools } = await import('./orchestrator/mcp/client.mjs');
-  const mcpTools = getMcpTools();
-  const mcpToolNames = mcpTools.map(t => t.name);
-  // Strict check — separately named tools `search` and `search_memories` must
-  // both be present. Match the full tool name so `__search_memories` does
-  // NOT satisfy the `search` requirement (endsWith('__search') excludes
-  // `__search_memories`).
-  const hasSearch = mcpToolNames.some(n => n.endsWith('__search'));
-  const hasSearchMemories = mcpToolNames.some(n => n.endsWith('__search_memories'));
-  if (!hasSearch || !hasSearchMemories) {
-    const missing = [];
-    if (!hasSearch) missing.push('search');
-    if (!hasSearchMemories) missing.push('search_memories');
-    throw new Error(
-      `[mcp] FATAL: required MCP tools missing after connect: ${missing.join(', ')}. ` +
-      `Got ${mcpTools.length} tools: [${mcpToolNames.join(', ')}]. ` +
-      `Check MCP server config — plugin cannot start with a crippled tool registry.`
-    );
+  if (Object.keys(externalServers).length > 0) {
+    await connectMcpServers(externalServers);
   }
   startAgentMaintenance();
   startStreamWatchdog(forEachSessionRuntime);
@@ -422,6 +414,16 @@ export async function init() {
 export async function handleToolCall(name, args, opts = {}) {
   const notifyFn = typeof opts.notifyFn === 'function' ? opts.notifyFn : null;
   const elicit = typeof opts.elicitFn === 'function' ? opts.elicitFn : null;
+  // Idempotent fallback — server.mjs populates the registry at boot via
+  // loadModule('agent').then(...), but if eager init failed (missing deps,
+  // file error), the first tool call still restores it here. Re-registration
+  // is safe: setInternalToolsProvider replaces the executor/tools refs.
+  if (typeof opts.toolExecutor === 'function' && Array.isArray(opts.internalTools)) {
+    setInternalToolsProvider({
+      executor: opts.toolExecutor,
+      tools: opts.internalTools,
+    });
+  }
 
   try {
     switch (name) {

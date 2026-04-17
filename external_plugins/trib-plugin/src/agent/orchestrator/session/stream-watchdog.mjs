@@ -5,16 +5,16 @@
  * Long total duration is fine; no progress for too long is not.
  *
  * Thresholds:
- *   120s — soft: emit tool_stream_stalled telemetry once per session.
- *   180s — hard: abort the session's controller with a StreamStalledAbortError,
+ *    60s — soft: emit tool_stream_stalled telemetry once per session.
+ *   120s — hard: abort the session's controller with a StreamStalledAbortError,
  *                emit tool_stream_aborted telemetry, stop tracking it.
  *
  * Tick interval is 15s, so a real stall is noticed within (threshold + 15s).
  */
 import { traceStreamAborted, traceStreamStalled } from '../bridge-trace.mjs';
 
-const SOFT_STALL_MS = 120_000;
-const HARD_STALL_MS = 180_000;
+const SOFT_STALL_MS = 60_000;
+const HARD_STALL_MS = 120_000;
 const TICK_MS = 15_000;
 
 let _tickHandle = null;

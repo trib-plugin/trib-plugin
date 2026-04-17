@@ -168,9 +168,26 @@ export function loadConfig() {
             if (rawMaint.reason && !rawMaint.search) rawMaint.search = rawMaint.reason;
             delete rawMaint.reason;
             delete rawMaint.defaultPreset;
+            // One-time migration: drop legacy self-ref mcpServers.trib-plugin.
+            // Plugin tools are injected in-process via agent's toolExecutor
+            // (see orchestrator/internal-tools); a self-ref entry causes
+            // self-spawn recursion or partial HTTP loopback, both broken.
+            const mcpServers = (raw.mcpServers && typeof raw.mcpServers === 'object') ? { ...raw.mcpServers } : {};
+            if (mcpServers['trib-plugin']) {
+                delete mcpServers['trib-plugin'];
+                raw.mcpServers = mcpServers;
+                try {
+                    const tmp = configPath + '.tmp';
+                    writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+                    renameSync(tmp, configPath);
+                    process.stderr.write(`[config] migrated: removed legacy self-ref mcpServers.trib-plugin\n`);
+                } catch (e) {
+                    process.stderr.write(`[config] self-ref migration persist failed: ${e.message}\n`);
+                }
+            }
             return {
                 providers: mergedProviders,
-                mcpServers: raw.mcpServers || {},
+                mcpServers,
                 presets: Array.isArray(raw.presets) ? raw.presets : [],
                 default: raw.default || null,
                 maintenance: { ...DEFAULT_MAINTENANCE, ...rawMaint },
