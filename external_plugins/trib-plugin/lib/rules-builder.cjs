@@ -15,8 +15,10 @@
  *   4. search.md     (when search-config.json has enabled)
  *   5. team.md       (always)
  *   6. models        (from agent-config.json presets)
- *   7. user name     (from memory-config.json user.name)
- *   8. user title    (from memory-config.json user.title)
+ *   7. user profile  (history/user.md, auto-wrapped as "# User Profile")
+ *   8. bot persona   (history/bot.md, auto-wrapped as "# Bot Persona")
+ *   9. user name     (from memory-config.json user.name)
+ *  10. user title    (from memory-config.json user.title)
  */
 
 const fs = require('fs');
@@ -165,10 +167,15 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   // injected by hooks/session-start.cjs, reading directly from memory.sqlite.
   // This keeps them always fresh with no intermediate file.
 
-  // Phase E: history/user.md and history/bot.md reads removed.
-  // User/bot persona now lives in agents/*.md role descriptions.
+  // --- 7. User Profile (Pool A only — history/user.md wrapped with H1) ---
+  const userProfile = readOptional(path.join(HISTORY_DIR, 'user.md'));
+  if (userProfile) parts.push(`# User Profile\n\n${userProfile}`);
 
-  // --- 10-11. User name & title (from memory-config.json) ---
+  // --- 8. Bot Persona (Pool A only — history/bot.md wrapped with H1) ---
+  const botPersona = readOptional(path.join(HISTORY_DIR, 'bot.md'));
+  if (botPersona) parts.push(`# Bot Persona\n\n${botPersona}`);
+
+  // --- 9-10. User name & title (from memory-config.json) ---
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
   const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
   if (userName) {

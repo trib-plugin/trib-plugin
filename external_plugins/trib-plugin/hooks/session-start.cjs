@@ -142,10 +142,10 @@ function buildRecap(db) {
         const element = r.element ?? '';
         const summary = r.summary ?? '';
         const combined = `${cat}${element}${summary ? ' — ' + summary : ''}`;
-        return `[${tsStr}] ${combined.slice(0, 500)}`;
+        return `[${tsStr}] ${combined.slice(0, 1000)}`;
       }
       const prefix = r.role === 'user' ? 'u' : r.role === 'assistant' ? 'a' : (r.role || '?');
-      return `[${tsStr}] ${prefix}: ${cleanText(String(r.content || '')).slice(0, 500)}`;
+      return `[${tsStr}] ${prefix}: ${cleanText(String(r.content || '')).slice(0, 1000)}`;
     });
     const text = lines.reverse().join('\n');
     return text.length > 20 ? '## Session Recap\n\n' + text : '';
