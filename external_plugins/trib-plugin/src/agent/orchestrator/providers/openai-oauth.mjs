@@ -11,6 +11,24 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { getPluginData } from '../config.mjs';
 import { enrichModels } from './model-catalog.mjs';
+
+// Codex Responses CLI docs (openai/codex command reference) specify
+// session_id Type: uuid. Our session ids are Date-based strings, so Codex
+// silently rejects them and never emits cached_tokens. Hash our session
+// id into a deterministic UUIDv4-shaped string — same input → same UUID,
+// so repeated turns keep landing on the same Codex conversation.
+function sessionIdToUuid(sessionId) {
+    if (!sessionId) return null;
+    const h = createHash('sha256').update(String(sessionId)).digest('hex');
+    const variant = ((parseInt(h.slice(16, 17), 16) & 0x3) | 0x8).toString(16);
+    return [
+        h.slice(0, 8),
+        h.slice(8, 12),
+        '4' + h.slice(13, 16),
+        variant + h.slice(17, 20),
+        h.slice(20, 32),
+    ].join('-');
+}
 import {
     extractCachedTokens,
     traceBridgeFetch,
@@ -445,16 +463,14 @@ export class OpenAIOAuthProvider {
                         'chatgpt-account-id': token.account_id || '',
                         'originator': 'codex_cli_rs',
                         'OpenAI-Beta': 'responses=experimental',
-                        // Codex Responses caches on a stable conversation-scoped
-                        // HTTP header. Name is `session-id` (dash) — the
-                        // upstream Envoy gateway drops underscore headers per
-                        // standard HTTP interop (openai/codex#11732,
-                        // "fix: use dash-separated HTTP header name for
-                        // session ID"). The body-level `prompt_cache_key`
-                        // alone produces no cache hits; the dash header is
-                        // the primary lever. Value: the agent session id,
-                        // conversation-stable across turns in that session.
-                        ...(sessionId ? { 'session-id': String(sessionId) } : {}),
+                        // Codex Responses CLI reference: `session_id Type:
+                        // uuid`. Envoy gateway also requires dash-separated
+                        // header names (openai/codex#11732). We therefore
+                        // send the header as `session-id` with a UUID-shaped
+                        // deterministic hash of our session id so repeated
+                        // turns land on the same Codex conversation while
+                        // passing the uuid-format validation.
+                        ...(sessionId ? { 'session-id': sessionIdToUuid(sessionId) } : {}),
                     },
                     body: JSON.stringify(body),
                     signal: controller.signal,
