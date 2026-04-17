@@ -1,18 +1,14 @@
 /**
- * Unified LLM usage logger for Smart Bridge paths.
+ * Unified LLM usage logger — writes to bridge-trace.jsonl.
  *
- * Two files, identical schema:
- *   - llm-usage.jsonl       — active (bridge tool, bridge_spawn → askSession)
- *   - llm-maintenance.jsonl — maintenance cycles (memory cycle1/cycle2)
+ * Phase D: Merged llm-usage.jsonl and llm-maintenance.jsonl into
+ * bridge-trace.jsonl. All usage records now go to the same trace file
+ * with kind:'usage'. Maintenance records carry maintenanceLog:true.
  *
- * Legacy `shared/llm/index.mjs` keeps writing to llm-usage.jsonl for callLLM
- * fallbacks (mode:'active'|'maintenance'). Smart Bridge writes through here
- * with richer fields (profileId, sessionId, cacheReadTokens, cacheWriteTokens,
- * prefixHash). Schema is additive — legacy readers still see the same flat
- * inputTokens/outputTokens/costUsd fields.
+ * Signature unchanged — callers are unaffected.
  */
 
-import { appendFileSync } from 'fs';
+import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -21,14 +17,24 @@ function resolveDataDir() {
         || join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
 }
 
+const HISTORY_DIR_NAME = 'history';
+let _tracePathResolved = null;
+function getTracePath() {
+    if (_tracePathResolved) return _tracePathResolved;
+    const dir = join(resolveDataDir(), HISTORY_DIR_NAME);
+    try { mkdirSync(dir, { recursive: true }); } catch {}
+    _tracePathResolved = join(dir, 'bridge-trace.jsonl');
+    return _tracePathResolved;
+}
+
 /**
- * Append a usage entry to the appropriate jsonl file.
+ * Append a usage entry to bridge-trace.jsonl.
  *
- * @param {object} entry — usage record (see schema below)
+ * @param {object} entry — usage record
  * @param {object} opts
- * @param {boolean} [opts.maintenance=false] — route to llm-maintenance.jsonl instead
+ * @param {boolean} [opts.maintenance=false] — flag record as maintenance-origin
  *
- * Entry schema (both files share this):
+ * Entry schema:
  *   ts, preset, model, provider, mode, duration,
  *   profileId, sessionId,
  *   inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
@@ -36,11 +42,14 @@ function resolveDataDir() {
  */
 export function logLlmCall(entry, opts = {}) {
     try {
-        const file = opts.maintenance ? 'llm-maintenance.jsonl' : 'llm-usage.jsonl';
-        const path = join(resolveDataDir(), file);
-        appendFileSync(path, JSON.stringify(entry) + '\n');
+        const row = {
+            ts: entry.ts || new Date().toISOString(),
+            kind: 'usage',
+            ...entry,
+            maintenanceLog: opts.maintenance === true ? true : undefined,
+        };
+        appendFileSync(getTracePath(), JSON.stringify(row) + '\n');
     } catch {
-        // Never let logging break the caller. Silent failure is acceptable
-        // since observability is best-effort.
+        // Never let logging break the caller.
     }
 }

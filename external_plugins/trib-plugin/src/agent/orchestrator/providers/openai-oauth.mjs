@@ -604,6 +604,7 @@ export class OpenAIOAuthProvider {
                 model: result.model || useModel,
                 responseId: result.responseId || null,
                 rawUsage: result.usage?.raw || null,
+                provider: 'openai-oauth',
             });
             process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
             const { responseId: _ignored, ...out } = result;

@@ -168,6 +168,7 @@ function buildSystemBlocks(systemText, model, cacheControl) {
 }
 
 const MODELS = [
+    { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'anthropic-oauth', contextWindow: 1000000 },
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic-oauth', contextWindow: 1000000 },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic-oauth', contextWindow: 200000 },
     { id: 'claude-sonnet-4-0', name: 'Claude Sonnet 4', provider: 'anthropic-oauth', contextWindow: 200000 },
@@ -179,6 +180,7 @@ const MODELS = [
 // family-based heuristic below. Conservative defaults — model may support
 // more but we'd rather stay within safe bounds.
 const MAX_TOKENS = {
+    'claude-opus-4-7': 32768,
     'claude-opus-4-6': 32768,
     'claude-sonnet-4-6': 16384,
     'claude-sonnet-4-0': 16384,
@@ -729,6 +731,7 @@ export class AnthropicOAuthProvider {
                 cacheWriteTokens: result.usage?.cacheWriteTokens || 0,
                 model: result.model || useModel,
                 rawUsage: result.usage?.raw || null,
+                provider: 'anthropic-oauth',
             });
 
             process.stderr.write(`[anthropic-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
@@ -774,7 +777,7 @@ export class AnthropicOAuthProvider {
             // Family-only fallback — no specific versions. These tokens resolve
             // at runtime via ANTHROPIC_DEFAULT_*_MODEL env vars, so the user
             // gets whatever Claude Code's current default is. Better than a
-            // stale hardcoded "Opus 4.6" that might not exist tomorrow.
+            // stale hardcoded version that might not exist tomorrow.
             return [
                 { id: 'opus',   display: 'Opus (auto)',   family: 'opus',   provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
                 { id: 'sonnet', display: 'Sonnet (auto)', family: 'sonnet', provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },

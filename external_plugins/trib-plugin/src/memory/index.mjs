@@ -419,7 +419,7 @@ function _initTranscriptWatcher() {
 async function _buildCycleOptions() {
   const cycleOptions = {}
   const { makeMaintenanceLlm } = await import('../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
-  cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance' })
+  cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance', role: 'maintenance' })
   return cycleOptions
 }
 

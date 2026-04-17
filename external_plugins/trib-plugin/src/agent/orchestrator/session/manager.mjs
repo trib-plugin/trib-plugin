@@ -210,7 +210,7 @@ const CONTEXT_WINDOWS = {
     'gpt-4o': 128000, 'gpt-4.1': 1000000, 'gpt-4.1-mini': 1000000, 'o4-mini': 200000,
     'gpt-5.4-mini': 1000000, 'gpt-5.4': 1000000, 'gpt-5.4-nano': 1000000, 'gpt-5.4-pro': 1000000,
     'gpt-5.2-codex': 1000000, 'gpt-5.2': 1000000, 'gpt-5.1-codex': 1000000,
-    'claude-opus-4-0': 200000, 'claude-sonnet-4-0': 200000, 'claude-haiku-4-5-20251001': 200000,
+    'claude-opus-4-7': 1000000, 'claude-opus-4-0': 200000, 'claude-sonnet-4-0': 200000, 'claude-haiku-4-5-20251001': 200000,
     'gemini-2.5-pro': 1000000, 'gemini-2.5-flash': 1000000, 'gemini-2.0-flash': 1000000,
     'llama-3.3-70b-versatile': 128000, 'llama3.3:latest': 8192, 'grok-3-beta': 131072,
 };
@@ -724,7 +724,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     }
                 } catch {}
             }
-            // Append to llm-usage.jsonl with the rich bridge usage fields.
+            // Append to bridge-trace.jsonl with the rich bridge usage fields.
             if (result.usage) {
                 logLlmCall({
                     ts: new Date().toISOString(),

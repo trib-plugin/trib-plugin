@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { getPluginData } from './config.mjs';
+import { normalizeUsage } from './smart-bridge/cache-obs.mjs';
 
 const HISTORY_DIR = join(getPluginData(), 'history');
 const TRACE_PATH = join(HISTORY_DIR, 'bridge-trace.jsonl');
@@ -98,7 +99,21 @@ function traceBridgeSse({ sessionId, sseParseMs }) {
     });
 }
 
-function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, model, responseId, rawUsage }) {
+function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, model, responseId, rawUsage, provider }) {
+    // Phase H: attach normalized cache observation when provider info is available
+    let normalized = undefined;
+    if (rawUsage && provider) {
+        try {
+            normalized = normalizeUsage(provider, rawUsage);
+        } catch {
+            // cache-obs normalization failed — skip, keep rawUsage intact
+        }
+    } else if (rawUsage && !provider) {
+        warnBridgeOnce(
+            'bridge-trace:missing-provider',
+            `[bridge-trace] rawUsage present but no provider field — skipping normalizeUsage. Provider should pass {provider: '...'} to traceBridgeUsage.`,
+        );
+    }
     appendBridgeTrace({
         sessionId,
         iteration,
@@ -108,16 +123,9 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         cached_tokens: cachedTokens,
         cache_write_tokens: cacheWriteTokens || 0,
         model: model || null,
-        // Correlation id for cross-turn trace alignment only (populated by
-        // openai-oauth when Codex SSE exposes response.id). Not consumed by
-        // any continuation logic — the Codex OAuth path is stateless.
         response_id: responseId || null,
-        // Raw provider usage object so we can inspect every cached-token
-        // shape the server might emit (Codex has shown the value under
-        // input_tokens_details.cached_tokens, prompt_tokens_details.cached_tokens,
-        // and sometimes a separate cache_read_input_tokens field on different
-        // edges — normalising downstream consumers requires ground truth).
         raw_usage: rawUsage || null,
+        normalized,
     });
 }
 

@@ -89,8 +89,8 @@ try {
   }
 } catch {}
 
-// Seed plugin-owned scaffolding files (common.md, history/user.md,
-// history/bot.md, memory-config.json). Idempotent — ensureDataSeeds skips
+// Seed plugin-owned scaffolding files (common.md, memory-config.json).
+// Idempotent — ensureDataSeeds skips
 // anything that already exists, so the agent/index.mjs call and this one
 // can both run without colliding.
 try { ensureDataSeeds(DATA_DIR); } catch {}
@@ -1241,42 +1241,9 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true, provider, models }));
     return;
   }
-
-  if (req.method === 'GET' && path === '/memory/files') {
-    const result = {};
-    for (const name of ['bot.md', 'user.md']) {
-      try { result[name] = readFileSync(join(MEMORY_FILES_DIR, name), 'utf8'); }
-      catch { result[name] = ''; }
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result));
-    return;
-  }
-
-  if (req.method === 'GET' && path.startsWith('/memory/file/')) {
-    const name = decodeURIComponent(path.slice('/memory/file/'.length));
-    if (!['bot.md', 'user.md'].includes(name)) { res.writeHead(404); res.end('Not found'); return; }
-    const filePath = join(MEMORY_FILES_DIR, name);
-    mkdirSync(MEMORY_FILES_DIR, { recursive: true });
-    if (!existsSync(filePath)) writeFileSync(filePath, '', 'utf8');
-    if (isWin) { spawn('cmd', ['/c', 'start', '', filePath], { detached: true, stdio: 'ignore', windowsHide: true }).unref(); }
-    else { exec(`open "${filePath}"`); }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-
-  if (req.method === 'POST' && path === '/memory/files') {
-    const data = await readBody(req);
-    mkdirSync(MEMORY_FILES_DIR, { recursive: true });
-    for (const name of ['bot.md', 'user.md']) {
-      if (data[name] != null) writeFileSync(join(MEMORY_FILES_DIR, name), data[name], 'utf8');
-    }
-    console.log('  Memory files saved');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
+  // /memory/files endpoints removed in v0.6.72 — bot.md / user.md surfaces
+  // are no longer part of the data dir. The Config UI edits memory-config.json
+  // directly; past-fact surfaces live in memory.sqlite.
 
   if (req.method === 'GET' && path === '/api/memory/entries/active') {
     try {

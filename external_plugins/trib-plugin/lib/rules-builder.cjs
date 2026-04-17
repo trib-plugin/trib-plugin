@@ -15,10 +15,8 @@
  *   4. search.md     (when search-config.json has enabled)
  *   5. team.md       (always)
  *   6. models        (from agent-config.json presets)
- *   7. user.md       (user profile)
- *   8. bot.md        (bot persona)
- *   9. user name     (from memory-config.json user.name)
- *  10. user title    (from memory-config.json user.title)
+ *   7. user name     (from memory-config.json user.name)
+ *   8. user title    (from memory-config.json user.title)
  */
 
 const fs = require('fs');
@@ -167,13 +165,8 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   // injected by hooks/session-start.cjs, reading directly from memory.sqlite.
   // This keeps them always fresh with no intermediate file.
 
-  // --- 8. User profile ---
-  const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
-  if (userProfileContent) parts.push(userProfileContent);
-
-  // --- 9. Bot persona ---
-  const botContent = readOptional(path.join(HISTORY_DIR, 'bot.md'));
-  if (botContent) parts.push(botContent);
+  // Phase E: history/user.md and history/bot.md reads removed.
+  // User/bot persona now lives in agents/*.md role descriptions.
 
   // --- 10-11. User name & title (from memory-config.json) ---
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
@@ -196,8 +189,6 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  *   - rules/memory.md       (when memory enabled)
  *   - rules/search.md       (when search enabled)
  *   - Common MD             (user-editable text from data/common.md, new in v0.6.47)
- *   - history/user.md       (user persona)
- *   - history/bot.md        (bot persona)
  *   - User: <name> (<title>)
  *
  * Explicitly excluded (stay in Pool A via buildInjectionContent):
@@ -257,11 +248,8 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
   if (claudeMdCommon) parts.push(claudeMdCommon);
 
-  const userProfileContent = readOptional(path.join(HISTORY_DIR, 'user.md'));
-  if (userProfileContent) parts.push(userProfileContent);
-
-  const botContent = readOptional(path.join(HISTORY_DIR, 'bot.md'));
-  if (botContent) parts.push(botContent);
+  // Phase E: history/user.md and history/bot.md reads removed.
+  // User/bot persona now lives in agents/*.md role descriptions.
 
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
   const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();

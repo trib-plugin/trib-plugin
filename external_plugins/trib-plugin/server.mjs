@@ -352,7 +352,6 @@ setImmediate(() => {
     const DATA_ALLOWLIST = new Set([
       'trib-config.json', 'config.json', 'memory-config.json', 'search-config.json',
       'agent-config.json', 'user-workflow.json', 'user-workflow.md',
-      'history/user.md', 'history/bot.md',
     ])
 
     const makeHandler = root => {

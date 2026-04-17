@@ -18,6 +18,7 @@ const servers = new Map();
  * Supports stdio (child process) and http (Streamable HTTP) transports.
  */
 export async function connectMcpServers(config) {
+    const failures = [];
     for (const [name, cfg] of Object.entries(config)) {
         try {
             await connectServer(name, cfg);
@@ -25,7 +26,12 @@ export async function connectMcpServers(config) {
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             process.stderr.write(`[mcp-client] Failed to connect "${name}": ${msg}\n`);
+            failures.push({ name, msg });
         }
+    }
+    if (failures.length > 0) {
+        const detail = failures.map(f => `${f.name}: ${f.msg}`).join('; ');
+        throw new Error(`[mcp-client] ${failures.length} MCP server(s) failed to connect — ${detail}`);
     }
 }
 /**
@@ -242,6 +248,7 @@ async function connectServer(name, cfg) {
         inputSchema: (t.inputSchema || { type: 'object', properties: {} }),
     }));
     const mode = cfg.pluginCache ? `pluginCache(${cfg.pluginCache})` : cfg.autoDetect ? `autoDetect(${cfg.autoDetect})` : cfg.transport || 'stdio';
+    const toolNames = tools.map(t => t.name);
     servers.set(name, { name, client, transport, tools, cfg });
-    process.stderr.write(`[mcp-client] Connected "${name}" via ${mode} — ${tools.length} tools\n`);
+    process.stderr.write(`[mcp] connected: ${tools.length} tools — ${toolNames.join(', ')}\n`);
 }

@@ -8,7 +8,7 @@ import { homedir } from "os";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
 import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.mjs';
 
-const webhookLlm = makeBridgeLlm({ taskType: 'webhook-handler' });
+const webhookLlm = makeBridgeLlm({ taskType: 'webhook-handler', role: 'webhook-handler' });
 const WEBHOOK_LOG = join(DATA_DIR, "webhook.log");
 function logWebhook(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}

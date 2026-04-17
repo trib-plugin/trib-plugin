@@ -2,7 +2,7 @@
  * Smart Bridge — Maintenance LLM Helper (thin wrapper)
  *
  * Thin wrapper over `makeBridgeLlm` that pins taskType='maintenance',
- * routes usage logging to llm-maintenance.jsonl, and preserves the original
+ * flags usage records as maintenance-origin in bridge-trace.jsonl, and preserves the original
  * `makeMaintenanceLlm` signature used by memory-cycle.mjs:
  *
  *   const result = await runCycle1(db, config, {

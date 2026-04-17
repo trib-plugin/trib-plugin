@@ -31,22 +31,9 @@ Example:
 -->
 `,
 
-    'history/user.md': `# User Profile
-
-<!--
-What Bridge agents should know about you. One short paragraph is usually
-enough — name, role, preferences the agent needs to respect across turns.
-Avoid dumping full history; use memory for that. Edit via the Config UI.
--->
-`,
-
-    'history/bot.md': `# Bot Persona
-
-<!--
-How the agent should introduce itself and what tone to adopt. Keep concise —
-this lives in the BP_2 cache block.
--->
-`,
+    // Phase E: history/user.md and history/bot.md seeds removed.
+    // User/bot persona now lives in user-workflow.json role configs and
+    // agents/*.md files. Existing data files are no longer read at runtime.
 
     'memory-config.json': JSON.stringify({
         enabled: true,

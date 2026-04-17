@@ -54,8 +54,9 @@ export function buildProviderCacheOpts(cacheType, provider, sessionId) {
     switch (provider) {
         case 'anthropic-oauth':
         case 'anthropic':
-            // Pass the per-layer TTL map directly — the provider translates into
-            // cache_control breakpoints at render time.
+            // 2026-03-06 Anthropic dropped default TTL 1h→5m. We send
+            // extended-cache-ttl-2025-04-11 header to retain 1h.
+            // Verified 2026-04-17 (ephemeral_1h_input_tokens=4722).
             return { cacheStrategy: ttls };
 
         case 'openai-oauth':
@@ -80,10 +81,31 @@ export function buildProviderCacheOpts(cacheType, provider, sessionId) {
                 },
             };
 
+        case 'groq':
+            // Auto prompt cache since 2025-12 (gpt-oss-120b, 50% saving). No code-level control.
+            return {};
+
+        case 'openrouter':
+            // Passes anthropic beta cache_control for supported backends
+            return { cacheStrategy: ttls };
+
+        case 'xai':
+            // No public prompt cache API (as of 2026-04)
+            return {};
+
+        case 'copilot':
+            // Consumer API, no prompt cache controls
+            return {};
+
+        case 'ollama':
+            // Local KV cache only, no API-level surface
+            return {};
+
+        case 'lmstudio':
+            // Local, no API cache
+            return {};
+
         default:
-            // OpenAI-compat (Groq, OpenRouter, Ollama, LMStudio, local) —
-            // no API-level cache surface. Return empty; engines do their own
-            // KV-cache behind the scenes.
             return {};
     }
 }

@@ -21,30 +21,34 @@ import { join } from 'path';
  * @property {string}      preset             - preset name from agent-config presets
  * @property {'read'|'read-write'|'full'} permission - tool permission category
  * @property {string|null} desc_path          - relative to CLAUDE_PLUGIN_ROOT
- * @property {'stateful'|'stateless'} behavior - session reuse semantics
- * @property {'5m'|'none'} tail_cache         - tail-cache TTL bucket
- * @property {'5m'|'1h'|'none'|null} override_ttl - identity cache TTL override
- * @property {number|null} expected_interval_ms - Phase F TTL auto-learn hint
+ * @property {'stateful'|'stateless'} behavior - pool-reuse semantics; drives cache strategy
  */
 
 const VALID_PERMISSIONS = new Set(['read', 'read-write', 'full']);
-const VALID_BEHAVIORS   = new Set(['stateful', 'stateless']);
-const VALID_TAIL_CACHE  = new Set(['5m', 'none']);
-const VALID_OVERRIDE_TTL = new Set(['5m', '1h', 'none']);
+const VALID_BEHAVIORS = new Set(['stateful', 'stateless']);
+
+// Default behavior per-role when user-workflow.json omits the field.
+// The 5 stateful roles run multi-turn; the 4 maintenance-ish roles are
+// one-shot dispatches that must not leak transcript across calls.
+const DEFAULT_BEHAVIOR = {
+  worker: 'stateful',
+  debugger: 'stateful',
+  reviewer: 'stateful',
+  researcher: 'stateful',
+  tester: 'stateful',
+  maintenance: 'stateless',
+  'webhook-handler': 'stateless',
+  'scheduler-task': 'stateless',
+  'proactive-decision': 'stateless',
+};
 
 function applyRoleDefaults(raw) {
-  const behavior = VALID_BEHAVIORS.has(raw.behavior) ? raw.behavior : 'stateful';
   const permission = VALID_PERMISSIONS.has(raw.permission) ? raw.permission : 'full';
-  const tail_cache = VALID_TAIL_CACHE.has(raw.tail_cache)
-    ? raw.tail_cache
-    : (behavior === 'stateful' ? '5m' : 'none');
-  const override_ttl = raw.override_ttl === null || raw.override_ttl === undefined
-    ? null
-    : (VALID_OVERRIDE_TTL.has(raw.override_ttl) ? raw.override_ttl : null);
-  const expected_interval_ms = typeof raw.expected_interval_ms === 'number'
-    ? raw.expected_interval_ms
-    : null;
   const desc_path = typeof raw.desc_path === 'string' ? raw.desc_path : null;
+  const rawBehavior = typeof raw.behavior === 'string' ? raw.behavior : null;
+  const behavior = VALID_BEHAVIORS.has(rawBehavior)
+    ? rawBehavior
+    : (DEFAULT_BEHAVIOR[raw.name] || 'stateful');
 
   return {
     name: raw.name,
@@ -52,9 +56,6 @@ function applyRoleDefaults(raw) {
     permission,
     desc_path,
     behavior,
-    tail_cache,
-    override_ttl,
-    expected_interval_ms,
   };
 }
 
@@ -67,10 +68,6 @@ function validateRoleConfig(role) {
     throw new Error(`[user-workflow] role "${role.name}": invalid permission "${role.permission}" (expected: ${[...VALID_PERMISSIONS].join(", ")})`);
   if (!VALID_BEHAVIORS.has(role.behavior))
     throw new Error(`[user-workflow] role "${role.name}": invalid behavior "${role.behavior}" (expected: ${[...VALID_BEHAVIORS].join(", ")})`);
-  if (!VALID_TAIL_CACHE.has(role.tail_cache))
-    throw new Error(`[user-workflow] role "${role.name}": invalid tail_cache "${role.tail_cache}" (expected: ${[...VALID_TAIL_CACHE].join(", ")})`);
-  if (role.override_ttl !== null && !VALID_OVERRIDE_TTL.has(role.override_ttl))
-    throw new Error(`[user-workflow] role "${role.name}": invalid override_ttl "${role.override_ttl}" (expected: ${[...VALID_OVERRIDE_TTL].join(", ")}, null)`);
 }
 
 /** @type {Map<string, RoleConfig>} */
@@ -164,9 +161,9 @@ function buildInstructions() {
 // Seed default workflows into user data dir if none exist yet.
 seedDefaults();
 
-// Seed plugin-owned scaffolding files (common.md, history/user.md,
-// history/bot.md, memory-config.json) so first-time installs land with the
-// Pool B surface populated and the Config UI has real paths to edit.
+// Seed plugin-owned scaffolding files (common.md, memory-config.json) so
+// first-time installs land with the Pool B surface populated and the Config
+// UI has real paths to edit.
 ensureDataSeeds(getPluginData());
 
 const INSTRUCTIONS = buildInstructions();
@@ -345,6 +342,7 @@ const TOOLS = [
         preset: { type: 'string', description: 'Override preset name (e.g., GPT5.4, gpt5.4-mini)' },
         context: { type: 'string', description: 'Additional context to prepend' },
         taskType: { type: 'string', description: 'Smart Bridge task type: "maintenance", "researcher", "reviewer", "one-shot", etc. Optional; scope already implies a role.' },
+        cwd: { type: 'string', description: 'Working directory for agent tool execution. Defaults to MCP server cwd.' },
       },
     },
   },
@@ -360,17 +358,46 @@ export async function init() {
   await initProviders(config.providers);
   seedDefaults();
   initTrajectoryStore(getPluginData());
-  if (config.mcpServers) await connectMcpServers(config.mcpServers);
+  if (!config.mcpServers || Object.keys(config.mcpServers).length === 0) {
+    throw new Error(
+      `[mcp] FATAL: config.mcpServers is empty or missing. ` +
+      `Plugin requires MCP servers providing 'search' and 'search_memories' tools to start. ` +
+      `Add an mcpServers block to config.json.`
+    );
+  }
+  await connectMcpServers(config.mcpServers);
+  const { getMcpTools } = await import('./orchestrator/mcp/client.mjs');
+  const mcpTools = getMcpTools();
+  const mcpToolNames = mcpTools.map(t => t.name);
+  // Strict check — separately named tools `search` and `search_memories` must
+  // both be present. Match the full tool name so `__search_memories` does
+  // NOT satisfy the `search` requirement (endsWith('__search') excludes
+  // `__search_memories`).
+  const hasSearch = mcpToolNames.some(n => n.endsWith('__search'));
+  const hasSearchMemories = mcpToolNames.some(n => n.endsWith('__search_memories'));
+  if (!hasSearch || !hasSearchMemories) {
+    const missing = [];
+    if (!hasSearch) missing.push('search');
+    if (!hasSearchMemories) missing.push('search_memories');
+    throw new Error(
+      `[mcp] FATAL: required MCP tools missing after connect: ${missing.join(', ')}. ` +
+      `Got ${mcpTools.length} tools: [${mcpToolNames.join(', ')}]. ` +
+      `Check MCP server config — plugin cannot start with a crippled tool registry.`
+    );
+  }
   startAgentMaintenance();
   // Smart Bridge — unified router + cache strategy + profile system.
   // User-role preset mapping comes from user-workflow.json (existing source
   // of truth). Preset catalog (provider/model/effort) comes from config.presets.
   try {
-    const { initSmartBridge, getSmartBridge } = await import('./orchestrator/smart-bridge/index.mjs');
+    const { initSmartBridge, getSmartBridge, setRoleResolver } = await import('./orchestrator/smart-bridge/index.mjs');
     const userRoles = loadUserWorkflowRoles();
-    const userProfiles = config.bridge?.profiles || {};
     const presets = config.presets || [];
-    const sb = initSmartBridge({ userRoles, userProfiles, presets });
+    // Inject the role resolver so SmartBridge.resolveSync() can read role
+    // configs without lazy-importing this module (avoids the circular
+    // require that the old router.mjs had).
+    setRoleResolver(getRoleConfig);
+    const sb = initSmartBridge({ userRoles, presets });
     // Inject into session manager so createSession() can resolve profiles
     // synchronously (no lazy-import race).
     setSmartBridge(sb);
@@ -674,12 +701,13 @@ export async function handleToolCall(name, args, opts = {}) {
           ? String(args.scope).replace(/-[a-z0-9]+$/i, '')
           : null;
 
+        const effectiveCwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd();
         const createFreshSession = () => createSession({
           preset,
           owner: effectiveLane === 'bridge' ? 'bridge' : 'user',
           scopeKey: runtimeSpec.scopeKey,
           lane: runtimeSpec.lane,
-          cwd: process.cwd(),
+          cwd: effectiveCwd,
           // Smart Bridge fields — resolveSync picks a profile if the role matches.
           role: smartRole || undefined,
           taskType: args.taskType || undefined,
@@ -699,14 +727,10 @@ export async function handleToolCall(name, args, opts = {}) {
         else {
           session = found;
         }
-        // Phase C Ship 3 — profiles marked `behavior: "stateless"` (sub-task,
-        // maintenance, etc.) carry no transcript across dispatches. Truncate
-        // the message list to the initial Pool B head so the provider cache
-        // handle (Anthropic prefix hash / OpenAI prompt_cache_key) stays warm
-        // while no prior-task transcript leaks into the next call. Role names
-        // are not inspected — the profile's behavior attribute drives the
-        // decision so user-customised role names are supported transparently.
-        // Idempotent on a freshly-created session (length already equals head).
+        // Stateless profiles (sub-task, maintenance, etc.) carry no transcript
+        // across dispatches. Truncate the message list to the initial Pool B
+        // head so the provider cache handle stays warm while no prior-task
+        // transcript leaks into the next call.
         if (session?.behavior === 'stateless' && session?.id) {
           try {
             const reset = resetStatelessSession(session.id);
@@ -730,7 +754,7 @@ export async function handleToolCall(name, args, opts = {}) {
           updateSessionStatus(session.id, 'running');
           emit(`[${scopeLabel}] started · ${modelLabel}`);
           try {
-            result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, process.cwd());
+            result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, effectiveCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             const inTok = fmtTokens(result.usage?.inputTokens);
             const outTok = fmtTokens(result.usage?.outputTokens);
@@ -743,11 +767,7 @@ export async function handleToolCall(name, args, opts = {}) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
             if (err instanceof SessionClosedError) {
-              // Cancellation is a clean exit, not a failure — render as grey
-              // "cancelled" rather than a red ❌ so the user can distinguish.
               emit(`[${scopeLabel}] ⏹ cancelled\n\n${modelLabel}`);
-              // updateSessionStatus on a closed session would recreate a stale
-              // file after the tombstone; skip it.
             } else {
               emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
               updateSessionStatus(session.id, 'error');
@@ -788,4 +808,3 @@ export async function handleToolCall(name, args, opts = {}) {
 
 export async function start() { /* noop — standalone mode uses main() */ }
 export async function stop() { stopAgentMaintenance(); await disconnectAll(); }
-
