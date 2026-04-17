@@ -348,7 +348,10 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         reasoning: { effort: opts.effort || 'medium' },
     };
     if (opts.sessionId) {
-        body.prompt_cache_key = String(opts.sessionId);
+        // Match the header path — Codex validates session_id as a uuid, so
+        // send the same deterministic uuid through prompt_cache_key for
+        // shard routing consistency. Case B after v0.6.62.
+        body.prompt_cache_key = sessionIdToUuid(opts.sessionId);
     }
     // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
     // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns
