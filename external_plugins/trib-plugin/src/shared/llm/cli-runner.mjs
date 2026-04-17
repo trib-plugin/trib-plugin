@@ -1,15 +1,10 @@
 /**
  * cli-runner.mjs — Isolated CLI runner for Claude.
- * runCodex / runGemini removed — all LLM calls converge through bridge.
- * cleanupOrphanedPids extracted to pid-cleanup.mjs.
  */
 import { spawn, execFileSync } from 'child_process'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
-
-// Re-export for any transitive importers (will be removed in a future pass).
-export { cleanupOrphanedPids } from './pid-cleanup.mjs'
 
 // ── PID tracking for orphan cleanup ─────────────────────────────────
 const PID_DIR = path.join(os.tmpdir(), 'trib-bridge')
