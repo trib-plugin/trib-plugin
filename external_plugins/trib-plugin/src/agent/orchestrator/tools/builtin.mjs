@@ -1,5 +1,8 @@
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
+import { readFile } from 'fs/promises';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 import { resolve, normalize } from 'path';
 // --- Tool definitions for external models ---
 export const BUILTIN_TOOLS = [
@@ -104,7 +107,7 @@ function resolveAgainstCwd(filePath, cwd) {
     return resolve(cwd, filePath);
 }
 // --- Tool execution ---
-export function executeBuiltinTool(name, args, cwd) {
+export async function executeBuiltinTool(name, args, cwd) {
     const workDir = cwd || process.cwd();
     switch (name) {
         case 'bash': {
@@ -138,7 +141,7 @@ export function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir))
                 return `Error: path outside allowed scope — ${filePath}`;
             try {
-                const content = readFileSync(resolveAgainstCwd(filePath, workDir), 'utf-8');
+                const content = await readFile(resolveAgainstCwd(filePath, workDir), 'utf-8');
                 const lines = content.split('\n');
                 const offset = args.offset || 0;
                 const limit = args.limit || 2000;
@@ -201,13 +204,12 @@ export function executeBuiltinTool(name, args, cwd) {
                 if (fileGlob)
                     rgArgs.push('--glob', fileGlob);
                 rgArgs.push(pattern, searchPath);
-                const result = execSync(`rg ${rgArgs.map(a => `"${a}"`).join(' ')}`, {
+                const { stdout } = await execAsync(`rg ${rgArgs.map(a => `"${a}"`).join(' ')}`, {
                     encoding: 'utf-8',
                     timeout: 10000,
-                    stdio: ['pipe', 'pipe', 'pipe'],
                     cwd: workDir,
                 });
-                const lines = result.split('\n').slice(0, 100);
+                const lines = stdout.split('\n').slice(0, 100);
                 return lines.join('\n') || '(no matches)';
             }
             catch {
@@ -221,13 +223,12 @@ export function executeBuiltinTool(name, args, cwd) {
             const basePath = args.path || '.';
             try {
                 // Use rg --files with glob for cross-platform compatibility
-                const result = execSync(`rg --files --glob "${pattern}" "${basePath}"`, {
+                const { stdout } = await execAsync(`rg --files --glob "${pattern}" "${basePath}"`, {
                     encoding: 'utf-8',
                     timeout: 10000,
-                    stdio: ['pipe', 'pipe', 'pipe'],
                     cwd: workDir,
                 });
-                const files = result.split('\n').filter(Boolean).slice(0, 100);
+                const files = stdout.split('\n').filter(Boolean).slice(0, 100);
                 return files.join('\n') || '(no files found)';
             }
             catch {

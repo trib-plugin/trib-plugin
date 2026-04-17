@@ -154,7 +154,7 @@ export function deleteSession(id) {
         return false;
     }
 }
-const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes idle
+const DEFAULT_SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes idle — aligned with Anthropic 5m messages tier and OpenAI in-memory cache window
 
 export function listStoredSessions(ttlMs) {
     const maxAge = ttlMs || DEFAULT_SESSION_TTL_MS;

@@ -92,11 +92,23 @@ async function renderIdentity({ role, permission, desc }) {
     const lines = [];
     if (role) lines.push(`# role\n${role}`);
     if (permission) lines.push(`# permission\n${permission}`);
-    const fileDesc = await loadAgentDesc(role);
-    if (fileDesc) {
-        lines.push(`# agent-role\n${fileDesc}`);
-    } else if (desc) {
-        lines.push(`# agent-role\n${desc}`);
+    // Hierarchical role "maintenance:cycle1" — base identity first (shared
+    // prefix across sibling roles), task-specific guidance appended at the
+    // end of Tier 2 so the common head maximises cache hits.
+    if (role && role.includes(':')) {
+        const [base, sub] = role.split(':');
+        const baseDesc = await loadAgentDesc(base);
+        if (baseDesc) lines.push(`# agent-role\n${baseDesc}`);
+        const specificDesc = await loadAgentDesc(`${base}-${sub}`);
+        if (specificDesc) lines.push(`# task\n${specificDesc}`);
+        if (!baseDesc && !specificDesc && desc) lines.push(`# agent-role\n${desc}`);
+    } else {
+        const fileDesc = await loadAgentDesc(role);
+        if (fileDesc) {
+            lines.push(`# agent-role\n${fileDesc}`);
+        } else if (desc) {
+            lines.push(`# agent-role\n${desc}`);
+        }
     }
     return lines.join('\n\n');
 }

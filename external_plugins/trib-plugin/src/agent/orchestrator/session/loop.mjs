@@ -13,7 +13,12 @@ import {
     THRESHOLD_PERCENT,
 } from './compressor.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
-const MAX_ITERATIONS = 30;
+const MAX_ITERATIONS = 100;
+// Eager-dispatch allowlist: read-only builtins can safely start executing
+// during SSE parsing so tool work overlaps with the rest of the stream.
+// Writes, bash, MCP and skills stay serial after send() returns.
+const EAGER_TOOLS = new Set(['read', 'grep', 'glob']);
+function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 /**
  * Execute a single tool call — routes to MCP or builtin.
@@ -145,8 +150,25 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         const nextIteration = iterations + 1;
         opts.iteration = nextIteration;
         opts.providerState = providerState;
+        // Eager-dispatch queue: when the provider streams a tool-call event,
+        // start read-only tools immediately so execution overlaps with the
+        // remaining SSE parse. Writes and unknown tools wait until send()
+        // returns and run serially in the call-order loop below.
+        const pending = new Map();
+        opts.onToolCall = (call) => {
+            if (!call?.id || !isEagerDispatchable(call.name)) return;
+            // endedAt is stamped by finally so `toolMs` reflects the true
+            // execution duration — independent of when the serial for-loop
+            // consumes the result (otherwise later eager calls would inflate
+            // by the await delay of earlier ones).
+            const entry = { startedAt: Date.now(), endedAt: null };
+            entry.promise = executeTool(call.name, call.arguments, cwd)
+                .finally(() => { entry.endedAt = Date.now(); });
+            pending.set(call.id, entry);
+        };
         const sendStartedAt = Date.now();
         response = await provider.send(messages, model, tools.length ? tools : undefined, opts);
+        opts.onToolCall = undefined;
         // Capture opaque state for the next turn (may be undefined — that's
         // the stateless contract for providers that don't use continuation).
         providerState = response?.providerState ?? undefined;
@@ -193,12 +215,24 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
         for (const call of calls) {
             if (sessionId) markSessionToolCall(sessionId, call.name);
             let result;
-            const toolStartedAt = Date.now();
+            let toolStartedAt;
+            let toolEndedAt;
             const toolKind = getToolKind(call.name);
             try {
-                result = await executeTool(call.name, call.arguments, cwd);
+                const eager = pending.get(call.id);
+                if (eager !== undefined) {
+                    toolStartedAt = eager.startedAt;
+                    result = await eager.promise;
+                    toolEndedAt = eager.endedAt ?? Date.now();
+                } else {
+                    toolStartedAt = Date.now();
+                    result = await executeTool(call.name, call.arguments, cwd);
+                    toolEndedAt = Date.now();
+                }
             }
             catch (err) {
+                if (toolStartedAt === undefined) toolStartedAt = Date.now();
+                toolEndedAt = Date.now();
                 result = `Error: ${err instanceof Error ? err.message : String(err)}`;
             }
             traceBridgeTool({
@@ -206,7 +240,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 iteration: iterations,
                 toolName: call.name,
                 toolKind,
-                toolMs: Date.now() - toolStartedAt,
+                toolMs: toolEndedAt - toolStartedAt,
             });
             messages.push({
                 role: 'tool',

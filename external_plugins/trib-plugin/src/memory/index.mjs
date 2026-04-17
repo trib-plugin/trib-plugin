@@ -416,10 +416,11 @@ function _initTranscriptWatcher() {
 // Maintenance LLM — always routes through bridge (anthropic-oauth with 1h cache).
 // The legacy `bridge.smartMaintenance` toggle has been removed; maintenance
 // always uses makeMaintenanceLlm. If loading fails, surface it immediately.
-async function _buildCycleOptions() {
+async function _buildCycleOptions(subtype) {
   const cycleOptions = {}
   const { makeMaintenanceLlm } = await import('../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
-  cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance', role: 'maintenance' })
+  const role = subtype ? `maintenance:${subtype}` : 'maintenance'
+  cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance', role })
   return cycleOptions
 }
 
@@ -439,8 +440,6 @@ async function checkCycles() {
 
   const now = Date.now()
   const last = getCycleLastRun()
-
-  const cycleOptions = await _buildCycleOptions()
 
   // Phase B §2.4 — cache-keeper health check + auto-restart.
   //
@@ -462,7 +461,8 @@ async function checkCycles() {
     if (now - lastAutoRestart >= CYCLE1_AUTO_RESTART_COOLDOWN_MS) {
       setCycleLastRun('cycle1_autoRestart', now)
       try {
-        const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycleOptions)
+        const cycle1Options = await _buildCycleOptions('cycle1')
+        const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycle1Options)
         setCycleLastRun('cycle1', Date.now())
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
@@ -478,7 +478,8 @@ async function checkCycles() {
 
   if (now - last.cycle1 >= cycle1Ms) {
     try {
-      const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycleOptions)
+      const cycle1Options = await _buildCycleOptions('cycle1')
+      const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycle1Options)
       setCycleLastRun('cycle1', Date.now())
       process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
     } catch (e) {
@@ -488,7 +489,8 @@ async function checkCycles() {
 
   if (now - last.cycle2 >= cycle2Ms) {
     try {
-      await runCycle2(db, mainConfig?.cycle2 || {}, cycleOptions)
+      const cycle2Options = await _buildCycleOptions('cycle2')
+      await runCycle2(db, mainConfig?.cycle2 || {}, cycle2Options)
       setCycleLastRun('cycle2', Date.now())
       process.stderr.write(`[cycle2] completed\n`)
     } catch (e) {

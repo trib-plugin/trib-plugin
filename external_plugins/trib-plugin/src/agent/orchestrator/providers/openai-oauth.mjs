@@ -212,7 +212,7 @@ async function refreshTokens(refreshToken) {
         clearTimeout(timeout);
     }
 }
-async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
+async function parseSSEStream(response, signal, abortStream, onStreamDelta, onToolCall) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
@@ -278,11 +278,16 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                     if (event.type === 'response.function_call_arguments.done') {
                         const itemId = event.item_id || '';
                         const pending = pendingCalls.get(itemId);
-                        toolCalls.push({
+                        const call = {
                             id: pending?.callId || `tc_${Date.now()}_${toolCalls.length}`,
                             name: pending?.name || '',
                             arguments: JSON.parse(event.arguments || '{}'),
-                        });
+                        };
+                        toolCalls.push(call);
+                        // Eager dispatch: let the loop start executing the
+                        // tool before `response.completed` arrives. The loop
+                        // keys pending promises by call.id so order is safe.
+                        try { onToolCall?.(call); } catch {}
                         try { onStreamDelta?.(); } catch {}
                     }
                     if (event.type === 'response.completed' && event.response?.usage) {
@@ -457,6 +462,7 @@ export class OpenAIOAuthProvider {
         const opts = sendOpts || {};
         const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
         const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
+        const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
         const externalSignal = opts.signal || null;
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.4';
@@ -619,7 +625,7 @@ export class OpenAIOAuthProvider {
         try { onStageChange?.('streaming'); } catch {}
         try {
             const sseStartedAt = Date.now();
-            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta);
+            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta, onToolCall);
             traceBridgeSse({
                 sessionId,
                 sseParseMs: Date.now() - sseStartedAt,

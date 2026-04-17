@@ -346,7 +346,7 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set(), messageTtl 
 
 // --- SSE parser ---
 
-async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
+async function parseSSEStream(response, signal, abortStream, onStreamDelta, onToolCall) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
@@ -443,12 +443,17 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                     if (event.type === 'content_block_stop') {
                         const pending = pendingToolInputs.get(event.index);
                         if (pending) {
-                            toolCalls.push({
+                            const call = {
                                 id: pending.id,
                                 name: pending.name,
                                 arguments: pending.inputJson ? JSON.parse(pending.inputJson) : {},
-                            });
+                            };
+                            toolCalls.push(call);
                             pendingToolInputs.delete(event.index);
+                            // Eager dispatch: let the loop start this tool
+                            // before message_stop arrives. The loop keys
+                            // pending promises by call.id so order is safe.
+                            try { onToolCall?.(call); } catch {}
                             try { onStreamDelta?.(); } catch {}
                         }
                     }
@@ -591,6 +596,7 @@ export class AnthropicOAuthProvider {
         const opts = sendOpts || {};
         const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
         const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
+        const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
         const externalSignal = opts.signal || null;
 
         let creds = this.ensureAuth();
@@ -747,7 +753,7 @@ export class AnthropicOAuthProvider {
 
         try {
             const sseStartedAt = Date.now();
-            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta);
+            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta, onToolCall);
 
             traceBridgeSse({
                 sessionId,

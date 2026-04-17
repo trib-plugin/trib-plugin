@@ -163,11 +163,7 @@ export function loadConfig() {
                     }
                 }
             }
-            // Back-compat: rename maintenance.reason → search (v0.6.35+).
             const rawMaint = { ...(raw.maintenance || {}) };
-            if (rawMaint.reason && !rawMaint.search) rawMaint.search = rawMaint.reason;
-            delete rawMaint.reason;
-            delete rawMaint.defaultPreset;
             // One-time migration: drop legacy self-ref mcpServers.trib-plugin.
             // Plugin tools are injected in-process via agent's toolExecutor
             // (see orchestrator/internal-tools); a self-ref entry causes
