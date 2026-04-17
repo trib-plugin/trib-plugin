@@ -378,11 +378,14 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         tool_choice: 'auto',
         parallel_tool_calls: true,
     };
-    if (opts.sessionId) {
-        // Case D — revert to raw sessionId on the body-level cache key; the
-        // UUID detour from case B (v0.6.63) did not help, and pi-mono's
-        // working implementation uses the raw string here.
-        body.prompt_cache_key = String(opts.sessionId);
+    // Prompt cache key — stable routing anchor. See CLAUDE.md §Prompt caching
+    // and session/manager.mjs (where the key is derived per session). Prefer
+    // the explicit promptCacheKey (stable per task for stateless sessions);
+    // fall back to sessionId for interactive sessions so legacy callers keep
+    // working.
+    const cacheKey = opts.promptCacheKey || opts.sessionId;
+    if (cacheKey) {
+        body.prompt_cache_key = String(cacheKey);
     }
     // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
     // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns
