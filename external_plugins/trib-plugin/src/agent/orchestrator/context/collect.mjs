@@ -197,6 +197,31 @@ export function collectProjectMd(cwd) {
     return content || '';
 }
 
+// --- Role template loading (Phase B §4 — UI-managed) ---
+/**
+ * Read <dataDir>/roles/<role>.md, parse frontmatter (name, description,
+ * permission) and body. Returns { description, permission, body } or null.
+ *
+ * The role md is created/edited from the Config UI; runtime parses it on
+ * each spawn and injects the result into the Tier 3 system-reminder via
+ * composeSystemPrompt's `roleTemplate` slot.
+ */
+export function loadRoleTemplate(role, dataDir) {
+    if (!role || !dataDir) return null;
+    const path = join(dataDir, 'roles', `${role}.md`);
+    const content = readSafe(path);
+    if (!content) return null;
+    const fm = parseFrontmatter(content);
+    const body = content.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
+    const description = (fm.description || '').trim();
+    const permission = (fm.permission || '').trim().toLowerCase();
+    return {
+        description: description || null,
+        permission: permission || null,
+        body: body || null,
+    };
+}
+
 // --- Compose system prompt — Phase B Tier 2 / Tier 3 split ---
 // Returns { systemTier2, tier3Reminder } where the caller places each into
 // the right layer (system block vs messages <system-reminder>).
@@ -239,7 +264,27 @@ export function composeSystemPrompt(opts) {
     if (opts.role) {
         tier3Parts.push('# role\n' + opts.role);
     }
-    if (opts.agentTemplate) {
+    if (opts.roleTemplate) {
+        const t = opts.roleTemplate;
+        const segs = [];
+        if (t.description) segs.push(t.description);
+        if (t.permission) {
+            const allow =
+                t.permission === 'read'
+                    ? 'Allowed: read tools only. Do not invoke read-write tools.'
+                    : t.permission === 'read-write'
+                        ? 'Allowed: read and read-write tools.'
+                        : `Unknown permission "${t.permission}" — treat as read-only and report.`;
+            segs.push(
+                `Permission: ${t.permission} — see "Tool Categories" in your common guide.\n` +
+                allow
+            );
+        }
+        if (t.body) segs.push(t.body);
+        if (segs.length > 0) {
+            tier3Parts.push('# agent-role\n' + segs.join('\n\n'));
+        }
+    } else if (opts.agentTemplate) {
         tier3Parts.push('# agent-role\n' + opts.agentTemplate);
     }
     if (opts.taskBrief) {
@@ -277,7 +322,8 @@ function parseFrontmatter(content) {
     const fm = match[1];
     const name = fm.match(/^name:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim();
     const description = fm.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim();
-    return { name, description };
+    const permission = fm.match(/^permission:\s*["']?(.+?)["']?\s*$/m)?.[1]?.trim();
+    return { name, description, permission };
 }
 function walkForAgent(dir, agentName, result) {
     try {

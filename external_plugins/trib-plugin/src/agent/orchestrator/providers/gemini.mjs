@@ -219,7 +219,7 @@ export class GeminiProvider {
         const cachedContent = await this.cacheManager.create({
             model: useModel,
             contents: prefixContents,
-            ttlSeconds: 300,
+            ttlSeconds: 3600,
             ...(geminiTools ? { tools: geminiTools } : {}),
             ...(systemInstruction ? { systemInstruction } : {}),
             displayName: `trib-bridge-${sessionId}`,

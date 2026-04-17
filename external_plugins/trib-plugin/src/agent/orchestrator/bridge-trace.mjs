@@ -98,7 +98,7 @@ function traceBridgeSse({ sessionId, sseParseMs }) {
     });
 }
 
-function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, model, responseId, rawUsage }) {
+function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, model, responseId, rawUsage }) {
     appendBridgeTrace({
         sessionId,
         iteration,
@@ -106,6 +106,7 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cached_tokens: cachedTokens,
+        cache_write_tokens: cacheWriteTokens || 0,
         model: model || null,
         // Correlation id for cross-turn trace alignment only (populated by
         // openai-oauth when Codex SSE exposes response.id). Not consumed by

@@ -1,16 +1,17 @@
 /**
  * Smart Bridge — Profile Registry
  *
- * Profiles define the SHAPE of execution (lifecycle, context chunks, tools,
- * skip flags). Model/provider selection comes from user-workflow.json + the
- * agent-config.json preset catalog — profiles never duplicate that.
+ * Profiles only carry routing + cacheType + role-level metadata. The system
+ * prompt + tool schema are unified across every Pool B caller so all traffic
+ * shares one cache shard per provider × model. Role-specific behaviour lives
+ * in `rules/roles/{role}.md` injected into the Tier 3 system-reminder.
  *
  * Resolution at runtime:
  *   1. Router picks profile by role / taskType / profileId
  *   2. Smart Bridge looks up user role → preset (user-workflow.json)
  *      → falls back to profile.fallbackPreset if no mapping
  *   3. Preset resolves to provider + model + effort + fast (agent-config.json)
- *   4. Cache strategy is derived from profile.lifecycle (not hardcoded)
+ *   4. Cache strategy is derived from profile.cacheType
  */
 
 /**
@@ -18,165 +19,95 @@
  * {
  *   id: string
  *   taskType: string              — "maintenance" | "worker" | ...
- *   lifecycle: "one-shot" | "recurring" | "continuous"
- *   recurrenceIntervalMs?: number — hint for recurring lifecycle
- *                                    < 1h → use cache, >= 1h → no cache
- *   contextChunks: string[]       — rules:*, memory:* chunk ids
- *   tools: string[]               — tool-set ids ("full" / "none" / specific)
- *   skip: { claudemd, skills, memory }
+ *   cacheType: "stateful" | "stateless"
+ *   behavior?: "stateless"        — pool reuse semantics (sub-task)
  *   fallbackPreset: string        — preset name if no user role mapping
- *   estimatedTurns: number
  *   description: string
  * }
+ *
+ * tools and skip are intentionally not per-profile — every Pool B call
+ * gets the same `tools: ['full']` and full system prefix so BP_1/BP_2
+ * hashes stay identical across roles. Per-role narrowing happens in the
+ * Tier 3 role.md injected into messages, not in the cached prefix.
  */
 
+const UNIFIED_TOOLS = ['full'];
+const UNIFIED_SKIP = { claudemd: false, skills: false, memory: false };
+
+function profile(id, taskType, cacheType, fallbackPreset, description, extra = {}) {
+    return {
+        id,
+        taskType,
+        cacheType,
+        tools: UNIFIED_TOOLS,
+        skip: UNIFIED_SKIP,
+        fallbackPreset,
+        description,
+        ...extra,
+    };
+}
+
 export const BUILTIN_PROFILES = {
-    'maintenance-light': {
-        id: 'maintenance-light',
-        taskType: 'maintenance',
-        lifecycle: 'recurring',
-        recurrenceIntervalMs: 10 * 60_000,  // 10min cycle1; well inside 1h
-        contextChunks: [],
-        tools: [],
-        skip: { claudemd: true, skills: true, memory: false },
-        fallbackPreset: 'haiku',
-        estimatedTurns: 1,
-        description: 'Memory cycle maintenance. Minimal prompt, runs every 10min, 1h cache maximizes reuse.',
-    },
+    'maintenance-light': profile(
+        'maintenance-light', 'maintenance', 'stateless', 'haiku',
+        'Memory cycle maintenance. Minimal prompt, runs every ~10min.',
+    ),
 
-    'worker-full': {
-        id: 'worker-full',
-        taskType: 'worker',
-        lifecycle: 'continuous',
-        contextChunks: ['rules:workflow', 'rules:commit', 'memory:stack'],
-        tools: ['tools:filesystem', 'tools:git', 'tools:mcp'],
-        skip: { claudemd: false, skills: false, memory: false },
-        fallbackPreset: 'opus-max',
-        estimatedTurns: 8,
-        description: 'Code implementation agent. Full tool access, multi-turn, stable prefix heavy-caches.',
-    },
+    'worker-full': profile(
+        'worker-full', 'worker', 'stateful', 'opus-max',
+        'Code implementation agent. Multi-turn, stable prefix heavy-caches.',
+    ),
 
-    'reviewer-external': {
-        id: 'reviewer-external',
-        taskType: 'reviewer',
-        lifecycle: 'one-shot',
-        contextChunks: ['rules:commit', 'memory:stack'],
-        tools: ['tools:filesystem'],
-        skip: { claudemd: false, skills: true, memory: true },
-        fallbackPreset: 'GPT5.4',
-        estimatedTurns: 3,
-        description: 'PR/code review. External perspective, read-only, no-cache (one-shot).',
-    },
+    'reviewer-external': profile(
+        'reviewer-external', 'reviewer', 'stateless', 'GPT5.4',
+        'PR/code review. External perspective, read-only.',
+    ),
 
-    'researcher-minimal': {
-        id: 'researcher-minimal',
-        taskType: 'researcher',
-        lifecycle: 'one-shot',
-        contextChunks: [],
-        tools: ['tools:search'],
-        skip: { claudemd: true, skills: true, memory: true },
-        fallbackPreset: 'gpt5.4-mini',
-        estimatedTurns: 2,
-        description: 'Web research / info lookup. Minimal context, no-cache.',
-    },
+    'researcher-minimal': profile(
+        'researcher-minimal', 'researcher', 'stateless', 'gpt5.4-mini',
+        'Web research / info lookup.',
+    ),
 
-    'tester-runtime': {
-        id: 'tester-runtime',
-        taskType: 'tester',
-        lifecycle: 'continuous',
-        contextChunks: ['rules:workflow', 'memory:stack'],
-        tools: ['tools:filesystem', 'tools:mcp'],
-        skip: { claudemd: false, skills: true, memory: true },
-        fallbackPreset: 'GPT5.4',
-        estimatedTurns: 5,
-        description: 'Runtime testing and behavior verification.',
-    },
+    'tester-runtime': profile(
+        'tester-runtime', 'tester', 'stateful', 'GPT5.4',
+        'Runtime testing and behavior verification.',
+    ),
 
-    'debugger-deep': {
-        id: 'debugger-deep',
-        taskType: 'debugger',
-        lifecycle: 'continuous',
-        contextChunks: ['rules:workflow', 'memory:stack'],
-        tools: ['tools:filesystem', 'tools:analysis', 'tools:git'],
-        skip: { claudemd: false, skills: true, memory: true },
-        fallbackPreset: 'GPT5.4',
-        estimatedTurns: 6,
-        description: 'Deep bug investigation. Analysis tools, multi-turn.',
-    },
+    'debugger-deep': profile(
+        'debugger-deep', 'debugger', 'stateful', 'GPT5.4',
+        'Deep bug investigation. Multi-turn.',
+    ),
 
-    'simple-fast': {
-        id: 'simple-fast',
-        taskType: 'one-shot',
-        lifecycle: 'one-shot',
-        contextChunks: ['rules:writing', 'rules:comms'],
-        tools: [],
-        skip: { claudemd: true, skills: true, memory: true },
-        fallbackPreset: 'haiku',
-        estimatedTurns: 1,
-        description: 'One-shot tasks (translate, format, summarize). No-cache, 20% cheaper.',
-    },
+    'simple-fast': profile(
+        'simple-fast', 'one-shot', 'stateless', 'haiku',
+        'One-shot tasks (translate, format, summarize).',
+    ),
 
-    'user-facing': {
-        id: 'user-facing',
-        taskType: 'lead',
-        lifecycle: 'continuous',
-        contextChunks: ['rules:comms', 'memory:user', 'rules:workflow', 'memory:stack'],
-        tools: ['full'],
-        skip: { claudemd: false, skills: false, memory: false },
-        fallbackPreset: 'opus-max',
-        estimatedTurns: 20,
-        description: 'Interactive user conversation. Full context, multi-turn.',
-    },
+    'user-facing': profile(
+        'user-facing', 'lead', 'stateful', 'opus-max',
+        'Interactive user conversation. Multi-turn.',
+    ),
 
-    'sub-task': {
-        id: 'sub-task',
-        taskType: 'sub',
-        lifecycle: 'continuous',
-        behavior: 'stateless',
-        contextChunks: [],
-        tools: ['tools:filesystem', 'tools:search'],
-        skip: { claudemd: false, skills: false, memory: true },
-        fallbackPreset: 'GPT5.4',
-        estimatedTurns: 3,
-        description: 'Unified sub-agent profile (reviewer / tester / debugger / researcher). Prefix-handle reuse across roles; messages reset per dispatch so task-briefs never leak between calls.',
-    },
+    'sub-task': profile(
+        'sub-task', 'sub', 'stateless', 'GPT5.4',
+        'Unified sub-agent profile (reviewer / tester / debugger / researcher). Prefix-handle reuse across roles; messages reset per dispatch so task-briefs never leak between calls.',
+        { behavior: 'stateless' },
+    ),
 
-    'scheduler-task': {
-        id: 'scheduler-task',
-        taskType: 'scheduler-task',
-        lifecycle: 'recurring',
-        recurrenceIntervalMs: 60 * 60_000,  // conservative hourly default; scheduler overrides
-        contextChunks: [],
-        tools: [],
-        skip: { claudemd: true, skills: true, memory: true },
-        fallbackPreset: 'sonnet-mid',
-        estimatedTurns: 1,
-        description: 'Scheduled channel task. Cron-triggered one-shot LLM call with 1h cache when applicable.',
-    },
+    'scheduler-task': profile(
+        'scheduler-task', 'scheduler-task', 'stateless', 'sonnet-mid',
+        'Scheduled channel task. Cron-triggered one-shot LLM call.',
+    ),
 
-    'proactive-decision': {
-        id: 'proactive-decision',
-        taskType: 'proactive-decision',
-        lifecycle: 'one-shot',
-        contextChunks: [],
-        tools: [],
-        skip: { claudemd: true, skills: true, memory: true },
-        fallbackPreset: 'sonnet-mid',
-        estimatedTurns: 1,
-        description: 'Proactive channel decision (fire/defer/skip). JSON-structured output, no cache.',
-    },
+    'proactive-decision': profile(
+        'proactive-decision', 'proactive-decision', 'stateless', 'sonnet-mid',
+        'Proactive channel decision (fire/defer/skip). JSON-structured output.',
+    ),
 
-    'webhook-handler': {
-        id: 'webhook-handler',
-        taskType: 'webhook-handler',
-        lifecycle: 'one-shot',
-        contextChunks: [],
-        tools: [],
-        skip: { claudemd: true, skills: true, memory: true },
-        fallbackPreset: 'sonnet-mid',
-        estimatedTurns: 1,
-        description: 'Webhook event analyser. One-shot external model call, no cache.',
-    },
+    'webhook-handler': profile(
+        'webhook-handler', 'webhook-handler', 'stateless', 'sonnet-mid',
+        'Webhook event analyser. One-shot external model call.',
+    ),
 };
 
 export function loadProfiles(userProfiles = {}) {
@@ -205,7 +136,7 @@ export function findProfileForTaskType(profiles, taskType) {
 
 /**
  * Find a profile whose fallbackPreset matches. Used when the caller specifies
- * a preset directly but we still want profile-based cache/context decisions.
+ * a preset directly but we still want profile-based cache decisions.
  */
 export function findProfileForPreset(profiles, presetName) {
     for (const p of Object.values(profiles)) {

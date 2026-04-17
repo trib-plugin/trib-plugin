@@ -1448,6 +1448,15 @@
           <button class="save" onclick="mdAddProject()">+ Add Project</button>
         </div>
       </div>
+
+      <div class="sec">
+        <div class="sec-title">Roles</div>
+        <div class="sec-desc">Per-role MD files — injected into Tier 3 <code>#&nbsp;agent-role</code> slot. Description and permission go into the message block, never the cached prefix. Permission categories (read / read-write) are defined in <code>common.md</code> §15.</div>
+        <div id="md-role-list"></div>
+        <div class="save-area">
+          <button class="save" onclick="mdAddRole()">+ Add Role</button>
+        </div>
+      </div>
     </div>
 
     <!-- CUSTOM WORKFLOW -->
@@ -1654,13 +1663,15 @@ async function genSavePanel() {
 
 async function mdLoadAll() {
   try {
-    const [cr, pr] = await Promise.all([
+    const [cr, pr, rr] = await Promise.all([
       fetch('/md/common').then(r => r.json()),
       fetch('/md/project').then(r => r.json()),
+      fetch('/md/role').then(r => r.json()),
     ]);
     const commonEl = document.getElementById('md-common-content');
     if (commonEl) commonEl.value = cr?.content || '';
     mdRenderProjects(pr?.items || []);
+    mdRenderRoles(rr?.items || []);
   } catch {
     /* ignore */
   }
@@ -1759,6 +1770,130 @@ async function mdDeleteProject(idx) {
   if (!confirm(`Remove "${cwd}" from the registry?\n\nThe PROJECT.md file on disk will NOT be deleted.`)) return;
   try {
     await fetch('/md/project?path=' + encodeURIComponent(cwd), { method: 'DELETE' });
+    await mdLoadAll();
+  } catch (err) {
+    alert('Delete failed: ' + (err?.message || 'network error'));
+  }
+}
+
+// --- Roles (Phase B §4) ---
+
+function mdRenderRoles(items) {
+  const host = document.getElementById('md-role-list');
+  if (!host) return;
+  host.innerHTML = '';
+  items.forEach((item, idx) => {
+    const row = document.createElement('div');
+    row.className = 'r';
+    row.style.cssText = 'flex-direction:column;align-items:stretch;gap:6px;padding:10px 14px;border-top:1px solid var(--border)';
+    const nameVal = (item.name || '').replace(/"/g, '&quot;');
+    const descVal = (item.description || '').replace(/</g, '&lt;');
+    const bodyVal = (item.body || '').replace(/</g, '&lt;');
+    const perm = (item.permission || 'read').toLowerCase();
+    const isOpen = !item.name; // newly added rows start expanded
+    row.innerHTML =
+      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      + `<input class="r-input" style="flex:1;min-width:140px;font-family:monospace;font-size:12px" id="md-role-name-${idx}" placeholder="role-name (e.g. reviewer)" value="${nameVal}" />`
+      + `<select class="r-input" style="width:140px;font-size:12px" id="md-role-perm-${idx}">`
+      +   `<option value="read"${perm === 'read' ? ' selected' : ''}>read</option>`
+      +   `<option value="read-write"${perm === 'read-write' ? ' selected' : ''}>read-write</option>`
+      + '</select>'
+      + `<button class="r-btn" onclick="mdToggleRoleDesc(${idx})" id="md-role-toggle-${idx}">${isOpen ? 'Description ▾' : 'Description ▸'}</button>`
+      + `<button class="r-btn" onclick="mdSaveRole(${idx})">Save</button>`
+      + `<button class="r-btn" style="color:var(--danger)" onclick="mdDeleteRole(${idx})">×</button>`
+      + '</div>'
+      + `<div id="md-role-desc-wrap-${idx}" style="display:${isOpen ? 'block' : 'none'}">`
+      +   `<textarea class="r-input" style="width:100%;min-height:60px;font-family:inherit;font-size:12px;margin-top:4px" id="md-role-desc-${idx}" placeholder="Description shown to the agent in the Tier 3 system-reminder...">${descVal}</textarea>`
+      +   `<textarea class="r-input" style="width:100%;min-height:80px;font-family:monospace;font-size:12px;margin-top:4px" id="md-role-body-${idx}" placeholder="Optional extra instructions (markdown body)...">${bodyVal}</textarea>`
+      + '</div>';
+    host.appendChild(row);
+  });
+}
+
+function mdToggleRoleDesc(idx) {
+  const wrap = document.getElementById(`md-role-desc-wrap-${idx}`);
+  const btn = document.getElementById(`md-role-toggle-${idx}`);
+  if (!wrap || !btn) return;
+  const open = wrap.style.display !== 'none';
+  wrap.style.display = open ? 'none' : 'block';
+  btn.textContent = open ? 'Description ▸' : 'Description ▾';
+}
+
+function mdAddRole() {
+  const host = document.getElementById('md-role-list');
+  if (!host) return;
+  const items = [];
+  host.querySelectorAll(':scope > .r').forEach((el, idx) => {
+    const ne = el.querySelector(`#md-role-name-${idx}`);
+    const de = el.querySelector(`#md-role-desc-${idx}`);
+    const pe = el.querySelector(`#md-role-perm-${idx}`);
+    const be = el.querySelector(`#md-role-body-${idx}`);
+    items.push({
+      name: ne?.value || '',
+      description: de?.value || '',
+      permission: pe?.value || 'read',
+      body: be?.value || '',
+    });
+  });
+  items.push({ name: '', description: '', permission: 'read', body: '' });
+  mdRenderRoles(items);
+}
+
+async function mdSaveRole(idx) {
+  const ne = document.getElementById(`md-role-name-${idx}`);
+  const de = document.getElementById(`md-role-desc-${idx}`);
+  const pe = document.getElementById(`md-role-perm-${idx}`);
+  const be = document.getElementById(`md-role-body-${idx}`);
+  const name = (ne?.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  if (!name) {
+    alert('Role name is required (lowercase letters, digits, _ or -).');
+    return;
+  }
+  const description = (de?.value || '').trim();
+  const permission = (pe?.value || 'read').trim().toLowerCase();
+  const body = (be?.value || '').trim();
+  try {
+    const r = await fetch('/md/role', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description, permission, body }),
+    }).then(r => r.json());
+    if (!r?.ok) {
+      alert('Save failed: ' + (r?.error || 'unknown'));
+      return;
+    }
+    await mdLoadAll();
+  } catch (err) {
+    alert('Save failed: ' + (err?.message || 'network error'));
+  }
+}
+
+async function mdDeleteRole(idx) {
+  const ne = document.getElementById(`md-role-name-${idx}`);
+  const name = (ne?.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  if (!name) {
+    // Not yet saved — drop locally.
+    const host = document.getElementById('md-role-list');
+    const items = [];
+    host.querySelectorAll(':scope > .r').forEach((el, i) => {
+      if (i === idx) return;
+      const ne2 = el.querySelector(`#md-role-name-${i}`);
+      const de2 = el.querySelector(`#md-role-desc-${i}`);
+      const pe2 = el.querySelector(`#md-role-perm-${i}`);
+      const be2 = el.querySelector(`#md-role-body-${i}`);
+      items.push({
+        name: ne2?.value || '',
+        description: de2?.value || '',
+        permission: pe2?.value || 'read',
+        body: be2?.value || '',
+      });
+    });
+    mdRenderRoles(items);
+    return;
+  }
+  if (!confirm(`Delete role "${name}"?\n\nThis removes <data>/roles/${name}.md from disk.`)) return;
+  try {
+    await fetch('/md/role?name=' + encodeURIComponent(name), { method: 'DELETE' });
     await mdLoadAll();
   } catch (err) {
     alert('Delete failed: ' + (err?.message || 'network error'));

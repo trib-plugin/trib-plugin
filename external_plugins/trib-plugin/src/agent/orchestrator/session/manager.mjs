@@ -5,7 +5,7 @@ import { getProvider } from '../providers/registry.mjs';
 import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
-import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
+import { collectSkillsCached, buildSkillToolDefs, collectClaudeMd, loadAgentTemplate, loadRoleTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { logLlmCall } from '../../../shared/llm/usage-log.mjs';
@@ -290,14 +290,25 @@ export function createSession(opts) {
     // (e.g. a test harness running without plugin-data initialised).
     const claudeMd = bridgeRules ? '' : collectClaudeMd(opts.cwd);
 
+    // Role template (Phase B §4 — UI-managed). Reads <DATA_DIR>/roles/<role>.md
+    // and parses frontmatter (description, permission). The template is
+    // injected into the Tier 3 system-reminder so role differences never
+    // touch the BP_2 cache prefix.
+    const resolvedRole = opts.role || profile?.taskType || null;
+    const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+    const roleTemplate = resolvedRole && dataDir
+        ? loadRoleTemplate(resolvedRole, dataDir)
+        : null;
+
     const { systemTier2, tier3Reminder } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
         claudeMd: claudeMd || undefined,
         agentTemplate: agentTemplate || undefined,
+        roleTemplate: roleTemplate || undefined,
         hasSkills: skills.length > 0,
         profile: profile || undefined,
-        role: opts.role || null,
+        role: resolvedRole,
         taskBrief: opts.taskBrief || null,
         projectContext: projectContext || null,
     });

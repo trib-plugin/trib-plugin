@@ -1647,6 +1647,79 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ROLE MD ROUTES (Phase B §4) — UI-managed agent role files.
+  // Each role lives at <data>/roles/<name>.md with frontmatter
+  // (name, description, permission) + optional body. Permission is one of
+  // "read" | "read-write".
+
+  if (req.method === 'GET' && path === '/md/role') {
+    const rolesDir = join(getPluginData(), 'roles');
+    const items = [];
+    try {
+      mkdirSync(rolesDir, { recursive: true });
+      const files = (await import('fs')).readdirSync(rolesDir).filter(f => f.endsWith('.md'));
+      for (const f of files) {
+        const name = f.replace(/\.md$/, '');
+        let raw = '';
+        try { raw = readFileSync(join(rolesDir, f), 'utf8'); } catch {}
+        const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n*/);
+        const fm = fmMatch ? fmMatch[1] : '';
+        const body = fmMatch ? raw.slice(fmMatch[0].length).trim() : raw.trim();
+        const description = (fm.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1] || '').trim();
+        const permission = (fm.match(/^permission:\s*["']?(.+?)["']?\s*$/m)?.[1] || '').trim().toLowerCase();
+        items.push({ name, description, permission, body });
+      }
+    } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ items }));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/md/role') {
+    const body = await readBody(req);
+    const name = String(body?.name || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const description = String(body?.description ?? '').trim();
+    const permission = String(body?.permission ?? '').trim().toLowerCase();
+    const note = String(body?.body ?? '').trim();
+    if (!name) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'name required' }));
+      return;
+    }
+    if (permission && permission !== 'read' && permission !== 'read-write') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'permission must be "read" or "read-write"' }));
+      return;
+    }
+    const fmLines = [`name: ${name}`];
+    if (description) fmLines.push(`description: ${description.replace(/\n/g, ' ')}`);
+    if (permission) fmLines.push(`permission: ${permission}`);
+    const content = `---\n${fmLines.join('\n')}\n---\n${note ? `\n${note}\n` : ''}`;
+    const p = join(getPluginData(), 'roles', `${name}.md`);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, content, 'utf8');
+    console.log(`  Config saved: role MD (${name})`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === 'DELETE' && path === '/md/role') {
+    const qs = new URL(req.url, 'http://x').searchParams;
+    const name = String(qs.get('name') || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (!name) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'name required' }));
+      return;
+    }
+    const p = join(getPluginData(), 'roles', `${name}.md`);
+    try { (await import('fs')).unlinkSync(p); } catch {}
+    console.log(`  Config removed: role MD (${name})`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // ============================================================
   // WORKFLOW MODULE ROUTES
   // ============================================================

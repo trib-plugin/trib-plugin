@@ -1,20 +1,18 @@
 /**
  * Smart Bridge — Cache Strategy
  *
- * Derives provider-specific cache settings from profile.lifecycle. Profiles
- * declare WHAT kind of workload they are (one-shot / recurring / continuous);
- * this module decides HOW to cache given that lifecycle + provider.
+ * Two cacheTypes cover every Pool B workload:
+ *   - stateful  → 1h on tools+system, 5m on messages tail.
+ *                 Multi-turn workers that re-enter the same session within
+ *                 minutes (worker, debugger, tester).
+ *   - stateless → 1h on tools+system, no cache on messages.
+ *                 Single dispatch or pooled stateless calls where the
+ *                 messages tail is replaced every turn (sub-task, reviewer,
+ *                 researcher, ad-hoc bridge, maintenance, webhook).
  *
- * Key decisions encoded here:
- *   - one-shot: never cache (cache write premium has no payoff when there's
- *     no re-read in the TTL window). 20% cheaper than 5m cache for true
- *     single-call prompts.
- *   - recurring: depends on interval.
- *       interval < 1h → 1h cache (fits within TTL, read discount applies).
- *       interval >= 1h → no cache (cache expires before next call, write
- *       premium is pure waste).
- *   - continuous: 1h on stable layers (tools, system) + 5m on messages
- *     sliding breakpoint for multi-turn sessions.
+ * Both share an identical tools+system prefix across the workspace, so all
+ * Pool B traffic hits one Anthropic shard per model. The only difference is
+ * whether the messages tail also carries a cache breakpoint.
  *
  * Providers differ in what they can express:
  *   - Anthropic: per-layer TTL via cache_control breakpoints — full control.
@@ -24,10 +22,8 @@
  *   - OpenAI-compat locals (Ollama, Groq, etc.): no API-level cache.
  */
 
-const ANTHROPIC_1H_WINDOW_MS = 60 * 60_000;
-
 /**
- * Return the layered cache policy (Anthropic-style TTL per layer) for a profile.
+ * Return the layered cache policy (Anthropic-style TTL per layer) for a cacheType.
  * Used directly by anthropic/anthropic-oauth; translated for other providers.
  *
  * Values:
@@ -35,48 +31,25 @@ const ANTHROPIC_1H_WINDOW_MS = 60 * 60_000;
  *   '5m'   → ephemeral 5m TTL  (1.25x write premium, 0.1x read)
  *   'none' → no cache_control  (1x flat, no premium, no cache)
  */
-export function resolveLifecycleCacheStrategy(profile) {
-    const lifecycle = profile?.lifecycle || 'one-shot';
-
-    if (lifecycle === 'one-shot') {
-        return { tools: 'none', system: 'none', messages: 'none' };
-    }
-
-    if (lifecycle === 'continuous') {
+export function resolveCacheStrategy(cacheType) {
+    if (cacheType === 'stateful') {
         return { tools: '1h', system: '1h', messages: '5m' };
     }
-
-    if (lifecycle === 'recurring') {
-        const interval = Number(profile?.recurrenceIntervalMs) || 0;
-        // Unknown interval: assume "short enough" (1h) as the safer default —
-        // pays write premium once but catches reuse if it happens.
-        if (interval === 0) {
-            return { tools: '1h', system: '1h', messages: 'none' };
-        }
-        // Short interval: cache fits within 1h TTL — read discount pays for
-        // write premium after ~3 calls.
-        if (interval < ANTHROPIC_1H_WINDOW_MS) {
-            return { tools: '1h', system: '1h', messages: 'none' };
-        }
-        // Long interval: cache always expires before next call — write premium
-        // is pure waste. No-cache is 50% cheaper.
-        return { tools: 'none', system: 'none', messages: 'none' };
-    }
-
-    // Unknown lifecycle — be safe.
-    return { tools: 'none', system: 'none', messages: 'none' };
+    // stateless (default) — covers sub-task, reviewer, researcher, ad-hoc,
+    // maintenance, webhook, and anything unspecified.
+    return { tools: '1h', system: '1h', messages: 'none' };
 }
 
 /**
- * Build provider-specific sendOpts from a profile + provider.
+ * Build provider-specific sendOpts from a cacheType + provider.
  *
- * @param {object} profile
+ * @param {string} cacheType   — 'stateful' | 'stateless'
  * @param {string} provider
  * @param {string} [sessionId]
  * @returns {object} partial sendOpts — spread into provider.send call
  */
-export function buildProviderCacheOpts(profile, provider, sessionId) {
-    const ttls = resolveLifecycleCacheStrategy(profile);
+export function buildProviderCacheOpts(cacheType, provider, sessionId) {
+    const ttls = resolveCacheStrategy(cacheType);
 
     switch (provider) {
         case 'anthropic-oauth':
@@ -87,26 +60,22 @@ export function buildProviderCacheOpts(profile, provider, sessionId) {
 
         case 'openai-oauth':
             // Codex endpoint rejects prompt_cache_retention. We rely on the
-            // server-side default in_memory cache (5-10min). For one-shot
-            // profiles the server will still prefix-cache if the prefix is
-            // reused within the in-memory window, so no user action needed.
+            // server-side default in_memory cache (5-10min). The server still
+            // prefix-caches if the prefix is reused within the in-memory window.
             return {};
 
-        case 'openai': {
-            // Public OpenAI API supports prompt_cache_retention. Map lifecycle:
-            //   one-shot → in_memory (default; 5-10min, no commitment)
-            //   recurring/continuous → 24h for extended retention
-            const lifecycle = profile?.lifecycle || 'one-shot';
-            if (lifecycle === 'one-shot') return { cacheRetention: 'in_memory' };
+        case 'openai':
+            // Public OpenAI API supports prompt_cache_retention. Both cache
+            // types want extended retention — the prefix is shared across
+            // every Pool B call in the workspace.
             return { cacheRetention: '24h' };
-        }
 
         case 'gemini':
             // Gemini uses cache objects. Signal intent; the provider layer
             // creates/updates the object separately from the message.
             return {
                 geminiCache: {
-                    enabled: ttls.system !== 'none',
+                    enabled: true,
                     ttlSeconds: ttlToSeconds(ttls.system),
                 },
             };
@@ -122,26 +91,25 @@ export function buildProviderCacheOpts(profile, provider, sessionId) {
 /**
  * Prefix content used to derive the cache hash for registry tracking.
  * Excludes the volatile user message — only the stable prefix (tools,
- * system, contextChunks) determines whether our cache is "still warm".
+ * system) determines whether our cache is "still warm". The Pool B prefix
+ * is workspace-wide, so a single hash represents every Pool B caller.
  */
-export function computePrefixContent(profile, systemPrompt, tools) {
+export function computePrefixContent(systemPrompt, tools) {
     return {
-        profileId: profile?.id,
         systemPrompt: systemPrompt || '',
         tools: (tools || []).map(t => ({
             name: t.name,
             description: t.description,
             inputSchema: t.inputSchema,
         })),
-        chunks: (profile?.contextChunks || []).slice().sort(),
     };
 }
 
 /**
  * Longest-lived layer TTL (seconds) for registry expiry tracking.
  */
-export function ttlSecondsForProfile(profile) {
-    const ttls = resolveLifecycleCacheStrategy(profile);
+export function ttlSecondsForCacheType(cacheType) {
+    const ttls = resolveCacheStrategy(cacheType);
     return Math.max(
         ttlToSeconds(ttls.tools),
         ttlToSeconds(ttls.system),

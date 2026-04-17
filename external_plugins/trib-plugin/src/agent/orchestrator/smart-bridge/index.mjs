@@ -11,7 +11,7 @@ import { join } from 'path';
 import { loadProfiles, getProfile } from './profiles.mjs';
 import { SmartRouter } from './router.mjs';
 import { CacheRegistry, hashContent, DEFAULT_TTL_SECONDS } from './registry.mjs';
-import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForProfile } from './cache-strategy.mjs';
+import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCacheType } from './cache-strategy.mjs';
 import { getPluginData } from '../config.mjs';
 
 let _sharedInstance = null;
@@ -79,7 +79,7 @@ export class SmartBridge {
         const effort = preset?.effort || null;
         const fast = preset?.fast === true;
 
-        const cacheOpts = buildProviderCacheOpts(profile, provider, request.sessionId);
+        const cacheOpts = buildProviderCacheOpts(profile?.cacheType, provider, request.sessionId);
 
         return {
             profile,
@@ -112,8 +112,8 @@ export class SmartBridge {
      */
     recordCall(profile, provider, { systemPrompt, tools, usage }) {
         if (!profile) return;
-        const prefixContent = computePrefixContent(profile, systemPrompt, tools);
-        const ttlSeconds = ttlSecondsForProfile(profile);
+        const prefixContent = computePrefixContent(systemPrompt, tools);
+        const ttlSeconds = ttlSecondsForCacheType(profile?.cacheType);
         if (ttlSeconds > 0) {
             this.registry.markWarm(profile.id, provider, prefixContent, ttlSeconds);
         }
@@ -269,4 +269,4 @@ export function translateNativePreset(preset) {
 
 // Re-exports for convenience.
 export { loadProfiles, getProfile, SmartRouter, CacheRegistry, hashContent, DEFAULT_TTL_SECONDS };
-export { buildProviderCacheOpts, computePrefixContent, ttlSecondsForProfile };
+export { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCacheType };

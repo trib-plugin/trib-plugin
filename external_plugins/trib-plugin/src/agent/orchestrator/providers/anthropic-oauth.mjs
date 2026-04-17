@@ -122,7 +122,7 @@ const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 // so declaring ourselves as Claude Code is literally accurate — not
 // impersonation. Haiku is not gated and ignores this prefix.
 const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
-const OAUTH_BETA_HEADERS = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27';
+const OAUTH_BETA_HEADERS = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,extended-cache-ttl-2025-04-11';
 const DEFAULT_CLI_VERSION = '2.1.77';
 
 function resolveCliVersion() {
@@ -331,7 +331,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
     let content = '';
     let model = '';
     let toolCalls = [];
-    let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 };
+    let usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, raw: null };
     let buffer = '';
     let idleTimedOut = false;
     let idleTimer = null;
@@ -389,6 +389,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                             usage.inputTokens = event.message.usage.input_tokens || 0;
                             usage.cachedTokens = event.message.usage.cache_read_input_tokens || 0;
                             usage.cacheWriteTokens = event.message.usage.cache_creation_input_tokens || 0;
+                            usage.raw = { ...event.message.usage };
                         }
                     }
 
@@ -434,6 +435,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta) {
                     if (event.type === 'message_delta') {
                         if (event.usage) {
                             usage.outputTokens = event.usage.output_tokens || 0;
+                            usage.raw = { ...(usage.raw || {}), ...event.usage };
                         }
                     }
                 } catch { /* skip malformed events */ }
@@ -727,7 +729,9 @@ export class AnthropicOAuthProvider {
                 inputTokens: result.usage?.inputTokens || 0,
                 outputTokens: result.usage?.outputTokens || 0,
                 cachedTokens: result.usage?.cachedTokens || 0,
+                cacheWriteTokens: result.usage?.cacheWriteTokens || 0,
                 model: result.model || useModel,
+                rawUsage: result.usage?.raw || null,
             });
 
             process.stderr.write(`[anthropic-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
