@@ -454,6 +454,11 @@ export function createSession(opts) {
         lastUsedAt: Date.now(),
         tokensCumulative: 0,
         role: opts.role || null,
+        // Origin tag written into every bridge-trace usage row so analytics
+        // can slice by (sourceType, sourceName) — e.g. maintenance/cycle1,
+        // scheduler/daily-standup, webhook/github-push, lead/worker.
+        sourceType: opts.sourceType || null,
+        sourceName: opts.sourceName || null,
         // Hermes-style in-flight compressor state
         compressionCount: 0,
         previousSummary: null,
@@ -833,21 +838,36 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             }
             // Append to bridge-trace.jsonl with the rich bridge usage fields.
             if (result.usage) {
+                const inputTokens = result.usage.inputTokens || 0;
+                const outputTokens = result.usage.outputTokens || 0;
+                const cacheReadTokens = result.usage.cachedTokens || 0;
+                const cacheWriteTokens = result.usage.cacheWriteTokens || 0;
+                let costUsd = result.usage.costUsd || 0;
+                if (!costUsd) {
+                    try {
+                        const { computeCostUsd } = await import('../../../shared/llm/cost.mjs');
+                        costUsd = computeCostUsd({
+                            model: session.model,
+                            inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+                        });
+                    } catch { /* best-effort */ }
+                }
                 logLlmCall({
                     ts: new Date().toISOString(),
+                    sourceType: session.sourceType || 'lead',
+                    sourceName: session.sourceName || session.role || null,
                     preset: session.presetName || null,
                     model: session.model,
                     provider: session.provider,
-                    mode: 'active',
                     duration: Date.now() - _askStartedAt,
                     profileId: session.profileId || null,
                     sessionId: session.id,
-                    inputTokens: result.usage.inputTokens || 0,
-                    outputTokens: result.usage.outputTokens || 0,
-                    cacheReadTokens: result.usage.cachedTokens || 0,
-                    cacheWriteTokens: result.usage.cacheWriteTokens || 0,
+                    inputTokens,
+                    outputTokens,
+                    cacheReadTokens,
+                    cacheWriteTokens,
                     prefixHash: prefixHashForLog,
-                    costUsd: result.usage.costUsd || 0,
+                    costUsd,
                 });
             }
             // Persist opaque providerState for future stateful providers.

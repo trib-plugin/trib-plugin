@@ -8,7 +8,7 @@ import { homedir } from "os";
 const WEBHOOKS_DIR = join(DATA_DIR, "webhooks");
 import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.mjs';
 
-const webhookLlm = makeBridgeLlm({ taskType: 'webhook-handler', role: 'webhook-handler' });
+const webhookLlm = makeBridgeLlm({ taskType: 'webhook-handler', role: 'webhook-handler', sourceType: 'webhook' });
 const WEBHOOK_LOG = join(DATA_DIR, "webhook.log");
 function logWebhook(msg) {
   const line = `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
@@ -412,7 +412,7 @@ class WebhookServer {
   async delegateAnalysis(name, prompt, model, channel, exec) {
     const presetId = model || 'sonnet-mid';
     try {
-      const result = await webhookLlm({ prompt, preset: presetId, mode: 'active', timeout: 120000 });
+      const result = await webhookLlm({ prompt, preset: presetId, mode: 'active', timeout: 120000, sourceName: name });
       if (!result) {
         logWebhook(`${name}: delegate returned empty`);
         return;

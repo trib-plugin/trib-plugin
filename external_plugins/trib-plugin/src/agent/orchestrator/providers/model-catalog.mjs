@@ -60,6 +60,28 @@ async function loadCatalog() {
 }
 
 /**
+ * Sync lookup using the in-memory cache only. Returns null if:
+ *   - no id provided, or
+ *   - the catalog has not been warmed yet (loadCatalog never ran), or
+ *   - the model id is not in the catalog after prefix probes.
+ *
+ * Used by hot-path loggers (bridge-trace usage row) that must not await.
+ */
+export function getModelMetadataSync(id) {
+    if (!id || !_memCache) return null;
+    const catalog = _memCache;
+    if (catalog[id]) return _normalize(catalog[id]);
+    for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'openrouter/anthropic/', 'openrouter/openai/']) {
+        if (catalog[prefix + id]) return _normalize(catalog[prefix + id]);
+    }
+    for (const prefix of ['anthropic.', 'bedrock/anthropic.']) {
+        const v1 = catalog[prefix + id + '-v1:0'];
+        if (v1) return _normalize(v1);
+    }
+    return null;
+}
+
+/**
  * Look up metadata for a model id. Returns null if the catalog doesn't
  * have the model. Matches exact id first, then with common prefix variants
  * ("anthropic/", "openai/", etc.) to bridge provider conventions.

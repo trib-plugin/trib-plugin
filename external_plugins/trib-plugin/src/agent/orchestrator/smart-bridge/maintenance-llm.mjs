@@ -24,10 +24,17 @@ import { makeBridgeLlm } from './bridge-llm.mjs';
  * @returns {(args: { prompt, mode, preset, timeout }) => Promise<string>}
  */
 export function makeMaintenanceLlm(opts = {}) {
+    // Derive sourceName from role: "maintenance:cycle1" → "cycle1", else the
+    // raw role. Callers can override by passing opts.sourceName.
+    let sourceName = opts.sourceName;
+    if (!sourceName && typeof opts.role === 'string') {
+        const idx = opts.role.indexOf(':');
+        sourceName = idx >= 0 ? opts.role.slice(idx + 1) : opts.role;
+    }
     return makeBridgeLlm({
         ...opts,
         taskType: opts.taskType || 'maintenance',
-        mode: 'maintenance',
-        maintenanceLog: true,
+        sourceType: opts.sourceType || 'maintenance',
+        sourceName: sourceName || null,
     });
 }

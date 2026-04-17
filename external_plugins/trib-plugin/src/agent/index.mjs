@@ -711,6 +711,10 @@ export async function handleToolCall(name, args, opts = {}) {
           cwd: effectiveCwd,
           // Smart Bridge resolveSync picks a profile from the role.
           role,
+          // Tag the usage row so bridge-trace analytics can slice lead
+          // calls by the requested role (worker / reviewer / ...).
+          sourceType: 'lead',
+          sourceName: role,
         });
         const found = findOrCreateSession(runtimeSpec.scopeKey, createFreshSession);
         // resumeSession returns null for tombstoned / unresumable sessions.

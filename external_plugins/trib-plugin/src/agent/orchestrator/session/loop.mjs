@@ -180,14 +180,26 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             messageCount: Array.isArray(messages) ? messages.length : 0,
             bodyBytesEst: estimateProviderPayloadBytes(messages, model, tools),
         });
-        // Accumulate usage across iterations
+        // Accumulate usage across iterations — every billable slot, not just
+        // input/output. Anthropic cache_read/cache_write typically stay 0 on
+        // the first iteration and surge on later ones (warm prefix reuse),
+        // so aggregating only the head would silently drop most of the
+        // cache-side tokens.
         if (response.usage) {
             if (lastUsage) {
-                lastUsage.inputTokens += response.usage.inputTokens;
-                lastUsage.outputTokens += response.usage.outputTokens;
+                lastUsage.inputTokens += response.usage.inputTokens || 0;
+                lastUsage.outputTokens += response.usage.outputTokens || 0;
+                lastUsage.cachedTokens = (lastUsage.cachedTokens || 0) + (response.usage.cachedTokens || 0);
+                lastUsage.cacheWriteTokens = (lastUsage.cacheWriteTokens || 0) + (response.usage.cacheWriteTokens || 0);
             }
             else {
-                lastUsage = { ...response.usage };
+                lastUsage = {
+                    inputTokens: response.usage.inputTokens || 0,
+                    outputTokens: response.usage.outputTokens || 0,
+                    cachedTokens: response.usage.cachedTokens || 0,
+                    cacheWriteTokens: response.usage.cacheWriteTokens || 0,
+                    raw: response.usage.raw,
+                };
             }
         }
         // Provider may have returned despite an abort (SDKs that don't honour
