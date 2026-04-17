@@ -59,16 +59,32 @@ async function loadCatalog() {
     }
 }
 
+function warmFromDiskSync() {
+    if (_memCache) return;
+    try {
+        const raw = JSON.parse(readFileSync(cachePath(), 'utf-8'));
+        if (raw?.data) {
+            _memCache = raw.data;
+            _memCacheAt = raw.fetchedAt || Date.now();
+        }
+    } catch { /* disk cache unavailable — stay cold, async warm will fill later */ }
+}
+
 /**
- * Sync lookup using the in-memory cache only. Returns null if:
- *   - no id provided, or
- *   - the catalog has not been warmed yet (loadCatalog never ran), or
- *   - the model id is not in the catalog after prefix probes.
+ * Sync lookup. Warm order:
+ *   1. in-memory cache (hot path),
+ *   2. disk cache one-shot read if memory is cold (first call after boot),
+ *   3. null if neither is available (async loadCatalog will fill later).
  *
  * Used by hot-path loggers (bridge-trace usage row) that must not await.
+ * The disk fallback is a single ~5ms blocking read on cold start; all
+ * subsequent calls hit memory. TTL is intentionally ignored here — stale
+ * catalog beats no catalog, and the async path refreshes on schedule.
  */
 export function getModelMetadataSync(id) {
-    if (!id || !_memCache) return null;
+    if (!id) return null;
+    if (!_memCache) warmFromDiskSync();
+    if (!_memCache) return null;
     const catalog = _memCache;
     if (catalog[id]) return _normalize(catalog[id]);
     for (const prefix of ['anthropic/', 'openai/', 'gemini/', 'google/', 'openrouter/anthropic/', 'openrouter/openai/']) {
