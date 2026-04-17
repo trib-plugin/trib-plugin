@@ -1,5 +1,6 @@
 import { initProviders } from './orchestrator/providers/registry.mjs';
 import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, resetStatelessSession } from './orchestrator/session/manager.mjs';
+import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
@@ -777,6 +778,16 @@ export async function handleToolCall(name, args, opts = {}) {
             errorMessage = err instanceof Error ? err.message : String(err);
             if (err instanceof SessionClosedError) {
               emit(`[${scopeLabel}] ⏹ cancelled\n\n${modelLabel}`);
+            } else if (err instanceof ToolLoopAbortError) {
+              const info = err.info || {};
+              const header = `⚠ tool loop aborted — ${info.attemptCount}× ${info.toolName}:${info.errorCategory}`;
+              const body = [
+                `signature: ${info.signature}`,
+                `last error: ${String(info.errorSample || '').slice(0, 200)}`,
+                `args: ${String(info.argsSample || '').slice(0, 200)}`,
+              ].join('\n');
+              emit(`[${scopeLabel}] ${header}\n${body}\n\n${modelLabel}`);
+              updateSessionStatus(session.id, 'error');
             } else {
               emit(`[${scopeLabel}] ❌ ${errorMessage}\n\n${modelLabel}`);
               updateSessionStatus(session.id, 'error');

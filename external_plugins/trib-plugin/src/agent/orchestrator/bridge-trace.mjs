@@ -82,6 +82,34 @@ function traceBridgeTool({ sessionId, iteration, toolName, toolKind, toolMs }) {
     });
 }
 
+function traceToolLoopDetected({ sessionId, iteration, info }) {
+    appendBridgeTrace({
+        sessionId,
+        iteration,
+        kind: 'tool_loop_detected',
+        signature: info.signature,
+        tool_name: info.toolName,
+        error_category: info.errorCategory,
+        attempt_count: info.attemptCount,
+        args_sample: info.argsSample,
+        error_sample: info.errorSample,
+    });
+}
+
+function traceToolLoopAborted({ sessionId, iteration, info }) {
+    appendBridgeTrace({
+        sessionId,
+        iteration,
+        kind: 'tool_loop_aborted',
+        signature: info.signature,
+        tool_name: info.toolName,
+        error_category: info.errorCategory,
+        attempt_count: info.attemptCount,
+        args_sample: info.argsSample,
+        error_sample: info.errorSample,
+    });
+}
+
 function traceBridgeFetch({ sessionId, headersMs, httpStatus }) {
     appendBridgeTrace({
         sessionId,
@@ -153,5 +181,7 @@ export {
     traceBridgeSse,
     traceBridgeTool,
     traceBridgeUsage,
+    traceToolLoopAborted,
+    traceToolLoopDetected,
     warnBridgeOnce,
 };

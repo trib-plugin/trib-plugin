@@ -9,10 +9,12 @@
  * a scaffold body.
  *
  * Usage:
- *   node scripts/skill-suggest.mjs                  # print suggestions to stdout
+ *   node scripts/skill-suggest.mjs                   # classifications-based suggestions
  *   node scripts/skill-suggest.mjs --write           # write .md files to ~/.claude/skills/
  *   node scripts/skill-suggest.mjs --min-freq 5      # custom frequency threshold
  *   node scripts/skill-suggest.mjs --days 14         # look-back window in days
+ *   node scripts/skill-suggest.mjs --3axis           # WHAT/HOW/FLOW extraction from trajectory.sqlite
+ *   node scripts/skill-suggest.mjs --promote-drafts  # promote auto-drafts/ to auto/ when thresholds met
  *
  * Also exports detectPatterns() and generateSkillMd() for programmatic use.
  */
@@ -22,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { extractPatterns3Axis, get3AxisReport, promoteQualifyingDrafts, getSkillCatalog } from '../src/agent/orchestrator/skill-suggest.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,13 +40,26 @@ function resolveDataDir() {
 // ── Parse CLI args ──────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { write: false, minFreq: 3, days: 30 };
+  const args = { write: false, minFreq: 3, days: 30, threeAxis: false, promoteDrafts: false, minConsistency: 'M' };
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === '--write') args.write = true;
     if (argv[i] === '--min-freq' && argv[i + 1]) args.minFreq = Number(argv[++i]);
     if (argv[i] === '--days' && argv[i + 1]) args.days = Number(argv[++i]);
+    if (argv[i] === '--3axis') args.threeAxis = true;
+    if (argv[i] === '--promote-drafts') args.promoteDrafts = true;
+    if (argv[i] === '--min-consistency' && argv[i + 1]) args.minConsistency = argv[++i];
   }
   return args;
+}
+
+function openTrajectoryDb() {
+  const dbPath = join(resolveDataDir(), 'trajectory.sqlite');
+  if (!existsSync(dbPath)) return null;
+  try {
+    return new DatabaseSync(dbPath, { open: true, readOnly: true });
+  } catch {
+    return null;
+  }
 }
 
 // ── Pattern detection ───────────────────────────────────────────────
@@ -266,6 +282,47 @@ export function suggest({ minFreq = 3, days = 30, write = false } = {}) {
 
 if (basename(process.argv[1] || '') === 'skill-suggest.mjs') {
   const args = parseArgs(process.argv);
+
+  // --promote-drafts: scan auto-drafts/ and promote qualifying ones
+  if (args.promoteDrafts) {
+    const tdb = openTrajectoryDb();
+    if (!tdb) {
+      console.log('trajectory.sqlite not found — nothing to promote.');
+      process.exit(0);
+    }
+    const results = promoteQualifyingDrafts(tdb, { minFreq: args.minFreq, minConsistency: args.minConsistency });
+    tdb.close();
+    if (results.length === 0) {
+      console.log('No drafts present in ~/.claude/skills/auto-drafts/.');
+    } else {
+      console.log(`Draft promotion results (minFreq=${args.minFreq}, minConsistency=${args.minConsistency}):`);
+      for (const r of results) {
+        const mark = r.promoted ? '✓' : '·';
+        console.log(`  ${mark} ${r.name}: ${r.reason}`);
+      }
+    }
+    process.exit(0);
+  }
+
+  // --3axis: WHAT/HOW/FLOW extraction from trajectory.sqlite
+  if (args.threeAxis) {
+    const tdb = openTrajectoryDb();
+    if (!tdb) {
+      console.log('trajectory.sqlite not found. No trajectory data to analyze.');
+      process.exit(0);
+    }
+    const report = get3AxisReport(tdb, { minFreq: args.minFreq });
+    tdb.close();
+    console.log(report);
+    const catalog = getSkillCatalog(join(dirname(fileURLToPath(import.meta.url)), '..'));
+    const totalCatalog = catalog.bundled.length + catalog.auto.length + catalog.drafts.length;
+    if (totalCatalog > 0) {
+      console.log(`\nSkill catalog: ${catalog.bundled.length} bundled, ${catalog.auto.length} auto, ${catalog.drafts.length} drafts.`);
+    }
+    process.exit(0);
+  }
+
+  // Default path: classifications-based suggestions
   const result = suggest(args);
 
   if (result.patterns.length === 0) {

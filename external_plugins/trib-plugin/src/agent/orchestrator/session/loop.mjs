@@ -1,9 +1,10 @@
 import { executeMcpTool, isMcpTool } from '../mcp/client.mjs';
 import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
-import { traceBridgeLoop, traceBridgeTool, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
+import { traceBridgeLoop, traceBridgeTool, traceToolLoopAborted, traceToolLoopDetected, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
 import { trimMessages } from './trim.mjs';
+import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
 import {
     shouldCompress,
     compress,
@@ -11,7 +12,7 @@ import {
     THRESHOLD_PERCENT,
 } from './compressor.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
-const MAX_ITERATIONS = 100;
+const MAX_ITERATIONS = 30;
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
 /**
  * Execute a single tool call — routes to MCP or builtin.
@@ -74,6 +75,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const opts = sendOpts || {};
     const sessionId = opts.sessionId || null;
     const signal = opts.signal || null;
+    const loopGuard = createGuard();
     // Opaque providerState passthrough. The loop never inspects it; only the
     // originating provider does. Seed from sendOpts.providerState if the
     // manager restored one. No provider currently emits state (Codex OAuth is
@@ -203,6 +205,19 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 content: result,
                 toolCallId: call.id,
             });
+            // Loop guard: check for repeated identical failures. 3 in a row -> abort.
+            const guardResult = checkToolCall(loopGuard, {
+                toolName: call.name,
+                args: call.arguments,
+                result,
+                iteration: iterations,
+            });
+            if (guardResult.action === 'detected') {
+                traceToolLoopDetected({ sessionId, iteration: iterations, info: guardResult.info });
+            } else if (guardResult.action === 'abort') {
+                traceToolLoopAborted({ sessionId, iteration: iterations, info: guardResult.info });
+                throw new ToolLoopAbortError(guardResult.info);
+            }
             // Soft-cancel after each tool: if close landed during execution,
             // discard the rest of the batch and skip the next provider.send.
             throwIfAborted();
