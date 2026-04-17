@@ -19,7 +19,7 @@ User rules always take precedence over base rules when they conflict.
 - Prefer fewer agents with grouped tasks over many single-task agents.
 
 ### Progress reporting
-- When running parallel agents, report status on each update.
+- When running agents, report status on each update.
 - Which agents completed, which are in progress, what each is doing.
 - Keep the user aware of overall progress without waiting for all to finish.
 - When an agent completes, summarize the result and share with the user.
