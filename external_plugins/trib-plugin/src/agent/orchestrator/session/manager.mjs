@@ -552,6 +552,14 @@ export function markSessionError(id, msg) {
 export function getSessionRuntime(id) {
     return id ? (_runtimeState.get(id) || null) : null;
 }
+/**
+ * Iterate all active session runtimes. Used by the stream watchdog.
+ * Returns an iterable of [sessionId, entry] pairs; consumers should
+ * treat entries as read-only snapshots and avoid mutating them.
+ */
+export function forEachSessionRuntime() {
+    return _runtimeState.entries();
+}
 function _clearSessionRuntime(id) {
     if (id) _runtimeState.delete(id);
 }

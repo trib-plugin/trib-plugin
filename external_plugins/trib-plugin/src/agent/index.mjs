@@ -1,6 +1,7 @@
 import { initProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, resetStatelessSession } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, resetStatelessSession, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
+import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
@@ -387,6 +388,7 @@ export async function init() {
     );
   }
   startAgentMaintenance();
+  startStreamWatchdog(forEachSessionRuntime);
   // Smart Bridge — unified router + cache strategy + profile system.
   // User-role preset mapping comes from user-workflow.json (existing source
   // of truth). Preset catalog (provider/model/effort) comes from config.presets.
@@ -778,6 +780,12 @@ export async function handleToolCall(name, args, opts = {}) {
             errorMessage = err instanceof Error ? err.message : String(err);
             if (err instanceof SessionClosedError) {
               emit(`[${scopeLabel}] ⏹ cancelled\n\n${modelLabel}`);
+            } else if (err instanceof StreamStalledAbortError) {
+              const info = err.info || {};
+              const header = `⚠ stream stalled — ${info.staleSeconds}s no delta (stage: ${info.stage || 'unknown'})`;
+              const body = `last tool call: ${info.lastToolCall || 'none'}\nprovider likely hung. Retry with a shorter prompt or a different provider.`;
+              emit(`[${scopeLabel}] ${header}\n${body}\n\n${modelLabel}`);
+              updateSessionStatus(session.id, 'error');
             } else if (err instanceof ToolLoopAbortError) {
               const info = err.info || {};
               const header = `⚠ tool loop aborted — ${info.attemptCount}× ${info.toolName}:${info.errorCategory}`;

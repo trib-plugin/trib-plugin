@@ -110,6 +110,26 @@ function traceToolLoopAborted({ sessionId, iteration, info }) {
     });
 }
 
+function traceStreamStalled({ sessionId, info }) {
+    appendBridgeTrace({
+        sessionId,
+        kind: 'stream_stalled',
+        stale_seconds: info.staleSeconds,
+        last_tool_call: info.lastToolCall,
+        stage: info.stage,
+    });
+}
+
+function traceStreamAborted({ sessionId, info }) {
+    appendBridgeTrace({
+        sessionId,
+        kind: 'stream_aborted',
+        stale_seconds: info.staleSeconds,
+        last_tool_call: info.lastToolCall,
+        stage: info.stage,
+    });
+}
+
 function traceBridgeFetch({ sessionId, headersMs, httpStatus }) {
     appendBridgeTrace({
         sessionId,
@@ -181,6 +201,8 @@ export {
     traceBridgeSse,
     traceBridgeTool,
     traceBridgeUsage,
+    traceStreamAborted,
+    traceStreamStalled,
     traceToolLoopAborted,
     traceToolLoopDetected,
     warnBridgeOnce,

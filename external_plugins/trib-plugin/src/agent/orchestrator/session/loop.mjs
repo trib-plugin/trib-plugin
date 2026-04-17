@@ -84,7 +84,10 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     const throwIfAborted = () => {
         if (signal?.aborted) {
             const reason = signal.reason instanceof Error ? signal.reason : null;
-            if (reason instanceof SessionClosedError) throw reason;
+            // Preserve any structured abort reason (SessionClosedError,
+            // StreamStalledAbortError, etc.). Fallback to SessionClosedError
+            // when the reason is not an Error instance.
+            if (reason) throw reason;
             throw new SessionClosedError(sessionId || 'unknown', 'agent loop aborted');
         }
     };
