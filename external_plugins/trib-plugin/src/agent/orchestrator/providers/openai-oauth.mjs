@@ -72,7 +72,26 @@ async function _saveCodexModelCache(models) {
             fetchedAt: Date.now(),
             models,
         }, null, 2));
+        _inMemoryCodexCatalog = Array.isArray(models) ? models.slice() : null;
     } catch { /* best-effort */ }
+}
+
+// In-memory mirror of the on-disk catalog, same pattern as anthropic-oauth.
+// Populated on first listModels() and after every _saveCodexModelCache.
+let _inMemoryCodexCatalog = null;
+let _codexRefreshInFlight = null;
+
+function _codexCatalogHas(id) {
+    if (!id || !Array.isArray(_inMemoryCodexCatalog)) return false;
+    return _inMemoryCodexCatalog.some(m => m.id === id);
+}
+
+// Codex returns dated ids (gpt-5.4-mini-2026-03-17). Strip the trailing
+// -YYYY-MM-DD to get the version alias (gpt-5.4-mini). Unknown shapes pass
+// through unchanged.
+function _displayCodexModel(id) {
+    if (!id || typeof id !== 'string') return id;
+    return id.replace(/-\d{4}-\d{2}-\d{2}$/, '');
 }
 
 function _normalizeCodexModel(m) {
@@ -584,6 +603,16 @@ export class OpenAIOAuthProvider {
             const text = await response.text().catch(() => '');
             const safeText = this.scrubTokens(text).slice(0, 200);
             process.stderr.write(`[openai-oauth] API error ${response.status}: ${safeText}\n`);
+
+            // Phase I: on unknown/404 model errors, force a catalog refresh and
+            // retry once. Protects against a silently-rotated model id.
+            const isUnknownModel = response.status === 404
+                || /unknown[_\s-]?model|model[_\s-]?not[_\s-]?found/i.test(safeText);
+            if (isUnknownModel && !opts._modelRetry) {
+                process.stderr.write(`[openai-oauth] unknown model - refreshing catalog + 1 retry\n`);
+                await this._refreshModelCache();
+                return this.send(messages, model, tools, { ...opts, _modelRetry: true });
+            }
             throw new Error(`Codex API ${response.status}: ${safeText}`);
         }
         process.stderr.write(`[openai-oauth] Response ${response.status}, parsing SSE...\n`);
@@ -595,17 +624,26 @@ export class OpenAIOAuthProvider {
                 sessionId,
                 sseParseMs: Date.now() - sseStartedAt,
             });
+            const liveModel = result.model || useModel;
             traceBridgeUsage({
                 sessionId,
                 iteration,
                 inputTokens: result.usage?.inputTokens || 0,
                 outputTokens: result.usage?.outputTokens || 0,
                 cachedTokens: result.usage?.cachedTokens || 0,
-                model: result.model || useModel,
+                model: liveModel,
+                modelDisplay: _displayCodexModel(liveModel),
                 responseId: result.responseId || null,
                 rawUsage: result.usage?.raw || null,
                 provider: 'openai-oauth',
             });
+
+            // Phase I: background catalog refresh when live response surfaces
+            // a model id that isn't in our cached catalog.
+            if (result.model && !_codexCatalogHas(result.model)) {
+                void this._refreshModelCache();
+            }
+
             process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
             const { responseId: _ignored, ...out } = result;
             return out;
@@ -618,7 +656,10 @@ export class OpenAIOAuthProvider {
         // Endpoint returns rich metadata (context_window, reasoning levels,
         // visibility) that is more detailed than /v1/models.
         const cached = await _loadCodexModelCache();
-        if (cached) return cached;
+        if (cached) {
+            _inMemoryCodexCatalog = cached.slice();
+            return cached;
+        }
         try {
             const auth = await this.ensureAuth();
             const url = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
@@ -646,6 +687,41 @@ export class OpenAIOAuthProvider {
             return [];
         }
     }
+    // Force a catalog refresh (ignores 24h TTL). De-duped via
+    // _codexRefreshInFlight so concurrent callers share one HTTP round-trip.
+    async _refreshModelCache() {
+        if (_codexRefreshInFlight) return _codexRefreshInFlight;
+        _codexRefreshInFlight = (async () => {
+            try {
+                const auth = await this.ensureAuth();
+                const url = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
+                const res = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${auth.access_token}`,
+                        'OpenAI-Beta': 'responses=experimental',
+                        'originator': 'codex_cli_rs',
+                        'chatgpt-account-id': auth.account_id || '',
+                    },
+                });
+                if (!res.ok) throw new Error(`codex list_models ${res.status}`);
+                const data = await res.json();
+                const items = Array.isArray(data?.models) ? data.models : [];
+                const normalized = items.map(m => _normalizeCodexModel(m));
+                const enriched = await enrichModels(normalized);
+                await _saveCodexModelCache(enriched);
+                process.stderr.write(`[openai-oauth] catalog refreshed (${enriched.length} models)\n`);
+                return enriched;
+            } catch (err) {
+                process.stderr.write(`[openai-oauth] catalog refresh failed (${err.message})\n`);
+                return null;
+            } finally {
+                _codexRefreshInFlight = null;
+            }
+        })();
+        return _codexRefreshInFlight;
+    }
+
     async isAvailable() {
         return this.tokens !== null;
     }

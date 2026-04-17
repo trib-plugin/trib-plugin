@@ -525,7 +525,14 @@ export async function handleToolCall(name, args, opts = {}) {
           // persisted status ('running' is only set by long-running callers; idle
           // otherwise). Single derivation, no legacy fallback path.
           const persistedStatus = s.status || 'idle';
-          const stage = runtime?.stage || (persistedStatus === 'running' ? 'connecting' : 'idle');
+          // Phase J: tombstones override status/stage. The persisted `status`
+          // field may still be 'running' because close_session aborts rather
+          // than touches it; `closed: true` is the authoritative signal.
+          const isClosed = s.closed === true;
+          const status = isClosed ? 'closed' : persistedStatus;
+          const stage = isClosed
+            ? 'closed'
+            : (runtime?.stage || (persistedStatus === 'running' ? 'connecting' : 'idle'));
           const lastStreamDeltaAt = runtime?.lastStreamDeltaAt
             ? new Date(runtime.lastStreamDeltaAt).toISOString()
             : null;
@@ -538,10 +545,12 @@ export async function handleToolCall(name, args, opts = {}) {
             model: s.model,
             messages: s.messages.length,
             tools: s.tools.length,
+            toolNames: Array.isArray(s.tools) ? s.tools.map((t) => t?.name).filter(Boolean) : [],
             sentTokens: s.totalInputTokens,
             receivedTokens: s.totalOutputTokens,
             scope: s.scopeKey || null,
-            status: persistedStatus,
+            status,
+            lastStatus: persistedStatus,
             createdAt: new Date(s.createdAt).toISOString(),
             updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : null,
             stage,

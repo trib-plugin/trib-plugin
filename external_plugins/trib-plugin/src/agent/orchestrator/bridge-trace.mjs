@@ -99,7 +99,7 @@ function traceBridgeSse({ sessionId, sseParseMs }) {
     });
 }
 
-function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, model, responseId, rawUsage, provider }) {
+function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, model, modelDisplay, responseId, rawUsage, provider }) {
     // Phase H: attach normalized cache observation when provider info is available
     let normalized = undefined;
     if (rawUsage && provider) {
@@ -123,6 +123,7 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         cached_tokens: cachedTokens,
         cache_write_tokens: cacheWriteTokens || 0,
         model: model || null,
+        model_display: modelDisplay || null,
         response_id: responseId || null,
         raw_usage: rawUsage || null,
         normalized,

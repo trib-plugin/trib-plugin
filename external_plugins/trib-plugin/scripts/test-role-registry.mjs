@@ -96,15 +96,15 @@ try {
 assert(roles.size === 9, `Expected 9 roles, got ${roles.size}`);
 
 const expectedRoles = {
-  worker:              { preset: 'opus-max',     permission: 'full',       desc_path: 'agents/worker.md' },
-  debugger:            { preset: 'GPT5.4',      permission: 'full',       desc_path: 'agents/debugger.md' },
-  reviewer:            { preset: 'GPT5.4',      permission: 'read',       desc_path: 'agents/reviewer.md' },
-  researcher:          { preset: 'gpt5.4-mini', permission: 'read',       desc_path: 'agents/researcher.md' },
-  tester:              { preset: 'GPT5.4',      permission: 'full',       desc_path: 'agents/tester.md' },
-  maintenance:         { preset: 'haiku',        permission: 'read-write', desc_path: 'agents/maintenance.md' },
-  'scheduler-task':    { preset: 'sonnet-mid',   permission: 'read-write', desc_path: 'agents/scheduler-task.md' },
-  'webhook-handler':   { preset: 'sonnet-mid',   permission: 'read-write', desc_path: 'agents/webhook-handler.md' },
-  'proactive-decision':{ preset: 'sonnet-mid',   permission: 'read-write', desc_path: 'agents/proactive-decision.md' },
+  worker:              { preset: 'opus-xhigh',    permission: 'full',       desc_path: 'agents/worker.md' },
+  debugger:            { preset: 'gpt5.4-xhigh',  permission: 'full',       desc_path: 'agents/debugger.md' },
+  reviewer:            { preset: 'gpt5.4-xhigh',  permission: 'read',       desc_path: 'agents/reviewer.md' },
+  researcher:          { preset: 'gpt5.4-medium', permission: 'read',       desc_path: 'agents/researcher.md' },
+  tester:              { preset: 'gpt5.4-xhigh',  permission: 'full',       desc_path: 'agents/tester.md' },
+  maintenance:         { preset: 'haiku',         permission: 'read-write', desc_path: 'agents/maintenance.md' },
+  'scheduler-task':    { preset: 'sonnet-medium', permission: 'read-write', desc_path: 'agents/scheduler-task.md' },
+  'webhook-handler':   { preset: 'sonnet-medium', permission: 'read-write', desc_path: 'agents/webhook-handler.md' },
+  'proactive-decision':{ preset: 'sonnet-medium', permission: 'read-write', desc_path: 'agents/proactive-decision.md' },
 };
 
 for (const [name, expected] of Object.entries(expectedRoles)) {

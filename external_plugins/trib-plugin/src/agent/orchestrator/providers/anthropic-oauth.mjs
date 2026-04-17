@@ -45,7 +45,29 @@ async function _saveModelCache(models) {
             fetchedAt: Date.now(),
             models,
         }, null, 2));
+        _inMemoryCatalog = Array.isArray(models) ? models.slice() : null;
     } catch { /* cache is best-effort */ }
+}
+
+// In-memory mirror of the disk catalog — populated on first listModels() and
+// refreshed after every _saveModelCache. Used by _catalogHas and _displayModel
+// so hot paths don't hit disk on every response.
+let _inMemoryCatalog = null;
+let _refreshInFlight = null;
+
+function _catalogHas(id) {
+    if (!id || !Array.isArray(_inMemoryCatalog)) return false;
+    return _inMemoryCatalog.some(m => m.id === id);
+}
+
+// Display-name normalization for trace / usage. Turns dated or version-alias
+// ids into the version alias form: claude-opus-4-7 → claude-opus-4.7,
+// claude-haiku-4-5-20251001 → claude-haiku-4.5. Falls back to the raw id.
+function _displayModel(id) {
+    if (!id || typeof id !== 'string') return id;
+    const m = id.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(?:-\d{8})?$/i);
+    if (!m) return id;
+    return `claude-${m[1].toLowerCase()}-${m[2]}.${m[3]}`;
 }
 
 // Classify a model id into our common tier/family shape. Anthropic's catalog
@@ -707,6 +729,16 @@ export class AnthropicOAuthProvider {
             const text = await response.text().catch(() => '');
             const safeText = this.scrubTokens(text).slice(0, 200);
             process.stderr.write(`[anthropic-oauth] API error ${response.status}: ${safeText}\n`);
+
+            // Phase I: on unknown/404 model errors, force a catalog refresh and
+            // retry once. Protects against a silently-rotated model id.
+            const isUnknownModel = response.status === 404
+                || /unknown[_\s-]?model|model[_\s-]?not[_\s-]?found/i.test(safeText);
+            if (isUnknownModel && !opts._modelRetry) {
+                process.stderr.write(`[anthropic-oauth] unknown model — refreshing catalog + 1 retry\n`);
+                await this._refreshModelCache();
+                return this.send(messages, model, tools, { ...opts, _modelRetry: true });
+            }
             throw new Error(`Anthropic OAuth API ${response.status}: ${safeText}`);
         }
 
@@ -722,6 +754,7 @@ export class AnthropicOAuthProvider {
                 sseParseMs: Date.now() - sseStartedAt,
             });
 
+            const liveModel = result.model || useModel;
             traceBridgeUsage({
                 sessionId,
                 iteration,
@@ -729,10 +762,18 @@ export class AnthropicOAuthProvider {
                 outputTokens: result.usage?.outputTokens || 0,
                 cachedTokens: result.usage?.cachedTokens || 0,
                 cacheWriteTokens: result.usage?.cacheWriteTokens || 0,
-                model: result.model || useModel,
+                model: liveModel,
+                modelDisplay: _displayModel(liveModel),
                 rawUsage: result.usage?.raw || null,
                 provider: 'anthropic-oauth',
             });
+
+            // Phase I: if the live response surfaced a model id we don't know
+            // about yet, kick off a background catalog refresh. Fire-and-forget
+            // — do not await, do not surface errors.
+            if (result.model && !_catalogHas(result.model)) {
+                void this._refreshModelCache();
+            }
 
             process.stderr.write(`[anthropic-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
             return result;
@@ -747,7 +788,10 @@ export class AnthropicOAuthProvider {
         // back to the static MODELS list on any failure so the plugin still
         // works offline or when Anthropic's /v1/models is momentarily down.
         const cached = await _loadModelCache();
-        if (cached) return cached;
+        if (cached) {
+            _inMemoryCatalog = cached.slice();
+            return cached;
+        }
         try {
             const creds = this.ensureAuth();
             const res = await fetch('https://api.anthropic.com/v1/models', {
@@ -784,6 +828,46 @@ export class AnthropicOAuthProvider {
                 { id: 'haiku',  display: 'Haiku (auto)',  family: 'haiku',  provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
             ];
         }
+    }
+
+    // Force a catalog refresh (ignores the 24h TTL). De-duped via
+    // _refreshInFlight so concurrent callers share one HTTP round-trip.
+    // Returns the new catalog on success, null on failure.
+    async _refreshModelCache() {
+        if (_refreshInFlight) return _refreshInFlight;
+        _refreshInFlight = (async () => {
+            try {
+                const creds = this.ensureAuth();
+                const res = await fetch('https://api.anthropic.com/v1/models', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${creds.accessToken}`,
+                        'anthropic-version': ANTHROPIC_VERSION,
+                        'anthropic-beta': OAUTH_BETA_HEADERS,
+                        'anthropic-dangerous-direct-browser-access': 'true',
+                        'user-agent': `claude-cli/${resolveCliVersion()} (external, sdk-cli)`,
+                        'x-app': 'cli',
+                    },
+                });
+                if (!res.ok) throw new Error(`list_models ${res.status}`);
+                const data = await res.json();
+                const items = Array.isArray(data?.data) ? data.data : [];
+                const normalized = items
+                    .map(m => _normalizeAnthropicModel(m))
+                    .filter(Boolean);
+                _markLatestByFamily(normalized);
+                const enriched = await enrichModels(normalized);
+                await _saveModelCache(enriched);
+                process.stderr.write(`[anthropic-oauth] catalog refreshed (${enriched.length} models)\n`);
+                return enriched;
+            } catch (err) {
+                process.stderr.write(`[anthropic-oauth] catalog refresh failed (${err.message})\n`);
+                return null;
+            } finally {
+                _refreshInFlight = null;
+            }
+        })();
+        return _refreshInFlight;
     }
 
     async isAvailable() {

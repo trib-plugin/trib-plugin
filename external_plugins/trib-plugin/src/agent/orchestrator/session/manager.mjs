@@ -144,10 +144,44 @@ function _getMcpToolsCached() {
 // explicitly, BP_1 hash differs across profiles with different tool subsets
 // (by design — sub-task profile cannot see bash; worker-full can), and
 // adding a new toolset id here is a localised change.
-function resolveSessionTools(toolSpec, skills) {
+// Phase L — permission-based tool filter. Applied AFTER toolSpec expansion so
+// every profile still gets the same base set, but `read` roles have write tools
+// stripped and `read-write` is a pass-through. `full` disables the filter.
+//
+// Bash is dual-use (cat/ls vs rm/cp); we ship it in all tiers and rely on the
+// role's Tier 3 system-reminder to forbid destructive shells. See
+// docs/common-permission-manual.md.
+//
+// MCP tools are not filtered by name here — MCP surfaces too many per-plugin
+// actions to pattern-match reliably. Role system-prompts declare which MCP
+// actions are allowed (see "Tool Categories" in the common guide).
+const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'multi_edit', 'notebook_edit']);
+
+function _applyPermissionFilter(tools, permission) {
+    if (!Array.isArray(tools)) return tools;
+    if (!permission || permission === 'full') return tools;
+    if (permission === 'read') {
+        return tools.filter(t => !WRITE_TOOL_NAMES.has(String(t?.name || '').toLowerCase()));
+    }
+    if (permission === 'read-write') {
+        return tools;
+    }
+    return tools;
+}
+
+function resolveSessionTools(toolSpec, skills, permission) {
     const mcp = _getMcpToolsCached();
     const skillTools = buildSkillToolDefs(skills);
 
+    const base = _computeBaseTools(toolSpec, mcp, skillTools);
+    const filtered = _applyPermissionFilter(base, permission);
+    if (permission && permission !== 'full' && filtered.length !== base.length) {
+        process.stderr.write(`[session] permission=${permission} tools=${filtered.length} (filtered from ${base.length})\n`);
+    }
+    return filtered;
+}
+
+function _computeBaseTools(toolSpec, mcp, skillTools) {
     if (Array.isArray(toolSpec)) {
         if (toolSpec.length === 0) {
             // Explicit "no tools" — skill meta tools still travel so the model
@@ -328,7 +362,33 @@ export function createSession(opts) {
     // no profile resolves, fall back to the preset.tools string ('full' /
     // 'readonly' / 'mcp') so raw createSession callers still work.
     const toolSpec = Array.isArray(profile?.tools) ? profile.tools : toolPreset;
-    const tools = resolveSessionTools(toolSpec, skills);
+
+    // Phase L — resolve permission for tool filtering. Priority:
+    //   opts.permission (explicit)
+    //   profile.permission (from role config)
+    //   'full' (no filter)
+    const permission = opts.permission || profile?.permission || null;
+    const tools = resolveSessionTools(toolSpec, skills, permission);
+
+    // Phase L invariants — throw at session create if role/tools contract
+    // is violated. Better to fail loudly here than to spawn a reviewer that
+    // silently has Write access.
+    const toolNameSet = new Set(tools.map(t => String(t?.name || '')));
+    if (resolvedRole === 'researcher') {
+        const hasSearchMcp = [...toolNameSet].some(n => /search/.test(n) && /mcp/.test(n));
+        if (!hasSearchMcp) {
+            throw new Error('Phase L invariant: role=researcher requires an MCP search tool in the session tool list.');
+        }
+    }
+    if (resolvedRole === 'reviewer' && permission === 'read') {
+        const forbidden = [...toolNameSet].filter(n => WRITE_TOOL_NAMES.has(n.toLowerCase()));
+        if (forbidden.length) {
+            throw new Error(`Phase L invariant: role=reviewer permission=read must not contain write tools (found: ${forbidden.join(', ')}).`);
+        }
+    }
+    if (resolvedRole) {
+        process.stderr.write(`[session] role=${resolvedRole} permission=${permission || 'full'} tools=${tools.length}\n`);
+    }
     const session = {
         id,
         provider: providerName,
@@ -850,7 +910,7 @@ export function resumeSession(sessionId, preset) {
             if (Array.isArray(profile?.tools)) toolSpec = profile.tools;
         } catch { /* ignore lookup failures, keep preset fallback */ }
     }
-    session.tools = resolveSessionTools(toolSpec, skills);
+    session.tools = resolveSessionTools(toolSpec, skills, session.permission || null);
     const newTools = session.tools;
     const missing = oldTools.filter(t => !newTools.find(n => n.name === t.name));
     if (missing.length) {
