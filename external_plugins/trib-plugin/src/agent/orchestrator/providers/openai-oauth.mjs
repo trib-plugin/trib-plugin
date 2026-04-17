@@ -336,9 +336,12 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const instructions = systemMsgs.map(m => m.content).join('\n\n') || 'You are a helpful assistant.';
     const opts = sendOpts || {};
-    // Codex OAuth contract: store=false, full transcript every call.
-    // prompt_cache_key drives server-side auto-cache.
     const input = convertMessagesToResponsesInput(messages);
+    // Match the body shape pi-mono and the official Codex CLI ship so the
+    // server-side auto-cache routes correctly. text.verbosity / include /
+    // tool_choice / parallel_tool_calls are all inert without side effects
+    // for most callers but their presence affects how Codex classifies the
+    // request (and therefore whether the prompt cache is consulted).
     const body = {
         model,
         instructions,
@@ -346,12 +349,16 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         store: false,
         stream: true,
         reasoning: { effort: opts.effort || 'medium' },
+        text: { verbosity: 'medium' },
+        include: ['reasoning.encrypted_content'],
+        tool_choice: 'auto',
+        parallel_tool_calls: true,
     };
     if (opts.sessionId) {
-        // Match the header path — Codex validates session_id as a uuid, so
-        // send the same deterministic uuid through prompt_cache_key for
-        // shard routing consistency. Case B after v0.6.62.
-        body.prompt_cache_key = sessionIdToUuid(opts.sessionId);
+        // Case D — revert to raw sessionId on the body-level cache key; the
+        // UUID detour from case B (v0.6.63) did not help, and pi-mono's
+        // working implementation uses the raw string here.
+        body.prompt_cache_key = String(opts.sessionId);
     }
     // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
     // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns
@@ -463,17 +470,27 @@ export class OpenAIOAuthProvider {
                     headers: {
                         'Authorization': `Bearer ${token.access_token}`,
                         'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream',
                         'chatgpt-account-id': token.account_id || '',
                         'originator': 'codex_cli_rs',
                         'OpenAI-Beta': 'responses=experimental',
-                        // Codex Responses CLI reference: `session_id Type:
-                        // uuid`. Envoy gateway also requires dash-separated
-                        // header names (openai/codex#11732). We therefore
-                        // send the header as `session-id` with a UUID-shaped
-                        // deterministic hash of our session id so repeated
-                        // turns land on the same Codex conversation while
-                        // passing the uuid-format validation.
-                        ...(sessionId ? { 'session-id': sessionIdToUuid(sessionId) } : {}),
+                        // Case D — match pi-mono's production-working
+                        // implementation: both underscore `session_id` AND
+                        // `x-client-request-id` carry the raw session id on
+                        // every request. v0.6.55 used the dash variant
+                        // (openai/codex#11732 fix on the Rust CLI), v0.6.62
+                        // switched it to a UUID, neither produced cached
+                        // tokens. pi-mono's badlogic/pi-mono#3196 issue
+                        // thread confirms the cache-routing headers that
+                        // actually work end-to-end through chatgpt.com's
+                        // Envoy. Keep the dash variant alongside so both
+                        // paths receive the value and we do not regress any
+                        // deployment that the earlier fix covered.
+                        ...(sessionId ? {
+                            'session_id': String(sessionId),
+                            'session-id': String(sessionId),
+                            'x-client-request-id': String(sessionId),
+                        } : {}),
                     },
                     body: JSON.stringify(body),
                     signal: controller.signal,
