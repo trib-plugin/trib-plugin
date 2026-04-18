@@ -11,3 +11,6 @@ external_plugins/*/mcp.lock
 external_plugins/*/mcp-debug.log
 external_plugins/*/tools-cache.json
 external_plugins/*/.embeddings.cache.json
+
+# Local dev / bench scripts and their outputs (not for distribution)
+external_plugins/*/dev/
