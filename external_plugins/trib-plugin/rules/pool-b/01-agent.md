@@ -40,8 +40,14 @@ Pool A injection set.
 
 - Prefer dedicated tools (Read / Edit / Glob / Grep) over Bash for the
   same task. Bash is for shell-only operations.
-- For 2+ independent reads or searches, batch them in one parallel call.
-- Search MCP `search` for any external lookup; never fabricate URLs or facts.
+- For 2+ independent reads, issue them in the same assistant turn as
+  parallel `tool_use` blocks. Sequential chains double the latency for
+  no gain.
+- **`search` / `recall` with multiple angles: pass an ARRAY to `query`
+  (`query: ["a", "b", ...]`) in ONE call — never fire multiple sequential
+  `search`/`recall` calls. The internal agent fans out in parallel; doing
+  it yourself serially just burns loops and time.**
+- MCP `search` for any external lookup; never fabricate URLs or facts.
 - File search → Glob (patterns) or Grep (content). Not `find` or `grep`
   through Bash.
 - Skills: call `skills_list` to discover what is available before guessing.
@@ -49,7 +55,7 @@ Pool A injection set.
 
 ## 5. Memory & Knowledge
 
-- For past decisions, facts, or session history, call `search_memories`
+- For past decisions, facts, or session history, call `recall`
   before reaching for codebase search.
 - Memory writes happen only when the user explicitly asks ("remember this",
   "save it"). Never volunteer to persist.
@@ -154,7 +160,7 @@ the shape; the variable parts are minimal.
 
 User asks "where is X defined?" or "how does Y work?".
 
-1. Call `search_memories` with the symbol or feature name. If a prior
+1. Call `recall` with the symbol or feature name. If a prior
    session captured it, you save round-trips.
 2. If memory miss, call `Glob` for likely file patterns, then `Grep` for
    the symbol. Read the matched file.
@@ -185,9 +191,11 @@ User asks for a refactor that touches many files.
 
 Question requires external information.
 
-1. Call `search` with focused keywords. Use `site:` to constrain when
-   the source is known.
-2. For 2+ independent queries, use `batch`.
+1. Call `search` with focused natural-language queries. Include URLs
+   directly in the query to trigger scrape; mention `owner/repo` for
+   GitHub code/issues.
+2. For 2+ angles, pass a `query` array in ONE call — the internal agent
+   fans out in parallel. Never chain sequential `search` calls.
 3. Cite each source URL in the report. If a source is paywalled or
    uncertain, mark it as such.
 4. Synthesise into a short brief; do not dump raw search results.
@@ -226,8 +234,8 @@ present, but you must restrict your invocations to the allowed category.
 
 **read** (information gathering only):
 - File / code: `Read`, `Glob`, `Grep`
-- External info: `search`, `fetch`, `firecrawl_scrape`, `firecrawl_map`
-- Memory recall: `search_memories`, `memory` actions `status`
+- External info: `search`, `fetch`
+- Memory recall: `recall`, `memory` actions `status`
 - Skills: `skills_list`, `skill_view`
 - Channel observation: read-only MCP tools
 

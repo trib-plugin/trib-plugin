@@ -303,6 +303,15 @@ async function detectAuth(config = {}) {
   const result = {};
   const codexAuth = join(home, '.codex', 'auth.json');
   result.codexOAuth = existsSync(codexAuth);
+  const claudeCreds = join(home, '.claude', '.credentials.json');
+  result.anthropicOAuth = (() => {
+    try {
+      if (!existsSync(claudeCreds)) return false;
+      const creds = JSON.parse(readFileSync(claudeCreds, 'utf8'));
+      const scopes = String(creds?.claudeAiOauth?.scopes || creds?.scopes || '');
+      return scopes.includes('inference') || !!creds?.claudeAiOauth?.accessToken;
+    } catch { return false; }
+  })();
   const configDir = isWin
     ? (process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'))
     : join(home, '.config');
@@ -435,18 +444,13 @@ function normalizePreset(input) {
   const id = String(input.id || '').trim();
   if (!id) throw new Error('preset.id is required');
   if (!/^[a-zA-Z0-9._-]+$/.test(id)) throw new Error('preset.id must be alphanumeric (._- allowed)');
-  const type = (input.type === 'native') ? 'native' : 'bridge';
   const model = String(input.model || '').trim();
   if (!model) throw new Error('preset.model is required');
-  const out = { id, type, model };
-  if (type === 'bridge') {
-    const provider = String(input.provider || '').trim();
-    if (!provider) throw new Error('preset.provider is required for bridge presets');
-    out.provider = provider;
-    const tools = String(input.tools || 'full');
-    if (!VALID_TOOLS.has(tools)) throw new Error(`preset.tools must be one of ${[...VALID_TOOLS].join(', ')}`);
-    out.tools = tools;
-  }
+  const provider = String(input.provider || '').trim();
+  if (!provider) throw new Error('preset.provider is required');
+  const tools = String(input.tools || 'full');
+  if (!VALID_TOOLS.has(tools)) throw new Error(`preset.tools must be one of ${[...VALID_TOOLS].join(', ')}`);
+  const out = { id, type: 'bridge', model, provider, tools };
   if (typeof input.name === 'string' && input.name.trim()) out.name = input.name.trim();
   if (input.effort != null && input.effort !== '') {
     const effort = String(input.effort);

@@ -459,8 +459,13 @@ export function createSession(opts) {
         // scheduler/daily-standup, webhook/github-push, lead/worker.
         sourceType: opts.sourceType || null,
         sourceName: opts.sourceName || null,
-        promptCacheKey: (profile?.behavior === 'stateless')
-            ? `trib:${opts.sourceType || 'task'}:${opts.sourceName || opts.role || 'default'}`
+        // Stable cache key for any tagged dispatch (bridge/scheduler/webhook)
+        // so multiple sessions of the same role share the same Codex cache
+        // shard. The profile.behavior flag is no longer gating this — every
+        // session that carries a sourceType gets a role-scoped key. Untagged
+        // sessions (direct MCP surface) fall back to the session id.
+        promptCacheKey: (opts.sourceType && (opts.sourceName || opts.role))
+            ? `trib:${opts.sourceType}:${opts.sourceName || opts.role}`
             : id,
         // Hermes-style in-flight compressor state
         compressionCount: 0,

@@ -83,13 +83,9 @@ export function makeBridgeLlm(opts = {}) {
             );
         }
 
-        let preset = config.presets?.find((p) => p.id === presetName || p.name === presetName);
+        const preset = config.presets?.find((p) => p.id === presetName || p.name === presetName);
         if (!preset) {
             throw new Error(`[bridge-llm] preset "${presetName}" not found in agent-config.json`);
-        }
-        if (preset?.type === 'native') {
-            const { translateNativePreset } = await import('./index.mjs');
-            preset = translateNativePreset(preset);
         }
 
         const roleLabel = opts.role || opts.taskType || mode || defaultLabel;

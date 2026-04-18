@@ -33,26 +33,26 @@ All modules coexist under `src/<module>/index.mjs` and share the same entry poin
 - **`channels` eager init** — scheduled right after `transport.connect()` via `setImmediate`, because its workers (Discord gateway, webhook HTTP server, scheduler, event pipeline) must run before any tool call.
 - **`memory` / `search` / `agent` lazy init** — each module boots on its first `CallTool`, then its handlers are cached.
 
-## MCP Tools (24)
+## MCP Tools (18)
 
 ### channels (10)
 `reply`, `react`, `edit_message`, `download_attachment`, `fetch`, `schedule_status`, `trigger_schedule`, `schedule_control`, `activate_channel_bridge`, `reload_config`
 
 ### memory (2)
-`memory`, `search_memories`
+`memory`, `recall` (AI-wrapped)
 
-### search (6)
-`search`, `firecrawl_scrape`, `firecrawl_map`, `crawl`, `batch`, `setup`
+### search (1)
+`search` (AI-wrapped)
 
-### agent (6)
-`create_session`, `list_sessions`, `close_session`, `list_models`, `get_workflows`, `get_workflow`
+### agent (5)
+`create_session`, `list_sessions`, `close_session`, `list_models`, `bridge`
 
 ## Layout
 
 ```
 trib-plugin/
 ├── server.mjs                       # MCP entry point
-├── tools.json                       # Static manifest (24 tools + module tag)
+├── tools.json                       # Static manifest (18 tools + module tag)
 ├── package.json
 ├── .claude-plugin/plugin.json
 ├── .mcp.json
@@ -112,9 +112,9 @@ Port-based ownership election (3460–3467) with stale-owner timeout. Non-owners
 
 ## Search — Detail
 
-- Google / Brave / Bing web search, routed to GitHub APIs for code/repo/issue queries.
-- Firecrawl-style scrape and map via Puppeteer + Readability.
-- `batch` runs multiple `search`/`firecrawl_scrape`/`firecrawl_map` actions in parallel (up to 10 per call).
+- Single `search` MCP tool — accepts natural language queries. An internal agent auto-dispatches to the right provider: web search (Serper / Brave / Perplexity / xAI), URL scrape (Firecrawl + Puppeteer + Readability), or GitHub code/issue/repo lookup.
+- Pass a `query` array for multi-angle parallel fan-out in one call.
+- Results are synthesized by the agent into grounded prose with citations.
 
 ## Agent — Detail
 

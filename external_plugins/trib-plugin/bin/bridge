@@ -6,8 +6,8 @@
 //   bridge list                 List stored keys
 //   bridge get <key>            Print stored content
 //   bridge delete <key>         Remove a key
-//   bridge <scope> <prompt...>  Send prompt via owner HTTP (no server boot)
-//   bridge <scope> -            Read prompt from stdin
+//   bridge <role> <prompt...>   Send prompt via owner HTTP (no server boot)
+//   bridge <role> -             Read prompt from stdin
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -99,11 +99,11 @@ switch (cmd) {
     break;
   }
   default: {
-    const scope = cmd;
-    if (!scope || scope.startsWith('-')) { console.error('Usage: bridge <scope> <prompt...> | bridge <scope> - (stdin)'); process.exit(1); }
+    const role = cmd;
+    if (!role || role.startsWith('-')) { console.error('Usage: bridge <role> <prompt...> | bridge <role> - (stdin)'); process.exit(1); }
     const port = getOwnerPort();
     if (!port) { console.error('No running trib-plugin instance found'); process.exit(1); }
-    const body = { scope };
+    const body = { role };
     if (rest[0] === '-') {
       const chunks = [];
       for await (const chunk of process.stdin) chunks.push(chunk);
@@ -111,7 +111,7 @@ switch (cmd) {
     } else if (rest.length) {
       body.prompt = rest.join(' ');
     } else {
-      console.error('Usage: bridge <scope> <prompt...> | bridge <scope> - (stdin)');
+      console.error('Usage: bridge <role> <prompt...> | bridge <role> - (stdin)');
       process.exit(1);
     }
     try {

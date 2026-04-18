@@ -863,14 +863,16 @@ export class AnthropicOAuthProvider {
             return enriched;
         } catch (err) {
             process.stderr.write(`[anthropic-oauth] listModels fetch failed (${err.message})\n`);
-            // Family-only fallback — no specific versions. These tokens resolve
-            // at runtime via ANTHROPIC_DEFAULT_*_MODEL env vars, so the user
-            // gets whatever Claude Code's current default is. Better than a
-            // stale hardcoded version that might not exist tomorrow.
+            // Fallback with full API model IDs. Short family tokens leaked
+            // through here would be accepted by setup and reintroduce the
+            // legacy shape. Env var override keeps this tracking defaults.
+            const opusId   = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL   || 'claude-opus-4-7';
+            const sonnetId = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-6';
+            const haikuId  = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL  || 'claude-haiku-4-5-20251001';
             return [
-                { id: 'opus',   display: 'Opus (auto)',   family: 'opus',   provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
-                { id: 'sonnet', display: 'Sonnet (auto)', family: 'sonnet', provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
-                { id: 'haiku',  display: 'Haiku (auto)',  family: 'haiku',  provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
+                { id: opusId,   display: 'Opus (auto)',   family: 'opus',   provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
+                { id: sonnetId, display: 'Sonnet (auto)', family: 'sonnet', provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
+                { id: haikuId,  display: 'Haiku (auto)',  family: 'haiku',  provider: 'anthropic-oauth', tier: 'family', latest: true, contextWindow: 200000 },
             ];
         }
     }

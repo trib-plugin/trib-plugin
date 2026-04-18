@@ -482,12 +482,12 @@ Ship 1 is gated on these six items.
 
 ### 10.2 `/bridge` command
 
-**Current flow**: user types `/trib-plugin:bridge <scope> <prompt>` → Claude Code runs `node bin/bridge ARGS` → the CLI calls a provider adapter directly → stdout streams to the user's terminal without Lead interpretation.
+**Current flow**: user types `/trib-plugin:bridge <role> <prompt>` → Claude Code runs `node bin/bridge ARGS` → the CLI calls a provider adapter directly → stdout streams to the user's terminal without Lead interpretation.
 
 **Phase B flow** (same user experience, unified internals):
 
 ```
-/trib-plugin:bridge <scope> <prompt>
+/trib-plugin:bridge <role> <prompt>
   → bin/bridge CLI
   → bridge-llm.mjs (shared Smart Bridge helper, introduced in Ship 2a)
     → provider adapter (unchanged)
@@ -544,7 +544,7 @@ Order partial. Ship 0 is a gate. Ship 1 cannot start without Ship 0 passing.
 | **2b** | Worker lifecycle triggers | Implement `session.lastUsedAt` tracking, idle-5-min close, token-threshold close (soft/hard with agent-config overrides), `close_session` on workflow-Ship transition. Depends on Ship 2a. |
 | **3** | Sub pool unification | Create `sub-task` profile (lifecycle `continuous`, `behavior: 'stateless'`). Route reviewer / tester / debugger / researcher through it. Implement pool as "at most one live session per role × provider, messages reset between dispatches" (§4.5). Retire or alias `reviewer-external` / `tester-runtime` / `debugger-deep` / `researcher-minimal`. |
 | **4** | Native path retirement + rules-builder Lead path + legacy cleanup | CLAUDE.md User Rules update to `worker → opus-max (Bridge)`. Delete `agents/Bridge.md` and `agents/Worker.md`. Optionally migrate Worker.md's task-guidance body into `rules/roles/worker.md`. Remove `router.mjs` Layer 2 LLM routing. Remove `bot.json: sleepEnabled / sleepTime` + `/sleep` command + its UI. Remove `PROFILE.md` files. |
-| **5** | Observability + search-memory origin anchor | cycle1 health-check + auto-restart (§2.4). Simultaneous-cold-spawn singleflight lock. Per-profile cache-hit / token / cost dashboards. `entries` schema extension with `source_session_id` + `source_turn_range`. Expose `anchor` in `search_memories` results for origin jsonl navigation. |
+| **5** | Observability + search-memory origin anchor | cycle1 health-check + auto-restart (§2.4). Simultaneous-cold-spawn singleflight lock. Per-profile cache-hit / token / cost dashboards. `entries` schema extension with `source_session_id` + `source_turn_range`. Expose `anchor` in `recall` results for origin jsonl navigation. |
 | **7** | MD management UI | Config UI General tab: Common MD textarea + Project MD CRUD. `/md/common` GET/POST + `/md/project` GET/POST/DELETE endpoints. |
 
 Ship 1.5 (Hermes auto-gen skill) was removed from the plan and deferred to Phase C.
@@ -562,7 +562,7 @@ Ship 6 number is not used; skipping prevents confusion in tracking.
 6. **Gemini viability for Sub** — resolved: 1h TTL makes Gemini viable for Sub, Worker, and Maintenance roles.
 7. **Bridge.md / Worker.md safe removal** — grep for remaining `Agent(subagent_type: "trib-plugin:Bridge" / "Worker")` usages, confirm all gone before Ship 4 deletion.
 8. **Manual cycle1 Smart Bridge bypass** — `memory/index.mjs` manual cycle1 still calls legacy `callLLM` path (observed 2026-04-16 21:49 KST). Fix in Ship 0 as a prerequisite for any cache validation.
-9. **`/bridge raw` mode** — decide in Ship 2a whether to support `<scope>=raw` that skips Pool B prefix.
+9. **`/bridge raw` mode** — decide in Ship 2a whether to support `<role>=raw` that skips Pool B prefix.
 
 ---
 

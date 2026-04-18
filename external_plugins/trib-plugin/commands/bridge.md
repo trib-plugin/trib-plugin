@@ -1,6 +1,6 @@
 ---
-description: Bridge to external model. Usage /bridge <scope> <prompt>
-argument-hint: "<scope> <prompt>"
+description: Bridge to external model. Usage /bridge <role> <prompt>
+argument-hint: "<role> <prompt>"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---

@@ -254,178 +254,49 @@
     "module": "memory"
   },
   {
-    "name": "search_memories",
-    "title": "Search Memories",
+    "name": "recall",
+    "title": "Recall",
     "annotations": {
-      "title": "Search Memories",
+      "title": "Recall",
       "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Search past context and memory. Use for prior work, decisions, preferences. Not for external info (use search) or codebase (use Grep/Glob).",
+    "description": "Look up past context — prior decisions, preferences, work history. Accepts natural language; an internal agent searches the memory store and returns a synthesized answer. Use for anything that happened before. Not for codebase (Grep/Glob) or external web (search).",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "query": { "type": "string", "description": "Search text (semantic hybrid search)" },
-        "period": { "type": "string", "description": "Scope: last, 24h/3d/7d/30d, all, YYYY-MM-DD, date~date. Default: 30d with query, latest without." },
-        "sort": { "type": "string", "enum": ["date", "importance"] },
-        "limit": { "type": "number", "default": 30 },
-        "offset": { "type": "number", "default": 0 },
-        "mode": { "type": "string", "enum": ["search", "reason"], "description": "reason: LLM-synthesized answer" }
-      },
-      "required": []
-    },
-    "module": "memory"
-  },
-  {
-    "name": "search",
-    "title": "Search",
-    "description": "REQUIRED for all external web lookups. For 2+ lookups use batch. Not for codebase or memory.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "keywords": {
+        "query": {
           "anyOf": [
             { "type": "string", "minLength": 1 },
             { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
           ],
-          "description": "Query string or array"
-        },
-        "site": { "type": "string", "description": "Restrict to domain" },
-        "type": { "type": "string", "enum": ["web", "news", "images"] },
-        "github_type": { "type": "string", "enum": ["repositories", "code", "issues", "file", "repo", "issue", "pulls"] },
-        "owner": { "type": "string" },
-        "repo": { "type": "string" },
-        "path": { "type": "string" },
-        "number": { "type": "integer" },
-        "ref": { "type": "string" },
-        "state": { "type": "string", "enum": ["open", "closed", "all"] },
-        "maxResults": { "type": "integer", "minimum": 1, "maximum": 20 }
-      },
-      "additionalProperties": false
-    },
-    "annotations": {
-      "title": "Search",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": true
-    },
-    "module": "search"
-  },
-  {
-    "name": "firecrawl_scrape",
-    "title": "Scrape",
-    "description": "Scrape URL(s) and extract readable content as text/markdown.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "urls": {
-          "type": "array",
-          "items": { "type": "string", "format": "uri" },
-          "minItems": 1
+          "description": "Natural language query, or array of queries for multi-angle lookup."
         }
       },
-      "required": ["urls"],
+      "required": ["query"],
       "additionalProperties": false
     },
-    "annotations": {
-      "title": "Scrape",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": true
-    },
-    "module": "search"
+    "module": "memory",
+    "aiWrapped": true
   },
   {
-    "name": "firecrawl_map",
-    "title": "Map",
-    "description": "Discover links on a page. Use to explore site structure before scraping.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "url": { "type": "string", "format": "uri" },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
-        "sameDomainOnly": { "type": "boolean" },
-        "search": { "type": "string", "description": "Filter links by term" }
-      },
-      "required": ["url"],
-      "additionalProperties": false
-    },
-    "annotations": {
-      "title": "Map",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": true
-    },
-    "module": "search"
-  },
-  {
-    "name": "batch",
+    "name": "search",
     "title": "Search",
-    "description": "Parallel batch of search, firecrawl_scrape, firecrawl_map actions.",
+    "description": "External lookups — web search, URL scrape, GitHub code/issues/repos. Natural language query; include a URL to scrape, or owner/repo reference for GitHub. An internal agent picks the provider and returns a synthesized answer. Not for codebase or memory.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "batch": {
-          "type": "array",
-          "items": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "action": { "type": "string", "enum": ["search"] },
-                  "keywords": {
-                    "anyOf": [
-                      { "type": "string", "minLength": 1 },
-                      { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
-                    ]
-                  },
-                  "site": { "type": "string" },
-                  "type": { "type": "string", "enum": ["web", "news", "images"] },
-                  "github_type": { "type": "string", "enum": ["repositories", "code", "issues", "file", "repo", "issue", "pulls"] },
-                  "owner": { "type": "string" },
-                  "repo": { "type": "string" },
-                  "path": { "type": "string" },
-                  "number": { "type": "integer" },
-                  "ref": { "type": "string" },
-                  "state": { "type": "string", "enum": ["open", "closed", "all"] },
-                  "maxResults": { "type": "integer", "minimum": 1, "maximum": 20 }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "action": { "type": "string", "enum": ["firecrawl_scrape"] },
-                  "urls": { "type": "array", "items": { "type": "string", "format": "uri" }, "minItems": 1 }
-                },
-                "required": ["action", "urls"],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "action": { "type": "string", "enum": ["firecrawl_map"] },
-                  "url": { "type": "string", "format": "uri" },
-                  "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
-                  "sameDomainOnly": { "type": "boolean" },
-                  "search": { "type": "string" }
-                },
-                "required": ["action", "url"],
-                "additionalProperties": false
-              }
-            ]
-          },
-          "minItems": 1,
-          "maxItems": 10
+        "query": {
+          "anyOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+          ],
+          "description": "Natural language query, or array for multi-angle lookup. Include a URL to trigger scrape; mention owner/repo for GitHub."
         }
       },
-      "required": ["batch"],
+      "required": ["query"],
       "additionalProperties": false
     },
     "annotations": {
@@ -435,7 +306,8 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "module": "search"
+    "module": "search",
+    "aiWrapped": true
   },
   {
     "name": "create_session",
@@ -489,18 +361,21 @@
   {
     "name": "bridge",
     "title": "Bridge to External Model",
-    "description": "Single-turn bridge to external AI. Session-based with tool access. Scope prefix-matches preset names in user-workflow.json.",
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "prompt": { "type": "string" },
-        "scope": { "type": "string", "description": "Agent scope: reviewer, debugger, explorer" },
-        "preset": { "type": "string" },
-        "context": { "type": "string" },
-        "ref": { "type": "string", "description": "Prompt store key" },
-        "file": { "type": "string", "description": "Read prompt from file" }
+        "prompt": { "type": "string", "description": "The task instruction for the agent." },
+        "role": {
+          "type": "string",
+          "description": "Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set."
+        },
+        "preset": { "type": "string", "description": "Advanced: explicit preset name (bypass role mapping)." },
+        "context": { "type": "string", "description": "Extra context appended to the prompt." },
+        "ref": { "type": "string", "description": "Prompt store key (populated by prompt_store)." },
+        "file": { "type": "string", "description": "Read prompt from a file path." }
       },
-      "required": ["prompt"]
+      "required": ["prompt", "role"]
     },
     "module": "agent"
   }

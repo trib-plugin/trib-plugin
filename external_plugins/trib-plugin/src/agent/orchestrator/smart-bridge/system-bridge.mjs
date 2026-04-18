@@ -18,26 +18,19 @@
  * path (`bridge-llm.mjs`) which still needs sessions.
  */
 
-import { AnthropicOAuthProvider } from '../providers/anthropic-oauth.mjs'
+import { getProvider as _getProviderFromRegistry } from '../providers/registry.mjs'
 import { resolveCacheStrategy } from './cache-strategy.mjs'
 import { recordCall } from './ttl-learner.mjs'
 import { resolveMaintenancePreset } from '../../../shared/llm/index.mjs'
 import { loadConfig } from '../config.mjs'
-
-let _provider = null
-function getProvider() {
-  if (_provider) return _provider
-  _provider = new AnthropicOAuthProvider({})
-  return _provider
-}
 
 function _resolvePreset(presetName) {
   const config = loadConfig()
   const presets = config?.presets || []
   const found = presets.find(p => p.id === presetName || p.name === presetName)
   if (found) return found
-  // Fallback for unknown preset
-  return { id: '_fallback', type: 'native', model: 'claude-sonnet-4-6', effort: 'medium' }
+  // Fallback for unknown preset — anthropic-oauth / sonnet, full model id.
+  return { id: '_fallback', type: 'bridge', provider: 'anthropic-oauth', model: 'claude-sonnet-4-6', effort: 'medium' }
 }
 
 function _resolveModel(preset) {
@@ -93,7 +86,11 @@ export async function systemBridge({
     { role: 'user', content: userMessage },
   ]
 
-  const provider = getProvider()
+  const providerName = presetSpec?.provider || 'anthropic-oauth'
+  const provider = _getProviderFromRegistry(providerName)
+  if (!provider) {
+    throw new Error(`[system-bridge] provider "${providerName}" not initialized (preset=${presetSpec?.id || presetSpec?.name}). Enable ${providerName} in agent-config.json.providers, or change maintenance preset for task "${task}" to one of the enabled providers.`)
+  }
   const sendOpts = {
     cacheStrategy,
     sourceType: 'maintenance',

@@ -58,6 +58,7 @@ try {
 // ── Static manifest ─────────────────────────────────────────────────
 const TOOL_DEFS = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'tools.json'), 'utf8'))
 const TOOL_MODULE = Object.fromEntries(TOOL_DEFS.map(t => [t.name, t.module]))
+const TOOL_BY_NAME = Object.fromEntries(TOOL_DEFS.map(t => [t.name, t]))
 const PLUGIN_VERSION = JSON.parse(
   readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8'),
 ).version
@@ -266,6 +267,19 @@ async function loadModule(name) {
 // Shared dispatcher — used by the MCP call handler AND the agent's
 // toolExecutor passed through agentContext(). Single source of tool routing.
 async function dispatchTool(name, args) {
+  const def = TOOL_BY_NAME[name]
+  if (!def) throw new Error(`Unknown tool: ${name}`)
+
+  if (def.aiWrapped) {
+    const { dispatchAiWrapped } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/ai-wrapped-dispatch.mjs')).href,
+    )
+    return dispatchAiWrapped(name, args ?? {}, {
+      PLUGIN_ROOT,
+      callMemoryWorker: (n, a) => callWorker('memory', n, a),
+    })
+  }
+
   const moduleName = TOOL_MODULE[name]
   if (!moduleName) throw new Error(`Unknown tool: ${name}`)
 

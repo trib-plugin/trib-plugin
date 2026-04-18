@@ -40,5 +40,5 @@ export function resolveMaintenancePreset(task, agentConfig) {
     || DEFAULT_MAINTENANCE[task] || DEFAULT_MAINTENANCE.defaultPreset
   const presets = cfg?.presets || []
   if (presets.some(p => p.id === presetId || p.name === presetId)) return presetId
-  return { id: '_fallback', type: 'native', model: 'sonnet', effort: 'medium' }
+  return { id: '_fallback', type: 'bridge', provider: 'anthropic-oauth', model: 'claude-sonnet-4-6', effort: 'medium' }
 }

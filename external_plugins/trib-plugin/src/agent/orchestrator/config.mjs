@@ -44,13 +44,38 @@ export const DEFAULT_MAINTENANCE = Object.freeze({
     search: 'SONNET MID',
 });
 
+// Map short Anthropic family labels to the full model ids used by the API.
+// Honors ANTHROPIC_DEFAULT_{OPUS|SONNET|HAIKU}_MODEL env overrides. Used
+// both for seed presets below and for legacy (`type: 'native'`) migration
+// inside normalizePreset.
+const ANTHROPIC_FAMILY_MODEL = Object.freeze({
+    opus: 'claude-opus-4-7',
+    sonnet: 'claude-sonnet-4-6',
+    haiku: 'claude-haiku-4-5-20251001',
+});
+function resolveAnthropicFamilyModel(family) {
+    const key = String(family || '').toLowerCase();
+    if (!key) return null;
+    const envVar = `ANTHROPIC_DEFAULT_${key.toUpperCase()}_MODEL`;
+    if (process.env[envVar]) return process.env[envVar];
+    return ANTHROPIC_FAMILY_MODEL[key] || null;
+}
+
+function isLegacyPresetShape(p) {
+    if (!p || typeof p !== 'object') return false;
+    if (p.type === 'native') return true;
+    if (p.type === 'bridge' && !p.provider && ['opus', 'sonnet', 'haiku'].includes(String(p.model || '').toLowerCase())) return true;
+    return false;
+}
+
 // Seed presets written when agent-config.json does not yet exist. Keyed by
 // preset.name so workflow/maintenance references stay consistent with the
-// resolve-by-name lookup in presetKey().
+// resolve-by-name lookup in presetKey(). All presets are bridge-typed with
+// an explicit provider — the legacy `type: 'native'` shortcut is gone.
 export const DEFAULT_PRESETS = Object.freeze([
-    Object.freeze({ id: 'haiku', name: 'HAIKU', type: 'native', model: 'haiku', tools: 'full' }),
-    Object.freeze({ id: 'sonnet-mid', name: 'SONNET MID', type: 'native', model: 'sonnet', effort: 'medium', tools: 'full' }),
-    Object.freeze({ id: 'opus-mid', name: 'OPUS MID', type: 'native', model: 'opus', effort: 'medium', tools: 'full' }),
+    Object.freeze({ id: 'haiku', name: 'HAIKU', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('haiku'), tools: 'full' }),
+    Object.freeze({ id: 'sonnet-mid', name: 'SONNET MID', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('sonnet'), effort: 'medium', tools: 'full' }),
+    Object.freeze({ id: 'opus-mid', name: 'OPUS MID', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('opus'), effort: 'medium', tools: 'full' }),
 ]);
 function buildDefaultConfig() {
     const providers = {};
@@ -70,7 +95,11 @@ function buildDefaultConfig() {
     // OpenAI OAuth (ChatGPT subscription) — enabled if ~/.codex/auth.json or own tokens exist
     const hasCodexAuth = existsSync(join(homedir(), '.codex', 'auth.json'));
     const hasOwnAuth = existsSync(join(getPluginData(), 'openai-oauth.json'));
-    providers['openai-oauth'] = { enabled: hasCodexAuth || hasOwnAuth };
+    // WebSocket transport is on by default — measured ~96% cross-session cache
+    // hit with delta payloads, vs. the SSE path which misses the cross-session
+    // cache entirely. Users who need to force SSE (e.g. a corporate proxy that
+    // blocks WSS to chatgpt.com) can set `websocket: false` in agent-config.json.
+    providers['openai-oauth'] = { enabled: hasCodexAuth || hasOwnAuth, websocket: true };
 
     // Anthropic OAuth (Claude Max subscription) — enabled if .credentials.json exists with inference scope
     const hasClaudeOAuth = (() => {
@@ -181,10 +210,26 @@ export function loadConfig() {
                     process.stderr.write(`[config] self-ref migration persist failed: ${e.message}\n`);
                 }
             }
+            // One-time migration: legacy `type: 'native'` presets → bridge
+            // with explicit anthropic-oauth provider + full model id.
+            const rawPresets = Array.isArray(raw.presets) ? raw.presets : [];
+            const normalizedPresets = rawPresets.map(p => normalizePreset(p)).filter(Boolean);
+            const hadLegacy = rawPresets.some(p => isLegacyPresetShape(p));
+            if (hadLegacy) {
+                try {
+                    const migrated = { ...raw, presets: normalizedPresets };
+                    const tmp = configPath + '.tmp';
+                    writeFileSync(tmp, JSON.stringify(migrated, null, 2) + '\n', 'utf-8');
+                    renameSync(tmp, configPath);
+                    process.stderr.write(`[config] migrated: ${rawPresets.filter(p => isLegacyPresetShape(p)).length} legacy preset(s) → bridge\n`);
+                } catch (e) {
+                    process.stderr.write(`[config] native→bridge migration persist failed: ${e.message}\n`);
+                }
+            }
             return {
                 providers: mergedProviders,
                 mcpServers,
-                presets: Array.isArray(raw.presets) ? raw.presets : [],
+                presets: normalizedPresets,
                 default: raw.default || null,
                 maintenance: { ...DEFAULT_MAINTENANCE, ...rawMaint },
                 agentMaintenance: { enabled: true, interval: '1h', ...raw.agentMaintenance },
@@ -256,25 +301,28 @@ export function saveConfig(config) {
     renameSync(tmp, path);
 }
 // --- Preset helpers ---
-// preset shape: { id, name, type, provider?, model, effort?, fast?, tools? }
-// type: "native" (Claude family label — routed via anthropic-oauth through bridge)
-//       or "bridge" (external model via bridge tool)
-// native presets use provider "anthropic-oauth" implicitly
+// preset shape: { id, name, type: 'bridge', provider, model, effort?, fast?, tools? }
+// Legacy inputs with `type: 'native'` + short family model (haiku/sonnet/opus)
+// are auto-migrated to { type: 'bridge', provider: 'anthropic-oauth', model: <full id> }.
 function presetKey(p) { return p?.id || p?.name || ''; }
 function normalizePreset(preset) {
     if (!preset || typeof preset !== 'object')
         return null;
     const id = String(preset.id || preset.name || '').trim();
     const name = String(preset.name || preset.id || '').trim();
-    const type = preset.type === 'native' ? 'native' : 'bridge';
-    const model = String(preset.model || '').trim();
-    if (!name || !model)
-        return null;
-    const out = { id, name, type, model };
-    // provider is required for bridge, optional for native
-    const provider = String(preset.provider || '').trim();
-    if (provider) out.provider = provider;
-    if (type === 'bridge' && !provider) return null;
+    let model = String(preset.model || '').trim();
+    let provider = String(preset.provider || '').trim();
+
+    // Legacy migration: flip to bridge, fill anthropic-oauth provider,
+    // expand short family model (haiku/sonnet/opus) to the full API id.
+    if (isLegacyPresetShape(preset)) {
+        if (!provider) provider = 'anthropic-oauth';
+        const resolved = resolveAnthropicFamilyModel(model);
+        if (resolved) model = resolved;
+    }
+
+    if (!name || !model || !provider) return null;
+    const out = { id, name, type: 'bridge', provider, model };
     if (preset.effort)
         out.effort = String(preset.effort).trim();
     if (preset.fast === true)

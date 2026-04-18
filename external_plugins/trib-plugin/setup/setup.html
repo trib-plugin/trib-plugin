@@ -2456,6 +2456,7 @@ const AG_API_PROVIDERS = [
 ];
 const AG_OAUTH_PROVIDERS = [
   {id:'openai-oauth',name:'OpenAI (Codex)',desc:'~/.codex/auth.json'},
+  {id:'anthropic-oauth',name:'Anthropic (Claude Max)',desc:'~/.claude/.credentials.json'},
   {id:'copilot',name:'GitHub Copilot',desc:'hosts.json / GITHUB_TOKEN'},
 ];
 const AG_LOCAL_PROVIDERS = [
@@ -2464,10 +2465,10 @@ const AG_LOCAL_PROVIDERS = [
 ];
 
 const AG_EFFORT_OPTIONS = {
-  'claude-code': [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
   openai: [{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
   'openai-oauth': [{v:'none',label:'None'},{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'xhigh',label:'Extra High'}],
   anthropic: [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
+  'anthropic-oauth': [{v:'low',label:'Low'},{v:'medium',label:'Medium'},{v:'high',label:'High'},{v:'max',label:'Max'}],
 };
 // Per-family effort profiles. Lookup order: model.reasoningLevels (provider-
 // declared) → AG_FAMILY_EFFORT[family] → AG_EFFORT_OPTIONS[provider].
@@ -2485,7 +2486,7 @@ const AG_FAMILY_EFFORT = {
 const AG_EFFORT_LABEL = { none: 'None', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' };
 // Families that don't support fast mode even when the provider does.
 const AG_FAMILY_NO_FAST = new Set(['haiku', 'gpt-nano', 'gpt-codex']);
-const AG_FAST_PROVIDERS = new Set(['claude-code', 'anthropic', 'openai', 'openai-oauth']);
+const AG_FAST_PROVIDERS = new Set(['anthropic', 'anthropic-oauth', 'openai', 'openai-oauth']);
 let agModelList = [];
 const AG_ACCESS_LABELS = { full: 'Read & Write', readonly: 'Read Only', mcp: 'None' };
 
@@ -2514,7 +2515,7 @@ function agRenderAll() {
   const oauthSec = document.getElementById('ag-oauth-sec');
   oauthSec.innerHTML = '';
   for (const p of AG_OAUTH_PROVIDERS) {
-    const detected = p.id === 'openai-oauth' ? agAuth.codexOAuth : agAuth.copilot;
+    const detected = agOAuthDetected(p.id);
     const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>';
     oauthSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><span style="flex:1;font-size:12px;color:var(--text-4)">${p.desc}</span>${tag}</div>`;
   }
@@ -2534,7 +2535,7 @@ function agRenderStatus() {
   const sec = document.getElementById('ag-status-sec');
   let h = '';
   for (const p of AG_API_PROVIDERS) { const hasKey = !!c[p.id]?.apiKey; const hasEnv = agAuth.envKeys?.[p.id]; const tag = hasKey ? '<span class="r-tag ok">API Key</span>' : hasEnv ? '<span class="r-tag env">Env Var</span>' : '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
-  for (const p of AG_OAUTH_PROVIDERS) { const detected = p.id === 'openai-oauth' ? agAuth.codexOAuth : agAuth.copilot; const tag = detected ? '<span class="r-tag oauth">OAuth</span>' : '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
+  for (const p of AG_OAUTH_PROVIDERS) { const detected = agOAuthDetected(p.id); const tag = detected ? '<span class="r-tag oauth">OAuth</span>' : '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
   for (const p of AG_LOCAL_PROVIDERS) { const enabled = c[p.id]?.enabled === true; const detected = agAuth[p.id]; let tag; if (enabled && detected) tag = '<span class="r-tag ok">Enabled</span>'; else if (enabled) tag = '<span class="r-tag oauth">Enabled</span>'; else if (detected) tag = '<span class="r-tag not-running">Disabled</span>'; else tag = '<span class="r-tag no">Off</span>'; h += `<div class="r"><span class="r-name">${p.name}</span>${tag}</div>`; }
   sec.innerHTML = h;
 }
@@ -2560,12 +2561,18 @@ async function agDoSave(data, panelId) {
   } catch { if (warn) warn.textContent = 'Save failed'; if (btn) { btn.textContent = 'Save'; btn.disabled = false; } }
 }
 
+function agOAuthDetected(providerId, auth = agAuth) {
+  if (providerId === 'openai-oauth') return !!auth?.codexOAuth;
+  if (providerId === 'anthropic-oauth') return !!auth?.anthropicOAuth;
+  if (providerId === 'copilot') return !!auth?.copilot;
+  return false;
+}
+
 function agGetEnabledProviders() {
-  const out = ['claude-code'];
+  const out = [];
   const c = agConfig.providers || {};
   for (const p of AG_API_PROVIDERS) { if (c[p.id]?.apiKey || agAuth.envKeys?.[p.id]) out.push(p.id); }
-  if (agAuth.codexOAuth) out.push('openai-oauth');
-  if (agAuth.copilot) out.push('copilot');
+  for (const p of AG_OAUTH_PROVIDERS) { if (agOAuthDetected(p.id)) out.push(p.id); }
   for (const p of AG_LOCAL_PROVIDERS) { if (c[p.id]?.enabled === true) out.push(p.id); }
   return out;
 }
@@ -2580,8 +2587,8 @@ function agRenderPresetList() {
   if (agPresets.length === 0) { list.innerHTML = '<div class="empty">No presets yet. Click <strong>+ New Preset</strong> to create one.</div>'; return; }
   list.innerHTML = agPresets.map(p => {
     const accessLabel = AG_ACCESS_LABELS[p.tools] || 'Read & Write';
-    const provModel = p.type === 'native' ? p.model : `${p.provider}/${p.model}`;
-    const meta = [provModel, p.type === 'native' ? 'Claude Code' : null, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
+    const provModel = `${p.provider}/${p.model}`;
+    const meta = [provModel, p.tools && p.tools !== 'full' ? accessLabel : null, p.effort ? `effort=${p.effort}` : null, p.fast ? 'Fast' : null].filter(Boolean).join(' · ');
     return `<div class="preset-card"><div class="preset-info"><div class="preset-id">${escapeHtml(p.name || p.id)}</div><div class="preset-meta">${escapeHtml(meta)}</div></div><div class="preset-actions"><button class="icon-btn edit-btn" onclick="agOpenPresetForm('${escapeAttr(p.id)}')">Edit</button><button class="icon-btn danger" onclick="agDeletePreset('${escapeAttr(p.id)}')">Delete</button></div></div>`;
   }).join('');
 }
@@ -2602,7 +2609,7 @@ function agOpenPresetForm(id) {
   if (id) {
     title.textContent = 'Edit Preset';
     const p = agPresets.find(x => x.id === id);
-    if (p) { document.getElementById('ag-pf-name').value = p.name || p.id; const providerVal = p.provider || (p.type === 'native' ? 'claude-code' : ''); providerSel.value = providerVal; agOnProviderChange().then(() => { document.getElementById('ag-pf-model').value = p.model; agUpdateEffortAndFast(providerVal); document.getElementById('ag-pf-effort').value = p.effort || ''; document.getElementById('ag-pf-fast').classList.toggle('on', !!p.fast); document.querySelectorAll('#ag-pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === (p.tools || 'full'))); if (p.tools && p.tools !== 'full') { if (advToggle) advToggle.querySelector('.arrow').classList.add('open'); if (advContent) advContent.classList.add('open'); } }); return; }
+    if (p) { document.getElementById('ag-pf-name').value = p.name || p.id; const providerVal = p.provider || ''; providerSel.value = providerVal; agOnProviderChange().then(() => { document.getElementById('ag-pf-model').value = p.model; agUpdateEffortAndFast(providerVal); document.getElementById('ag-pf-effort').value = p.effort || ''; document.getElementById('ag-pf-fast').classList.toggle('on', !!p.fast); document.querySelectorAll('#ag-pf-tools .radio-btn').forEach(b => b.classList.toggle('on', b.dataset.v === (p.tools || 'full'))); if (p.tools && p.tools !== 'full') { if (advToggle) advToggle.querySelector('.arrow').classList.add('open'); if (advContent) advContent.classList.add('open'); } }); return; }
   }
   title.textContent = 'New Preset';
   document.getElementById('ag-pf-name').value = '';
@@ -2625,29 +2632,21 @@ async function agOnProviderChange() {
   }
 
   let models;
-  if (provider === 'claude-code') {
-    models = [
-      { id: 'opus', family: 'opus', tier: 'family' },
-      { id: 'sonnet', family: 'sonnet', tier: 'family' },
-      { id: 'haiku', family: 'haiku', tier: 'family' },
-    ];
-  } else {
-    modelSel.disabled = true;
-    modelSel.innerHTML = '<option value="">Loading...</option>';
-    modelSel.onchange = null;
-    try {
-      const r = await fetch(`/agent/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
-      models = (r.models || []).map(m => typeof m === 'string' ? { id: m } : m).filter(m => m && m.id);
-    } catch {
-      modelSel.innerHTML = '<option value="">Failed to fetch</option>';
-      agReplaceModelWithInput('');
-      return;
-    }
-    if (!Array.isArray(models) || models.length === 0) {
-      modelSel.innerHTML = '<option value="">No models found</option>';
-      agReplaceModelWithInput('');
-      return;
-    }
+  modelSel.disabled = true;
+  modelSel.innerHTML = '<option value="">Loading...</option>';
+  modelSel.onchange = null;
+  try {
+    const r = await fetch(`/agent/models?provider=${encodeURIComponent(provider)}`).then(r => r.json());
+    models = (r.models || []).map(m => typeof m === 'string' ? { id: m } : m).filter(m => m && m.id);
+  } catch {
+    modelSel.innerHTML = '<option value="">Failed to fetch</option>';
+    agReplaceModelWithInput('');
+    return;
+  }
+  if (!Array.isArray(models) || models.length === 0) {
+    modelSel.innerHTML = '<option value="">No models found</option>';
+    agReplaceModelWithInput('');
+    return;
   }
 
   agModelList = models;
@@ -2751,9 +2750,7 @@ async function agSavePreset() {
   if (!model) { warn.textContent = 'Model is required'; return; }
   const id = agEditingPresetId || name.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   if (!id) { warn.textContent = 'Name must contain valid characters'; return; }
-  const isWorker = provider === 'claude-code';
-  const body = { id, name, model, tools, provider };
-  body.type = isWorker ? 'native' : 'bridge';
+  const body = { id, name, model, tools, provider, type: 'bridge' };
   if (effort) body.effort = effort;
   const fastRowVisible = document.getElementById('ag-pf-fast-row').style.display !== 'none';
   if (fast && fastRowVisible) body.fast = true;
@@ -2815,7 +2812,7 @@ function memRenderAll() {
   }
   const oauthSec = document.getElementById('mem-oauth-sec');
   oauthSec.innerHTML = '';
-  for (const p of MEM_OAUTH_PROVIDERS) { const detected = p.id === 'openai-oauth' ? memAuth.codexOAuth : memAuth.copilot; const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>'; oauthSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><span style="flex:1;font-size:12px;color:var(--text-4)">${p.desc}</span>${tag}</div>`; }
+  for (const p of MEM_OAUTH_PROVIDERS) { const detected = agOAuthDetected(p.id, memAuth); const tag = detected ? '<span class="r-tag ok">Set</span>' : '<span class="r-tag no">Not Set</span>'; oauthSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><span style="flex:1;font-size:12px;color:var(--text-4)">${p.desc}</span>${tag}</div>`; }
   const localSec = document.getElementById('mem-local-sec');
   localSec.innerHTML = '';
   for (const p of MEM_LOCAL_PROVIDERS) { const url = c[p.id]?.baseURL || p.url; const detected = memAuth[p.id]; const tag = detected ? '<span class="r-tag running">Running</span>' : '<span class="r-tag not-running">Not Running</span>'; localSec.innerHTML += `<div class="r"><span class="r-name">${p.name}</span><input class="r-input" id="mem-url-${p.id}" value="${escapeAttr(url)}" placeholder="${p.url}">${tag}</div>`; }
@@ -3190,7 +3187,8 @@ async function saveLearningConfig() {
 const AG_MAINT_TASKS = [
   { id: 'cycle1', label: 'Cycle 1', desc: 'Episode classification (every 10 min)' },
   { id: 'cycle2', label: 'Cycle 2', desc: 'Memory consolidation (every 1h)' },
-  { id: 'search', label: 'Search', desc: 'Memory-based reasoning synthesis' },
+  { id: 'search', label: 'Search', desc: 'External lookup synthesis' },
+  { id: 'recall', label: 'Recall', desc: 'Memory recall synthesis' },
 ];
 let agMaintenance = {};
 let agMaintenanceDefaults = {};

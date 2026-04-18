@@ -34,8 +34,10 @@ import {
     traceBridgeFetch,
     traceBridgeSse,
     traceBridgeUsage,
+    appendBridgeTrace,
 } from '../bridge-trace.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
+import { sendViaWebSocket } from './openai-oauth-ws.mjs';
 // --- Constants ---
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
@@ -384,10 +386,10 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     }
     // NOTE: prompt_cache_retention is a public OpenAI Responses API parameter —
     // the Codex endpoint (chatgpt.com/backend-api/codex/responses) returns
-    // 400 "Unsupported parameter" when it's included. Leave cache behavior
-    // to the Codex server-side default (in-memory, 5-10 min). Callers who
-    // want extended retention should use the public OpenAI API provider
-    // instead of OAuth.
+    // 400 "Unsupported parameter" when it's included. Re-verified 2026-04-19.
+    // Leave cache behavior to the Codex server-side default (in-memory, 5-10
+    // min). Callers who want extended retention should use the public OpenAI
+    // API provider instead of OAuth.
     if (opts.fast === true) {
         body.service_tier = 'priority';
     }
@@ -465,8 +467,52 @@ export class OpenAIOAuthProvider {
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.4';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
-        const sessionId = opts.sessionId || null;
+        // Prefer stable promptCacheKey (role-scoped) over instance-specific
+        // sessionId so WS pool reuses the connection across bridge calls.
+        const sessionId = opts.promptCacheKey || opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
+        // WebSocket transport opt-in (feature flag). When enabled, dispatch to
+        // the WS module and bypass the SSE path entirely. Catalog refresh +
+        // model-unknown retry semantics are preserved in the WS failure case.
+        const wsEnabled = this.config?.websocket === true;
+        if (wsEnabled) {
+            try {
+                return await sendViaWebSocket({
+                    auth,
+                    body,
+                    sendOpts: opts,
+                    onStreamDelta,
+                    onToolCall,
+                    onStageChange,
+                    externalSignal,
+                    sessionId,
+                    iteration,
+                    useModel,
+                    displayModel: _displayCodexModel,
+                });
+            } catch (err) {
+                const status = err?.httpStatus;
+                if (status === 401) {
+                    process.stderr.write(`[openai-oauth-ws] 401 — forcing refresh and retrying once over WS\n`);
+                    this.tokens.expires_at = 0;
+                    auth = await this.ensureAuth();
+                    return await sendViaWebSocket({
+                        auth,
+                        body,
+                        sendOpts: opts,
+                        onStreamDelta,
+                        onToolCall,
+                        onStageChange,
+                        externalSignal,
+                        sessionId,
+                        iteration,
+                        useModel,
+                        displayModel: _displayCodexModel,
+                    });
+                }
+                throw err;
+            }
+        }
         const doRequest = async (token) => {
             const controller = createAbortController();
             const timeout = setTimeout(() => controller.abort(), 120_000);

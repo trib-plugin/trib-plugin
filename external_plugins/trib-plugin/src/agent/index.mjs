@@ -691,12 +691,8 @@ export async function handleToolCall(name, args, opts = {}) {
         const presetName = rolePresets[args.role];
         if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json`);
 
-        let preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
+        const preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
         if (!preset) return fail(`preset "${presetName}" (mapped from role "${args.role}") not found in agent-config.json`);
-        if (preset?.type === 'native') {
-          const { translateNativePreset } = await import('./orchestrator/smart-bridge/index.mjs');
-          preset = translateNativePreset(preset);
-        }
 
         const role = args.role;
         const effectiveLane = 'bridge';

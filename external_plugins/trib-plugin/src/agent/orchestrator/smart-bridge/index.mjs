@@ -11,12 +11,9 @@
  * comes from `request.preset` → userRoles[request.role] → default preset.
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { buildVirtualProfile } from './profiles.mjs';
 import { CacheRegistry, hashContent, DEFAULT_TTL_SECONDS } from './registry.mjs';
 import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCacheType } from './cache-strategy.mjs';
-import { getPluginData } from '../config.mjs';
 
 let _sharedInstance = null;
 
@@ -92,7 +89,6 @@ export class SmartBridge {
             || null;
 
         let preset = this._findPreset(presetName);
-        if (preset) preset = this._translateNativePreset(preset);
 
         const provider = request.provider || preset?.provider || null;
         const model = request.model || preset?.model || null;
@@ -120,10 +116,6 @@ export class SmartBridge {
     _findPreset(name) {
         if (!name || !this.presets.length) return null;
         return this.presets.find(p => p.id === name || p.name === name) || null;
-    }
-
-    _translateNativePreset(preset) {
-        return translateNativePreset(preset);
     }
 
     /**
@@ -189,79 +181,6 @@ export function getSmartBridge() {
         _sharedInstance = new SmartBridge();
     }
     return _sharedInstance;
-}
-
-// --- Model family resolution --------------------------------------------
-// Unchanged from v0.6.71.
-const FAMILY_FALLBACK = {
-    opus:   ['claude-opus-4-7',          'claude-opus-4-6'],
-    sonnet: ['claude-sonnet-4-6'],
-    haiku:  ['claude-haiku-4-5-20251001'],
-};
-const FAMILY_ENV = {
-    opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
-    sonnet: 'ANTHROPIC_DEFAULT_SONNET_MODEL',
-    haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-};
-
-export function resolveAnthropicModelForFamily(family, overrides = {}) {
-    const key = String(family || '').toLowerCase();
-    if (overrides[key]) return overrides[key];
-    const envVar = FAMILY_ENV[key];
-    if (envVar && process.env[envVar]) return process.env[envVar];
-    const fromCache = _resolveFromCatalog(key);
-    if (fromCache) return fromCache;
-    const chain = FAMILY_FALLBACK[key];
-    return Array.isArray(chain) ? chain[0] : (chain || null);
-}
-
-export function nextFallbackModel(currentModel) {
-    for (const chain of Object.values(FAMILY_FALLBACK)) {
-        const idx = chain.indexOf(currentModel);
-        if (idx >= 0 && idx < chain.length - 1) {
-            process.stderr.write(`[smart-bridge] model ${currentModel} unavailable, falling back to ${chain[idx + 1]}\n`);
-            return chain[idx + 1];
-        }
-    }
-    return null;
-}
-
-function _resolveFromCatalog(family) {
-    try {
-        const cachePath = join(getPluginData(), 'anthropic-oauth-models.json');
-        if (!existsSync(cachePath)) return null;
-        const data = JSON.parse(readFileSync(cachePath, 'utf-8'));
-        const models = Array.isArray(data?.models) ? data.models : [];
-
-        const sameFamily = models.filter(m => m.family === family);
-        if (sameFamily.length === 0) return null;
-
-        const versioned = sameFamily.filter(m => m.tier === 'version');
-        if (versioned.length > 0) {
-            const latest = versioned.find(m => m.latest)
-                        || [...versioned].sort((a, b) => b.id.localeCompare(a.id))[0];
-            if (latest?.id) return latest.id;
-        }
-
-        const dated = sameFamily.filter(m => m.tier === 'dated');
-        if (dated.length > 0) {
-            const latestDated = [...dated].sort((a, b) => b.id.localeCompare(a.id))[0];
-            if (latestDated?.id) return latestDated.id;
-        }
-
-        return null;
-    } catch { return null; }
-}
-
-export function translateNativePreset(preset) {
-    if (preset?.type !== 'native') return preset;
-    const model = resolveAnthropicModelForFamily(preset.model);
-    if (!model) return preset;
-    return {
-        ...preset,
-        provider: 'anthropic-oauth',
-        model,
-    };
 }
 
 // Re-exports for convenience.
