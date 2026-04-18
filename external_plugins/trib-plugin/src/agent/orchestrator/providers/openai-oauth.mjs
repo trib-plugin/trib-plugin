@@ -12,31 +12,6 @@ import { homedir } from 'os';
 import { getPluginData } from '../config.mjs';
 import { enrichModels } from './model-catalog.mjs';
 
-// Codex Responses CLI docs (openai/codex command reference) specify
-// session_id Type: uuid. Our session ids are Date-based strings, so Codex
-// silently rejects them and never emits cached_tokens. Hash our session
-// id into a deterministic UUIDv4-shaped string — same input → same UUID,
-// so repeated turns keep landing on the same Codex conversation.
-function sessionIdToUuid(sessionId) {
-    if (!sessionId) return null;
-    const h = createHash('sha256').update(String(sessionId)).digest('hex');
-    const variant = ((parseInt(h.slice(16, 17), 16) & 0x3) | 0x8).toString(16);
-    return [
-        h.slice(0, 8),
-        h.slice(8, 12),
-        '4' + h.slice(13, 16),
-        variant + h.slice(17, 20),
-        h.slice(20, 32),
-    ].join('-');
-}
-import {
-    extractCachedTokens,
-    traceBridgeFetch,
-    traceBridgeSse,
-    traceBridgeUsage,
-    appendBridgeTrace,
-} from '../bridge-trace.mjs';
-import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { sendViaWebSocket } from './openai-oauth-ws.mjs';
 // --- Constants ---
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -44,7 +19,6 @@ const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
 const TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const REDIRECT_URI = 'http://localhost:1455/auth/callback';
 const SCOPE = 'openid profile email offline_access';
-const CODEX_API_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CALLBACK_PORT = 1455;
 // Version string baked into the models endpoint query — Codex rejects the
 // request without it. Keep close to the latest published Codex CLI because
@@ -214,114 +188,6 @@ async function refreshTokens(refreshToken) {
         clearTimeout(timeout);
     }
 }
-async function parseSSEStream(response, signal, abortStream, onStreamDelta, onToolCall) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let content = '';
-    let model = '';
-    let toolCalls = [];
-    let usage;
-    let buffer = '';
-    let idleTimedOut = false;
-    let idleTimer = null;
-    let responseId = '';
-    const pendingCalls = new Map();
-    const resetIdleTimer = () => {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => {
-            idleTimedOut = true;
-            try { abortStream?.(); } catch {}
-            try { reader.cancel('SSE idle timeout'); } catch {}
-        }, 60_000);
-    };
-    const onAbort = () => { try { reader.cancel('SSE aborted'); } catch {} };
-    if (signal) {
-        if (signal.aborted) throw new Error('Codex SSE stream aborted');
-        signal.addEventListener('abort', onAbort, { once: true });
-    }
-    try {
-        resetIdleTimer();
-        while (true) {
-            let chunk;
-            try { chunk = await reader.read(); } catch (err) {
-                if (idleTimedOut) throw new Error('Codex SSE stream timed out after 60000ms of inactivity');
-                if (signal?.aborted) throw new Error('Codex SSE stream aborted');
-                throw err;
-            }
-            const { done, value } = chunk;
-            if (done) break;
-            resetIdleTimer();
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const data = line.slice(6).trim();
-                if (data === '[DONE]') continue;
-                try {
-                    const event = JSON.parse(data);
-                    if (event.type === 'response.output_text.delta') {
-                        content += event.delta || '';
-                        try { onStreamDelta?.(); } catch {}
-                    }
-                    if (event.type === 'response.created') {
-                        if (event.response?.model) model = event.response.model;
-                        if (event.response?.id) responseId = event.response.id;
-                    }
-                    if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
-                        pendingCalls.set(event.item.id || '', {
-                            name: event.item.name || '',
-                            callId: event.item.call_id || '',
-                        });
-                    }
-                    if (event.type === 'response.function_call_arguments.delta') {
-                        try { onStreamDelta?.(); } catch {}
-                    }
-                    if (event.type === 'response.function_call_arguments.done') {
-                        const itemId = event.item_id || '';
-                        const pending = pendingCalls.get(itemId);
-                        const call = {
-                            id: pending?.callId || `tc_${Date.now()}_${toolCalls.length}`,
-                            name: pending?.name || '',
-                            arguments: JSON.parse(event.arguments || '{}'),
-                        };
-                        toolCalls.push(call);
-                        // Eager dispatch: let the loop start executing the
-                        // tool before `response.completed` arrives. The loop
-                        // keys pending promises by call.id so order is safe.
-                        try { onToolCall?.(call); } catch {}
-                        try { onStreamDelta?.(); } catch {}
-                    }
-                    if (event.type === 'response.completed' && event.response?.usage) {
-                        const u = event.response.usage;
-                        usage = {
-                            inputTokens: u.input_tokens || 0,
-                            outputTokens: u.output_tokens || 0,
-                            cachedTokens: extractCachedTokens(u),
-                            raw: u,
-                        };
-                        if (!model && event.response.model) model = event.response.model;
-                        if (!responseId && event.response.id) responseId = event.response.id;
-                        if (!content && event.response.output) {
-                            for (const item of event.response.output) {
-                                if (item.type === 'message') {
-                                    for (const c of item.content || []) {
-                                        if (c.type === 'output_text') content += c.text || '';
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch { /* skip malformed events */ }
-            }
-        }
-        return { content, model, toolCalls: toolCalls.length ? toolCalls : undefined, usage, responseId: responseId || undefined };
-    } finally {
-        if (idleTimer) clearTimeout(idleTimer);
-        if (signal) signal.removeEventListener('abort', onAbort);
-        try { reader.releaseLock(); } catch {}
-    }
-}
 // --- Build Responses API request ---
 /**
  * Convert a message slice to Responses API input items.
@@ -453,11 +319,6 @@ export class OpenAIOAuthProvider {
         }
         return this.tokens;
     }
-    scrubTokens(text) {
-        return text
-            .replace(/Bearer [A-Za-z0-9._\-]+/g, 'Bearer [REDACTED]')
-            .replace(/"access_token"\s*:\s*"[^"]+"/g, '"access_token":"[REDACTED]"');
-    }
     async send(messages, model, tools, sendOpts) {
         const opts = sendOpts || {};
         const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
@@ -471,13 +332,35 @@ export class OpenAIOAuthProvider {
         // sessionId so WS pool reuses the connection across bridge calls.
         const sessionId = opts.promptCacheKey || opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
-        // WebSocket transport opt-in (feature flag). When enabled, dispatch to
-        // the WS module and bypass the SSE path entirely. Catalog refresh +
-        // model-unknown retry semantics are preserved in the WS failure case.
-        const wsEnabled = this.config?.websocket === true;
-        if (wsEnabled) {
-            try {
-                return await sendViaWebSocket({
+        // WebSocket is the only dispatch path. Catalog refresh + 401 retry +
+        // unknown-model catalog invalidation are layered around the WS call.
+        try {
+            const result = await sendViaWebSocket({
+                auth,
+                body,
+                sendOpts: opts,
+                onStreamDelta,
+                onToolCall,
+                onStageChange,
+                externalSignal,
+                sessionId,
+                iteration,
+                useModel,
+                displayModel: _displayCodexModel,
+            });
+            // Background catalog refresh when a live response surfaces a model
+            // id that isn't in our cached catalog (silent rotation guard).
+            if (result?.model && !_codexCatalogHas(result.model)) {
+                void this._refreshModelCache();
+            }
+            return result;
+        } catch (err) {
+            const status = err?.httpStatus;
+            if (status === 401) {
+                process.stderr.write(`[openai-oauth-ws] 401 — forcing refresh and retrying once over WS\n`);
+                this.tokens.expires_at = 0;
+                auth = await this.ensureAuth();
+                const result = await sendViaWebSocket({
                     auth,
                     body,
                     sendOpts: opts,
@@ -490,215 +373,20 @@ export class OpenAIOAuthProvider {
                     useModel,
                     displayModel: _displayCodexModel,
                 });
-            } catch (err) {
-                const status = err?.httpStatus;
-                if (status === 401) {
-                    process.stderr.write(`[openai-oauth-ws] 401 — forcing refresh and retrying once over WS\n`);
-                    this.tokens.expires_at = 0;
-                    auth = await this.ensureAuth();
-                    return await sendViaWebSocket({
-                        auth,
-                        body,
-                        sendOpts: opts,
-                        onStreamDelta,
-                        onToolCall,
-                        onStageChange,
-                        externalSignal,
-                        sessionId,
-                        iteration,
-                        useModel,
-                        displayModel: _displayCodexModel,
-                    });
+                if (result?.model && !_codexCatalogHas(result.model)) {
+                    void this._refreshModelCache();
                 }
-                throw err;
+                return result;
             }
-        }
-        const doRequest = async (token) => {
-            const controller = createAbortController();
-            const timeout = setTimeout(() => controller.abort(), 120_000);
-            const fetchStartedAt = Date.now();
-            // Bridge external cancellation → inner controller. We can't use
-            // createChildAbortController here because `controller` was created
-            // independently; instead we forward the abort directly.
-            let cancelHandler = null;
-            if (externalSignal) {
-                if (externalSignal.aborted) {
-                    clearTimeout(timeout);
-                    controller.abort(externalSignal.reason);
-                    throw externalSignal.reason instanceof Error
-                        ? externalSignal.reason
-                        : new Error('Codex request aborted by session close');
-                }
-                cancelHandler = () => { try { controller.abort(externalSignal.reason); } catch {} };
-                externalSignal.addEventListener('abort', cancelHandler, { once: true });
-            }
-            try {
-                try { onStageChange?.('requesting'); } catch {}
-                const response = await fetch(CODEX_API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token.access_token}`,
-                        'Content-Type': 'application/json',
-                        'Accept': 'text/event-stream',
-                        'chatgpt-account-id': token.account_id || '',
-                        'originator': 'codex_cli_rs',
-                        'OpenAI-Beta': 'responses=experimental',
-                        // Case D — match pi-mono's production-working
-                        // implementation: both underscore `session_id` AND
-                        // `x-client-request-id` carry the raw session id on
-                        // every request. v0.6.55 used the dash variant
-                        // (openai/codex#11732 fix on the Rust CLI), v0.6.62
-                        // switched it to a UUID, neither produced cached
-                        // tokens. pi-mono's badlogic/pi-mono#3196 issue
-                        // thread confirms the cache-routing headers that
-                        // actually work end-to-end through chatgpt.com's
-                        // Envoy. Keep the dash variant alongside so both
-                        // paths receive the value and we do not regress any
-                        // deployment that the earlier fix covered.
-                        ...(sessionId ? {
-                            'session_id': String(sessionId),
-                            'session-id': String(sessionId),
-                            'x-client-request-id': String(sessionId),
-                        } : {}),
-                    },
-                    body: JSON.stringify(body),
-                    signal: controller.signal,
-                });
-                traceBridgeFetch({
-                    sessionId,
-                    headersMs: Date.now() - fetchStartedAt,
-                    httpStatus: response.status,
-                });
-                clearTimeout(timeout);
-                return { response, controller, cancelHandler };
-            } catch (err) {
-                clearTimeout(timeout);
-                if (cancelHandler) externalSignal.removeEventListener('abort', cancelHandler);
-                if (externalSignal?.aborted) {
-                    const reason = externalSignal.reason;
-                    throw reason instanceof Error ? reason : new Error('Codex request aborted by session close');
-                }
-                if (err?.name === 'AbortError')
-                    throw new Error('Codex API initial response timed out after 120000ms');
-                throw err;
-            }
-        };
-        // Retry on transient 5xx / connect errors before SSE stream begins.
-        // Codex /backend-api/codex/responses 503 has been observed to terminate
-        // bridge sessions; once SSE parsing starts we commit and never retry.
-        const isTransientStatus = s => s === 502 || s === 503 || s === 504;
-        const isTransientErr = err => {
-            if (!err) return false;
-            const code = err.code || err.cause?.code || '';
-            if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') return true;
-            const msg = err.message || '';
-            if (msg.includes('initial response timed out')) return true;
-            return false;
-        };
-        const sleep = ms => new Promise(r => {
-            const t = setTimeout(r, ms);
-            if (externalSignal) {
-                const onAbort = () => { clearTimeout(t); r(); };
-                if (externalSignal.aborted) return onAbort();
-                externalSignal.addEventListener('abort', onAbort, { once: true });
-            }
-        });
-        const MAX_ATTEMPTS = 5;
-        const BACKOFF_MS = [0, 1000, 2000, 4000, 8000];
-        let response, controller, cancelHandler;
-        let lastStatus = null;
-        let attempt = 0;
-        while (attempt < MAX_ATTEMPTS) {
-            if (externalSignal?.aborted) {
-                const reason = externalSignal.reason;
-                throw reason instanceof Error ? reason : new Error('Codex request aborted by session close');
-            }
-            if (attempt > 0) {
-                process.stderr.write(`[openai-oauth] retry attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${lastStatus || 'network error'}\n`);
-                await sleep(BACKOFF_MS[attempt]);
-                if (externalSignal?.aborted) {
-                    const reason = externalSignal.reason;
-                    throw reason instanceof Error ? reason : new Error('Codex request aborted by session close');
-                }
-            }
-            try {
-                ({ response, controller, cancelHandler } = await doRequest(auth));
-            } catch (err) {
-                if (externalSignal?.aborted) throw err;
-                if (isTransientErr(err) && attempt < MAX_ATTEMPTS - 1) {
-                    lastStatus = err.code || err.message || 'network error';
-                    attempt++;
-                    continue;
-                }
-                throw err;
-            }
-            if (isTransientStatus(response.status) && attempt < MAX_ATTEMPTS - 1) {
-                try { await response.text(); } catch {}
-                if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
-                lastStatus = response.status;
-                attempt++;
-                continue;
-            }
-            break;
-        }
-        if (response.status === 401) {
-            process.stderr.write(`[openai-oauth] Got 401, forcing token refresh and retrying...\n`);
-            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
-            this.tokens.expires_at = 0;
-            auth = await this.ensureAuth();
-            ({ response, controller, cancelHandler } = await doRequest(auth));
-        }
-        if (!response.ok) {
-            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
-            const text = await response.text().catch(() => '');
-            const safeText = this.scrubTokens(text).slice(0, 200);
-            process.stderr.write(`[openai-oauth] API error ${response.status}: ${safeText}\n`);
-
-            // Phase I: on unknown/404 model errors, force a catalog refresh and
-            // retry once. Protects against a silently-rotated model id.
-            const isUnknownModel = response.status === 404
-                || /unknown[_\s-]?model|model[_\s-]?not[_\s-]?found/i.test(safeText);
+            const msg = err?.message || '';
+            const isUnknownModel = status === 404
+                || /unknown[_\s-]?model|model[_\s-]?not[_\s-]?found/i.test(msg);
             if (isUnknownModel && !opts._modelRetry) {
-                process.stderr.write(`[openai-oauth] unknown model - refreshing catalog + 1 retry\n`);
+                process.stderr.write(`[openai-oauth-ws] unknown model — refreshing catalog + 1 retry\n`);
                 await this._refreshModelCache();
                 return this.send(messages, model, tools, { ...opts, _modelRetry: true });
             }
-            throw new Error(`Codex API ${response.status}: ${safeText}`);
-        }
-        process.stderr.write(`[openai-oauth] Response ${response.status}, parsing SSE...\n`);
-        try { onStageChange?.('streaming'); } catch {}
-        try {
-            const sseStartedAt = Date.now();
-            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta, onToolCall);
-            traceBridgeSse({
-                sessionId,
-                sseParseMs: Date.now() - sseStartedAt,
-            });
-            const liveModel = result.model || useModel;
-            traceBridgeUsage({
-                sessionId,
-                iteration,
-                inputTokens: result.usage?.inputTokens || 0,
-                outputTokens: result.usage?.outputTokens || 0,
-                cachedTokens: result.usage?.cachedTokens || 0,
-                model: liveModel,
-                modelDisplay: _displayCodexModel(liveModel),
-                responseId: result.responseId || null,
-                rawUsage: result.usage?.raw || null,
-                provider: 'openai-oauth',
-            });
-
-            // Phase I: background catalog refresh when live response surfaces
-            // a model id that isn't in our cached catalog.
-            if (result.model && !_codexCatalogHas(result.model)) {
-                void this._refreshModelCache();
-            }
-
-            process.stderr.write(`[openai-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
-            const { responseId: _ignored, ...out } = result;
-            return out;
-        } finally {
-            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+            throw err;
         }
     }
     async listModels() {
