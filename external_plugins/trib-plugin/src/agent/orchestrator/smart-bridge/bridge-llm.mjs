@@ -28,9 +28,6 @@ import { resolveRuntimeSpec } from '../config.mjs';
 import {
     askSession,
     createSession,
-    findOrCreateSession,
-    resetStatelessSession,
-    resumeSession,
     updateSessionStatus,
 } from '../session/manager.mjs';
 
@@ -102,7 +99,12 @@ export function makeBridgeLlm(opts = {}) {
         });
 
         const cwd = process.cwd();
-        const createFresh = () => createSession({
+
+        // Stateless ephemeral session — created fresh per call, never pooled
+        // or resumed. Cache prefix matching happens at the provider layer
+        // (account-level), not the session level, so we lose nothing from
+        // skipping pool reuse. Mixing risk = 0.
+        const session = createSession({
             preset,
             owner: 'bridge',
             scopeKey: runtimeSpec.scopeKey,
@@ -113,21 +115,6 @@ export function makeBridgeLlm(opts = {}) {
             sourceType: opts.sourceType || undefined,
             sourceName: sourceNameArg || opts.sourceName || undefined,
         });
-
-        const found = findOrCreateSession(runtimeSpec.scopeKey, createFresh);
-        let session = found?.id ? (resumeSession(found.id) || createFresh()) : found;
-
-        // Stateless profiles (maintenance, sub-task) carry no transcript across
-        // dispatches; truncate to the initial Pool B head so the prefix stays
-        // warm but per-task transcripts never leak into the next call.
-        if (session?.behavior === 'stateless' && session?.id) {
-            try {
-                const reset = resetStatelessSession(session.id);
-                if (reset) session = reset;
-            } catch (e) {
-                process.stderr.write(`[bridge-llm] stateless reset failed: ${e.message}\n`);
-            }
-        }
 
         try {
             updateSessionStatus(session.id, 'running');

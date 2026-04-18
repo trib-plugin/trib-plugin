@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { cleanMemoryText } from './memory.mjs'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
+import { synth } from '../../shared/llm/agentic-synth.mjs'
 import { computeEntryScore } from './memory-score.mjs'
 import { embedText } from './embedding-provider.mjs'
 
@@ -115,16 +116,13 @@ export async function runCycle1(db, config = {}, options = {}) {
     return { processed: 0, chunks: 0, skipped: 0 }
   }
 
-  const promptPath = join(resourceDir(), 'defaults', 'memory-chunk-prompt.md')
-  if (!existsSync(promptPath)) {
-    throw new Error(`runCycle1: prompt file missing at ${promptPath}`)
-  }
-  const template = readFileSync(promptPath, 'utf8')
-  const prompt = template.replace('{{ENTRIES}}', buildEntriesText(rows))
+  // Pool C SYSTEM (cycle rules, schema, format) is auto-prepended by synth().
+  // The user message carries only the volatile data — the entries to chunk.
+  const userMessage = `Run cycle1: chunk these entries and emit JSON per the cycle1 spec.\n\n${buildEntriesText(rows)}`
 
   let raw
   try {
-    raw = await invokeLlm(prompt, options, 'cycle1', preset, timeout)
+    raw = await synth({ task: 'cycle1', userMessage, mode: 'write-back', preset, timeout })
   } catch (err) {
     process.stderr.write(`[cycle1] LLM error: ${err.message}\n`)
     return { processed: 0, chunks: 0, skipped: rows.length }

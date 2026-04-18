@@ -1,18 +1,9 @@
 /**
  * Smart Bridge — Cache Strategy
  *
- * Two cacheTypes cover every Pool B workload:
- *   - stateful  → 1h on tools+system, 5m on messages tail.
- *                 Multi-turn workers that re-enter the same session within
- *                 minutes (worker, debugger, tester).
- *   - stateless → 1h on tools+system, no cache on messages.
- *                 Single dispatch or pooled stateless calls where the
- *                 messages tail is replaced every turn (sub-task, reviewer,
- *                 researcher, ad-hoc bridge, maintenance, webhook).
- *
- * Both share an identical tools+system prefix across the workspace, so all
- * Pool B traffic hits one Anthropic shard per model. The only difference is
- * whether the messages tail also carries a cache breakpoint.
+ * Stateless-only (v0.6.96+). All bridge calls are stateless: messages tail
+ * is freshly composed per call, sessions are ephemeral, and there is no
+ * cross-call message cache. Only the prefix (tools + system) is cached.
  *
  * Providers differ in what they can express:
  *   - Anthropic: per-layer TTL via cache_control breakpoints — full control.
@@ -23,20 +14,20 @@
  */
 
 /**
- * Return the layered cache policy (Anthropic-style TTL per layer) for a cacheType.
- * Used directly by anthropic/anthropic-oauth; translated for other providers.
+ * Return the layered cache policy. Single fixed strategy now that all
+ * bridge calls are stateless: cache the prefix (tools + system), never
+ * cache the messages tail.
  *
  * Values:
  *   '1h'   → ephemeral 1h TTL  (2x write premium, 0.1x read)
  *   '5m'   → ephemeral 5m TTL  (1.25x write premium, 0.1x read)
  *   'none' → no cache_control  (1x flat, no premium, no cache)
+ *
+ * The cacheType parameter is accepted for backward compatibility but
+ * ignored; legacy callers passing 'stateful' get the same stateless
+ * policy as everyone else.
  */
-export function resolveCacheStrategy(cacheType) {
-    if (cacheType === 'stateful') {
-        return { tools: '1h', system: '1h', messages: '5m' };
-    }
-    // stateless (default) — covers sub-task, reviewer, researcher, ad-hoc,
-    // maintenance, webhook, and anything unspecified.
+export function resolveCacheStrategy(_cacheType) {
     return { tools: '1h', system: '1h', messages: 'none' };
 }
 

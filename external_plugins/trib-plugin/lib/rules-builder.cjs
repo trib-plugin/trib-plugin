@@ -89,6 +89,8 @@ function extractCommonClaudeMdSections(content) {
  */
 function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
+  const POOL_A_DIR = path.join(RULES_DIR, 'pool-a');
+  const SHARED_DIR = path.join(RULES_DIR, '_shared');
   const HISTORY_DIR = path.join(DATA_DIR, 'history');
 
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
@@ -96,31 +98,31 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const parts = [];
 
   // --- 1. General (always) ---
-  const general = readOptional(path.join(RULES_DIR, 'general.md'));
+  const general = readOptional(path.join(POOL_A_DIR, '01-general.md'));
   if (general) parts.push(general);
 
   // --- 2. Memory (when memory-config.json has enabled) ---
   if (memoryConfig.enabled) {
-    const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
+    const memory = readOptional(path.join(SHARED_DIR, 'memory.md'));
     if (memory) parts.push(memory);
   }
 
   // --- 3. Search (when search-config.json has enabled) ---
   if (searchConfig.enabled) {
-    const search = readOptional(path.join(RULES_DIR, 'search.md'));
+    const search = readOptional(path.join(SHARED_DIR, 'search.md'));
     if (search) parts.push(search);
   }
 
   // --- 4. Channels (always) ---
-  const channels = readOptional(path.join(RULES_DIR, 'channels.md'));
+  const channels = readOptional(path.join(POOL_A_DIR, '02-channels.md'));
   if (channels) parts.push(channels);
 
   // --- 5. Team (always) ---
-  const team = readOptional(path.join(RULES_DIR, 'team.md'));
+  const team = readOptional(path.join(POOL_A_DIR, '03-team.md'));
   if (team) parts.push(team);
 
   // --- 6. Workflow (always) ---
-  const workflow = readOptional(path.join(RULES_DIR, 'workflow.md'));
+  const workflow = readOptional(path.join(POOL_A_DIR, '04-workflow.md'));
   if (workflow) parts.push(workflow);
 
   // --- 7. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
@@ -189,33 +191,53 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  */
 function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
+  const POOL_B_DIR = path.join(RULES_DIR, 'pool-b');
+  const SHARED_DIR = path.join(RULES_DIR, '_shared');
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
 
-  const mcpBlocks = ['mcp-orchestration.md', 'mcp-memory.md', 'mcp-search.md']
-    .map(f => readOptional(path.join(RULES_DIR, f)))
+  const mcpBlocks = ['02-mcp-memory.md', '03-mcp-search.md']
+    .map(f => readOptional(path.join(POOL_B_DIR, f)))
     .filter(Boolean);
   if (mcpBlocks.length > 0) {
     parts.push(['# MCP Instructions', '', mcpBlocks.join('\n\n')].join('\n'));
   }
 
-  const agentContent = readOptional(path.join(RULES_DIR, 'agent.md'));
+  const agentContent = readOptional(path.join(POOL_B_DIR, '01-agent.md'));
   if (agentContent) parts.push(agentContent);
 
   if (memoryConfig.enabled) {
-    const memory = readOptional(path.join(RULES_DIR, 'memory.md'));
+    const memory = readOptional(path.join(SHARED_DIR, 'memory.md'));
     if (memory) parts.push(memory);
   }
 
   if (searchConfig.enabled) {
-    const search = readOptional(path.join(RULES_DIR, 'search.md'));
+    const search = readOptional(path.join(SHARED_DIR, 'search.md'));
     if (search) parts.push(search);
   }
 
   const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
   const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
   if (claudeMdCommon) parts.push(claudeMdCommon);
+
+  // User-defined agent customizations (monolithic — all roles/schedules/webhooks
+  // baked into the cached prefix). The active per-call task data lives in the
+  // tail (user message), not here. This keeps cache shard count at 1 across
+  // every Pool B caller in the workspace.
+  const agentsDir = path.join(DATA_DIR, 'agents');
+  for (const subdir of ['roles', 'schedules', 'webhooks']) {
+    const dir = path.join(agentsDir, subdir);
+    let entries;
+    try { entries = fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort(); }
+    catch { entries = []; }
+    if (entries.length === 0) continue;
+    const blocks = entries
+      .map(f => readOptional(path.join(dir, f)))
+      .filter(Boolean);
+    if (blocks.length === 0) continue;
+    parts.push([`# Agent ${subdir}`, '', blocks.join('\n\n')].join('\n'));
+  }
 
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
   const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
@@ -226,4 +248,56 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   return parts.join('\n\n');
 }
 
-module.exports = { buildInjectionContent, buildBridgeInjectionContent };
+/**
+ * Build the Pool C injection content (System / Maintenance synth tasks).
+ *
+ * Returns the concatenated content of all `rules/pool-c/*.md` modules in
+ * filename order (numbered prefix governs ordering). This is the SYSTEM
+ * prompt for all `agentic-synth.mjs` calls (cycle, recap, search-synth, etc).
+ *
+ * Pool C is monolithic — every synth task gets the same system prompt.
+ * Task differentiation happens in the user message ("run cycle1 on these
+ * entries"), not via per-task system slicing. This keeps cache shard count
+ * at 1 and maximizes hit ratio across providers.
+ *
+ * @param {object} opts
+ * @param {string} opts.PLUGIN_ROOT — absolute path to the plugin root
+ * @returns {string} joined Pool C content
+ */
+function buildSystemInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
+  const POOL_C_DIR = path.join(PLUGIN_ROOT, 'rules', 'pool-c');
+  let entries;
+  try {
+    entries = fs.readdirSync(POOL_C_DIR)
+      .filter(f => f.endsWith('.md'))
+      .sort();
+  } catch {
+    return '';
+  }
+  const parts = entries
+    .map(f => readOptional(path.join(POOL_C_DIR, f)))
+    .filter(Boolean);
+
+  // User-defined system task instructions (monolithic — baked into cached
+  // prefix). The active per-call task data lives in the tail.
+  if (DATA_DIR) {
+    const tasksDir = path.join(DATA_DIR, 'tasks');
+    let taskFiles;
+    try { taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.md')).sort(); }
+    catch { taskFiles = []; }
+    const taskBlocks = taskFiles
+      .map(f => readOptional(path.join(tasksDir, f)))
+      .filter(Boolean);
+    if (taskBlocks.length > 0) {
+      parts.push(['## User-defined tasks', '', taskBlocks.join('\n\n')].join('\n'));
+    }
+  }
+
+  return parts.join('\n\n');
+}
+
+module.exports = {
+  buildInjectionContent,
+  buildBridgeInjectionContent,
+  buildSystemInjectionContent,
+};

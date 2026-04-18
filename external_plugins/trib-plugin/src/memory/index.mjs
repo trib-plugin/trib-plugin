@@ -77,9 +77,9 @@ const MAX_PORT = 3357
 
 const MEMORY_INSTRUCTIONS_TEXT = (() => {
   try {
-    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'mcp-memory.md'), 'utf8').trim()
+    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'pool-b', '02-mcp-memory.md'), 'utf8').trim()
   } catch (e) {
-    process.stderr.write(`[memory] rules/mcp-memory.md load failed: ${e.message}\n`)
+    process.stderr.write(`[memory] rules/pool-b/02-mcp-memory.md load failed: ${e.message}\n`)
     return ''
   }
 })()

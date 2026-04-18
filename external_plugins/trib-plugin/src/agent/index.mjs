@@ -1,5 +1,5 @@
 import { initProviders } from './orchestrator/providers/registry.mjs';
-import { createSession, askSession, listSessions, closeSession, resumeSession, findSessionByScopeKey, findOrCreateSession, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, resetStatelessSession, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
+import { createSession, askSession, listSessions, closeSession, findSessionByScopeKey, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
@@ -131,9 +131,12 @@ const AGENT_MCP_BASE = (() => {
   try {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
     if (!root) return '';
-    return readFileSync(join(root, 'rules', 'mcp-orchestration.md'), 'utf8').trim();
+    // mcp-orchestration.md was removed (v0.6.94) — sub-agents do not dispatch
+    // other agents, so this content was redundant. Tool list is auto-exposed
+    // by Claude Code; policy lives in rules/pool-a/03-team.md.
+    return '';
   } catch (e) {
-    process.stderr.write(`[agent] rules/mcp-orchestration.md load failed: ${e.message}\n`);
+    process.stderr.write(`[agent] rules/pool-b load failed: ${e.message}\n`);
     return '';
   }
 })();
@@ -703,46 +706,19 @@ export async function handleToolCall(name, args, opts = {}) {
         });
 
         const effectiveCwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd();
-        const createFreshSession = () => createSession({
+        // Stateless ephemeral session — created fresh per call (v0.6.97+).
+        // No pool, no resume, no reset. Provider-level prefix cache still
+        // hits because cache is content-keyed, not session-keyed.
+        const session = createSession({
           preset,
           owner: 'bridge',
           scopeKey: runtimeSpec.scopeKey,
           lane: runtimeSpec.lane,
           cwd: effectiveCwd,
-          // Smart Bridge resolveSync picks a profile from the role.
           role,
-          // Tag the usage row so bridge-trace analytics can slice lead
-          // calls by the requested role (worker / reviewer / ...).
           sourceType: 'lead',
           sourceName: role,
         });
-        const found = findOrCreateSession(runtimeSpec.scopeKey, createFreshSession);
-        // resumeSession returns null for tombstoned / unresumable sessions.
-        // In that case spin up a fresh session instead of returning the raw
-        // closed record — a tombstone must never reach the caller, it would
-        // be aborted immediately by the abort-controller wired during close.
-        let session;
-        if (found.id) {
-          session = resumeSession(found.id);
-          if (!session) {
-            session = createFreshSession();
-          }
-        }
-        else {
-          session = found;
-        }
-        // Stateless profiles (sub-task, maintenance, etc.) carry no transcript
-        // across dispatches. Truncate the message list to the initial Pool B
-        // head so the provider cache handle stays warm while no prior-task
-        // transcript leaks into the next call.
-        if (session?.behavior === 'stateless' && session?.id) {
-          try {
-            const reset = resetStatelessSession(session.id);
-            if (reset) session = reset;
-          } catch (e) {
-            process.stderr.write(`[bridge] stateless reset failed: ${e.message}\n`);
-          }
-        }
 
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;
