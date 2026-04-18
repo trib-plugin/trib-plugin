@@ -1,34 +1,43 @@
 /**
  * Smart Bridge — Cache Strategy
  *
- * Stateless-only (v0.6.96+). All bridge calls are stateless: messages tail
- * is freshly composed per call, sessions are ephemeral, and there is no
- * cross-call message cache. Only the prefix (tools + system) is cached.
+ * Provider-level cache policy. Anthropic supports explicit cache_control
+ * breakpoints (up to 4 per request) — we use all 4 slots. Non-breakpoint
+ * providers rely on server-side automatic prefix matching or dedicated
+ * cache objects.
  *
- * Providers differ in what they can express:
- *   - Anthropic: per-layer TTL via cache_control breakpoints — full control.
- *   - OpenAI public: prompt_cache_retention (in_memory / 24h) — request-level.
- *   - OpenAI Codex OAuth: no retention control — server-side default only.
- *   - Gemini: explicit cache objects (separate CRUD lifecycle).
- *   - OpenAI-compat locals (Ollama, Groq, etc.): no API-level cache.
+ * Anthropic 4-BP layout (bridge/agent use case — no interactive idle):
+ *   BP_1  tools      (1h)  — tool schemas, stable per role
+ *   BP_2  system     (1h)  — Tier 2 shared rules
+ *   BP_3  tier3      (1h)  — role/permission meta (messages[1] system-reminder)
+ *   BP_4  messages   (5m)  — last message only; sliding extends prefix loss-free
+ *
+ * Tier 3 gets its own BP because role meta is stable per dispatch, so a
+ * dedicated slot gives a reliable hit across the entire tool loop while
+ * the sliding messages BP handles volatile tool_result accumulation.
+ *
+ * Non-breakpoint providers:
+ *   - OpenAI (public): prompt_cache_key + prompt_cache_retention=24h
+ *   - OpenAI OAuth (Codex): prompt_cache_key only (server in-memory 5-10min)
+ *   - Gemini: explicit cachedContent object, 1h TTL, append-extension reuse
+ *   - Groq: auto 50% cache (gpt-oss-120b) — no knob
+ *   - Copilot / xAI / Ollama / LMStudio: no API-level cache
  */
 
 /**
- * Return the layered cache policy. Single fixed strategy now that all
- * bridge calls are stateless: cache the prefix (tools + system), never
- * cache the messages tail.
+ * Return the layered cache policy for Anthropic-family providers.
  *
  * Values:
  *   '1h'   → ephemeral 1h TTL  (2x write premium, 0.1x read)
  *   '5m'   → ephemeral 5m TTL  (1.25x write premium, 0.1x read)
  *   'none' → no cache_control  (1x flat, no premium, no cache)
  *
- * The cacheType parameter is accepted for backward compatibility but
- * ignored; legacy callers passing 'stateful' get the same stateless
- * policy as everyone else.
+ * cacheType is accepted for backward compatibility; both stateful and
+ * stateless get the same policy since bridge/agent calls never experience
+ * interactive idle that would threaten the 5m tail TTL.
  */
 export function resolveCacheStrategy(_cacheType) {
-    return { tools: '1h', system: '1h', messages: 'none' };
+    return { tools: '1h', system: '1h', tier3: '1h', messages: '5m' };
 }
 
 /**

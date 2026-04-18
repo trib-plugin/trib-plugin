@@ -1,36 +1,65 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadConfig } from '../config.mjs';
 
-// Single-path: 5-minute ephemeral cache only. The 1h extended-TTL beta is
-// not exposed — `cacheTtl` config key was removed for v0.6.10.
-function withEphemeralCacheControl(block) {
+// 4-BP cache policy aligned with anthropic-oauth — tools + system + tier3
+// + messages-tail. 1h TTL requires the extended-cache-ttl beta header,
+// which we set on the client via defaultHeaders below.
+const CACHE_TTL_STABLE = { type: 'ephemeral', ttl: '1h' };
+const CACHE_TTL_VOLATILE = { type: 'ephemeral' };
+
+function withCacheControl(block, ttl = CACHE_TTL_VOLATILE) {
     if (!block || typeof block !== 'object' || block.cache_control) return block;
-    return { ...block, cache_control: { type: 'ephemeral' } };
+    return { ...block, cache_control: ttl };
 }
 
-function appendAnthropicCacheControl(content) {
+function appendCacheControl(content, ttl = CACHE_TTL_VOLATILE) {
     if (Array.isArray(content)) {
         if (content.length === 0) return content;
         const next = [...content];
-        const lastIndex = next.length - 1;
-        next[lastIndex] = withEphemeralCacheControl(next[lastIndex]);
+        next[next.length - 1] = withCacheControl(next[next.length - 1], ttl);
         return next;
     }
     if (typeof content === 'string') {
-        return [withEphemeralCacheControl({ type: 'text', text: content })];
+        return [withCacheControl({ type: 'text', text: content }, ttl)];
     }
     return content;
 }
 
-function collectRecentCacheableMessageIndexes(messages) {
+function collectRecentCacheableMessageIndexes(messages, availableSlots = 1) {
+    const slots = Math.max(0, Math.min(4, availableSlots));
     const marked = new Set();
-    for (let i = messages.length - 1; i >= 0 && marked.size < 3; i--) {
-        const msg = messages[i];
-        if (msg?.role !== 'system') {
-            marked.add(i);
-        }
+    for (let i = messages.length - 1; i >= 0 && marked.size < slots; i--) {
+        if (messages[i]?.role !== 'system') marked.add(i);
     }
     return marked;
+}
+
+function findTier3Index(chatMsgs) {
+    for (let i = 0; i < chatMsgs.length; i++) {
+        const m = chatMsgs[i];
+        if (m?.role === 'user' && typeof m.content === 'string'
+            && m.content.startsWith('<system-reminder>')) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function resolveCacheTtls(opts) {
+    const strategy = opts?.cacheStrategy || {};
+    const pick = (layer, fallback) => {
+        const v = strategy[layer];
+        if (v === '1h') return CACHE_TTL_STABLE;
+        if (v === '5m') return CACHE_TTL_VOLATILE;
+        if (v === 'none') return null;
+        return fallback;
+    };
+    return {
+        tools: pick('tools', CACHE_TTL_STABLE),
+        system: pick('system', CACHE_TTL_STABLE),
+        tier3: pick('tier3', CACHE_TTL_STABLE),
+        messages: pick('messages', CACHE_TTL_VOLATILE),
+    };
 }
 
 const MODELS = [
@@ -40,13 +69,16 @@ const MODELS = [
     { id: 'claude-sonnet-4-0', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000 },
     { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: 200000 },
 ];
-const MAX_TOKENS = {
-    'claude-opus-4-7': 32768,
-    'claude-opus-4-6': 32768,
-    'claude-opus-4-0': 32768,
-    'claude-sonnet-4-0': 16384,
-    'claude-haiku-4-5-20251001': 8192,
-};
+// Family-based heuristic so new model ids (including custom user-configured
+// ones) resolve a sensible max_tokens without requiring a code change.
+function resolveMaxTokens(model) {
+    const id = String(model || '').toLowerCase();
+    if (id.includes('opus')) return 32768;
+    if (id.includes('sonnet')) return 16384;
+    if (id.includes('haiku')) return 8192;
+    return 8192;
+}
+
 // Effort → thinking budget tokens (Anthropic extended thinking)
 const EFFORT_BUDGET = {
     low: 1024,
@@ -61,17 +93,26 @@ function toAnthropicTools(tools) {
         input_schema: t.inputSchema,
     }));
 }
-function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
+function toAnthropicMessages(
+    messages,
+    cacheableIndexes = new Set(),
+    messageTtl = CACHE_TTL_VOLATILE,
+    tier3Idx = -1,
+    tier3Ttl = null,
+) {
+    const applyMsgTtl = messageTtl || CACHE_TTL_VOLATILE;
+    const shouldCacheMsg = (idx) => messageTtl !== null && cacheableIndexes.has(idx);
+    const shouldCacheTier3 = (idx) => tier3Ttl !== null && idx === tier3Idx;
+    const pickTtl = (idx) => shouldCacheTier3(idx) ? tier3Ttl : applyMsgTtl;
+    const anyCache = (idx) => shouldCacheMsg(idx) || shouldCacheTier3(idx);
+
     const result = [];
     for (let idx = 0; idx < messages.length; idx++) {
         const m = messages[idx];
-        if (m.role === 'system')
-            continue; // handled separately
+        if (m.role === 'system') continue;
         if (m.role === 'assistant' && m.toolCalls?.length) {
-            // Assistant message with tool use blocks
             let content = [];
-            if (m.content)
-                content.push({ type: 'text', text: m.content });
+            if (m.content) content.push({ type: 'text', text: m.content });
             for (const tc of m.toolCalls) {
                 content.push({
                     type: 'tool_use',
@@ -80,17 +121,11 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
                     input: tc.arguments,
                 });
             }
-            if (cacheableIndexes.has(idx)) {
-                content = appendAnthropicCacheControl(content);
-            }
+            if (anyCache(idx)) content = appendCacheControl(content, pickTtl(idx));
             result.push({ role: 'assistant', content });
             continue;
         }
         if (m.role === 'tool') {
-            // Tool results must be in a user message with tool_result blocks.
-            // Anthropic native path allows cache_control on content blocks, so if
-            // this synthetic user/tool_result message is one of the last 3
-            // non-system messages we mark the last block in the array.
             const last = result[result.length - 1];
             const block = {
                 type: 'tool_result',
@@ -99,26 +134,21 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set()) {
             };
             if (last?.role === 'user' && Array.isArray(last.content)) {
                 last.content.push(block);
-                if (cacheableIndexes.has(idx)) {
-                    last.content = appendAnthropicCacheControl(last.content);
+                if (anyCache(idx)) {
+                    last.content = appendCacheControl(last.content, pickTtl(idx));
                 }
             }
             else {
                 let content = [block];
-                if (cacheableIndexes.has(idx)) {
-                    content = appendAnthropicCacheControl(content);
-                }
+                if (anyCache(idx)) content = appendCacheControl(content, pickTtl(idx));
                 result.push({ role: 'user', content });
             }
             continue;
         }
-        const content = cacheableIndexes.has(idx)
-            ? appendAnthropicCacheControl(m.content)
+        const content = anyCache(idx)
+            ? appendCacheControl(m.content, pickTtl(idx))
             : m.content;
-        result.push({
-            role: m.role,
-            content,
-        });
+        result.push({ role: m.role, content });
     }
     return result;
 }
@@ -140,6 +170,7 @@ export class AnthropicProvider {
         this.config = config;
         this.client = new Anthropic({
             apiKey: config.apiKey || process.env.ANTHROPIC_API_KEY,
+            defaultHeaders: { 'anthropic-beta': 'extended-cache-ttl-2025-04-11' },
         });
     }
     reloadApiKey() {
@@ -148,7 +179,10 @@ export class AnthropicProvider {
             const cfg = freshConfig.providers?.anthropic;
             const newKey = cfg?.apiKey || process.env.ANTHROPIC_API_KEY;
             if (newKey) {
-                this.client = new Anthropic({ apiKey: newKey });
+                this.client = new Anthropic({
+                    apiKey: newKey,
+                    defaultHeaders: { 'anthropic-beta': 'extended-cache-ttl-2025-04-11' },
+                });
             }
         } catch { /* best effort */ }
     }
@@ -165,26 +199,53 @@ export class AnthropicProvider {
         }
     }
     async _doSend(messages, model, tools, sendOpts) {
-        const useModel = model || 'claude-sonnet-4-0';
-        const maxTokens = MAX_TOKENS[useModel] || 8192;
+        if (!model) throw new Error('[anthropic] model is required — pass it from the caller preset');
+        const useModel = model;
+        const maxTokens = resolveMaxTokens(useModel);
         const opts = sendOpts || {};
-        // Single-path: 5-minute ephemeral cache_control on system + last few
-        // chat messages. The 1h extended-TTL beta has been removed for v0.6.10.
+        const ttls = resolveCacheTtls(opts);
+
         const systemMsgs = messages.filter(m => m.role === 'system');
         const chatMsgs = messages.filter(m => m.role !== 'system');
         const systemText = systemMsgs.map(m => m.content).join('\n\n') || undefined;
-        const cacheableIndexes = collectRecentCacheableMessageIndexes(chatMsgs);
-        const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes);
+
+        // 4-BP budget: tools + system + tier3 + messages-tail.
+        const toolsBpUsed = ttls.tools && tools?.length ? 1 : 0;
+        const systemBpUsed = ttls.system && systemText ? 1 : 0;
+        const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
+        const tier3BpUsed = tier3Idx >= 0 ? 1 : 0;
+        const usedSlots = toolsBpUsed + systemBpUsed + tier3BpUsed;
+        const msgSlots = ttls.messages ? Math.max(0, 4 - usedSlots) : 0;
+        const cacheableIndexes = collectRecentCacheableMessageIndexes(chatMsgs, msgSlots);
+        if (tier3Idx >= 0) cacheableIndexes.delete(tier3Idx);
+
+        const anthropicMessages = toAnthropicMessages(
+            chatMsgs,
+            cacheableIndexes,
+            ttls.messages,
+            tier3Idx,
+            ttls.tier3,
+        );
+
         const params = {
             model: useModel,
             max_tokens: maxTokens,
             system: systemText
-                ? [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }]
+                ? [ttls.system
+                    ? { type: 'text', text: systemText, cache_control: ttls.system }
+                    : { type: 'text', text: systemText }]
                 : undefined,
             messages: anthropicMessages,
         };
         if (tools?.length) {
-            params.tools = toAnthropicTools(tools);
+            const converted = toAnthropicTools(tools);
+            if (ttls.tools && converted.length > 0) {
+                converted[converted.length - 1] = {
+                    ...converted[converted.length - 1],
+                    cache_control: ttls.tools,
+                };
+            }
+            params.tools = converted;
         }
         // Effort → extended thinking budget
         if (opts.effort && EFFORT_BUDGET[opts.effort]) {

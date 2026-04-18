@@ -291,10 +291,21 @@ function toAnthropicTools(tools) {
     }));
 }
 
-function toAnthropicMessages(messages, cacheableIndexes = new Set(), messageTtl = CACHE_TTL_VOLATILE) {
-    // messageTtl === null disables message-layer caching entirely.
-    const applyTtl = messageTtl || CACHE_TTL_VOLATILE;
-    const shouldCache = (idx) => messageTtl !== null && cacheableIndexes.has(idx);
+function toAnthropicMessages(
+    messages,
+    cacheableIndexes = new Set(),
+    messageTtl = CACHE_TTL_VOLATILE,
+    tier3Idx = -1,
+    tier3Ttl = null,
+) {
+    // messageTtl === null disables message-tail caching.
+    // tier3Ttl  === null disables the dedicated Tier 3 breakpoint.
+    const applyMsgTtl = messageTtl || CACHE_TTL_VOLATILE;
+    const shouldCacheMsg = (idx) => messageTtl !== null && cacheableIndexes.has(idx);
+    const shouldCacheTier3 = (idx) => tier3Ttl !== null && idx === tier3Idx;
+    const pickTtl = (idx) => shouldCacheTier3(idx) ? tier3Ttl : applyMsgTtl;
+    const anyCache = (idx) => shouldCacheMsg(idx) || shouldCacheTier3(idx);
+
     const result = [];
     for (let idx = 0; idx < messages.length; idx++) {
         const m = messages[idx];
@@ -311,7 +322,7 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set(), messageTtl 
                     input: tc.arguments,
                 });
             }
-            if (shouldCache(idx)) content = appendCacheControl(content, applyTtl);
+            if (anyCache(idx)) content = appendCacheControl(content, pickTtl(idx));
             result.push({ role: 'assistant', content });
             continue;
         }
@@ -325,19 +336,19 @@ function toAnthropicMessages(messages, cacheableIndexes = new Set(), messageTtl 
             };
             if (last?.role === 'user' && Array.isArray(last.content)) {
                 last.content.push(block);
-                if (shouldCache(idx)) {
-                    last.content = appendCacheControl(last.content, applyTtl);
+                if (anyCache(idx)) {
+                    last.content = appendCacheControl(last.content, pickTtl(idx));
                 }
             } else {
                 let content = [block];
-                if (shouldCache(idx)) content = appendCacheControl(content, applyTtl);
+                if (anyCache(idx)) content = appendCacheControl(content, pickTtl(idx));
                 result.push({ role: 'user', content });
             }
             continue;
         }
 
-        const content = shouldCache(idx)
-            ? appendCacheControl(m.content, applyTtl)
+        const content = anyCache(idx)
+            ? appendCacheControl(m.content, pickTtl(idx))
             : m.content;
         result.push({ role: m.role, content });
     }
@@ -495,10 +506,25 @@ function resolveCacheTtls(opts) {
         return fallback;
     };
     return {
-        tools: pick('tools', CACHE_TTL_STABLE),       // default: 1h
-        system: pick('system', CACHE_TTL_STABLE),     // default: 1h
-        messages: pick('messages', CACHE_TTL_VOLATILE), // default: 5m
+        tools: pick('tools', CACHE_TTL_STABLE),        // default: 1h
+        system: pick('system', CACHE_TTL_STABLE),      // default: 1h
+        tier3: pick('tier3', CACHE_TTL_STABLE),        // default: 1h (role meta)
+        messages: pick('messages', CACHE_TTL_VOLATILE), // default: 5m (sliding tail)
     };
+}
+
+// Tier 3 is injected by session/manager as a user message whose content
+// starts with `<system-reminder>`. Location is typically chatMsgs[0], but
+// we pattern-match to stay robust against future prepended messages.
+function findTier3Index(chatMsgs) {
+    for (let i = 0; i < chatMsgs.length; i++) {
+        const m = chatMsgs[i];
+        if (m?.role === 'user' && typeof m.content === 'string'
+            && m.content.startsWith('<system-reminder>')) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 function buildRequestBody(messages, model, tools, sendOpts) {
@@ -510,14 +536,27 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const ttls = resolveCacheTtls(opts);
     const systemBlocks = buildSystemBlocks(rawSystemText, model, ttls?.system);
 
-    // Cache breakpoint budget: 4 total. The prefix-only block never carries
-    // one (fixed short string), so systemBlocks consume at most one BP via
-    // the rest block. Tools and messages claim the remainder.
+    // 4-BP budget layout: tools + system + tier3 + messages-tail.
+    // Tier 3 gets a dedicated 1h slot (role/permission meta, stable per
+    // dispatch) so it hits across the whole tool loop. messages-tail claims
+    // whatever remains (typically 1 slot, sliding 5m).
     const systemBpUsed = ttls.system && systemBlocks.some(b => b.cache_control) ? 1 : 0;
-    const usedSlots = (ttls.tools && tools?.length ? 1 : 0) + systemBpUsed;
+    const toolsBpUsed = ttls.tools && tools?.length ? 1 : 0;
+    const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
+    const tier3BpUsed = tier3Idx >= 0 ? 1 : 0;
+    const usedSlots = toolsBpUsed + systemBpUsed + tier3BpUsed;
     const msgSlots = ttls.messages ? Math.max(0, 4 - usedSlots) : 0;
     const cacheableIndexes = collectRecentCacheableIndexes(chatMsgs, msgSlots);
-    const anthropicMessages = toAnthropicMessages(chatMsgs, cacheableIndexes, ttls.messages);
+    // If the tail slot landed on the Tier 3 index, drop it from the sliding
+    // set — Tier 3 already owns its own BP and we don't want to double-mark.
+    if (tier3Idx >= 0) cacheableIndexes.delete(tier3Idx);
+    const anthropicMessages = toAnthropicMessages(
+        chatMsgs,
+        cacheableIndexes,
+        ttls.messages,
+        tier3Idx,
+        ttls.tier3,
+    );
 
     const body = {
         model,

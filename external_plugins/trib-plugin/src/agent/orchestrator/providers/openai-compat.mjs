@@ -213,10 +213,14 @@ export class OpenAICompatProvider {
             input,
             reasoning: { effort: opts.effort || 'medium' },
         };
-        if (opts.sessionId && this.name === 'openai') {
-            body.prompt_cache_key = String(opts.sessionId);
+        // Stable scope key (role × workspace from session) wins over the
+        // volatile sessionId so the same cache shard is reused across
+        // dispatches within a role.
+        const cacheKey = opts.promptCacheKey || opts.sessionId;
+        if (cacheKey && this.name === 'openai') {
+            body.prompt_cache_key = String(cacheKey);
         }
-        else if (opts.sessionId && this.name !== 'openai') {
+        else if (cacheKey && this.name !== 'openai') {
             warnBridgeOnce(`prompt-cache-skip:${this.name}`, `[bridge-cache] ${this.name} responses endpoint: prompt_cache_key unsupported, skipping`);
         }
         if (toolsFlat?.length)
