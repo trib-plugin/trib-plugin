@@ -378,10 +378,6 @@ function buildRequestBody(messages, model, tools, sendOpts) {
         tool_choice: 'auto',
         parallel_tool_calls: true,
     };
-    // Prompt cache key — stable routing anchor. The key is derived per session
-    // in session/manager.mjs (session.promptCacheKey). Prefer the explicit
-    // promptCacheKey (stable per task for stateless sessions); fall back to
-    // sessionId for interactive sessions so legacy callers keep working.
     const cacheKey = opts.promptCacheKey || opts.sessionId;
     if (cacheKey) {
         body.prompt_cache_key = String(cacheKey);

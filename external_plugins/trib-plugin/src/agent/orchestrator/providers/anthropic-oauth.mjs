@@ -501,10 +501,6 @@ function resolveCacheTtls(opts) {
     };
 }
 
-// Anthropic caching uses explicit cache_control markers on system blocks /
-// tools / messages (see buildSystemBlocks + resolveCacheTtls). It does NOT
-// accept an OpenAI-style prompt_cache_key; opts.promptCacheKey is therefore
-// ignored here on purpose.
 function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
