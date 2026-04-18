@@ -459,14 +459,13 @@ export function createSession(opts) {
         // scheduler/daily-standup, webhook/github-push, lead/worker.
         sourceType: opts.sourceType || null,
         sourceName: opts.sourceName || null,
-        // Prompt cache anchor (see CLAUDE.md §Prompt caching).
-        // Repeatable task sessions (maintenance / scheduler / webhook) share a
-        // stable key per (sourceType, sourceName) so same-prefix calls route
-        // to the same GPU and reuse the cached prefix. Interactive sessions
-        // (worker / lead) fall back to the session id — each such session has
-        // its own evolving prefix and routing is naturally isolated.
-        // Do not mix per-session IDs into the stable key — that fragments
-        // cache routing and collapses hit rate.
+        // Prompt cache anchor. Repeatable task sessions (maintenance /
+        // scheduler / webhook) share a stable key per (sourceType, sourceName)
+        // so same-prefix calls route to the same GPU and reuse the cached
+        // prefix. Interactive sessions (worker / lead) fall back to the
+        // session id — each such session has its own evolving prefix and
+        // routing is naturally isolated. Do not mix per-session IDs into the
+        // stable key — that fragments cache routing and collapses hit rate.
         promptCacheKey: (profile?.behavior === 'stateless')
             ? `trib:${opts.sourceType || 'task'}:${opts.sourceName || opts.role || 'default'}`
             : id,
@@ -795,7 +794,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     fast: session.fast === true,
                     sessionId,
                     // Providers read this first for prompt_cache_key routing;
-                    // sessionId is a legacy fallback. See CLAUDE.md §Prompt caching.
+                    // sessionId is a legacy fallback.
                     promptCacheKey: session.promptCacheKey || sessionId,
                     signal,
                     providerState: session.providerState ?? undefined,
