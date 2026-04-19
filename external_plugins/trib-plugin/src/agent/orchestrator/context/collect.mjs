@@ -81,10 +81,14 @@ export function collectSkills(cwd) {
     return skills;
 }
 // --- Skill cache (TTL-based) ---
+// Skills folders rarely change within a session. A 5-minute TTL keeps the
+// recursive readdirSync + frontmatter parse off the hot path for most
+// bridge/Pool C invocations. Bench harness or tests can invalidate by
+// boot; long-running plugin server picks up changes on next window.
 let _skillsCache = null;
 let _skillsCacheTime = 0;
 let _skillsCacheCwd = null;
-const SKILLS_CACHE_TTL = 30000; // 30 seconds
+const SKILLS_CACHE_TTL = 5 * 60_000;
 export function collectSkillsCached(cwd) {
     const now = Date.now();
     if (_skillsCache && _skillsCacheCwd === cwd && now - _skillsCacheTime < SKILLS_CACHE_TTL) {
@@ -109,11 +113,18 @@ export function loadSkillContent(name, cwd) {
  * Build slim skill tool definitions (Hermes-style 3-tool split).
  * The skill catalogue is served at runtime via `skills_list` rather than
  * inlined into tool descriptions, keeping per-session schema bytes small.
+ *
+ * The structure is constant regardless of how many skills are in scope —
+ * the 3-tool shape only shows up when `skills.length > 0`, and the slot
+ * contents never change. Memoise so every createSession doesn't rebuild
+ * identical objects (trivial work, but the allocation noise shows up in
+ * repeated Pool C fan-out).
  */
+let _skillToolDefsCache = null;
 export function buildSkillToolDefs(skills) {
-    if (!skills.length)
-        return [];
-    return [
+    if (!skills.length) return [];
+    if (_skillToolDefsCache) return _skillToolDefsCache;
+    _skillToolDefsCache = [
         {
             name: 'skills_list',
             description: 'List available skills with short descriptions. Call this first to discover what skills are available before using skill_view or skill_execute.',
@@ -147,6 +158,7 @@ export function buildSkillToolDefs(skills) {
             },
         },
     ];
+    return _skillToolDefsCache;
 }
 // --- Collect project MD (Phase B §5) ---
 /**
