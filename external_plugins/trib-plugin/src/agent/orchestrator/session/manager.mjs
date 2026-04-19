@@ -500,7 +500,17 @@ export function createSession(opts) {
     // to pass the explicit list.
     const permDeny = denyListFor(permission);
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
-    const mergedDeny = [...new Set([...permDeny, ...callerDeny])];
+    // Bridge sessions (Pool B/C) have no business with Discord channel ops,
+    // session lifecycle, or schedule/config admin — those are Lead-only
+    // surfaces. Stripping them shrinks the tool-schema prefix (~9 KB from
+    // BP1) without losing any capability agents actually use during work.
+    const bridgeDeny = opts.owner === 'bridge' ? [
+        'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
+        'activate_channel_bridge',
+        'create_session', 'close_session', 'list_sessions', 'list_models',
+        'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
+    ] : [];
+    const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {
         const denySet = new Set(mergedDeny);
         const before = tools.length;
