@@ -300,6 +300,17 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
+  if (def.module === 'lsp') {
+    // LSP-backed symbol tools. One shared typescript-language-server
+    // child is spawned on first call and torn down after 90s idle; see
+    // src/agent/orchestrator/tools/lsp.mjs for the state machine.
+    const { executeLspTool } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/lsp.mjs')).href,
+    )
+    const text = await executeLspTool(name, args ?? {}, process.cwd())
+    return { content: [{ type: 'text', text: String(text) }] }
+  }
+
   const moduleName = TOOL_MODULE[name]
   if (!moduleName) throw new Error(`Unknown tool: ${name}`)
 
