@@ -252,8 +252,13 @@ const TOOLS = [
   },
   {
     name: 'list_sessions',
-    description: 'List all active orchestrator sessions.',
-    inputSchema: { type: 'object', properties: {} },
+    description: 'List all active orchestrator sessions. Pass { brief: true } to omit per-session toolNames and trim the response — useful when the full listing blows past the tool-result size limit in long-running environments.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        brief: { type: 'boolean', description: 'Drop per-session toolNames (still returns count). Defaults to false for backwards compatibility.' },
+      },
+    },
   },
   {
     name: 'close_session',
@@ -526,6 +531,7 @@ export async function handleToolCall(name, args, opts = {}) {
         const sessions = listSessions();
         if (sessions.length === 0) return ok('No active sessions.');
         const now = Date.now();
+        const brief = args.brief === true;
         return ok(sessions.map((s) => {
           const runtime = getSessionRuntime(s.id);
           // No runtime entry → session has no in-flight work; stage derives from
@@ -546,13 +552,12 @@ export async function handleToolCall(name, args, opts = {}) {
           const staleSeconds = runtime?.lastStreamDeltaAt
             ? Math.floor((now - runtime.lastStreamDeltaAt) / 1000)
             : null;
-          return {
+          const base = {
             id: s.id,
             provider: s.provider,
             model: s.model,
             messages: s.messages.length,
             tools: s.tools.length,
-            toolNames: Array.isArray(s.tools) ? s.tools.map((t) => t?.name).filter(Boolean) : [],
             sentTokens: s.totalInputTokens,
             receivedTokens: s.totalOutputTokens,
             scope: s.scopeKey || null,
@@ -565,6 +570,10 @@ export async function handleToolCall(name, args, opts = {}) {
             staleSeconds,
             lastToolCall: runtime?.lastToolCall || null,
           };
+          if (!brief) {
+            base.toolNames = Array.isArray(s.tools) ? s.tools.map((t) => t?.name).filter(Boolean) : [];
+          }
+          return base;
         }));
       }
 
