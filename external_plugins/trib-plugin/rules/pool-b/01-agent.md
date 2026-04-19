@@ -254,7 +254,9 @@ error and does not consume the turn.
 
 **read-write** (read + state change):
 - All `read` tools
-- File / code mutation: `Write`, `Edit`, `Bash`
+- File / code mutation: `Write`, `Edit`, `multi_edit` (same file, ordered
+  replacements, all-or-nothing), `batch_edit` (cross-file batch,
+  per-entry failure isolation), `Bash`
 - Memory writes: `memory` actions `remember`, `forget`, `cycle1`, `cycle2`
 - Skills: `skill_execute`
 - Channel / agent control: `reply`, `react`, `edit_message`,
