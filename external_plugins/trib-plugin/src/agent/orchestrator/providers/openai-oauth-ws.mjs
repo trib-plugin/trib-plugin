@@ -1,12 +1,13 @@
 /**
- * OpenAI Codex OAuth — WebSocket transport (beta).
+ * OpenAI Codex OAuth — WebSocket transport.
  *
- * Opt-in replacement for the HTTP+SSE path in openai-oauth.mjs. Uses the
- * `responses_websockets=2026-02-06` beta Codex WebSocket upgrade on
- * chatgpt.com/backend-api/codex/responses. A per-session connection is
- * cached (5 min idle TTL) so subsequent tool-loop iterations can send only
- * the incremental `input` delta plus `previous_response_id`, skipping the
- * full tools/system/history prefix each turn.
+ * Single dispatch path for the openai-oauth provider (SSE removed in
+ * v0.6.117). Uses the `responses_websockets=2026-02-06` beta WebSocket
+ * upgrade on chatgpt.com/backend-api/codex/responses. Per-session
+ * connections are pooled (5 min idle TTL, up to 8 parallel sockets per
+ * key) so subsequent tool-loop iterations can send only the incremental
+ * `input` delta plus `previous_response_id`, skipping the full
+ * tools/system/history prefix each turn.
  *
  * References:
  * - pi-mono packages/ai/src/providers/openai-codex-responses.ts
@@ -15,7 +16,7 @@
  *
  * Exposes:
  *   sendViaWebSocket({ auth, body, sendOpts, onStreamDelta, onToolCall,
- *                      onStageChange, externalSignal, sessionId, iteration,
+ *                      onStageChange, externalSignal, poolKey, cacheKey, iteration,
  *                      useModel, traceCtx })
  *
  * The caller (openai-oauth.mjs) supplies a fully built request body and the
@@ -34,21 +35,56 @@ import {
 const CODEX_WS_URL = 'wss://chatgpt.com/backend-api/codex/responses';
 const WS_IDLE_MS = 5 * 60_000;
 const WS_HANDSHAKE_TIMEOUT_MS = 30_000;
-const WS_STREAM_IDLE_MS = 60_000;
+// Codex can stall for 50+s between chunks on long reasoning requests
+// (observed: iter 5 of a multi-file review produced sse_parse_ms=58265).
+// 60s was too tight — raising to 120s gives headroom without letting a
+// truly dead socket hang forever.
+const WS_STREAM_IDLE_MS = 120_000;
+// WS socket pool buckets are keyed by `poolKey` (the per-call sessionId)
+// to isolate parallel bridge invocations — each gets its own socket so
+// a second caller cannot grab a sibling's mid-turn entry (Codex would
+// otherwise reject the new response.create with "No tool output found
+// for function call ..."). The Codex handshake `session_id` header/URL
+// uses `cacheKey` — a provider-scoped unified key (e.g. 'trib-codex')
+// built in manager.mjs via providerCacheKey(). All orchestrator-internal
+// dispatches targeting this provider share the same cacheKey, so the
+// server-side prompt-cache shard is shared across every role/source.
+// Codex dedupes cache by handshake session_id, not by
+// body.prompt_cache_key alone (measured 2026-04-19 after the v0.6.151
+// regression).
+const MAX_POOLED_SOCKETS_PER_KEY = 8;
 
-// sessionId -> { socket, busy, idleTimer, lastResponseId, lastRequestSansInput,
-//                lastInputLen, turnState, pendingCloseAfterRelease }
+// poolKey -> Entry[]
+// Entry: { socket, busy, idleTimer, lastResponseId, lastRequestSansInput,
+//          lastInputLen, turnState, closing, ephemeral }
 const _wsPool = new Map();
 
-function _scheduleIdleClose(sessionId) {
-    const entry = _wsPool.get(sessionId);
+function _getPoolArr(poolKey) {
+    if (!poolKey) return null;
+    let arr = _wsPool.get(poolKey);
+    if (!arr) {
+        arr = [];
+        _wsPool.set(poolKey, arr);
+    }
+    return arr;
+}
+
+function _removeFromPool(poolKey, entry) {
+    if (!poolKey) return;
+    const arr = _wsPool.get(poolKey);
+    if (!arr) return;
+    const idx = arr.indexOf(entry);
+    if (idx >= 0) arr.splice(idx, 1);
+    if (arr.length === 0) _wsPool.delete(poolKey);
+}
+
+function _scheduleIdleClose(poolKey, entry) {
     if (!entry) return;
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = setTimeout(() => {
-        const cur = _wsPool.get(sessionId);
-        if (!cur || cur.busy) return;
-        try { cur.socket.close(1000, 'idle_timeout'); } catch {}
-        _wsPool.delete(sessionId);
+        if (entry.busy) return;
+        try { entry.socket.close(1000, 'idle_timeout'); } catch {}
+        _removeFromPool(poolKey, entry);
     }, WS_IDLE_MS);
 }
 
@@ -63,15 +99,15 @@ function _isOpen(entry) {
     return entry?.socket?.readyState === WebSocket.OPEN;
 }
 
-function _buildHandshakeHeaders({ auth, sessionId, turnState }) {
+function _buildHandshakeHeaders({ auth, cacheKey, turnState }) {
     const headers = {
         'Authorization': `Bearer ${auth.access_token}`,
         'chatgpt-account-id': auth.account_id || '',
         'originator': 'trib',
         'OpenAI-Beta': 'responses_websockets=2026-02-06',
     };
-    if (sessionId) {
-        const sid = String(sessionId);
+    if (cacheKey) {
+        const sid = String(cacheKey);
         headers['session_id'] = sid;
         headers['x-client-request-id'] = sid;
     }
@@ -79,9 +115,9 @@ function _buildHandshakeHeaders({ auth, sessionId, turnState }) {
     return headers;
 }
 
-function _openSocket({ auth, sessionId, turnState }) {
-    const headers = _buildHandshakeHeaders({ auth, sessionId, turnState });
-    const url = CODEX_WS_URL + (sessionId ? `?session_id=${encodeURIComponent(String(sessionId))}` : '');
+function _openSocket({ auth, cacheKey, turnState }) {
+    const headers = _buildHandshakeHeaders({ auth, cacheKey, turnState });
+    const url = CODEX_WS_URL + (cacheKey ? `?session_id=${encodeURIComponent(String(cacheKey))}` : '');
     return new Promise((resolve, reject) => {
         let settled = false;
         const socket = new WebSocket(url, { headers, handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS });
@@ -117,24 +153,47 @@ function _openSocket({ auth, sessionId, turnState }) {
     });
 }
 
-async function acquireWebSocket({ auth, sessionId, forceFresh }) {
-    if (sessionId && !forceFresh) {
-        const entry = _wsPool.get(sessionId);
-        if (entry && _isOpen(entry) && !entry.busy) {
-            _clearIdle(entry);
-            entry.busy = true;
-            return { entry, reused: true };
+async function acquireWebSocket({ auth, poolKey, cacheKey, forceFresh }) {
+    if (poolKey && !forceFresh) {
+        const arr = _wsPool.get(poolKey) || [];
+        // Prune dead entries first.
+        for (let i = arr.length - 1; i >= 0; i--) {
+            if (!_isOpen(arr[i]) || arr[i].closing) {
+                _clearIdle(arr[i]);
+                arr.splice(i, 1);
+            }
         }
-        if (entry && (!_isOpen(entry) || entry.closing)) {
-            _clearIdle(entry);
-            _wsPool.delete(sessionId);
+        if (arr.length === 0) _wsPool.delete(poolKey);
+        // Reuse any idle open entry (cache-warm path).
+        const idle = arr.find(e => !e.busy);
+        if (idle) {
+            _clearIdle(idle);
+            idle.busy = true;
+            return { entry: idle, reused: true };
+        }
+        // All entries busy and bucket at cap: fall through to ephemeral socket.
+        if (arr.length >= MAX_POOLED_SOCKETS_PER_KEY) {
+            const { socket, turnState } = await _openSocket({ auth, cacheKey, turnState: null });
+            const entry = {
+                socket,
+                busy: true,
+                idleTimer: null,
+                lastResponseId: null,
+                lastRequestSansInput: null,
+                lastInputLen: 0,
+                turnState: turnState || null,
+                closing: false,
+                ephemeral: true,
+            };
+            socket.on('close', () => { entry.closing = true; });
+            return { entry, reused: false };
         }
     }
-    const { socket, turnState } = await _openSocket({
-        auth,
-        sessionId,
-        turnState: sessionId ? _wsPool.get(sessionId)?.turnState : null,
-    });
+    // Parallel sockets must not inherit sibling turnState or the Codex server
+    // treats the new request as a continuation of another in-flight turn and
+    // returns "No tool output found for function call …". turnState only
+    // propagates within a single entry across its own iterations.
+    const { socket, turnState } = await _openSocket({ auth, cacheKey, turnState: null });
     const entry = {
         socket,
         busy: true,
@@ -144,24 +203,25 @@ async function acquireWebSocket({ auth, sessionId, forceFresh }) {
         lastInputLen: 0,
         turnState: turnState || null,
         closing: false,
+        ephemeral: false,
     };
-    if (sessionId && !forceFresh) _wsPool.set(sessionId, entry);
+    if (poolKey && !forceFresh) _getPoolArr(poolKey).push(entry);
     socket.on('close', () => {
         entry.closing = true;
-        if (sessionId && _wsPool.get(sessionId) === entry) _wsPool.delete(sessionId);
+        _removeFromPool(poolKey, entry);
     });
     return { entry, reused: false };
 }
 
-function releaseWebSocket({ entry, sessionId, keep }) {
+function releaseWebSocket({ entry, poolKey, keep }) {
     if (!entry) return;
     entry.busy = false;
-    if (!keep || !_isOpen(entry) || !sessionId) {
+    if (!keep || !_isOpen(entry) || !poolKey || entry.ephemeral) {
         try { entry.socket.close(1000, keep ? 'no_session' : 'release_no_keep'); } catch {}
-        if (sessionId && _wsPool.get(sessionId) === entry) _wsPool.delete(sessionId);
+        _removeFromPool(poolKey, entry);
         return;
     }
-    _scheduleIdleClose(sessionId);
+    _scheduleIdleClose(poolKey, entry);
 }
 
 // Port of pi-mono get_incremental_items: if the cached request (sans input)
@@ -236,12 +296,26 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
     let errorHandler = null;
 
     return new Promise((resolve, reject) => {
-        const resetIdle = () => {
+        // Pre-stream watchdog only: the timer fires if the server never sends
+        // a first chunk within WS_STREAM_IDLE_MS after our last frame. Once
+        // any chunk arrives, we consider the stream live and cancel the
+        // timer — silent gaps between chunks (e.g. Codex spending 50s+
+        // producing reasoning tokens mid-turn) are normal and should not
+        // abort the turn. Truly stuck streams are caught by the external
+        // signal (session close / user cancel), not by a heuristic idle.
+        const armPreStreamWatchdog = () => {
             if (idleTimer) clearTimeout(idleTimer);
             idleTimer = setTimeout(() => {
-                terminalError = new Error('Codex WS stream timed out after 60000ms of inactivity');
+                terminalError = new Error(`Codex WS stream no first chunk within ${WS_STREAM_IDLE_MS}ms`);
                 try { socket.close(4000, 'idle_timeout'); } catch {}
             }, WS_STREAM_IDLE_MS);
+        };
+        const resetIdle = () => {
+            // First chunk disarms the watchdog for the rest of the stream.
+            if (idleTimer) {
+                clearTimeout(idleTimer);
+                idleTimer = null;
+            }
         };
         const cleanup = () => {
             if (idleTimer) clearTimeout(idleTimer);
@@ -373,7 +447,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
         socket.on('message', messageHandler);
         socket.on('close', closeHandler);
         socket.on('error', errorHandler);
-        resetIdle();
+        armPreStreamWatchdog();
     });
 }
 
@@ -389,7 +463,8 @@ export async function sendViaWebSocket({
     onToolCall,
     onStageChange,
     externalSignal,
-    sessionId,
+    poolKey,
+    cacheKey,
     iteration,
     useModel,
     displayModel,
@@ -398,11 +473,11 @@ export async function sendViaWebSocket({
     let acquired;
     try { onStageChange?.('requesting'); } catch {}
     try {
-        acquired = await acquireWebSocket({ auth, sessionId });
+        acquired = await acquireWebSocket({ auth, poolKey, cacheKey });
     } catch (err) {
         if (err?.httpStatus) {
             traceBridgeFetch({
-                sessionId,
+                sessionId: poolKey,
                 headersMs: Date.now() - handshakeStart,
                 httpStatus: err.httpStatus,
             });
@@ -411,7 +486,7 @@ export async function sendViaWebSocket({
     }
     const { entry, reused } = acquired;
     traceBridgeFetch({
-        sessionId,
+        sessionId: poolKey,
         headersMs: Date.now() - handshakeStart,
         httpStatus: reused ? 0 : 101,
     });
@@ -422,7 +497,7 @@ export async function sendViaWebSocket({
     try {
         entry.socket.send(JSON.stringify(frame));
     } catch (err) {
-        releaseWebSocket({ entry, sessionId, keep: false });
+        releaseWebSocket({ entry, poolKey, keep: false });
         throw err instanceof Error ? err : new Error(String(err));
     }
 
@@ -432,10 +507,10 @@ export async function sendViaWebSocket({
     try {
         result = await _streamResponse({ entry, externalSignal, onStreamDelta, onToolCall });
     } catch (err) {
-        releaseWebSocket({ entry, sessionId, keep: false });
+        releaseWebSocket({ entry, poolKey, keep: false });
         throw err;
     }
-    traceBridgeSse({ sessionId, sseParseMs: Date.now() - sseStart });
+    traceBridgeSse({ sessionId: poolKey, sseParseMs: Date.now() - sseStart });
 
     // Update cache state for the next iteration in this session.
     if (result.responseId) {
@@ -446,7 +521,7 @@ export async function sendViaWebSocket({
 
     const liveModel = result.model || useModel;
     traceBridgeUsage({
-        sessionId,
+        sessionId: poolKey,
         iteration,
         inputTokens: result.usage?.inputTokens || 0,
         outputTokens: result.usage?.outputTokens || 0,
@@ -460,7 +535,7 @@ export async function sendViaWebSocket({
     // Extra WS-specific observability: transport + per-iteration delta bytes.
     try {
         appendBridgeTrace({
-            sessionId,
+            sessionId: poolKey,
             iteration,
             kind: 'transport',
             transport: 'websocket',
@@ -470,7 +545,7 @@ export async function sendViaWebSocket({
         });
     } catch {}
 
-    releaseWebSocket({ entry, sessionId, keep: true });
+    releaseWebSocket({ entry, poolKey, keep: true });
     const { responseId: _ignored, ...out } = result;
     return out;
 }
@@ -478,8 +553,10 @@ export async function sendViaWebSocket({
 // Test/debug surface — lets callers force-close all pooled sockets (e.g. on
 // plugin unload). Not part of the send path.
 export function _closeAllPooledSockets(reason = 'shutdown') {
-    for (const [sid, entry] of _wsPool.entries()) {
-        try { entry.socket.close(1000, reason); } catch {}
-        _wsPool.delete(sid);
+    for (const arr of _wsPool.values()) {
+        for (const entry of arr) {
+            try { entry.socket.close(1000, reason); } catch {}
+        }
     }
+    _wsPool.clear();
 }

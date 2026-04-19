@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { cleanMemoryText } from './memory.mjs'
 import { resolveMaintenancePreset } from '../../shared/llm/index.mjs'
-import { synth } from '../../shared/llm/agentic-synth.mjs'
+import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.mjs'
 import { computeEntryScore } from './memory-score.mjs'
 import { embedText } from './embedding-provider.mjs'
 
@@ -66,15 +66,13 @@ function extractJsonObject(text) {
   try { return JSON.parse(candidate.slice(start, end + 1)) } catch { return null }
 }
 
+// cycle2 routes through the dedicated `cycle2-agent` Pool C hidden role so
+// the snippet + bridgeRules prefix match every other Pool C call and share
+// the same cache shard. The per-phase `mode` label is preserved for
+// bridge-trace bookkeeping; options.preset/timeout still win when set.
 async function invokeLlm(prompt, options, mode, preset, timeout) {
-  if (typeof options.llm !== 'function') {
-    throw new Error(
-      'memory-cycle.invokeLlm: options.llm is required. '
-      + 'Maintenance cycles must route through Smart Bridge (makeMaintenanceLlm). '
-      + 'Legacy callLLM fallback has been removed in v0.6.46.'
-    )
-  }
-  return await options.llm({ prompt, mode, preset, timeout })
+  const llm = makeBridgeLlm({ role: 'cycle2-agent', taskType: 'maintenance', mode })
+  return await llm({ prompt, mode, preset, timeout })
 }
 
 function selectRootId(members) {
@@ -116,13 +114,14 @@ export async function runCycle1(db, config = {}, options = {}) {
     return { processed: 0, chunks: 0, skipped: 0 }
   }
 
-  // Pool C SYSTEM (cycle rules, schema, format) is auto-prepended by synth().
-  // The user message carries only the volatile data — the entries to chunk.
+  // Pool C `cycle1-agent` snippet + bridgeRules already carry the chunking
+  // spec; only the volatile data — the entries to chunk — rides in `prompt`.
   const userMessage = `Run cycle1: chunk these entries and emit JSON per the cycle1 spec.\n\n${buildEntriesText(rows)}`
 
+  const llm = makeBridgeLlm({ role: 'cycle1-agent', taskType: 'maintenance', mode: 'cycle1' })
   let raw
   try {
-    raw = await synth({ task: 'cycle1', userMessage, mode: 'write-back', preset, timeout })
+    raw = await llm({ prompt: userMessage, mode: 'cycle1', preset, timeout })
   } catch (err) {
     process.stderr.write(`[cycle1] LLM error: ${err.message}\n`)
     return { processed: 0, chunks: 0, skipped: rows.length }

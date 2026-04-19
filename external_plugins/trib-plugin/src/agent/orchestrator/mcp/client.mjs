@@ -87,12 +87,33 @@ export async function executeMcpTool(name, args) {
         }
     }
     const content = result.content;
+    let text;
     if (Array.isArray(content)) {
-        return content
+        text = content
             .map((c) => (c.type === 'text' ? c.text || '' : JSON.stringify(c)))
             .join('\n');
+    } else {
+        text = typeof content === 'string' ? content : JSON.stringify(content);
     }
-    return typeof content === 'string' ? content : JSON.stringify(content);
+    return capMcpOutput(text);
+}
+
+// Matches Claude Code's DEFAULT_MAX_MCP_OUTPUT_TOKENS (25_000 tokens) at the
+// ~4-chars-per-token rule of thumb used elsewhere in this orchestrator. MCP
+// tools (search/recall/fetch/etc.) can return arbitrarily large text and were
+// the unchecked path that spiked iter 9 context to 218k input tokens on
+// 2026-04-19. Claude Code lets the model request the full content via a
+// separate fetch on token-count breaches; we do not yet have that, so the
+// head slice is what the model sees.
+const MCP_OUTPUT_MAX_CHARS = 100_000;
+
+function capMcpOutput(content) {
+    const s = typeof content === 'string' ? content : String(content ?? '');
+    if (s.length <= MCP_OUTPUT_MAX_CHARS) return s;
+    const head = s.slice(0, MCP_OUTPUT_MAX_CHARS);
+    const tail = s.slice(MCP_OUTPUT_MAX_CHARS);
+    const remainingLines = (tail.match(/\n/g) || []).length + 1;
+    return `${head}\n\n... [${remainingLines} lines truncated] ...`;
 }
 /**
  * Check if a tool name is an MCP tool.

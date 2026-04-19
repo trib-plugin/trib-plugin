@@ -1,6 +1,6 @@
 /**
  * pid-cleanup.mjs — Orphaned bridge CLI process cleanup.
- * Extracted from cli-runner.mjs; used by server.mjs on startup and shutdown.
+ * Used by server.mjs on startup and shutdown.
  */
 import fs from 'fs'
 import path from 'path'

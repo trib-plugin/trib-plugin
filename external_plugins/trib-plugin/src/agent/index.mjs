@@ -688,8 +688,8 @@ export async function handleToolCall(name, args, opts = {}) {
         const wfPath = join(getPluginData(), 'user-workflow.json');
         let rolePresets = {};
         try { const wf = JSON.parse(readFileSync(wfPath, 'utf-8')); if (Array.isArray(wf.roles)) for (const r of wf.roles) rolePresets[r.name] = r.preset; } catch {}
-        const presetName = rolePresets[args.role];
-        if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json`);
+        const presetName = args.preset || rolePresets[args.role];
+        if (!presetName) return fail(`role "${args.role}" not found in user-workflow.json (and no preset override given)`);
 
         const preset = config.presets?.find((x) => x.id === presetName || x.name === presetName);
         if (!preset) return fail(`preset "${presetName}" (mapped from role "${args.role}") not found in agent-config.json`);
@@ -743,6 +743,10 @@ export async function handleToolCall(name, args, opts = {}) {
             errorMessage = err instanceof Error ? err.message : String(err);
             if (err instanceof SessionClosedError) {
               emit(`[${role}] ⏹ cancelled\n\n${modelLabel}`);
+              // Cancellation isn't an error; flip to idle so the next sweep
+              // pass can reclaim the file instead of leaving a 'running'
+              // zombie until the 24h tombstone window expires.
+              updateSessionStatus(session.id, 'idle');
             } else if (err instanceof StreamStalledAbortError) {
               const info = err.info || {};
               const header = `⚠ stream stalled — ${info.staleSeconds}s no delta (stage: ${info.stage || 'unknown'})`;

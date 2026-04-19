@@ -38,6 +38,9 @@ function shouldSkip(sessionId, entry) {
     if (entry.closed) return true;
     if (!entry.controller || entry.controller.signal?.aborted) return true;
     if (!entry.lastStreamDeltaAt) return true;
+    // Server silence while the client runs a tool is expected, not a stall.
+    // The next streaming phase refreshes lastStreamDeltaAt on its own.
+    if (entry.stage === 'tool_running') return true;
     return false;
 }
 

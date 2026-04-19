@@ -174,6 +174,30 @@ function _getMcpToolsCached() {
 // actions are allowed (see "Tool Categories" in the common guide).
 const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'multi_edit', 'notebook_edit']);
 
+// Permission → hard deny list. Applied on top of the soft permission filter so
+// high-risk tools (bash, write/edit) cannot slip through even when they carry
+// no readOnlyHint:false annotation. Callers can still pass `opts.disallowedTools`
+// to extend the list per dispatch; that merges with the permission default.
+// `recall` / `search` / `explore` / `bridge` are the orchestrator-managed
+// aiWrapped MCP tools. Every Pool C hidden role (recall-agent / search-agent /
+// explorer / cycle1-agent / …) would otherwise see them in the tools=full
+// shared shard and could call them back, spawning another Pool C session —
+// an infinite recursion. Keep them in the read deny list so hidden roles
+// can only use their dedicated executors (memory_search / web_search / glob
+// / grep / read) and never re-enter dispatchAiWrapped.
+const PERMISSION_DENY = {
+    read:      ['bash', 'write', 'edit', 'notebookedit', 'notebook_edit', 'multi_edit',
+                'recall', 'search', 'explore', 'bridge'],
+    readwrite: [],
+    'read-write': [],
+    full:      [],
+};
+
+function denyListFor(permission) {
+    if (!permission) return [];
+    return PERMISSION_DENY[permission] || [];
+}
+
 // A tool counts as write-capable if:
 //   (a) its bare name is a built-in writer (write/edit/…), OR
 //   (b) its tools.json annotation says readOnlyHint:false (which internal
@@ -287,6 +311,20 @@ function guessContextWindow(model) {
         return 8192;
     return 128000;
 }
+// Provider-scoped unified cache key. Goal: all orchestrator-internal
+// dispatches (bridge/maintenance/mcp/scheduler/webhook) targeting the
+// same provider land in a single server-side cache shard, so the
+// shared prefix (tools + system + pool system prompt) is reused
+// regardless of role. Per-role / per-session differentiation lives in
+// the message tail, which is naturally separated by content hashing.
+const PROVIDER_ALIAS = {
+    'openai-oauth': 'codex',      // ChatGPT subscription (Codex backend)
+    'anthropic-oauth': 'claude',  // Claude Max subscription
+};
+function providerCacheKey(provider) {
+    if (!provider) return 'trib-default';
+    return `trib-${PROVIDER_ALIAS[provider] || provider}`;
+}
 // --- create_session ---
 // opts can pass either a `preset` object (from config.presets) or raw provider/model.
 // Preset shape: { name, provider, model, effort?, fast?, tools? }
@@ -333,7 +371,12 @@ export function createSession(opts) {
     const providerName = opts.provider || presetObj?.provider
         || (profile?.preferredProviders?.[0]);
     const modelName = opts.model || presetObj?.model;
-    const toolPreset = presetObj?.tools || (typeof opts.preset === 'string' ? opts.preset : null) || opts.tools || 'full';
+    // opts.tools (caller-supplied) wins over presetObj.tools — caller
+    // intent ('tools:readonly' from Pool C, etc.) must override the
+    // preset's default 'full'. Previous priority let HAIKU's tools='full'
+    // shadow Pool C's explicit readonly request, leaking write tools and
+    // bash into a read-only agent.
+    const toolPreset = opts.tools || presetObj?.tools || (typeof opts.preset === 'string' ? opts.preset : null) || 'full';
     const effort = presetObj?.effort || opts.effort || null;
     const fast = presetObj?.fast === true || opts.fast === true;
     if (!providerName)
@@ -349,7 +392,10 @@ export function createSession(opts) {
     const skills = collectSkillsCached(opts.cwd);
 
     // Phase B Tier 2 content — Pool B common prefix (bit-identical across roles).
-    const bridgeRules = _buildBridgeRules();
+    // Pool C callers (orchestrator hidden roles) skip this because their system
+    // prompt comes from rules/pool-c/, not from Pool B — Pool B rules target
+    // external Bridge agents and would confuse an internal orchestrator.
+    const bridgeRules = opts.skipBridgeRules ? '' : _buildBridgeRules();
     // Project MD (cwd-based, Tier 3 slot).
     const projectContext = collectProjectMd(opts.cwd);
 
@@ -371,6 +417,7 @@ export function createSession(opts) {
         hasSkills: skills.length > 0,
         profile: profile || undefined,
         role: resolvedRole,
+        skipRoleReminder: opts.skipRoleReminder || false,
         taskBrief: opts.taskBrief || null,
         projectContext: projectContext || null,
     });
@@ -400,7 +447,24 @@ export function createSession(opts) {
     //   profile.permission (from role config)
     //   'full' (no filter)
     const permission = opts.permission || profile?.permission || null;
-    const tools = resolveSessionTools(toolSpec, skills, permission);
+    let tools = resolveSessionTools(toolSpec, skills, permission);
+
+    // disallowedTools — Anthropic BuiltInAgentDefinition pattern. Caller
+    // can name specific tools to strip after toolset expansion + permission
+    // filter. Merged with the permission default deny list so 'read'
+    // automatically strips bash / write / edit even when the caller forgets
+    // to pass the explicit list.
+    const permDeny = denyListFor(permission);
+    const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
+    const mergedDeny = [...new Set([...permDeny, ...callerDeny])];
+    if (mergedDeny.length) {
+        const denySet = new Set(mergedDeny);
+        const before = tools.length;
+        tools = tools.filter(t => !denySet.has(String(t?.name || '').toLowerCase()));
+        if (tools.length !== before) {
+            process.stderr.write(`[session] disallowedTools=${mergedDeny.join(',')} stripped ${before - tools.length} tools\n`);
+        }
+    }
 
     // Phase L invariants — throw at session create if role/tools contract
     // is violated. Better to fail loudly here than to spawn a reviewer that
@@ -459,14 +523,11 @@ export function createSession(opts) {
         // scheduler/daily-standup, webhook/github-push, lead/worker.
         sourceType: opts.sourceType || null,
         sourceName: opts.sourceName || null,
-        // Stable cache key for any tagged dispatch (bridge/scheduler/webhook)
-        // so multiple sessions of the same role share the same Codex cache
-        // shard. The profile.behavior flag is no longer gating this — every
-        // session that carries a sourceType gets a role-scoped key. Untagged
-        // sessions (direct MCP surface) fall back to the session id.
-        promptCacheKey: (opts.sourceType && (opts.sourceName || opts.role))
-            ? `trib:${opts.sourceType}:${opts.sourceName || opts.role}`
-            : id,
+        // Provider-scoped unified cache key — one shard per provider,
+        // shared across all roles / sources (bridge/maintenance/mcp/
+        // scheduler/webhook). Role or source-specific context must be
+        // injected into the message tail, not the shared prefix.
+        promptCacheKey: providerCacheKey(presetObj?.provider || opts.provider),
         // Hermes-style in-flight compressor state
         compressionCount: 0,
         previousSummary: null,

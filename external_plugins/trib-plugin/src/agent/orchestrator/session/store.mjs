@@ -155,6 +155,11 @@ export function deleteSession(id) {
     }
 }
 const DEFAULT_SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes idle — aligned with Anthropic 5m messages tier and OpenAI in-memory cache window
+// Hard wall-clock ceiling for sessions stuck in status='running'. The
+// stream-watchdog should abort stalled streams within ~120s, but if it misses
+// one (process crash, watchdog not started, provider never returned), this
+// backstop reclaims the file so the sweep doesn't leak zombies indefinitely.
+const RUNNING_STALL_MS = 10 * 60 * 1000;
 
 export function listStoredSessions(ttlMs) {
     const maxAge = ttlMs || DEFAULT_SESSION_TTL_MS;
@@ -214,9 +219,15 @@ export function sweepStaleSessions(ttlMs) {
         try {
             const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
             const lastActive = session.updatedAt || session.createdAt || 0;
-            // Only sweep bridge sessions; skip running sessions
+            // Only sweep bridge sessions
             if (session.owner !== 'bridge') { remaining++; continue; }
-            if (session.status === 'running') { remaining++; continue; }
+            // Running sessions are normally reaped by the stream-watchdog
+            // within ~120s. Skip them here unless they've been silent past
+            // RUNNING_STALL_MS, at which point they are treated as zombies.
+            if (session.status === 'running' && now - lastActive <= RUNNING_STALL_MS) {
+                remaining++;
+                continue;
+            }
             if (now - lastActive > maxAge) {
                 try { unlinkSync(join(dir, f)); } catch { continue; }
                 cleaned++;

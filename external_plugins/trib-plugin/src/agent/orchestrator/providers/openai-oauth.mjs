@@ -1,8 +1,11 @@
 /**
  * OpenAI ChatGPT OAuth (Codex) provider.
  *
- * Uses Codex Responses API (chatgpt.com/backend-api/codex/responses)
- * with SSE streaming. Authenticates via PKCE OAuth or reuses ~/.codex/auth.json.
+ * Dispatches over the WebSocket upgrade of chatgpt.com/backend-api/codex/
+ * responses (responses_websockets=2026-02-06 beta). Authenticates via PKCE
+ * OAuth or reuses ~/.codex/auth.json. Streaming/framing lives in
+ * openai-oauth-ws.mjs; this file owns auth, model catalog, and request-body
+ * shape.
  */
 import { createServer } from 'http';
 import { randomBytes, createHash } from 'crypto';
@@ -328,9 +331,23 @@ export class OpenAIOAuthProvider {
         let auth = await this.ensureAuth();
         const useModel = model || 'gpt-5.4';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
-        // Prefer stable promptCacheKey (role-scoped) over instance-specific
-        // sessionId so WS pool reuses the connection across bridge calls.
-        const sessionId = opts.promptCacheKey || opts.sessionId || null;
+        // Split into two keys to satisfy both constraints simultaneously:
+        //   - poolKey:  per-call unique, so parallel bridge invocations get
+        //               independent WS sockets (prevents mid-turn socket
+        //               collision that triggers Codex "No tool output found
+        //               for function call ...").
+        //   - cacheKey: provider-scoped unified (e.g. 'trib-codex'), fed
+        //               from session.promptCacheKey via manager.mjs. The
+        //               Codex handshake `session_id` header/URL +
+        //               body.prompt_cache_key all carry this shared key
+        //               so every role/source dispatched to this provider
+        //               lands in the same server-side cache shard. Codex
+        //               dedupes server-side prompt cache by the handshake
+        //               session_id, so cross-session reuse requires this
+        //               to be stable across invocations — role or task
+        //               context must ride in the message tail, not here.
+        const poolKey  = opts.sessionId || opts.promptCacheKey || null;
+        const cacheKey = opts.promptCacheKey || opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
         // WebSocket is the only dispatch path. Catalog refresh + 401 retry +
         // unknown-model catalog invalidation are layered around the WS call.
@@ -343,7 +360,8 @@ export class OpenAIOAuthProvider {
                 onToolCall,
                 onStageChange,
                 externalSignal,
-                sessionId,
+                poolKey,
+                cacheKey,
                 iteration,
                 useModel,
                 displayModel: _displayCodexModel,
@@ -368,7 +386,8 @@ export class OpenAIOAuthProvider {
                     onToolCall,
                     onStageChange,
                     externalSignal,
-                    sessionId,
+                    poolKey,
+                    cacheKey,
                     iteration,
                     useModel,
                     displayModel: _displayCodexModel,

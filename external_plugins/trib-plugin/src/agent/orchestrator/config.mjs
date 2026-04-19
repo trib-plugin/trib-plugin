@@ -41,7 +41,9 @@ const ENV_KEY_MAP = {
 export const DEFAULT_MAINTENANCE = Object.freeze({
     cycle1: 'HAIKU',
     cycle2: 'SONNET MID',
-    search: 'SONNET MID',
+    search: 'HAIKU',
+    recall: 'HAIKU',
+    explore: 'HAIKU',
 });
 
 // Map short Anthropic family labels to the full model ids used by the API.

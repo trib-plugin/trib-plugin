@@ -1,5 +1,5 @@
 /**
- * System Bridge — direct stateless provider call for Pool C synth tasks.
+ * System Bridge — direct stateless provider call for Pool D synth tasks.
  *
  * Bypasses the session manager + bridge-llm orchestration. Each call:
  *   1. Creates a fresh provider instance (no session pool, no reuse)
@@ -39,11 +39,11 @@ function _resolveModel(preset) {
 }
 
 /**
- * Run a Pool C synth task with direct provider call.
+ * Run a Pool D synth task with direct provider call.
  *
  * @param {object} opts
  * @param {string} opts.task         — task identifier (cycle1, recap, search-synth, ...)
- * @param {string} opts.system       — Pool C SYSTEM content (built by caller)
+ * @param {string} opts.system       — Pool D SYSTEM content (built by caller)
  * @param {string} opts.userMessage  — task-specific data + instructions
  * @param {string|object} [opts.preset] — preset id or object; default resolved via maintenance preset
  * @param {number} [opts.timeout]    — ms, default 120000
@@ -77,7 +77,7 @@ export async function systemBridge({
   const sourceKey = `system:${task}`
   recordCall(sourceKey, Date.now())
 
-  // Cache strategy — Pool C is always stateless (single-shot synth).
+  // Cache strategy — Pool D is always stateless (single-shot synth).
   const cacheStrategy = resolveCacheStrategy('stateless')
 
   // Build messages — system + user only. No tools, no history.

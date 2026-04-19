@@ -263,7 +263,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Look up past context — prior decisions, preferences, work history. Accepts natural language; an internal agent searches the memory store and returns a synthesized answer. Use for anything that happened before. Not for codebase (Grep/Glob) or external web (search).",
+    "description": "Past context — prior decisions, preferences, conversation and work history from the memory store. Accepts a natural-language query or an array of queries; an internal agent fans out in parallel and returns a synthesized answer. Not for external web (use `search`) or codebase files (use `explore`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -272,7 +272,7 @@
             { "type": "string", "minLength": 1 },
             { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
           ],
-          "description": "Natural language query, or array of queries for multi-angle lookup."
+          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
         }
       },
       "required": ["query"],
@@ -284,7 +284,7 @@
   {
     "name": "search",
     "title": "Search",
-    "description": "External lookups — web search, URL scrape, GitHub code/issues/repos. Natural language query; include a URL to scrape, or owner/repo reference for GitHub. An internal agent picks the provider and returns a synthesized answer. Not for codebase or memory.",
+    "description": "External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel, picks the provider per query, and returns a synthesized answer. Not for past context (use `recall`) or codebase files (use `explore`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -293,7 +293,7 @@
             { "type": "string", "minLength": 1 },
             { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
           ],
-          "description": "Natural language query, or array for multi-angle lookup. Include a URL to trigger scrape; mention owner/repo for GitHub."
+          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out. Include a URL to trigger scrape; mention `owner/repo` for GitHub code/issues."
         }
       },
       "required": ["query"],
@@ -307,6 +307,38 @@
       "openWorldHint": true
     },
     "module": "search",
+    "aiWrapped": true
+  },
+  {
+    "name": "explore",
+    "title": "Explore",
+    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; each is translated to glob + grep patterns (Haiku) and executed in parallel, returning matched paths with snippet lines. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "anyOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+          ],
+          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Override the search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the server auto-picks between the launch workspace (`cwd`) and `~/.claude` based on the query."
+        }
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Explore",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "module": "memory",
     "aiWrapped": true
   },
   {

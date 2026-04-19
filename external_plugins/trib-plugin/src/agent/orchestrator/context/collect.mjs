@@ -220,7 +220,11 @@ export function composeSystemPrompt(opts) {
 
     // ── Tier 3 block ─────────────────────────────────────────────────────
     const tier3Parts = [];
-    if (opts.role) {
+    // Pool C callers set skipRoleReminder=true: the role is already conveyed
+    // by the "## Agent: <name>" header prepended to the user prompt, so
+    // emitting "# role\n<role>" here would just shard the cache prefix (one
+    // per Pool C agent) for zero information gain.
+    if (opts.role && !opts.skipRoleReminder) {
         tier3Parts.push('# role\n' + opts.role);
     }
     if (opts.roleTemplate) {

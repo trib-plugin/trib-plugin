@@ -7,12 +7,13 @@
  * (hook mode) or the MCP boot-time writer (claude_md mode) uses.
  *
  * Pool A injection order (lead):
- *   1.  general.md        (rules/general.md)
- *   2.  memory.md         (when memory-config.json has enabled)
- *   3.  search.md         (when search-config.json has enabled)
- *   4.  channels.md       (rules/channels.md)
- *   5.  team.md           (rules/team.md)
- *   6.  workflow.md       (rules/workflow.md)
+ *   1.  general.md        (rules/pool-a/01-general.md)
+ *   2.  memory.md         (rules/_shared/memory.md — when memory-config.json enabled)
+ *   3.  search.md         (rules/_shared/search.md — when search-config.json enabled)
+ *   3b. explore.md        (rules/_shared/explore.md — always; internal file search)
+ *   4.  channels.md       (rules/pool-a/02-channels.md)
+ *   5.  team.md           (rules/pool-a/03-team.md)
+ *   6.  workflow.md       (rules/pool-a/04-workflow.md)
  *   7.  # Roles           (auto-rendered from DATA_DIR/user-workflow.json)
  *   8.  # User Workflow   (DATA_DIR/user-workflow.md — user customizations)
  *   9.  # User Profile    (history/user.md, auto-wrapped)
@@ -47,8 +48,8 @@ function readJson(filePath) {
  *      heading) is removed.
  */
 const CLAUDE_MD_EXCLUDE_H1 = new Set([
-  '# General', '# Memory', '# Channels', '# Search', '# Team',
-  '# Workflow', '# Roles', '# User Workflow',
+  '# General', '# Memory', '# Channels', '# Search', '# Explore',
+  '# Team', '# Workflow', '# Roles', '# User Workflow',
 ]);
 const CLAUDE_MD_EXCLUDE_H2 = new Set([
   '## Workflow', '## User Rules',
@@ -113,6 +114,10 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     if (search) parts.push(search);
   }
 
+  // --- 3b. Explore (always — internal codebase search) ---
+  const explore = readOptional(path.join(SHARED_DIR, 'explore.md'));
+  if (explore) parts.push(explore);
+
   // --- 4. Channels (always) ---
   const channels = readOptional(path.join(POOL_A_DIR, '02-channels.md'));
   if (channels) parts.push(channels);
@@ -171,10 +176,11 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  * Build the Pool B injection content (Bridge sessions — Worker / Sub / Maintenance).
  *
  * Included:
- *   - MCP instructions (rules/mcp-*.md)
- *   - Agent MD (rules/agent.md, plugin-fixed Pool B rules)
- *   - rules/memory.md (when memory enabled)
- *   - rules/search.md (when search enabled)
+ *   - MCP instructions (rules/pool-b/02-mcp-memory.md, 03-mcp-search.md, 04-mcp-explore.md)
+ *   - Agent MD (rules/pool-b/01-agent.md, plugin-fixed Pool B rules)
+ *   - rules/_shared/memory.md (when memory enabled)
+ *   - rules/_shared/search.md (when search enabled)
+ *   - rules/_shared/explore.md (always; internal file search)
  *   - CLAUDE.md common sections (user-authored custom sections outside the
  *     managed block and outside the Lead-only H1/H2 blacklist)
  *   - User: <name> (<title>)
@@ -197,7 +203,7 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
 
-  const mcpBlocks = ['02-mcp-memory.md', '03-mcp-search.md']
+  const mcpBlocks = ['02-mcp-memory.md', '03-mcp-search.md', '04-mcp-explore.md']
     .map(f => readOptional(path.join(POOL_B_DIR, f)))
     .filter(Boolean);
   if (mcpBlocks.length > 0) {
@@ -216,6 +222,9 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     const search = readOptional(path.join(SHARED_DIR, 'search.md'));
     if (search) parts.push(search);
   }
+
+  const exploreShared = readOptional(path.join(SHARED_DIR, 'explore.md'));
+  if (exploreShared) parts.push(exploreShared);
 
   const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
   const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
@@ -249,22 +258,20 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 }
 
 /**
- * Build the Pool C injection content (System / Maintenance synth tasks).
+ * Build the Pool C injection content (Orchestrator agent system prompt).
  *
  * Returns the concatenated content of all `rules/pool-c/*.md` modules in
- * filename order (numbered prefix governs ordering). This is the SYSTEM
- * prompt for all `agentic-synth.mjs` calls (cycle, recap, search-synth, etc).
- *
- * Pool C is monolithic — every synth task gets the same system prompt.
- * Task differentiation happens in the user message ("run cycle1 on these
- * entries"), not via per-task system slicing. This keeps cache shard count
- * at 1 and maximizes hit ratio across providers.
+ * filename order. This is the SYSTEM prompt for Pool C agents (explorer,
+ * recall-agent, search-agent) invoked via bridge-llm. Pool C is monolithic
+ * like Pool D — every agent gets the same system, and per-agent routing
+ * happens in the user message (`## Agent: explorer` header) so the cache
+ * prefix stays shared across all Pool C callers.
  *
  * @param {object} opts
  * @param {string} opts.PLUGIN_ROOT — absolute path to the plugin root
  * @returns {string} joined Pool C content
  */
-function buildSystemInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
+function buildPoolCSystem({ PLUGIN_ROOT }) {
   const POOL_C_DIR = path.join(PLUGIN_ROOT, 'rules', 'pool-c');
   let entries;
   try {
@@ -277,27 +284,11 @@ function buildSystemInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const parts = entries
     .map(f => readOptional(path.join(POOL_C_DIR, f)))
     .filter(Boolean);
-
-  // User-defined system task instructions (monolithic — baked into cached
-  // prefix). The active per-call task data lives in the tail.
-  if (DATA_DIR) {
-    const tasksDir = path.join(DATA_DIR, 'tasks');
-    let taskFiles;
-    try { taskFiles = fs.readdirSync(tasksDir).filter(f => f.endsWith('.md')).sort(); }
-    catch { taskFiles = []; }
-    const taskBlocks = taskFiles
-      .map(f => readOptional(path.join(tasksDir, f)))
-      .filter(Boolean);
-    if (taskBlocks.length > 0) {
-      parts.push(['## User-defined tasks', '', taskBlocks.join('\n\n')].join('\n'));
-    }
-  }
-
   return parts.join('\n\n');
 }
 
 module.exports = {
   buildInjectionContent,
+  buildPoolCSystem,
   buildBridgeInjectionContent,
-  buildSystemInjectionContent,
 };

@@ -159,5 +159,14 @@ function reset() {
   assert(iterations === 0, '10. idempotent start; tick has not fired yet (timers are stopped too fast to fire)');
 }
 
+// ── 11. tool_running stage is skipped — tool execution silence is not a stall ─
+{
+  reset();
+  const e = entryAt(185, { stage: 'tool_running' });
+  const result = inspectEntry('s_tool', e);
+  assert(result === 'skip', '11. tool_running stage -> skip');
+  assert(!e.controller.wasAborted(), '11. tool_running not aborted even past hard threshold');
+}
+
 console.log(`test-stream-watchdog: ${passed} pass / ${failed} fail`);
 process.exit(failed ? 1 : 0);

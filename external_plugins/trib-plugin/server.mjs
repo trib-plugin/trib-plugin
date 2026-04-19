@@ -314,12 +314,55 @@ loadModule('agent')
     // setInternalToolsProvider as an idempotent fallback, but we no longer
     // rely on a tool call arriving first.
     try {
-      const { setInternalToolsProvider } = await import(
+      const internalToolsMod = await import(
         pathToFileURL(join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'internal-tools.mjs')).href
       )
+      const { setInternalToolsProvider, addInternalTools } = internalToolsMod
       const ctx = agentContext()
       setInternalToolsProvider({ executor: ctx.toolExecutor, tools: ctx.internalTools })
-      log(`internal-tools registry populated tools=${ctx.internalTools.length}`)
+
+      // Pool C synthetic tools — memory_search / web_search bypass the
+      // aiWrapped recall/search tools (those re-enter the agent fan-out and
+      // would loop) and route straight to the native memory worker and
+      // search module handlers. Registered here so every tools=full session
+      // sees them; only recall-agent / search-agent are prompted to call.
+      addInternalTools([
+        {
+          def: {
+            name: 'memory_search',
+            description: 'Search long-term memory. Returns ranked entries matching the query.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: { type: 'string' },
+                limit: { type: 'number' },
+              },
+              required: ['query'],
+            },
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+          },
+          executor: async (args) => callWorker('memory', 'search_memories', args || {}),
+        },
+        {
+          def: {
+            name: 'web_search',
+            description: 'Search the web. Returns ranked results.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                keywords: { type: 'string' },
+              },
+              required: ['keywords'],
+            },
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+          },
+          executor: async (args) => {
+            const searchMod = await loadModule('search')
+            return searchMod.handleToolCall('search', args || {})
+          },
+        },
+      ])
+      log(`internal-tools registry populated tools=${ctx.internalTools.length}+2`)
     } catch (e) {
       log(`internal-tools registry populate failed: ${e.message}`)
     }
