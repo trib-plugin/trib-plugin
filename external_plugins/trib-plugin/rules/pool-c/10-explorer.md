@@ -55,9 +55,19 @@ means you're inlining too much.
 
 ## Roots
 
-Two roots available — the launch workspace (`cwd`) and `~/.claude`
-(plugins / skills / hooks / settings). Pick one per query; fan out
-both only when genuinely ambiguous.
+The `# cwd` value in your tier3 reminder is the authoritative root
+for this call. Confine `glob` / `grep` / `read` to that root — do
+NOT silently fan out to a different directory. Exception: the user's
+query text explicitly names an absolute path (e.g. `~/.claude/...`,
+`C:\...`, `/home/...`) — in that case treat the named path as the
+root, overriding tier3.
+
+When a grounded answer cannot be produced under the authoritative
+root, return an explicit "not found under <cwd>" note that names
+the patterns you tried and suggests the likely correct root (e.g.
+"try `cwd: "~/.claude/plugins/..."`"). Do NOT guess with a
+fan-out — a precise nil with next-step guidance beats a silent
+wrong-scope answer.
 
 ## Stop condition
 

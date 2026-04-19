@@ -880,7 +880,7 @@ const TOOL_DEFS = [
         topic: { type: 'string', description: 'Topic for remember' },
         element: { type: 'string', description: 'Content for remember' },
         importance: { type: 'string', description: 'Importance for remember (default: fact)' },
-        maxDays: { type: 'number' },
+        maxDays: { type: 'number', description: 'Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions.' },
         window: { type: 'string', description: 'Time window: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
       },
@@ -909,12 +909,12 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).',
+    description: 'Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. The `cwd` argument is the authoritative search root; when omitted the launch workspace is used (no silent fan-out between roots). Not for past context (use `recall`) or external web (use `search`).',
     inputSchema: {
       type: 'object',
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query, or an array of queries for multi-angle parallel fan-out.' },
-        cwd: { type: 'string', description: 'Override the search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the server auto-picks between the launch workspace (`cwd`) and `~/.claude` based on the query.' },
+        cwd: { type: 'string', description: 'Authoritative search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the launch workspace is used — pass `cwd: "~/.claude/..."` explicitly to target the plugin install tree or other directories outside the workspace. No silent fan-out between roots.' },
         wait: { type: 'boolean', description: 'Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`.' },
       },
       required: ['query'],

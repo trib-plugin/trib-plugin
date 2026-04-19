@@ -106,6 +106,24 @@ try {
 }
 
 // ── MCP server ──────────────────────────────────────────────────────
+const SERVER_INSTRUCTIONS = [
+  `trib-plugin MCP server v${PLUGIN_VERSION}.`,
+  '',
+  'Agent delegation:',
+  '- Hand off implementation / review / research / debug / test work to external agents via `bridge` with a `role` argument.',
+  '- Role names are user-defined in `user-workflow.json`; the currently-active role set is injected into the Lead session as the `# Roles` rule — consult that rather than hard-coding role names.',
+  '- Built-in `Agent` / `TaskCreate` / `TeamCreate` are NOT used for agent spawning in this ecosystem; `bridge` is the single entry point.',
+  '',
+  'Information retrieval (all async-by-default):',
+  '- `recall` — past context from the memory store.',
+  '- `search` — external web / URL scrape / GitHub code / issues / repos.',
+  '- `explore` — internal codebase filesystem search. `cwd` is authoritative: pass `cwd: "~/.claude/..."` explicitly to target the plugin install tree.',
+  'Each call returns an `async_...` handle immediately; the merged answer is pushed back into the session via `notifications/claude/channel` with `meta.type = "async_result"`. `session_result` is the fallback for explicit pull.',
+  '',
+  'Channels:',
+  '- `notifications/claude/channel` also delivers schedule / webhook / queue / proactive events into the Lead session. `meta.type` identifies the event class.',
+].join('\n')
+
 const server = new Server(
   { name: 'trib-plugin', version: PLUGIN_VERSION },
   {
@@ -113,6 +131,7 @@ const server = new Server(
       tools: {},
       experimental: { 'claude/channel': {}, 'claude/channel/permission': {} },
     },
+    instructions: SERVER_INSTRUCTIONS,
   },
 )
 
@@ -222,19 +241,21 @@ function callWorker(name, toolName, args) {
 // ── Module loader (cached, init+start runs once per module) ─────────
 const modules = new Map()
 
+function pushChannelNotification(content, extraMeta) {
+  return server.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content,
+      meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString(), ...(extraMeta || {}) },
+    },
+  }).catch(err => {
+    log(`[agent-notify] channel failed: ${err instanceof Error ? err.message : String(err)}`)
+  })
+}
+
 function agentContext() {
   return {
-    notifyFn: text => {
-      server.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: text,
-          meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString() },
-        },
-      }).catch(err => {
-        log(`[agent-notify] channel failed: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    },
+    notifyFn: (text, extraMeta) => pushChannelNotification(text, extraMeta),
     elicitFn: opts => server.elicitInput(opts),
     // In-process tool bridge. External LLMs see the plugin's non-agent tools
     // (search, search_memories, channels actions, etc.) and their tool_calls
@@ -282,6 +303,10 @@ async function dispatchTool(name, args, callerCtx = {}) {
       // recursion when a hidden-role session (recall-agent / search-agent /
       // explorer / cycle1/2) tries to re-enter an aiWrapped dispatcher.
       callerSessionId: callerCtx.callerSessionId,
+      // Push merged answer into the Lead session when an async dispatch
+      // (wait:false) completes, so Lead integrates the result on its next
+      // turn instead of polling session_result.
+      notifyFn: pushChannelNotification,
     })
   }
 

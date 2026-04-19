@@ -81,9 +81,9 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string' },
+                path: { type: 'string', description: 'Absolute or cwd-relative file path.' },
                 old_string: { type: 'string', description: 'Must appear exactly once.' },
-                new_string: { type: 'string' },
+                new_string: { type: 'string', description: 'Replacement text.' },
             },
             required: ['path', 'old_string', 'new_string'],
         },
@@ -96,8 +96,8 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string' },
-                content: { type: 'string' },
+                path: { type: 'string', description: 'Absolute or cwd-relative file path. File is created if missing, overwritten if it exists.' },
+                content: { type: 'string', description: 'Full file content to write (UTF-8).' },
             },
             required: ['path', 'content'],
         },
@@ -110,7 +110,7 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                command: { type: 'string' },
+                command: { type: 'string', description: 'Shell command to execute in the workspace cwd. Rejected if it matches a blocked safety pattern (e.g. `rm -rf /`, `git push --force`, `format c:`).' },
                 timeout: { type: 'number', description: 'Milliseconds (default 30000, max 600000).' },
             },
             required: ['command'],
@@ -124,11 +124,11 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] },
-                path: { type: 'string' },
-                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] },
-                output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
-                head_limit: { type: 'number' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Regex pattern(s) passed to ripgrep via `-e`. A string searches for one pattern; an array OR-joins multiple patterns in a single rg invocation.' },
+                path: { type: 'string', description: 'Directory or file to search under. Defaults to the workspace cwd (`.`).' },
+                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Optional glob filter(s) applied on top of the default ignore list (node_modules, .git, dist, build, etc.). String or array of strings.' },
+                output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'], description: '`files_with_matches` (default, paths only), `content` (matched lines with path and line number), or `count` (per-file match counts).' },
+                head_limit: { type: 'number', description: 'Cap on returned entries. Default 100; pass 0 for no limit. Extra entries are summarised as `... [N more entries]`.' },
             },
             required: ['pattern'],
         },
@@ -141,8 +141,8 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] },
-                path: { type: 'string' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s) passed to `rg --files --glob`. A string matches one glob; an array OR-joins multiple globs in a single rg invocation.' },
+                path: { type: 'string', description: 'Base directory to walk. Defaults to the workspace cwd (`.`). Results are capped at 100 files.' },
             },
             required: ['pattern'],
         },
@@ -155,15 +155,16 @@ export const BUILTIN_TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string' },
+                path: { type: 'string', description: 'Absolute or cwd-relative path to the single file receiving all edits.' },
                 edits: {
                     type: 'array',
+                    description: 'Ordered list of replacements applied in sequence to the in-memory content. Any failure aborts before the file is written, so the tree never lands in a half-edited state.',
                     items: {
                         type: 'object',
                         properties: {
-                            old_string: { type: 'string' },
-                            new_string: { type: 'string' },
-                            replace_all: { type: 'boolean' },
+                            old_string: { type: 'string', description: 'Exact text to find. Must be unique in the current (post-prior-edits) content unless `replace_all:true`.' },
+                            new_string: { type: 'string', description: 'Replacement text.' },
+                            replace_all: { type: 'boolean', description: 'When true, replace every occurrence and skip the uniqueness check. Defaults to false.' },
                         },
                         required: ['old_string', 'new_string'],
                     },
@@ -183,6 +184,7 @@ export const BUILTIN_TOOLS = [
             properties: {
                 reads: {
                     type: 'array',
+                    description: 'List of read requests dispatched in parallel. Each entry reuses the single-read size cap and line-number formatting; per-file errors are inlined into the aggregate instead of aborting the batch.',
                     items: {
                         type: 'object',
                         properties: {
@@ -208,6 +210,7 @@ export const BUILTIN_TOOLS = [
             properties: {
                 edits: {
                     type: 'array',
+                    description: 'Cross-file edits dispatched sequentially through the single-edit path. Each entry is independent; failures are reported inline as `FAIL <path>: <reason>` and the batch continues.',
                     items: {
                         type: 'object',
                         properties: {

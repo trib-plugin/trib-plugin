@@ -161,7 +161,11 @@ export function makeBridgeLlm(opts = {}) {
             agentId: roleLabel,
         });
 
-        const cwd = process.cwd();
+        // Callers (e.g. aiWrapped explore dispatch) may pass an explicit
+        // `cwd` to scope the agent's filesystem view. Absolute path expected
+        // (aiWrapped already expands `~` and resolves relatives). Falls back
+        // to the MCP server's process cwd when unset.
+        const cwd = (typeof opts.cwd === 'string' && opts.cwd) ? opts.cwd : process.cwd();
 
         // Unified dispatch: Pool B/C share bit-identical tools + system prompt
         // so every role lands on the same provider-side cache shard. Per-role

@@ -362,7 +362,8 @@
           "description": "Importance for remember (default: fact)"
         },
         "maxDays": {
-          "type": "number"
+          "type": "number",
+          "description": "Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions."
         },
         "window": {
           "type": "string",
@@ -438,7 +439,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
+    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. The `cwd` argument is the authoritative search root; when omitted the launch workspace is used (no silent fan-out between roots). Not for past context (use `recall`) or external web (use `search`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -461,7 +462,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Override the search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the server auto-picks between the launch workspace (`cwd`) and `~/.claude` based on the query."
+          "description": "Authoritative search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the launch workspace is used — pass `cwd: \"~/.claude/...\"` explicitly to target the plugin install tree or other directories outside the workspace. No silent fan-out between roots."
         },
         "wait": {
           "type": "boolean",
@@ -533,7 +534,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Poll a background dispatch started via `recall` / `search` / `explore` with `wait:false`. Pass the `async_...` id returned by the original call. Returns the merged answer once the dispatch is done, a short `still running` message while in flight, or an error description on failure. Not for regular Pool B / Pool C session ids — those are managed internally.",
+    "description": "Collect a background dispatch started via `recall` / `search` / `explore` with `wait:false`. As of v0.6.186, completed async dispatches are auto-pushed into the Lead session via the channel bridge (`notifications/claude/channel`, `meta.type = 'async_result'`) — no polling needed in the common case. Use this tool to explicitly pull by `async_...` id, or as a fallback if you missed the channel notification. Returns the merged answer, a short `still running` message, or an error description. Not for regular Pool B / Pool C session ids — those are managed internally.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -551,6 +552,14 @@
   },
   {
     "name": "create_session",
+    "title": "Create Session",
+    "annotations": {
+      "title": "Create Session",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
     "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
     "inputSchema": {
       "type": "object",
@@ -560,10 +569,12 @@
           "description": "openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local"
         },
         "model": {
-          "type": "string"
+          "type": "string",
+          "description": "Provider-specific model id (e.g. \"gpt-5\", \"claude-opus-4\", \"gemini-2.5-pro\"). Must be valid for the chosen provider."
         },
         "systemPrompt": {
-          "type": "string"
+          "type": "string",
+          "description": "Optional system prompt prepended to the session. When omitted, the plugin injects the default Pool B/C prefix based on role/preset."
         },
         "agent": {
           "type": "string",
@@ -575,10 +586,12 @@
             "full",
             "readonly",
             "mcp"
-          ]
+          ],
+          "description": "Tool permission preset: `full` grants read+write+shell, `readonly` restricts to read-only tools, `mcp` exposes only MCP-bridged tools."
         },
         "files": {
           "type": "array",
+          "description": "Optional virtual files seeded into the session's working context (path+content pairs). The agent can read these immediately without fs access.",
           "items": {
             "type": "object",
             "properties": {
@@ -609,6 +622,14 @@
   },
   {
     "name": "list_sessions",
+    "title": "List Sessions",
+    "annotations": {
+      "title": "List Sessions",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
     "description": "List active orchestrator sessions.",
     "inputSchema": {
       "type": "object",
@@ -618,12 +639,21 @@
   },
   {
     "name": "close_session",
+    "title": "Close Session",
+    "annotations": {
+      "title": "Close Session",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
     "description": "Close an orchestrator session.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "sessionId": {
-          "type": "string"
+          "type": "string",
+          "description": "Id of the session to close (as returned by `create_session` or `list_sessions`). Plants a tombstone and aborts any in-flight work; re-closing the same id is a no-op."
         }
       },
       "required": [
@@ -634,6 +664,14 @@
   },
   {
     "name": "list_models",
+    "title": "List Models",
+    "annotations": {
+      "title": "List Models",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
     "description": "List available models from all providers.",
     "inputSchema": {
       "type": "object",
@@ -644,6 +682,13 @@
   {
     "name": "bridge",
     "title": "Bridge to External Model",
+    "annotations": {
+      "title": "Bridge to External Model",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
     "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.",
     "inputSchema": {
       "type": "object",
@@ -728,14 +773,16 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute or cwd-relative file path."
         },
         "old_string": {
           "type": "string",
           "description": "Must appear exactly once."
         },
         "new_string": {
-          "type": "string"
+          "type": "string",
+          "description": "Replacement text."
         }
       },
       "required": [
@@ -761,10 +808,12 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute or cwd-relative file path. File is created if missing, overwritten if it exists."
         },
         "content": {
-          "type": "string"
+          "type": "string",
+          "description": "Full file content to write (UTF-8)."
         }
       },
       "required": [
@@ -789,7 +838,8 @@
       "type": "object",
       "properties": {
         "command": {
-          "type": "string"
+          "type": "string",
+          "description": "Shell command to execute in the workspace cwd. Rejected if it matches a blocked safety pattern (e.g. `rm -rf /`, `git push --force`, `format c:`)."
         },
         "timeout": {
           "type": "number",
@@ -828,10 +878,12 @@
               },
               "minItems": 1
             }
-          ]
+          ],
+          "description": "Regex pattern(s) passed to ripgrep via `-e`. A string searches for one pattern; an array OR-joins multiple patterns in a single rg invocation."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Directory or file to search under. Defaults to the workspace cwd (`.`)."
         },
         "glob": {
           "anyOf": [
@@ -845,7 +897,8 @@
               },
               "minItems": 1
             }
-          ]
+          ],
+          "description": "Optional glob filter(s) applied on top of the default ignore list (node_modules, .git, dist, build, etc.). String or array of strings."
         },
         "output_mode": {
           "type": "string",
@@ -853,10 +906,12 @@
             "files_with_matches",
             "content",
             "count"
-          ]
+          ],
+          "description": "`files_with_matches` (default, paths only), `content` (matched lines with path and line number), or `count` (per-file match counts)."
         },
         "head_limit": {
-          "type": "number"
+          "type": "number",
+          "description": "Cap on returned entries. Default 100; pass 0 for no limit. Extra entries are summarised as `... [N more entries]`."
         }
       },
       "required": [
@@ -891,10 +946,12 @@
               },
               "minItems": 1
             }
-          ]
+          ],
+          "description": "Glob pattern(s) passed to `rg --files --glob`. A string matches one glob; an array OR-joins multiple globs in a single rg invocation."
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Base directory to walk. Defaults to the workspace cwd (`.`). Results are capped at 100 files."
         }
       },
       "required": [
@@ -918,21 +975,26 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "Absolute or cwd-relative path to the single file receiving all edits."
         },
         "edits": {
           "type": "array",
+          "description": "Ordered list of replacements applied in sequence to the in-memory content. Any failure aborts before the file is written, so the tree never lands in a half-edited state.",
           "items": {
             "type": "object",
             "properties": {
               "old_string": {
-                "type": "string"
+                "type": "string",
+                "description": "Exact text to find. Must be unique in the current (post-prior-edits) content unless `replace_all:true`."
               },
               "new_string": {
-                "type": "string"
+                "type": "string",
+                "description": "Replacement text."
               },
               "replace_all": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "When true, replace every occurrence and skip the uniqueness check. Defaults to false."
               }
             },
             "required": [
@@ -966,6 +1028,7 @@
       "properties": {
         "reads": {
           "type": "array",
+          "description": "List of read requests dispatched in parallel. Each entry reuses the single-read size cap and line-number formatting; per-file errors are inlined into the aggregate instead of aborting the batch.",
           "items": {
             "type": "object",
             "properties": {
@@ -1011,6 +1074,7 @@
       "properties": {
         "edits": {
           "type": "array",
+          "description": "Cross-file edits dispatched sequentially through the single-edit path. Each entry is independent; failures are reported inline as `FAIL <path>: <reason>` and the batch continues.",
           "items": {
             "type": "object",
             "properties": {

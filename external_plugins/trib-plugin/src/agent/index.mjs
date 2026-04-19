@@ -238,7 +238,7 @@ const TOOLS = [
     name: 'session_result',
     title: 'Session Result',
     annotations: { title: 'Session Result', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Poll a background dispatch started via `recall` / `search` / `explore` with `wait:false`. Pass the `async_...` id returned by the original call. Returns the merged answer once the dispatch is done, a short `still running` message while in flight, or an error description on failure. Not for regular Pool B / Pool C session ids — those are managed internally.',
+    description: 'Collect a background dispatch started via `recall` / `search` / `explore` with `wait:false`. As of v0.6.186, completed async dispatches are auto-pushed into the Lead session via the channel bridge (`notifications/claude/channel`, `meta.type = \'async_result\'`) — no polling needed in the common case. Use this tool to explicitly pull by `async_...` id, or as a fallback if you missed the channel notification. Returns the merged answer, a short `still running` message, or an error description. Not for regular Pool B / Pool C session ids — those are managed internally.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -250,16 +250,18 @@ const TOOLS = [
   },
   {
     name: 'create_session',
+    title: 'Create Session',
+    annotations: { title: 'Create Session', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     description: 'Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.',
     inputSchema: {
       type: 'object',
       properties: {
         provider: { type: 'string', description: 'openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
-        model: { type: 'string' },
-        systemPrompt: { type: 'string' },
+        model: { type: 'string', description: 'Provider-specific model id (e.g. "gpt-5", "claude-opus-4", "gemini-2.5-pro"). Must be valid for the chosen provider.' },
+        systemPrompt: { type: 'string', description: 'Optional system prompt prepended to the session. When omitted, the plugin injects the default Pool B/C prefix based on role/preset.' },
         agent: { type: 'string', description: 'Agent template: Worker, Reviewer' },
-        preset: { type: 'string', enum: ['full', 'readonly', 'mcp'] },
-        files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
+        preset: { type: 'string', enum: ['full', 'readonly', 'mcp'], description: 'Tool permission preset: `full` grants read+write+shell, `readonly` restricts to read-only tools, `mcp` exposes only MCP-bridged tools.' },
+        files: { type: 'array', description: 'Optional virtual files seeded into the session\'s working context (path+content pairs). The agent can read these immediately without fs access.', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
         cwd: { type: 'string', description: 'Working directory for tool execution' },
       },
       required: ['provider', 'model'],
@@ -267,20 +269,26 @@ const TOOLS = [
   },
   {
     name: 'list_sessions',
+    title: 'List Sessions',
+    annotations: { title: 'List Sessions', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'List active orchestrator sessions.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'close_session',
+    title: 'Close Session',
+    annotations: { title: 'Close Session', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description: 'Close an orchestrator session.',
     inputSchema: {
       type: 'object',
-      properties: { sessionId: { type: 'string' } },
+      properties: { sessionId: { type: 'string', description: 'Id of the session to close (as returned by `create_session` or `list_sessions`). Plants a tombstone and aborts any in-flight work; re-closing the same id is a no-op.' } },
       required: ['sessionId'],
     },
   },
   {
     name: 'list_models',
+    title: 'List Models',
+    annotations: { title: 'List Models', readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'List available models from all providers.',
     inputSchema: { type: 'object', properties: {} },
   },
@@ -358,6 +366,7 @@ const TOOLS = [
   {
     name: 'bridge',
     title: 'Bridge to External Model',
+    annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.',
     inputSchema: {
       type: 'object',

@@ -8,7 +8,15 @@
  * spawns a single agent, so the per-array cost scales linearly with query
  * count. Shared Pool B/C cache shards mean only the first concurrent agent
  * pays the cold-write; peers ride the warm prefix.
+ *
+ * Async completion pushes into the caller's session via the existing
+ * `notifications/claude/channel` bridge with `meta.type = 'async_result'`
+ * so the Lead integrates the answer on its next turn instead of burning
+ * LLM round-trips polling session_result.
  */
+
+import { homedir } from 'os'
+import { resolve as resolvePath, isAbsolute } from 'path'
 
 const ROLE_BY_TOOL = Object.freeze({
   recall:  { role: 'recall-agent',  build: buildRecallPrompt,   label: 'recall-agent' },
@@ -89,10 +97,11 @@ export async function dispatchAiWrapped(name, args, ctx) {
       queries,
       createdAt: Date.now(),
     })
+    const resolvedCwd = resolveCwd(args.cwd)
     Promise.allSettled(
       queries.map((q) => {
-        const llm = makeBridgeLlm({ role: spec.role })
-        return llm({ prompt: spec.build(q, args.cwd) })
+        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd })
+        return llm({ prompt: spec.build(q) })
       }),
     ).then((settled) => {
       const merged = queries.length === 1
@@ -110,23 +119,27 @@ export async function dispatchAiWrapped(name, args, ctx) {
         entry.content = merged
         entry.completedAt = Date.now()
       }
+      pushAsyncResult(ctx, id, name, queries, merged)
     }).catch((err) => {
+      const msg = err?.message || String(err)
       const entry = _asyncResults.get(id)
       if (entry) {
         entry.status = 'error'
-        entry.error = err?.message || String(err)
+        entry.error = msg
         entry.completedAt = Date.now()
       }
+      pushAsyncResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
     })
     return ok(`Async dispatch started (${name}, ${queries.length} ${queries.length === 1 ? 'query' : 'queries'}). Poll with session_result id="${id}".`)
   }
 
   // One Pool C session per query, dispatched concurrently. allSettled so a
   // single agent failure doesn't nullify the remaining answers.
+  const resolvedCwd = resolveCwd(args.cwd)
   const settled = await Promise.allSettled(
     queries.map((q) => {
-      const llm = makeBridgeLlm({ role: spec.role })
-      return llm({ prompt: spec.build(q, args.cwd) })
+      const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd })
+      return llm({ prompt: spec.build(q) })
     }),
   )
 
@@ -144,19 +157,50 @@ export async function dispatchAiWrapped(name, args, ctx) {
   return ok(merged)
 }
 
-function buildExplorerPrompt(query, _cwdOverride) {
-  // cwd now rides in the session's tier3Reminder (<system-reminder># cwd),
-  // not in the user message body — keeps the message prefix shareable with
-  // recall/search calls for cache hit purposes.
+function buildExplorerPrompt(query) {
+  // cwd rides in the session's tier3Reminder (<system-reminder># cwd) via
+  // bridge-llm's opts.cwd plumbing — not in the user message body — so the
+  // message prefix stays shareable with recall/search calls for cache hit.
   return `Query: ${query}\n\nUse your read-only tools (glob / grep / read / multi_read) to find grounded answers. Return concise prose with concrete file paths.`
 }
 
-function buildRecallPrompt(query, _cwdOverride) {
+function buildRecallPrompt(query) {
   return `Query: ${query}\n\nUse the \`memory_search\` tool to retrieve ranked entries. Return concise prose citing entry ids inline.`
 }
 
-function buildSearchPrompt(query, _cwdOverride) {
+function buildSearchPrompt(query) {
   return `Query: ${query}\n\nUse the \`web_search\` tool to retrieve ranked results. Return concise prose with cited URLs.`
+}
+
+/**
+ * Resolve user-provided cwd: expand `~`, resolve relatives against the
+ * launch workspace. Falls back to null so callers use process.cwd().
+ */
+function resolveCwd(input) {
+  if (!input || typeof input !== 'string') return null
+  const trimmed = input.trim()
+  if (!trimmed) return null
+  const expanded = trimmed.startsWith('~')
+    ? trimmed.replace(/^~/, homedir())
+    : trimmed
+  return isAbsolute(expanded) ? expanded : resolvePath(process.cwd(), expanded)
+}
+
+function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
+  const notify = ctx?.notifyFn
+  if (typeof notify !== 'function') return
+  const querySummary = queries.length === 1
+    ? String(queries[0]).slice(0, 160)
+    : `${queries.length} queries`
+  const header = flags.error
+    ? `[async-result ${id}] ${tool} failed`
+    : `[async-result ${id}] ${tool} complete — ${querySummary}`
+  const content = `${header}\n\n${body}`
+  try {
+    notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step and do not re-poll session_result for this handle.` })
+  } catch {
+    // Telemetry-style best-effort — never let the push crash the dispatch.
+  }
 }
 
 function ok(text) {
