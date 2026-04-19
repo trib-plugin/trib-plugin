@@ -407,6 +407,54 @@ async function documentSymbols(args, cwd) {
   return formatDocumentSymbols(result);
 }
 
+// Tool definitions consumed by build-tools-manifest. Shape mirrors
+// tools.json — title / annotations / description / inputSchema — so the
+// build output is bit-identical to the hand-maintained entries before
+// this file was integrated into MODULES.
+export const LSP_TOOL_DEFS = [
+  {
+    name: 'lsp_definition',
+    title: 'LSP Definition',
+    annotations: { title: 'LSP Definition', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Resolve a symbol to its canonical definition via the TypeScript language server. Pass `symbol` (the name to resolve) and `file` (a TS/JS/MJS file that contains or imports the symbol). Returns one or more `path:line:col` locations. Prefer this over `grep` for any symbol that appears in multiple files — the LSP picks THE definition, grep picks every textual match. Only TypeScript / JavaScript files are supported (.ts .tsx .js .jsx .mjs .cjs).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name to resolve (identifier, class, function, method).' },
+        file: { type: 'string', description: 'Absolute or cwd-relative path to a file that contains or imports the symbol. The server anchors its semantic analysis from this document.' },
+      },
+      required: ['symbol', 'file'],
+    },
+  },
+  {
+    name: 'lsp_references',
+    title: 'LSP References',
+    annotations: { title: 'LSP References', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'List every call site / reference of a symbol across the workspace, using the TypeScript language server. Pass `symbol` and `file` (same contract as `lsp_definition`). Returns a newline-separated `path:line:col` listing, declaration included. Unlike grep, unrelated occurrences of the same name (different scopes, shadowed vars) are excluded.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name to look up references for.' },
+        file: { type: 'string', description: 'Absolute or cwd-relative path to a file that contains the symbol. Used to anchor the LSP cursor.' },
+      },
+      required: ['symbol', 'file'],
+    },
+  },
+  {
+    name: 'lsp_symbols',
+    title: 'LSP Document Symbols',
+    annotations: { title: 'LSP Document Symbols', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Outline a TS/JS file: class / function / method / variable declarations with line numbers, hierarchical when the server supports it. Pass `file`. Good first pass before diving in — shows the shape of a file without reading its body.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Absolute or cwd-relative path to the TS/JS file to outline.' },
+      },
+      required: ['file'],
+    },
+  },
+];
+
 export async function executeLspTool(name, args, cwd) {
   const effectiveCwd = cwd || process.cwd();
   switch (name) {

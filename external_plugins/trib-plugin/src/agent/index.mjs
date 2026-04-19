@@ -229,36 +229,46 @@ function fmtTokens(n) {
 
 // --- Tool definitions ---
 
+// Public entries (advertised in tools.json) come first, then `public:
+// false` entries (reachable through handleToolCall / in-process dispatch
+// only — excluded from build-tools-manifest output so the Lead never
+// sees them).
 const TOOLS = [
   {
-    name: 'create_session',
-    description: 'Create an external AI session. Auto-injects CLAUDE.md, agent rules, skills. Registers builtin+MCP tools. Optional Smart Bridge routing via taskType/role/profileId: when provided, a profile is resolved and its cache strategy + context filters are applied automatically.',
+    name: 'session_result',
+    title: 'Session Result',
+    annotations: { title: 'Session Result', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Poll a background dispatch started via `recall` / `search` / `explore` with `wait:false`. Pass the `async_...` id returned by the original call. Returns the merged answer once the dispatch is done, a short `still running` message while in flight, or an error description on failure. Not for regular Pool B / Pool C session ids — those are managed internally.',
     inputSchema: {
       type: 'object',
       properties: {
-        provider: { type: 'string', description: 'openai, openai-oauth, anthropic, anthropic-oauth, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
-        model: { type: 'string', description: 'e.g., gpt-4o, claude-sonnet-4-0, gemini-2.5-pro' },
-        systemPrompt: { type: 'string', description: 'Additional system prompt' },
-        agent: { type: 'string', description: 'Agent template: "Worker", "Reviewer"' },
-        preset: { type: 'string', enum: ['full', 'readonly', 'mcp'], description: 'Tool preset (default: full)' },
+        id: { type: 'string', description: 'The `async_...` handle returned by the original wait:false dispatch.' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'create_session',
+    description: 'Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        provider: { type: 'string', description: 'openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local' },
+        model: { type: 'string' },
+        systemPrompt: { type: 'string' },
+        agent: { type: 'string', description: 'Agent template: Worker, Reviewer' },
+        preset: { type: 'string', enum: ['full', 'readonly', 'mcp'] },
         files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
-        cwd: { type: 'string', description: 'Working directory for builtin tool execution and CLAUDE.md/agents/skills lookup. Pass the project root (e.g. C:/Project). Defaults to MCP server cwd.' },
-        taskType: { type: 'string', description: 'Smart Bridge routing: "maintenance", "worker", "reviewer", "researcher", "tester", "debugger", "one-shot", "lead". Picks a profile that controls cache strategy and context filtering.' },
-        role: { type: 'string', description: 'Smart Bridge routing: user-defined role ("worker", "reviewer", etc). Mapped via user-workflow.json.' },
-        profileId: { type: 'string', description: 'Smart Bridge routing: explicit profile id (e.g. "maintenance-light", "worker-full"). Overrides taskType/role.' },
+        cwd: { type: 'string', description: 'Working directory for tool execution' },
       },
       required: ['provider', 'model'],
     },
   },
   {
     name: 'list_sessions',
-    description: 'List all active orchestrator sessions. Pass { brief: true } to omit per-session toolNames and trim the response — useful when the full listing blows past the tool-result size limit in long-running environments.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        brief: { type: 'boolean', description: 'Drop per-session toolNames (still returns count). Defaults to false for backwards compatibility.' },
-      },
-    },
+    description: 'List active orchestrator sessions.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'close_session',
@@ -271,16 +281,18 @@ const TOOLS = [
   },
   {
     name: 'list_models',
-    description: 'List available models from all enabled providers.',
+    description: 'List available models from all providers.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'get_workflows',
+    public: false,
     description: 'List all available workflow plans (name + description).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'get_workflow',
+    public: false,
     description: 'Get a specific workflow plan by name. Returns full JSON with steps.',
     inputSchema: {
       type: 'object',
@@ -293,6 +305,7 @@ const TOOLS = [
   {
     name: 'set_prompt',
     title: 'Store Prompt',
+    public: false,
     description: 'Store a long prompt and get a short reference key. Use with bridge tool\'s ref parameter.',
     inputSchema: {
       type: 'object',
@@ -305,12 +318,14 @@ const TOOLS = [
   },
   {
     name: 'skill_suggest',
+    public: false,
     description: 'Analyze trajectory data and suggest skills from repeating patterns. Returns a report of skill candidates.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'bridge_spawn',
     title: 'Spawn Bridge Agent',
+    public: false,
     description: 'Create a Smart Bridge agent session with a role/taskType and optionally send the first prompt. Replacement for native Agent/TeamCreate flow — no team container required, sessions are standalone. When wait=true, returns the agent\'s first response synchronously. When wait=false, returns sessionId immediately for later bridge_send calls.',
     inputSchema: {
       type: 'object',
@@ -329,6 +344,7 @@ const TOOLS = [
   {
     name: 'bridge_send',
     title: 'Send to Bridge Agent',
+    public: false,
     description: 'Send a message to an existing bridge agent session. Returns the agent\'s response synchronously. Replacement for SendMessage in native team flow.',
     inputSchema: {
       type: 'object',
@@ -341,17 +357,17 @@ const TOOLS = [
   },
   {
     name: 'bridge',
-    title: 'Ask External Model',
-    description: 'Send a prompt to an external AI model via Smart Bridge. The role field resolves to a preset via user-workflow.json, which in turn maps to model/provider. Returns immediately with jobId; result delivered via notification.',
+    title: 'Bridge to External Model',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.',
     inputSchema: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', description: 'The prompt to send (or use ref/file instead)' },
-        role: { type: 'string', description: 'Role primitive only: worker, reviewer, researcher, debugger, tester. Mapped to preset via user-workflow.json. No suffix variants accepted.' },
-        ref: { type: 'string', description: 'Reference key from prompt store' },
-        file: { type: 'string', description: 'Read prompt from this file path' },
-        context: { type: 'string', description: 'Additional context to prepend' },
-        cwd: { type: 'string', description: 'Working directory for agent tool execution. Defaults to MCP server cwd.' },
+        prompt: { type: 'string', description: 'The task instruction for the agent.' },
+        role: { type: 'string', description: 'Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set.' },
+        preset: { type: 'string', description: 'Advanced: explicit preset name (bypass role mapping).' },
+        context: { type: 'string', description: 'Extra context appended to the prompt.' },
+        ref: { type: 'string', description: 'Prompt store key (populated by prompt_store).' },
+        file: { type: 'string', description: 'Read prompt from a file path.' },
       },
       required: ['prompt', 'role'],
     },

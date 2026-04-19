@@ -2,9 +2,20 @@
 /**
  * Build tools.json — the static tool manifest consumed by server.mjs.
  *
- * Collects TOOL_DEFS from all four plugin modules and tags each tool
+ * Collects TOOL_DEFS from every participating module and tags each tool
  * with its originating module so that server.mjs can route CallTool
  * requests without a runtime handler discovery pass.
+ *
+ * Modules now include the orchestrator-side builtin file tools and the
+ * LSP-backed symbol tools — previously hand-merged into tools.json.
+ * Every tool is single-source-of-truth in code; this script only
+ * filters and stitches.
+ *
+ * Filtering: entries flagged `public: false` are reachable through the
+ * in-process dispatcher (Pool C executors, synthetic tool registrations,
+ * module handleToolCall) but excluded from tools.json so external LLMs
+ * never see them advertised. The `public` flag itself is stripped from
+ * the output to keep the manifest clean.
  *
  * Usage:  node scripts/build-tools-manifest.mjs
  * Output: <plugin-root>/tools.json
@@ -30,24 +41,35 @@ if (!process.env.CLAUDE_PLUGIN_DATA) {
   process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(tmpdir(), 'trib-tools-'))
 }
 
+// `key` names the export each module uses for its tool list. Most modules
+// standardised on TOOL_DEFS; the two orchestrator-internal files predate
+// that convention and keep their domain-specific names.
 const MODULES = [
-  { name: 'channels', path: 'src/channels/index.mjs' },
-  { name: 'memory',   path: 'src/memory/index.mjs' },
-  { name: 'search',   path: 'src/search/index.mjs' },
-  { name: 'agent',    path: 'src/agent/index.mjs' },
+  { name: 'channels', path: 'src/channels/index.mjs',                    key: 'TOOL_DEFS' },
+  { name: 'memory',   path: 'src/memory/index.mjs',                      key: 'TOOL_DEFS' },
+  { name: 'search',   path: 'src/search/index.mjs',                      key: 'TOOL_DEFS' },
+  { name: 'agent',    path: 'src/agent/index.mjs',                       key: 'TOOL_DEFS' },
+  { name: 'builtin',  path: 'src/agent/orchestrator/tools/builtin.mjs',  key: 'BUILTIN_TOOLS' },
+  { name: 'lsp',      path: 'src/agent/orchestrator/tools/lsp.mjs',      key: 'LSP_TOOL_DEFS' },
 ]
 
 const t0 = Date.now()
 const collected = []
 
-for (const { name, path } of MODULES) {
+for (const { name, path, key } of MODULES) {
   const url = pathToFileURL(join(PLUGIN_ROOT, path)).href
   const mod = await import(url)
-  const defs = Array.isArray(mod.TOOL_DEFS) ? mod.TOOL_DEFS : []
+  const defs = Array.isArray(mod[key]) ? mod[key] : []
+  let kept = 0
+  let hidden = 0
   for (const def of defs) {
-    collected.push({ ...def, module: name })
+    if (def?.public === false) { hidden++; continue }
+    const { public: _pub, ...rest } = def
+    collected.push({ ...rest, module: name })
+    kept++
   }
-  console.error(`[build-tools] ${name.padEnd(8)}: ${String(defs.length).padStart(3)} tools`)
+  const note = hidden ? ` (+${hidden} hidden)` : ''
+  console.error(`[build-tools] ${name.padEnd(8)}: ${String(kept).padStart(3)} tools${note}`)
 }
 
 // Deduplicate by name (later modules override earlier if collision)

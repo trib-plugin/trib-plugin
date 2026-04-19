@@ -862,31 +862,69 @@ async function handleMemoryAction(args) {
   return { text: `unknown memory action: ${action}`, isError: true }
 }
 
+// The canonical TOOL_DEFS for this module. `public: false` entries are
+// reachable through the in-process dispatcher (Pool C executors, synthetic
+// tool registrations) but are not advertised via ListTools / tools.json, so
+// they never reach an external LLM. `aiWrapped: true` routes dispatches
+// through ai-wrapped-dispatch.mjs instead of the module's handleToolCall.
 const TOOL_DEFS = [
   {
     name: 'memory',
-    title: 'Memory Operations',
-    annotations: { title: 'Memory Operations', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory management operations on the unified entries store. Actions: status (counts/health), cycle1 (chunk + classify), cycle2/sleep (promote + cap), flush (cycle1+cycle2), rebuild (reset roots and re-classify), prune (delete old unclassified), backfill (ingest transcripts within window then drain cycle1 and run cycle2), remember (insert active root entry), forget (archive an active root by id or element match).',
+    title: 'Memory Cycle',
+    annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description: 'Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact).',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['status', 'cycle1', 'cycle2', 'sleep', 'flush', 'rebuild', 'prune', 'backfill', 'remember', 'forget'] },
-        element: { type: 'string', description: 'Short subject label (5-10 words). Required for remember.' },
-        summary: { type: 'string', description: 'Refined summary (1-3 sentences). Required for remember.' },
-        category: { type: 'string', description: 'One of: rule, constraint, decision, fact, goal, preference, task, issue. Default: fact.' },
-        maxDays: { type: 'number', description: 'For prune: delete unclassified entries older than this many days (default 30).' },
-        id: { type: 'number', description: 'For forget: target active root id.' },
-        limit: { type: 'number', description: 'For backfill: optional cap on transcript files to scan (unlimited by default).' },
-        window: { type: 'string', description: 'For backfill: time window (1d/3d/7d/30d/all). Default 7d.' },
-        scope: { type: 'string', description: 'For backfill: all or workspace. Default all.' },
+        action: { type: 'string', enum: ['sleep','cycle2','flush','rebuild','rebuild_classifications','prune','cycle1','backfill','status','remember'], description: 'Operation to run' },
+        topic: { type: 'string', description: 'Topic for remember' },
+        element: { type: 'string', description: 'Content for remember' },
+        importance: { type: 'string', description: 'Importance for remember (default: fact)' },
+        maxDays: { type: 'number' },
+        window: { type: 'string', description: 'Time window: 1d, 3d, 7d, 30d, all' },
+        limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
       },
       required: ['action'],
     },
   },
   {
+    name: 'recall',
+    title: 'Recall',
+    aiWrapped: true,
+    annotations: { title: 'Recall', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Past context — prior decisions, preferences, conversation and work history from the memory store. Accepts a natural-language query or an array of queries; an internal agent fans out in parallel. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for external web (use `search`) or codebase files (use `explore`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query, or an array of queries for multi-angle parallel fan-out.' },
+        cwd: { type: 'string', description: 'Optional workspace hint forwarded to the recall agent. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL.' },
+        wait: { type: 'boolean', description: 'Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'explore',
+    title: 'Explore',
+    aiWrapped: true,
+    annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    description: 'Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query, or an array of queries for multi-angle parallel fan-out.' },
+        cwd: { type: 'string', description: 'Override the search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the server auto-picks between the launch workspace (`cwd`) and `~/.claude` based on the query.' },
+        wait: { type: 'boolean', description: 'Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'search_memories',
     title: 'Search Memories',
+    public: false,
     annotations: { title: 'Search Memories', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Search past context and memory. Returns root entries by default. Use when user references prior work, decisions, or preferences. Storage is automatic — only retrieval is manual.',
     inputSchema: {

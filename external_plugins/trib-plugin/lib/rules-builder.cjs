@@ -11,6 +11,7 @@
  *   2.  memory.md         (rules/_shared/memory.md — when memory-config.json enabled)
  *   3.  search.md         (rules/_shared/search.md — when search-config.json enabled)
  *   3b. explore.md        (rules/_shared/explore.md — always; internal file search)
+ *   3c. lsp.md            (rules/_shared/lsp.md — always; TS/JS semantic symbol lookup)
  *   4.  channels.md       (rules/pool-a/02-channels.md)
  *   5.  team.md           (rules/pool-a/03-team.md)
  *   6.  workflow.md       (rules/pool-a/04-workflow.md)
@@ -49,6 +50,7 @@ function readJson(filePath) {
  */
 const CLAUDE_MD_EXCLUDE_H1 = new Set([
   '# General', '# Memory', '# Channels', '# Search', '# Explore',
+  '# Code Symbols (LSP)',
   '# Team', '# Workflow', '# Roles', '# User Workflow',
 ]);
 const CLAUDE_MD_EXCLUDE_H2 = new Set([
@@ -118,6 +120,10 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const explore = readOptional(path.join(SHARED_DIR, 'explore.md'));
   if (explore) parts.push(explore);
 
+  // --- 3c. LSP symbol tools (always — TS/JS semantic lookup) ---
+  const lsp = readOptional(path.join(SHARED_DIR, 'lsp.md'));
+  if (lsp) parts.push(lsp);
+
   // --- 4. Channels (always) ---
   const channels = readOptional(path.join(POOL_A_DIR, '02-channels.md'));
   if (channels) parts.push(channels);
@@ -181,6 +187,7 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  *   - rules/_shared/memory.md (when memory enabled)
  *   - rules/_shared/search.md (when search enabled)
  *   - rules/_shared/explore.md (always; internal file search)
+ *   - rules/_shared/lsp.md (always; TS/JS semantic symbol lookup)
  *   - CLAUDE.md common sections (user-authored custom sections outside the
  *     managed block and outside the Lead-only H1/H2 blacklist)
  *   - User: <name> (<title>)
@@ -225,6 +232,9 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 
   const exploreShared = readOptional(path.join(SHARED_DIR, 'explore.md'));
   if (exploreShared) parts.push(exploreShared);
+
+  const lspShared = readOptional(path.join(SHARED_DIR, 'lsp.md'));
+  if (lspShared) parts.push(lspShared);
 
   const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
   const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));

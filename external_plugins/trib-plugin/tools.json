@@ -9,39 +9,48 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Send a message to a Discord channel. Supports text, reply threading, file attachments, embeds, and components.",
+    "description": "Reply on the messaging channel. Pass chat_id from the inbound message. Optionally pass reply_to, files, embeds, and components (buttons, selects, etc).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "chat_id": {
           "type": "string",
-          "description": "Channel ID"
+          "description": "Channel ID where the message will be sent"
         },
         "text": {
           "type": "string",
-          "description": "Message text (markdown)"
+          "description": "Message text content (markdown supported)"
         },
         "reply_to": {
           "type": "string",
-          "description": "Message ID to thread under"
+          "description": "Message ID to thread under. Use message_id from the inbound <channel> block, or an id from fetch."
         },
         "files": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Absolute file paths to attach. Max 10, 25MB each."
+          "items": {
+            "type": "string"
+          },
+          "description": "Absolute file paths to attach (images, logs, etc). Max 10 files, 25MB each."
         },
         "embeds": {
           "type": "array",
-          "items": { "type": "object" },
-          "description": "Discord embed objects."
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord embed objects. Fields: title, description, color (int), fields [{name, value, inline}], footer {text}, timestamp."
         },
         "components": {
           "type": "array",
-          "items": { "type": "object" },
-          "description": "Discord message components."
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord message components. Use Action Rows containing Buttons, Select Menus, etc. See Discord Components V2 docs."
         }
       },
-      "required": ["chat_id", "text"]
+      "required": [
+        "chat_id",
+        "text"
+      ]
     },
     "module": "channels"
   },
@@ -55,15 +64,28 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Add emoji reaction to a message.",
+    "description": "Add an emoji reaction to a message. Unicode emoji work directly; custom emoji need the <:name:id> form.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chat_id": { "type": "string", "description": "Channel ID" },
-        "message_id": { "type": "string", "description": "Message ID" },
-        "emoji": { "type": "string", "description": "Unicode or custom emoji (<:name:id>)" }
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID containing the message"
+        },
+        "message_id": {
+          "type": "string",
+          "description": "ID of the message to react to"
+        },
+        "emoji": {
+          "type": "string",
+          "description": "Unicode emoji (e.g. \"👍\") or custom emoji in <:name:id> format"
+        }
       },
-      "required": ["chat_id", "message_id", "emoji"]
+      "required": [
+        "chat_id",
+        "message_id",
+        "emoji"
+      ]
     },
     "module": "channels"
   },
@@ -77,17 +99,42 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Edit a bot message. Supports text, embeds, components.",
+    "description": "Edit a message the bot previously sent. Supports text, embeds, and components.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chat_id": { "type": "string", "description": "Channel ID" },
-        "message_id": { "type": "string", "description": "Bot message ID to edit" },
-        "text": { "type": "string", "description": "New text" },
-        "embeds": { "type": "array", "items": { "type": "object" } },
-        "components": { "type": "array", "items": { "type": "object" } }
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID containing the message"
+        },
+        "message_id": {
+          "type": "string",
+          "description": "ID of the bot message to edit"
+        },
+        "text": {
+          "type": "string",
+          "description": "New message text content"
+        },
+        "embeds": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord embed objects."
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Discord message components."
+        }
       },
-      "required": ["chat_id", "message_id", "text"]
+      "required": [
+        "chat_id",
+        "message_id",
+        "text"
+      ]
     },
     "module": "channels"
   },
@@ -101,14 +148,23 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Download message attachments to local inbox. Returns file paths.",
+    "description": "Download attachments from a message to the local inbox. Use after fetch shows a message has attachments (marked with +Natt). Returns file paths ready to Read.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "chat_id": { "type": "string", "description": "Channel ID" },
-        "message_id": { "type": "string", "description": "Message ID with attachments" }
+        "chat_id": {
+          "type": "string",
+          "description": "Channel ID containing the message"
+        },
+        "message_id": {
+          "type": "string",
+          "description": "ID of the message with attachments"
+        }
       },
-      "required": ["chat_id", "message_id"]
+      "required": [
+        "chat_id",
+        "message_id"
+      ]
     },
     "module": "channels"
   },
@@ -122,14 +178,22 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch recent messages from a channel. Returns oldest-first with IDs.",
+    "description": "Fetch recent messages from a channel. Returns oldest-first with message IDs. The platform's search API isn't exposed to bots, so this is the only way to look back.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "channel": { "type": "string", "description": "Channel name label" },
-        "limit": { "type": "number", "description": "Max messages (default 20, max 100)" }
+        "channel": {
+          "type": "string",
+          "description": "Channel name label (e.g. \"main\", \"general\") as configured in channelsConfig"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max messages (default 20, capped at 100)."
+        }
       },
-      "required": ["channel"]
+      "required": [
+        "channel"
+      ]
     },
     "module": "channels"
   },
@@ -143,8 +207,11 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Show all schedules with next fire time and running state.",
-    "inputSchema": { "type": "object", "properties": {} },
+    "description": "Show all configured schedules, their next fire time, and whether they are currently running.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
     "module": "channels"
   },
   {
@@ -157,13 +224,18 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Manually fire a named schedule immediately.",
+    "description": "Manually trigger a named schedule immediately, ignoring time/day constraints.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "name": { "type": "string", "description": "Schedule name" }
+        "name": {
+          "type": "string",
+          "description": "Schedule name to trigger"
+        }
       },
-      "required": ["name"]
+      "required": [
+        "name"
+      ]
     },
     "module": "channels"
   },
@@ -177,15 +249,31 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Defer or skip a schedule. defer: suppress N minutes. skip_today: suppress rest of day.",
+    "description": "Defer or skip a schedule. Use \"defer\" to suppress for N minutes (default 30), or \"skip_today\" to suppress for the rest of the day.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "name": { "type": "string", "description": "Schedule name" },
-        "action": { "type": "string", "enum": ["defer", "skip_today"] },
-        "minutes": { "type": "number", "description": "Defer duration (default 30)" }
+        "name": {
+          "type": "string",
+          "description": "Schedule name (e.g. \"mail-briefing\" or \"proactive:chat\")"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "defer",
+            "skip_today"
+          ],
+          "description": "Action to take"
+        },
+        "minutes": {
+          "type": "number",
+          "description": "Defer duration in minutes (default 30, only for defer action)"
+        }
       },
-      "required": ["name", "action"]
+      "required": [
+        "name",
+        "action"
+      ]
     },
     "module": "channels"
   },
@@ -199,13 +287,18 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Toggle channel bridge. Active: typing indicators, reactions, auto-forward. Inactive: manual tool calls only.",
+    "description": "Activate or deactivate the channel bridge. When active, inbound messages trigger typing indicators, emoji reactions, and auto-forwarding of transcript output to Discord. When inactive, only direct MCP tool calls (reply, fetch) work.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "active": { "type": "boolean" }
+        "active": {
+          "type": "boolean",
+          "description": "true to activate, false to deactivate"
+        }
       },
-      "required": ["active"]
+      "required": [
+        "active"
+      ]
     },
     "module": "channels"
   },
@@ -219,8 +312,11 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Reload config.json and re-register schedules, webhooks, event rules.",
-    "inputSchema": { "type": "object", "properties": {} },
+    "description": "Reload config from disk and re-register all schedules, webhooks, and event rules without restarting.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
     "module": "channels"
   },
   {
@@ -239,23 +335,54 @@
       "properties": {
         "action": {
           "type": "string",
-          "enum": ["sleep", "cycle2", "flush", "rebuild", "rebuild_classifications", "prune", "cycle1", "backfill", "status", "remember"],
+          "enum": [
+            "sleep",
+            "cycle2",
+            "flush",
+            "rebuild",
+            "rebuild_classifications",
+            "prune",
+            "cycle1",
+            "backfill",
+            "status",
+            "remember"
+          ],
           "description": "Operation to run"
         },
-        "topic": { "type": "string", "description": "Topic for remember" },
-        "element": { "type": "string", "description": "Content for remember" },
-        "importance": { "type": "string", "description": "Importance for remember (default: fact)" },
-        "maxDays": { "type": "number" },
-        "window": { "type": "string", "description": "Time window: 1d, 3d, 7d, 30d, all" },
-        "limit": { "type": "number", "description": "Max episodes to backfill (default 100)" }
+        "topic": {
+          "type": "string",
+          "description": "Topic for remember"
+        },
+        "element": {
+          "type": "string",
+          "description": "Content for remember"
+        },
+        "importance": {
+          "type": "string",
+          "description": "Importance for remember (default: fact)"
+        },
+        "maxDays": {
+          "type": "number"
+        },
+        "window": {
+          "type": "string",
+          "description": "Time window: 1d, 3d, 7d, 30d, all"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max episodes to backfill (default 100)"
+        }
       },
-      "required": ["action"]
+      "required": [
+        "action"
+      ]
     },
     "module": "memory"
   },
   {
     "name": "recall",
     "title": "Recall",
+    "aiWrapped": true,
     "annotations": {
       "title": "Recall",
       "readOnlyHint": true,
@@ -269,8 +396,18 @@
       "properties": {
         "query": {
           "anyOf": [
-            { "type": "string", "minLength": 1 },
-            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
           ],
           "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
         },
@@ -283,59 +420,42 @@
           "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
         }
       },
-      "required": ["query"],
+      "required": [
+        "query"
+      ],
       "additionalProperties": false
     },
-    "module": "memory",
-    "aiWrapped": true
+    "module": "memory"
   },
   {
-    "name": "search",
-    "title": "Search",
-    "description": "External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel and picks the provider per query. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for past context (use `recall`) or codebase files (use `explore`).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "query": {
-          "anyOf": [
-            { "type": "string", "minLength": 1 },
-            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
-          ],
-          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out. Include a URL to trigger scrape; mention `owner/repo` for GitHub code/issues."
-        },
-        "cwd": {
-          "type": "string",
-          "description": "Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies."
-        },
-        "wait": {
-          "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
-        }
-      },
-      "required": ["query"],
-      "additionalProperties": false
-    },
+    "name": "explore",
+    "title": "Explore",
+    "aiWrapped": true,
     "annotations": {
-      "title": "Search",
+      "title": "Explore",
       "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "module": "search",
-    "aiWrapped": true
-  },
-  {
-    "name": "explore",
-    "title": "Explore",
     "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "query": {
           "anyOf": [
-            { "type": "string", "minLength": 1 },
-            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
           ],
           "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
         },
@@ -348,18 +468,60 @@
           "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
         }
       },
-      "required": ["query"],
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "module": "memory"
+  },
+  {
+    "name": "search",
+    "title": "Search",
+    "aiWrapped": true,
+    "description": "External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel and picks the provider per query. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for past context (use `recall`) or codebase files (use `explore`).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out. Include a URL to trigger scrape; mention `owner/repo` for GitHub code/issues."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies."
+        },
+        "wait": {
+          "type": "boolean",
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
+        }
+      },
+      "required": [
+        "query"
+      ],
       "additionalProperties": false
     },
     "annotations": {
-      "title": "Explore",
+      "title": "Search",
       "readOnlyHint": true,
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "module": "memory",
-    "aiWrapped": true
+    "module": "search"
   },
   {
     "name": "session_result",
@@ -375,147 +537,416 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "The `async_...` handle returned by the original wait:false dispatch." }
+        "id": {
+          "type": "string",
+          "description": "The `async_...` handle returned by the original wait:false dispatch."
+        }
       },
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "additionalProperties": false
+    },
+    "module": "agent"
+  },
+  {
+    "name": "create_session",
+    "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local"
+        },
+        "model": {
+          "type": "string"
+        },
+        "systemPrompt": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string",
+          "description": "Agent template: Worker, Reviewer"
+        },
+        "preset": {
+          "type": "string",
+          "enum": [
+            "full",
+            "readonly",
+            "mcp"
+          ]
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          }
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for tool execution"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ]
+    },
+    "module": "agent"
+  },
+  {
+    "name": "list_sessions",
+    "description": "List active orchestrator sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "agent"
+  },
+  {
+    "name": "close_session",
+    "description": "Close an orchestrator session.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "module": "agent"
+  },
+  {
+    "name": "list_models",
+    "description": "List available models from all providers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "module": "agent"
+  },
+  {
+    "name": "bridge",
+    "title": "Bridge to External Model",
+    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The task instruction for the agent."
+        },
+        "role": {
+          "type": "string",
+          "description": "Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set."
+        },
+        "preset": {
+          "type": "string",
+          "description": "Advanced: explicit preset name (bypass role mapping)."
+        },
+        "context": {
+          "type": "string",
+          "description": "Extra context appended to the prompt."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Prompt store key (populated by prompt_store)."
+        },
+        "file": {
+          "type": "string",
+          "description": "Read prompt from a file path."
+        }
+      },
+      "required": [
+        "prompt",
+        "role"
+      ]
     },
     "module": "agent"
   },
   {
     "name": "read",
     "title": "Read",
-    "annotations": { "title": "Read", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+    "annotations": {
+      "title": "Read",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
     "description": "Read a file from disk with cat -n line-numbered output, byte-size cap, and optional offset/limit windowing.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "path": { "type": "string", "description": "Absolute or cwd-relative file path." },
-        "offset": { "type": "number", "description": "Start line (0-based)." },
-        "limit": { "type": "number", "description": "Max lines to read." }
+        "path": {
+          "type": "string",
+          "description": "Absolute or cwd-relative file path."
+        },
+        "offset": {
+          "type": "number",
+          "description": "Start line (0-based)."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max lines to read."
+        }
       },
-      "required": ["path"]
+      "required": [
+        "path"
+      ]
     },
     "module": "builtin"
   },
   {
     "name": "edit",
     "title": "Edit",
-    "annotations": { "title": "Edit", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false },
+    "annotations": {
+      "title": "Edit",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
     "description": "Replace one unique occurrence of `old_string` with `new_string` in a file. `old_string` must match exactly once.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "path": { "type": "string" },
-        "old_string": { "type": "string", "description": "Must appear exactly once." },
-        "new_string": { "type": "string" }
+        "path": {
+          "type": "string"
+        },
+        "old_string": {
+          "type": "string",
+          "description": "Must appear exactly once."
+        },
+        "new_string": {
+          "type": "string"
+        }
       },
-      "required": ["path", "old_string", "new_string"]
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ]
     },
     "module": "builtin"
   },
   {
     "name": "write",
     "title": "Write",
-    "annotations": { "title": "Write", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false },
+    "annotations": {
+      "title": "Write",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
     "description": "Create or overwrite a file with the provided content.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "path": { "type": "string" },
-        "content": { "type": "string" }
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
       },
-      "required": ["path", "content"]
+      "required": [
+        "path",
+        "content"
+      ]
     },
     "module": "builtin"
   },
   {
     "name": "bash",
     "title": "Bash",
-    "annotations": { "title": "Bash", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true },
+    "annotations": {
+      "title": "Bash",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
     "description": "Execute a shell command with a configurable timeout. A small blocked-pattern safety list rejects `rm -rf /`, `git push --force`, `format c:`, etc.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "command": { "type": "string" },
-        "timeout": { "type": "number", "description": "Milliseconds (default 30000, max 600000)." }
+        "command": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Milliseconds (default 30000, max 600000)."
+        }
       },
-      "required": ["command"]
+      "required": [
+        "command"
+      ]
     },
     "module": "builtin"
   },
   {
     "name": "grep",
     "title": "Grep",
-    "annotations": { "title": "Grep", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+    "annotations": {
+      "title": "Grep",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
     "description": "ripgrep-backed content search. `pattern` and `glob` both accept a string or an array of strings (OR-joined in one invocation). Output modes: `files_with_matches` (default), `content`, `count`; `head_limit` caps the return set.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "pattern": {
           "anyOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
           ]
         },
-        "path": { "type": "string" },
+        "path": {
+          "type": "string"
+        },
         "glob": {
           "anyOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
           ]
         },
-        "output_mode": { "type": "string", "enum": ["files_with_matches", "content", "count"] },
-        "head_limit": { "type": "number" }
+        "output_mode": {
+          "type": "string",
+          "enum": [
+            "files_with_matches",
+            "content",
+            "count"
+          ]
+        },
+        "head_limit": {
+          "type": "number"
+        }
       },
-      "required": ["pattern"]
+      "required": [
+        "pattern"
+      ]
     },
     "module": "builtin"
   },
   {
     "name": "glob",
     "title": "Glob",
-    "annotations": { "title": "Glob", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+    "annotations": {
+      "title": "Glob",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
     "description": "File name / path search via ripgrep --files. `pattern` accepts a string or an array of globs (OR-joined in one invocation).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "pattern": {
           "anyOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
           ]
         },
-        "path": { "type": "string" }
+        "path": {
+          "type": "string"
+        }
       },
-      "required": ["pattern"]
+      "required": [
+        "pattern"
+      ]
     },
     "module": "builtin"
   },
   {
     "name": "multi_edit",
     "title": "Multi Edit",
-    "annotations": { "title": "Multi Edit", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false },
+    "annotations": {
+      "title": "Multi Edit",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
     "description": "Apply several ordered replacements to ONE file in a single call. Edits are chained in memory first; if any `old_string` fails to match uniquely (or at all) the file is left untouched. `replace_all:true` per entry drops the uniqueness requirement.",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "path": { "type": "string" },
+        "path": {
+          "type": "string"
+        },
         "edits": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "old_string": { "type": "string" },
-              "new_string": { "type": "string" },
-              "replace_all": { "type": "boolean" }
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
             },
-            "required": ["old_string", "new_string"]
+            "required": [
+              "old_string",
+              "new_string"
+            ]
           },
           "minItems": 1
         }
       },
-      "required": ["path", "edits"]
+      "required": [
+        "path",
+        "edits"
+      ]
     },
     "module": "builtin"
   },
@@ -538,16 +969,29 @@
           "items": {
             "type": "object",
             "properties": {
-              "path": { "type": "string", "description": "Absolute file path (relative paths resolve against the plugin server cwd)." },
-              "offset": { "type": "number", "description": "Start line (0-based)." },
-              "limit": { "type": "number", "description": "Max lines to read." }
+              "path": {
+                "type": "string",
+                "description": "Absolute file path (relative paths resolve against the plugin server cwd)."
+              },
+              "offset": {
+                "type": "number",
+                "description": "Start line (0-based)."
+              },
+              "limit": {
+                "type": "number",
+                "description": "Max lines to read."
+              }
             },
-            "required": ["path"]
+            "required": [
+              "path"
+            ]
           },
           "minItems": 1
         }
       },
-      "required": ["reads"]
+      "required": [
+        "reads"
+      ]
     },
     "module": "builtin"
   },
@@ -570,88 +1014,33 @@
           "items": {
             "type": "object",
             "properties": {
-              "path": { "type": "string", "description": "Absolute file path." },
-              "old_string": { "type": "string", "description": "Exact text to find (must be unique in the file)." },
-              "new_string": { "type": "string", "description": "Replacement text." }
+              "path": {
+                "type": "string",
+                "description": "Absolute file path."
+              },
+              "old_string": {
+                "type": "string",
+                "description": "Exact text to find (must be unique in the file)."
+              },
+              "new_string": {
+                "type": "string",
+                "description": "Replacement text."
+              }
             },
-            "required": ["path", "old_string", "new_string"]
+            "required": [
+              "path",
+              "old_string",
+              "new_string"
+            ]
           },
           "minItems": 1
         }
       },
-      "required": ["edits"]
+      "required": [
+        "edits"
+      ]
     },
     "module": "builtin"
-  },
-  {
-    "name": "create_session",
-    "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "provider": { "type": "string", "description": "openai, anthropic, gemini, groq, openrouter, xai, copilot, ollama, lmstudio, local" },
-        "model": { "type": "string" },
-        "systemPrompt": { "type": "string" },
-        "agent": { "type": "string", "description": "Agent template: Worker, Reviewer" },
-        "preset": { "type": "string", "enum": ["full", "readonly", "mcp"] },
-        "files": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": { "path": { "type": "string" }, "content": { "type": "string" } },
-            "required": ["path", "content"]
-          }
-        },
-        "cwd": { "type": "string", "description": "Working directory for tool execution" }
-      },
-      "required": ["provider", "model"]
-    },
-    "module": "agent"
-  },
-  {
-    "name": "list_sessions",
-    "description": "List active orchestrator sessions.",
-    "inputSchema": { "type": "object", "properties": {} },
-    "module": "agent"
-  },
-  {
-    "name": "close_session",
-    "description": "Close an orchestrator session.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "sessionId": { "type": "string" }
-      },
-      "required": ["sessionId"]
-    },
-    "module": "agent"
-  },
-  {
-    "name": "list_models",
-    "description": "List available models from all providers.",
-    "inputSchema": { "type": "object", "properties": {} },
-    "module": "agent"
-  },
-  {
-    "name": "bridge",
-    "title": "Bridge to External Model",
-    "description": "Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "prompt": { "type": "string", "description": "The task instruction for the agent." },
-        "role": {
-          "type": "string",
-          "description": "Agent role as defined in user-workflow.json. Default roles: worker, researcher, reviewer, debugger, tester. Users may customize — check user-workflow.json for the actual set."
-        },
-        "preset": { "type": "string", "description": "Advanced: explicit preset name (bypass role mapping)." },
-        "context": { "type": "string", "description": "Extra context appended to the prompt." },
-        "ref": { "type": "string", "description": "Prompt store key (populated by prompt_store)." },
-        "file": { "type": "string", "description": "Read prompt from a file path." }
-      },
-      "required": ["prompt", "role"]
-    },
-    "module": "agent"
   },
   {
     "name": "lsp_definition",
@@ -667,10 +1056,19 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "symbol": { "type": "string", "description": "Symbol name to resolve (identifier, class, function, method)." },
-        "file": { "type": "string", "description": "Absolute or cwd-relative path to a file that contains or imports the symbol. The server anchors its semantic analysis from this document." }
+        "symbol": {
+          "type": "string",
+          "description": "Symbol name to resolve (identifier, class, function, method)."
+        },
+        "file": {
+          "type": "string",
+          "description": "Absolute or cwd-relative path to a file that contains or imports the symbol. The server anchors its semantic analysis from this document."
+        }
       },
-      "required": ["symbol", "file"]
+      "required": [
+        "symbol",
+        "file"
+      ]
     },
     "module": "lsp"
   },
@@ -688,10 +1086,19 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "symbol": { "type": "string", "description": "Symbol name to look up references for." },
-        "file": { "type": "string", "description": "Absolute or cwd-relative path to a file that contains the symbol. Used to anchor the LSP cursor." }
+        "symbol": {
+          "type": "string",
+          "description": "Symbol name to look up references for."
+        },
+        "file": {
+          "type": "string",
+          "description": "Absolute or cwd-relative path to a file that contains the symbol. Used to anchor the LSP cursor."
+        }
       },
-      "required": ["symbol", "file"]
+      "required": [
+        "symbol",
+        "file"
+      ]
     },
     "module": "lsp"
   },
@@ -709,9 +1116,14 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "file": { "type": "string", "description": "Absolute or cwd-relative path to the TS/JS file to outline." }
+        "file": {
+          "type": "string",
+          "description": "Absolute or cwd-relative path to the TS/JS file to outline."
+        }
       },
-      "required": ["file"]
+      "required": [
+        "file"
+      ]
     },
     "module": "lsp"
   }

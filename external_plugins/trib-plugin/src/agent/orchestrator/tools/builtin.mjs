@@ -48,118 +48,136 @@ const READ_MAX_SIZE_BYTES = 256 * 1024;
 const READ_MAX_OUTPUT_BYTES = 100 * 1024;
 
 // --- Tool definitions for external models ---
-// `searchHint` mirrors Anthropic's Tool.searchHint — short capability phrase
-// for keyword-based discovery (used by future ToolSearch integration).
+//
+// Ordered to match the previous hand-maintained tools.json entries
+// (read / edit / write / bash / grep / glob / multi_edit / multi_read /
+// batch_edit) so build-tools-manifest reproduces the legacy ordering.
+// Shape mirrors tools.json: title + annotations + compact descriptions.
+// The previous long-form descriptions have been trimmed to the tools.json
+// versions — those are what external models actually saw in the prefix.
+// `BUILTIN_TOOLS` name is preserved because session/manager.mjs and the
+// isBuiltinTool check in this file both reference it by that symbol.
 export const BUILTIN_TOOLS = [
     {
-        name: 'bash',
-        searchHint: 'shell command terminal execute',
-        description: 'Executes a given bash command and returns its output.\n\nIMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands when a dedicated tool would work — use `glob` for filename patterns, `grep` for content search, `read` for file contents. Bash is for shell operations that require command composition (git, npm, build scripts, multi-step pipelines).',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                command: { type: 'string', description: 'The shell command to execute' },
-                timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000, max: 600000)' },
-            },
-            required: ['command'],
-        },
-    },
-    {
         name: 'read',
-        searchHint: 'read file contents lines',
-        description: `Reads a file from the local filesystem and returns its contents.\n\nUsage:\n- Pass an absolute path. Reads up to 2000 lines starting from the beginning by default.\n- For large files, use offset (0-based start line) and limit (max lines) to read targeted slices.\n- Hard cap: files larger than ${Math.round(READ_MAX_SIZE_BYTES/1024)} KB are rejected pre-read with a small error response. Output is truncated at ${Math.round(READ_MAX_OUTPUT_BYTES/1024)} KB.\n- This tool reads files only, not directories. Use \`glob\` to enumerate directory contents.\n- Results are returned in cat -n format (line number + tab + content).`,
+        title: 'Read',
+        annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Read a file from disk with cat -n line-numbered output, byte-size cap, and optional offset/limit windowing.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Absolute or cwd-relative file path to read' },
-                offset: { type: 'number', description: 'Start line (0-based). Defaults to 0.' },
-                limit: { type: 'number', description: 'Max lines to read. Defaults to 2000.' },
+                path: { type: 'string', description: 'Absolute or cwd-relative file path.' },
+                offset: { type: 'number', description: 'Start line (0-based).' },
+                limit: { type: 'number', description: 'Max lines to read.' },
             },
             required: ['path'],
         },
     },
     {
-        name: 'write',
-        searchHint: 'write create file content',
-        description: 'Write content to a file (creates or overwrites). Path must be within the working directory scope.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'File path to write' },
-                content: { type: 'string', description: 'Content to write' },
-            },
-            required: ['path', 'content'],
-        },
-    },
-    {
         name: 'edit',
-        searchHint: 'edit replace string file modify',
-        description: 'Replace a string in a file. `old_string` must appear exactly once in the file (unique match required).',
+        title: 'Edit',
+        annotations: { title: 'Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Replace one unique occurrence of `old_string` with `new_string` in a file. `old_string` must match exactly once.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path to edit' },
-                old_string: { type: 'string', description: 'Exact text to find (must be unique in the file)' },
-                new_string: { type: 'string', description: 'Replacement text' },
+                path: { type: 'string' },
+                old_string: { type: 'string', description: 'Must appear exactly once.' },
+                new_string: { type: 'string' },
             },
             required: ['path', 'old_string', 'new_string'],
         },
     },
     {
-        name: 'multi_edit',
-        searchHint: 'edit same file many replacements',
-        description: 'Apply several replacements to ONE file in a single tool call. Each entry in `edits` is {old_string, new_string, replace_all?} and is applied in order against the same path; each old_string must match uniquely at its turn (unless `replace_all:true`). If any entry fails, the call reports the error and leaves the file untouched — all-or-nothing semantics (matches Claude Code native MultiEdit).',
+        name: 'write',
+        title: 'Write',
+        annotations: { title: 'Write', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Create or overwrite a file with the provided content.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path to edit' },
+                path: { type: 'string' },
+                content: { type: 'string' },
+            },
+            required: ['path', 'content'],
+        },
+    },
+    {
+        name: 'bash',
+        title: 'Bash',
+        annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+        description: 'Execute a shell command with a configurable timeout. A small blocked-pattern safety list rejects `rm -rf /`, `git push --force`, `format c:`, etc.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                command: { type: 'string' },
+                timeout: { type: 'number', description: 'Milliseconds (default 30000, max 600000).' },
+            },
+            required: ['command'],
+        },
+    },
+    {
+        name: 'grep',
+        title: 'Grep',
+        annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'ripgrep-backed content search. `pattern` and `glob` both accept a string or an array of strings (OR-joined in one invocation). Output modes: `files_with_matches` (default), `content`, `count`; `head_limit` caps the return set.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] },
+                path: { type: 'string' },
+                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] },
+                output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
+                head_limit: { type: 'number' },
+            },
+            required: ['pattern'],
+        },
+    },
+    {
+        name: 'glob',
+        title: 'Glob',
+        annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'File name / path search via ripgrep --files. `pattern` accepts a string or an array of globs (OR-joined in one invocation).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] },
+                path: { type: 'string' },
+            },
+            required: ['pattern'],
+        },
+    },
+    {
+        name: 'multi_edit',
+        title: 'Multi Edit',
+        annotations: { title: 'Multi Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Apply several ordered replacements to ONE file in a single call. Edits are chained in memory first; if any `old_string` fails to match uniquely (or at all) the file is left untouched. `replace_all:true` per entry drops the uniqueness requirement.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string' },
                 edits: {
                     type: 'array',
                     items: {
                         type: 'object',
                         properties: {
-                            old_string: { type: 'string', description: 'Exact text to find (must be unique at apply time unless replace_all is true)' },
-                            new_string: { type: 'string', description: 'Replacement text' },
-                            replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match.' },
+                            old_string: { type: 'string' },
+                            new_string: { type: 'string' },
+                            replace_all: { type: 'boolean' },
                         },
                         required: ['old_string', 'new_string'],
                     },
                     minItems: 1,
-                    description: 'Replacements applied in order to the same file.',
                 },
             },
             required: ['path', 'edits'],
         },
     },
     {
-        name: 'batch_edit',
-        searchHint: 'edit multiple files batch replace cross',
-        description: 'Apply edits across SEVERAL files in a single tool call — each entry is {path, old_string, new_string} with the same unique-match rules as `edit`. Per-entry errors are reported inline and do not abort the batch; subsequent entries still run. Use this when the change set touches many files; use `multi_edit` when it is many replacements inside one file.\n\nReturns one line per edit: `OK <path>` or `FAIL <path>: <reason>`.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                edits: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string', description: 'File path to edit' },
-                            old_string: { type: 'string', description: 'Exact text to find (must be unique in the file)' },
-                            new_string: { type: 'string', description: 'Replacement text' },
-                        },
-                        required: ['path', 'old_string', 'new_string'],
-                    },
-                    minItems: 1,
-                    description: 'Edits in apply order across any paths. Same file can appear multiple times — each entry re-reads the file.',
-                },
-            },
-            required: ['edits'],
-        },
-    },
-    {
         name: 'multi_read',
-        searchHint: 'read multiple files batch parallel',
-        description: 'Read several files in a single tool call — each entry in `reads` is processed with the same rules as `read` (size cap, offset/limit, cat -n formatting). Prefer this over chaining multiple `read` calls when you already know the paths you want, because it collapses N iterations into 1 and saves a round-trip of prompt growth per file.\n\nReturns a single string with each file delimited by a `### <path>` header. Per-file errors are surfaced inline and do not abort the batch.',
+        title: 'Multi Read',
+        annotations: { title: 'Multi Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Read several files in one call. Each entry in `reads` is { path, offset?, limit? } with the same semantics as a single read. Returns `### <path>` delimited sections; per-file errors appear inline and do not abort the batch.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -168,64 +186,41 @@ export const BUILTIN_TOOLS = [
                     items: {
                         type: 'object',
                         properties: {
-                            path: { type: 'string', description: 'Absolute or cwd-relative file path to read' },
-                            offset: { type: 'number', description: 'Start line (0-based). Defaults to 0.' },
-                            limit: { type: 'number', description: 'Max lines to read. Defaults to 2000.' },
+                            path: { type: 'string', description: 'Absolute file path (relative paths resolve against the plugin server cwd).' },
+                            offset: { type: 'number', description: 'Start line (0-based).' },
+                            limit: { type: 'number', description: 'Max lines to read.' },
                         },
                         required: ['path'],
                     },
                     minItems: 1,
-                    description: 'Per-file read specs. Each entry accepts the same arguments as `read`.',
                 },
             },
             required: ['reads'],
         },
     },
     {
-        name: 'grep',
-        searchHint: 'search regex content ripgrep',
-        description: 'A powerful search tool built on ripgrep.\n\nUsage:\n- ALWAYS use grep for content search. NEVER invoke `grep` or `rg` via the bash tool.\n- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+").\n- `pattern` accepts a single regex or an array of regexes — an array is OR-joined inside one rg invocation (a single turn replaces N separate grep calls).\n- Filter files with the `glob` parameter (e.g., "*.ts", "*.{js,jsx}"); `glob` also accepts an array for multi-extension OR filtering.\n- Output modes: "files_with_matches" (default — paths only, lowest token cost), "content" (matched lines with path+line number), "count" (per-file match counts). Prefer `files_with_matches` for broad searches and chase down specific files with `read` afterwards.\n- `head_limit` caps output entries (default 100 across all modes).',
+        name: 'batch_edit',
+        title: 'Batch Edit',
+        annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Apply edits across several files in one call. Each entry in `edits` is { path, old_string, new_string } with the same unique-match rule as a single edit. Per-entry failures are reported inline (`FAIL <path>: <reason>`) and do not abort the batch.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: {
-                    anyOf: [
-                        { type: 'string' },
-                        { type: 'array', items: { type: 'string' }, minItems: 1 },
-                    ],
-                    description: 'Regex pattern (or array for OR-join).',
+                edits: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Absolute file path.' },
+                            old_string: { type: 'string', description: 'Exact text to find (must be unique in the file).' },
+                            new_string: { type: 'string', description: 'Replacement text.' },
+                        },
+                        required: ['path', 'old_string', 'new_string'],
+                    },
+                    minItems: 1,
                 },
-                path: { type: 'string', description: 'Directory or file to search in (default: cwd)' },
-                glob: {
-                    anyOf: [
-                        { type: 'string' },
-                        { type: 'array', items: { type: 'string' }, minItems: 1 },
-                    ],
-                    description: 'File pattern filter — string or array of globs (OR-joined).',
-                },
-                output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'], description: 'Output mode. Defaults to "files_with_matches".' },
-                head_limit: { type: 'number', description: 'Max entries to return (default 100). Pass 0 for unlimited.' },
             },
-            required: ['pattern'],
-        },
-    },
-    {
-        name: 'glob',
-        searchHint: 'find files filename pattern wildcard',
-        description: 'Find files matching a glob pattern.\n\nUsage:\n- Use for filename / path-pattern search. NEVER invoke `find` or `ls` via the bash tool when glob suffices.\n- Returns file paths only (not contents). Use `grep` for content search and `read` to inspect specific files.\n- `pattern` accepts a single glob or an array of globs — an array is OR-joined (one call replaces N separate glob calls).\n- Patterns like "**/*.ts" or "src/**/*.{js,jsx}" are supported.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                pattern: {
-                    anyOf: [
-                        { type: 'string' },
-                        { type: 'array', items: { type: 'string' }, minItems: 1 },
-                    ],
-                    description: 'Glob pattern or array of patterns (OR-joined).',
-                },
-                path: { type: 'string', description: 'Base directory (default: cwd)' },
-            },
-            required: ['pattern'],
+            required: ['edits'],
         },
     },
 ];

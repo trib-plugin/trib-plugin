@@ -477,17 +477,35 @@ async function _mapCore(args, { timeoutMs }) {
   return { tool: 'map', links }
 }
 
+// `search` is the single public surface — wrapped by the async search
+// agent (aiWrapped) so it lines up with recall / explore. The remaining
+// five (firecrawl_scrape / firecrawl_map / crawl / batch / setup) are
+// `public: false`: still reachable via the module's handleToolCall and
+// advertised when this module runs as a standalone MCP server, but
+// excluded from the unified build-tools-manifest output so the Lead
+// only sees the agent-wrapped entry point.
 const toolDefinitions = [
   {
     name: 'search',
     title: 'Search',
-    description: 'Search the web for external information. Use this instead of built-in WebSearch/WebFetch. For 2+ lookups use batch tool. Not for codebase (Grep/Glob/Read) or past context (search_memories).',
-    inputSchema: buildInputSchema(searchArgsSchema),
+    aiWrapped: true,
+    description: 'External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel and picks the provider per query. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for past context (use `recall`) or codebase files (use `explore`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query, or an array of queries for multi-angle parallel fan-out. Include a URL to trigger scrape; mention `owner/repo` for GitHub code/issues.' },
+        cwd: { type: 'string', description: 'Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies.' },
+        wait: { type: 'boolean', description: 'Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
     annotations: { title: 'Search', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: 'firecrawl_scrape',
     title: 'Scrape',
+    public: false,
     description: 'Fetch a single URL and extract its readable content as clean text or markdown. Use for known URLs when you need page content.',
     inputSchema: buildInputSchema(scrapeArgsSchema),
     annotations: { title: 'Scrape', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -495,6 +513,7 @@ const toolDefinitions = [
   {
     name: 'firecrawl_map',
     title: 'Map',
+    public: false,
     description: 'Discover all links on a given page. Returns a list of URLs found. Use to explore site structure before scraping specific pages.',
     inputSchema: buildInputSchema(mapArgsSchema),
     annotations: { title: 'Map', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -502,6 +521,7 @@ const toolDefinitions = [
   {
     name: 'crawl',
     title: 'Crawl',
+    public: false,
     description: 'Crawl a website starting from a URL, following links up to a configured depth. Collects page summaries from each visited page. Not supported in batch mode.',
     inputSchema: buildInputSchema(crawlArgsSchema),
     annotations: { title: 'Crawl', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -509,12 +529,14 @@ const toolDefinitions = [
   {
     name: 'batch',
     title: 'Search',
+    public: false,
     description: 'Execute multiple search, firecrawl_scrape, and firecrawl_map actions in a single request. Each item runs in parallel. Crawl is not supported in batch.',
     inputSchema: buildInputSchema(batchArgsSchema),
     annotations: { title: 'Search', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   {
     name: 'setup',
+    public: false,
     description: 'Open interactive setup form to configure search providers, API keys, and options.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { title: 'Setup' },
