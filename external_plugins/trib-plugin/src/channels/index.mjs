@@ -1681,7 +1681,7 @@ async function handleToolCallWithBridgeRetry(toolName, args) {
   const result = await handleToolCall(toolName, args);
   const toolLine = OutputForwarder.buildToolLine(toolName, args);
   if (toolLine) {
-    void forwarder.forwardToolLog(toolLine);
+    void forwarder.forwardToolLog(toolLine, toolName, args);
   }
   return result;
 }

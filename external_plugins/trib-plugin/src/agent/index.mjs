@@ -814,18 +814,12 @@ export async function handleToolCall(name, args, opts = {}) {
             } else if (err instanceof StreamStalledAbortError) {
               const info = err.info || {};
               const header = `⚠ stream stalled — ${info.staleSeconds}s no delta (stage: ${info.stage || 'unknown'})`;
-              const body = `last tool call: ${info.lastToolCall || 'none'}\nprovider likely hung. Retry with a shorter prompt or a different provider.`;
-              emit(`${role} error: ${header}\n${body}`);
+              emit(`${role} error: ${header}`);
               updateSessionStatus(session.id, 'error');
             } else if (err instanceof ToolLoopAbortError) {
               const info = err.info || {};
               const header = `⚠ tool loop aborted — ${info.attemptCount}× ${info.toolName}:${info.errorCategory}`;
-              const body = [
-                `signature: ${info.signature}`,
-                `last error: ${String(info.errorSample || '').slice(0, 200)}`,
-                `args: ${String(info.argsSample || '').slice(0, 200)}`,
-              ].join('\n');
-              emit(`${role} error: ${header}\n${body}`);
+              emit(`${role} error: ${header}`);
               updateSessionStatus(session.id, 'error');
             } else {
               emit(`${role} error: ${errorMessage}`);

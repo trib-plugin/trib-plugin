@@ -22,7 +22,17 @@ function logSchedule(msg) {
 }
 import { isHoliday } from "./holidays.mjs";
 import { tryRead } from "./settings.mjs";
-import cron from "node-cron";
+// node-cron is an optional runtime dep. If the module isn't installed
+// (e.g. a fresh v0.6.190 where node_modules predates the package.json
+// bump), fall back to the legacy tick() path instead of crashing the
+// whole channels worker.
+let cron = null;
+try {
+  const mod = await import("node-cron");
+  cron = mod.default || mod;
+} catch (err) {
+  process.stderr.write(`trib-plugin scheduler: node-cron unavailable, cron expressions disabled (${err?.code || err?.message || err})\n`);
+}
 const TICK_INTERVAL = 6e4;
 // Legacy time formats handled by the tick() path. Anything else is
 // forwarded to node-cron for parsing/scheduling.
@@ -30,6 +40,7 @@ const LEGACY_TIME_RE = /^(?:\d{2}:\d{2}|every\d+m|hourly|daily)$/;
 function isCronExpression(time) {
   if (typeof time !== "string" || !time) return false;
   if (LEGACY_TIME_RE.test(time)) return false;
+  if (!cron) return false;
   const tokens = time.trim().split(/\s+/);
   if (tokens.length !== 5 && tokens.length !== 6) return false;
   try { return cron.validate(time); } catch { return false; }

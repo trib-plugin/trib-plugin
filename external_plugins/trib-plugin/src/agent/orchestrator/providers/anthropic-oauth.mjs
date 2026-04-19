@@ -565,11 +565,11 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const ttls = resolveCacheTtls(opts);
     const systemBlocks = buildSystemBlocks(systemTexts, model, ttls?.system);
 
-    // 4-BP budget layout: tools + system (N-1 BPs for N system blocks) +
-    // tier3 + messages-tail. systemBpUsed now counts each cacheable system
-    // block — under Stage 3 the manager produces two (systemBase, systemRole)
-    // so this typically lands on 2 slots. The messages-tail budget shrinks
-    // accordingly.
+    // 4-BP budget layout. systemRole was removed (moved to tier3Reminder)
+    // so systemBpUsed is now 1 (systemBase only). tools BP is dropped —
+    // systemBase BP covers the tools prefix via Anthropic's prompt cache
+    // prefix semantics (order: tools → system → messages). That frees
+    // 2 slots for tier3 + messages-tail.
     const systemBpUsed = ttls.system ? systemBlocks.filter(b => b.cache_control).length : 0;
     const toolsBpUsed = 0;
     const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
@@ -598,9 +598,10 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     if (systemBlocks.length) body.system = systemBlocks;
 
     if (tools?.length) {
-        // Tools ride on system[0]'s prefix cache — Anthropic evaluates tools
-        // before system, so the first system block's cache_control already
-        // covers the whole tools array. No separate BP needed here.
+        // No cache_control on tools — the systemBase BP already covers the
+        // tools prefix via Anthropic's prompt cache prefix semantics (order:
+        // tools → system → messages). Placing a separate BP here would waste
+        // a slot that's better spent on messages tail.
         body.tools = toAnthropicTools(tools);
     }
 

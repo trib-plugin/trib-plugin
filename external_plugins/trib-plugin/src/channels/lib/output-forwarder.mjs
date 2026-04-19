@@ -326,7 +326,11 @@ class OutputForwarder {
       return;
     }
     const formatted = item.preformatted ? item.text : formatForDiscord(item.text);
-    const hash = item.skipHashDedup ? "" : createHash("md5").update(formatted).digest("hex");
+    const hash = item.skipHashDedup
+      ? ""
+      : item.dedupKey
+        ? item.dedupKey
+        : createHash("md5").update(formatted).digest("hex");
     if (!item.skipHashDedup && this.lastHash === hash) {
       this.commitReadProgress(item.nextFileSize);
       return;
@@ -373,7 +377,7 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
     return true;
   }
   /** Forward tool log line to Discord */
-  async forwardToolLog(toolLine) {
+  async forwardToolLog(toolLine, toolName, toolInput) {
     if (!this.channelId) return;
     // Advance the transcript marker without embedding newText into the
     // toolLog payload — the text transcript is already delivered through
@@ -384,7 +388,8 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
       type: "toolLog",
       text: toolLine,
       nextFileSize,
-      preformatted: true
+      preformatted: true,
+      dedupKey: OutputForwarder.buildDedupKey(toolName, toolInput)
     });
     void this.drainQueue();
   }
@@ -497,6 +502,26 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
     if (OutputForwarder.HIDDEN_TOOLS.has(name)) return true;
     if (name.includes("plugin_trib-plugin") && !name.endsWith("recall_memory") || name === "reply" || name === "react" || name === "edit_message" || name === "fetch" || name === "download_attachment") return true;
     return false;
+  }
+  /**
+   * Build a per-call dedup key for tool-log queue items.
+   * Uses the full (unsquished) tool args so that two Reads on distinct files
+   * sharing a basename, or two Grep/Glob calls sharing only a pattern prefix,
+   * do not collapse onto the same key and suppress the second send.
+   * Returns "" to fall back to md5(formatted) at delivery time.
+   */
+  static buildDedupKey(name, input) {
+    if (!name || !input || typeof input !== "object") return "";
+    switch (name) {
+      case "Read":
+        return input.file_path ? "read:" + input.file_path : "";
+      case "Grep":
+        return "grep:" + (input.pattern ?? "") + ":" + (input.path ?? "");
+      case "Glob":
+        return "glob:" + (input.pattern ?? "") + ":" + (input.path ?? "");
+      default:
+        return "";
+    }
   }
   /** Build a tool log line from the tool name and input. */
   static buildToolLine(name, input) {

@@ -297,7 +297,9 @@ export function composeSystemPrompt(opts) {
     if (opts.roleSnippet) {
         roleParts.push(`# agent-snippet\n${opts.roleSnippet}`);
     }
-    const systemRole = roleParts.length > 0 ? roleParts.join('\n\n') : '';
+    // systemRole force-disabled: role content migrates to tier3Parts so BP1
+    // (systemBase) stays bit-identical across every role in the same pool/model.
+    const systemRole = '';
 
     // ── BP4-adjacent: tier3Reminder (messages user, not system) ─────────
     // Per-call variance only — task brief, skills hint, project context,
@@ -305,7 +307,9 @@ export function composeSystemPrompt(opts) {
     // <system-reminder> so the tool user sees it once up front without
     // polluting the per-turn prompt body.
     const tier3Parts = [];
-    if (opts.cwd) tier3Parts.push('# cwd\n' + opts.cwd);
+    // Role content migrated from systemRole (BP1 stays shared).
+    for (const part of roleParts) tier3Parts.push(part);
+    // cwd omitted: tools resolve working dir internally.
     if (opts.taskBrief) tier3Parts.push('# task-brief\n' + opts.taskBrief);
     if (opts.hasSkills && !skip.skills) {
         tier3Parts.push('# skills\nCall `skills_list` to discover available skills.');
@@ -319,7 +323,7 @@ export function composeSystemPrompt(opts) {
     // `systemTier2` kept as a back-compat alias for the older single-block
     // consumer (= systemBase + systemRole concatenated). Prefer the split
     // fields on new callers.
-    const systemTier2 = [systemBase, systemRole].filter(Boolean).join('\n\n---\n\n');
+    const systemTier2 = systemBase;
 
     return { systemBase, systemRole, systemTier2, tier3Reminder };
 }

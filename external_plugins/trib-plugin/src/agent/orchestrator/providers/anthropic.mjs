@@ -209,8 +209,11 @@ export class AnthropicProvider {
         const chatMsgs = messages.filter(m => m.role !== 'system');
         const systemText = systemMsgs.map(m => m.content).join('\n\n') || undefined;
 
-        // 4-BP budget: tools + system + tier3 + messages-tail.
-        const toolsBpUsed = ttls.tools && tools?.length ? 1 : 0;
+        // 4-BP budget: aligned with anthropic-oauth. tools BP is dropped —
+        // system BP covers the tools prefix via Anthropic prefix semantics
+        // (order: tools → system → messages). That frees 1 slot for
+        // messages-tail.
+        const toolsBpUsed = 0;
         const systemBpUsed = ttls.system && systemText ? 1 : 0;
         const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
         const tier3BpUsed = tier3Idx >= 0 ? 1 : 0;
@@ -238,14 +241,9 @@ export class AnthropicProvider {
             messages: anthropicMessages,
         };
         if (tools?.length) {
-            const converted = toAnthropicTools(tools);
-            if (ttls.tools && converted.length > 0) {
-                converted[converted.length - 1] = {
-                    ...converted[converted.length - 1],
-                    cache_control: ttls.tools,
-                };
-            }
-            params.tools = converted;
+            // No cache_control on tools — the system BP covers tools via
+            // Anthropic prefix semantics (order: tools → system → messages).
+            params.tools = toAnthropicTools(tools);
         }
         // Effort → extended thinking budget
         if (opts.effort && EFFORT_BUDGET[opts.effort]) {
