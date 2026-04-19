@@ -250,16 +250,33 @@ function resolveSessionTools(toolSpec, skills, permission) {
     return filtered;
 }
 
+// Dedup by name, first occurrence wins. BUILTIN_TOOLS is passed in ahead
+// of the MCP-registered internal tools so plugin-side definitions take
+// precedence when both surfaces declare the same name (e.g. read / grep /
+// glob, which v0.6.173 also exposed via tools.json with module:'builtin').
+// Without this merge, Anthropic rejected the request with
+// "tools: Tool names must be unique" and the orchestrator burned up to
+// 20 iterations retrying before the final answer landed.
+function _dedupByName(tools) {
+    const seen = new Map();
+    for (const t of tools) {
+        const n = t?.name;
+        if (!n || seen.has(n)) continue;
+        seen.set(n, t);
+    }
+    return [...seen.values()];
+}
+
 function _computeBaseTools(toolSpec, mcp, skillTools) {
     if (Array.isArray(toolSpec)) {
         if (toolSpec.length === 0) {
             // Explicit "no tools" — skill meta tools still travel so the model
             // can at least discover and invoke skills if that is the one
             // dynamic surface the profile retains.
-            return [...skillTools];
+            return _dedupByName([...skillTools]);
         }
         if (toolSpec.includes('full')) {
-            return [...BUILTIN_TOOLS, ...mcp, ...skillTools];
+            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
         }
         const byName = new Map();
         const add = (tool) => { if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool); };
@@ -288,19 +305,19 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
                     process.stderr.write(`[session] unknown toolset id "${tag}" (profile.tools); skipping\n`);
             }
         }
-        return [...byName.values(), ...skillTools];
+        return _dedupByName([...byName.values(), ...skillTools]);
     }
 
     switch (toolSpec) {
         case 'mcp':
-            return [...mcp, ...skillTools];
+            return _dedupByName([...mcp, ...skillTools]);
         case 'readonly': {
             const readTools = BUILTIN_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name));
-            return [...readTools, ...mcp, ...skillTools];
+            return _dedupByName([...readTools, ...mcp, ...skillTools]);
         }
         case 'full':
         default:
-            return [...BUILTIN_TOOLS, ...mcp, ...skillTools];
+            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
     }
 }
 
