@@ -6,8 +6,17 @@ import { homedir } from 'os';
  * Load an agent MD file (Worker.md, Reviewer.md, etc.) as session instructions.
  * Strips frontmatter, returns the body.
  */
+// Agent template cache — walkForAgent() recurses the whole marketplaces
+// tree, which is the single most expensive file-system call in
+// createSession. Cache per (name, cwd) with a 60s TTL so repeated Pool C
+// fan-out in the same window pays the walk cost once.
+const _agentTemplateCache = new Map();
+const AGENT_TEMPLATE_TTL = 60_000;
 export function loadAgentTemplate(name, cwd) {
     const projectDir = cwd || process.cwd();
+    const key = `${name}|${projectDir}`;
+    const cached = _agentTemplateCache.get(key);
+    if (cached && Date.now() - cached.ts < AGENT_TEMPLATE_TTL) return cached.value;
     // Search paths for agent files
     const searchPaths = [
         join(projectDir, '.claude', 'agents', `${name}.md`),
@@ -26,9 +35,12 @@ export function loadAgentTemplate(name, cwd) {
         if (content) {
             // Strip YAML frontmatter
             const stripped = content.replace(/^---\n[\s\S]*?\n---\n*/, '');
-            return stripped.trim();
+            const body = stripped.trim();
+            _agentTemplateCache.set(key, { ts: Date.now(), value: body });
+            return body;
         }
     }
+    _agentTemplateCache.set(key, { ts: Date.now(), value: null });
     return null;
 }
 /**
