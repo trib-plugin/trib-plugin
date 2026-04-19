@@ -350,6 +350,207 @@
     "aiWrapped": true
   },
   {
+    "name": "read",
+    "title": "Read",
+    "annotations": { "title": "Read", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+    "description": "Read a file from disk with cat -n line-numbered output, byte-size cap, and optional offset/limit windowing.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Absolute or cwd-relative file path." },
+        "offset": { "type": "number", "description": "Start line (0-based)." },
+        "limit": { "type": "number", "description": "Max lines to read." }
+      },
+      "required": ["path"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "edit",
+    "title": "Edit",
+    "annotations": { "title": "Edit", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false },
+    "description": "Replace one unique occurrence of `old_string` with `new_string` in a file. `old_string` must match exactly once.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "old_string": { "type": "string", "description": "Must appear exactly once." },
+        "new_string": { "type": "string" }
+      },
+      "required": ["path", "old_string", "new_string"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "write",
+    "title": "Write",
+    "annotations": { "title": "Write", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false },
+    "description": "Create or overwrite a file with the provided content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "content": { "type": "string" }
+      },
+      "required": ["path", "content"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "bash",
+    "title": "Bash",
+    "annotations": { "title": "Bash", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true },
+    "description": "Execute a shell command with a configurable timeout. A small blocked-pattern safety list rejects `rm -rf /`, `git push --force`, `format c:`, etc.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string" },
+        "timeout": { "type": "number", "description": "Milliseconds (default 30000, max 600000)." }
+      },
+      "required": ["command"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "grep",
+    "title": "Grep",
+    "annotations": { "title": "Grep", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+    "description": "ripgrep-backed content search. `pattern` and `glob` both accept a string or an array of strings (OR-joined in one invocation). Output modes: `files_with_matches` (default), `content`, `count`; `head_limit` caps the return set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ]
+        },
+        "path": { "type": "string" },
+        "glob": {
+          "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ]
+        },
+        "output_mode": { "type": "string", "enum": ["files_with_matches", "content", "count"] },
+        "head_limit": { "type": "number" }
+      },
+      "required": ["pattern"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "glob",
+    "title": "Glob",
+    "annotations": { "title": "Glob", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+    "description": "File name / path search via ripgrep --files. `pattern` accepts a string or an array of globs (OR-joined in one invocation).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ]
+        },
+        "path": { "type": "string" }
+      },
+      "required": ["pattern"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "multi_edit",
+    "title": "Multi Edit",
+    "annotations": { "title": "Multi Edit", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false },
+    "description": "Apply several ordered replacements to ONE file in a single call. Edits are chained in memory first; if any `old_string` fails to match uniquely (or at all) the file is left untouched. `replace_all:true` per entry drops the uniqueness requirement.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "old_string": { "type": "string" },
+              "new_string": { "type": "string" },
+              "replace_all": { "type": "boolean" }
+            },
+            "required": ["old_string", "new_string"]
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["path", "edits"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "multi_read",
+    "title": "Multi Read",
+    "annotations": {
+      "title": "Multi Read",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Read several files in one call. Each entry in `reads` is { path, offset?, limit? } with the same semantics as a single read. Returns `### <path>` delimited sections; per-file errors appear inline and do not abort the batch.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string", "description": "Absolute file path (relative paths resolve against the plugin server cwd)." },
+              "offset": { "type": "number", "description": "Start line (0-based)." },
+              "limit": { "type": "number", "description": "Max lines to read." }
+            },
+            "required": ["path"]
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["reads"]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "batch_edit",
+    "title": "Batch Edit",
+    "annotations": {
+      "title": "Batch Edit",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Apply edits across several files in one call. Each entry in `edits` is { path, old_string, new_string } with the same unique-match rule as a single edit. Per-entry failures are reported inline (`FAIL <path>: <reason>`) and do not abort the batch.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string", "description": "Absolute file path." },
+              "old_string": { "type": "string", "description": "Exact text to find (must be unique in the file)." },
+              "new_string": { "type": "string", "description": "Replacement text." }
+            },
+            "required": ["path", "old_string", "new_string"]
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["edits"]
+    },
+    "module": "builtin"
+  },
+  {
     "name": "create_session",
     "description": "Create external AI session with tool access. Auto-injects context. Use preset: full/readonly/mcp. Use agent: Worker/Reviewer.",
     "inputSchema": {
