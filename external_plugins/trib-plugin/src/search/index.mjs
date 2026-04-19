@@ -489,7 +489,7 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel and picks the provider per query. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for past context (use `recall`) or codebase files (use `explore`).',
+    description: 'External web search, URL scrape, GitHub code/issues/repos. `query` accepts a string or array (parallel fan-out); include a URL to trigger scrape or `owner/repo` for GitHub. Async by default: returns `async_...` handle, collected via `session_result` or `wait:true` inline. Not for past context (use `recall`) or codebase files (use `explore`).',
     inputSchema: {
       type: 'object',
       properties: {

@@ -212,21 +212,11 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const agentContent = readOptional(path.join(POOL_B_DIR, '01-agent.md'));
   if (agentContent) parts.push(agentContent);
 
-  if (memoryConfig.enabled) {
-    const memory = readOptional(path.join(SHARED_DIR, 'memory.md'));
-    if (memory) parts.push(memory);
-  }
-
-  if (searchConfig.enabled) {
-    const search = readOptional(path.join(SHARED_DIR, 'search.md'));
-    if (search) parts.push(search);
-  }
-
-  const exploreShared = readOptional(path.join(SHARED_DIR, 'explore.md'));
-  if (exploreShared) parts.push(exploreShared);
-
-  const lspShared = readOptional(path.join(SHARED_DIR, 'lsp.md'));
-  if (lspShared) parts.push(lspShared);
+  // rules/{memory,search,explore,lsp}.md intentionally NOT included here.
+  // Bridge sessions receive full tool schemas (non-deferred) so the
+  // Anthropic tool description already carries canonical usage info for
+  // each tool. Pool A still includes these files via buildInjectionContent
+  // as a deferred-tool safety net for Lead.
 
   const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
   const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));

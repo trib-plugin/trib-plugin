@@ -892,7 +892,7 @@ const TOOL_DEFS = [
     title: 'Recall',
     aiWrapped: true,
     annotations: { title: 'Recall', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Past context — prior decisions, preferences, conversation and work history from the memory store. Accepts a natural-language query or an array of queries; an internal agent fans out in parallel. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for external web (use `search`) or codebase files (use `explore`).',
+    description: 'Past context from the memory store. `query` accepts a string or an array (parallel fan-out). Async by default: returns an `async_...` handle, collected later via `session_result`; pass `wait:true` to block inline. Not for external web (use `search`) or codebase files (use `explore`).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -909,7 +909,7 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. The `cwd` argument is the authoritative search root; when omitted the launch workspace is used (no silent fan-out between roots). Not for past context (use `recall`) or external web (use `search`).',
+    description: 'Internal codebase file and code search. `query` accepts a string or array (parallel fan-out). `cwd` is the authoritative search root (no silent fan-out between roots). Async by default: returns `async_...` handle, collected via `session_result` or `wait:true` inline. Not for past context (use `recall`) or external web (use `search`).',
     inputSchema: {
       type: 'object',
       properties: {
