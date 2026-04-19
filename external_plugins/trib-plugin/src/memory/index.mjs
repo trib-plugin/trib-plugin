@@ -569,7 +569,7 @@ function formatTs(tsMs) {
 async function handleSearch(args) {
   const query = String(args.query ?? '').trim()
   const period = String(args.period ?? '').trim() || undefined
-  const limit = Math.max(1, Number(args.limit ?? 30))
+  const limit = Math.max(1, Number(args.limit ?? 10))
   const offset = Math.max(0, Number(args.offset ?? 0))
   const sort = args.sort != null ? String(args.sort) : 'importance'
   const includeMembers = Boolean(args.includeMembers)

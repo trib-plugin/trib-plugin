@@ -264,10 +264,22 @@ export class AnthropicProvider {
             content: textBlock?.type === 'text' ? textBlock.text : '',
             model: response.model,
             toolCalls,
-            usage: {
-                inputTokens: response.usage.input_tokens,
-                outputTokens: response.usage.output_tokens,
-            },
+            usage: (() => {
+                const input = response.usage.input_tokens || 0;
+                const cacheRead = response.usage.cache_read_input_tokens || 0;
+                const cacheWrite = response.usage.cache_creation_input_tokens || 0;
+                return {
+                    inputTokens: input,
+                    outputTokens: response.usage.output_tokens || 0,
+                    cachedTokens: cacheRead,
+                    cacheWriteTokens: cacheWrite,
+                    // Unified prompt volume — what the model actually ingested,
+                    // regardless of cache splitting. Anthropic reports input
+                    // uncached-only; sum the three billable slots so the
+                    // cross-provider `promptTokens` field has consistent meaning.
+                    promptTokens: input + cacheRead + cacheWrite,
+                };
+            })(),
         };
     }
     async listModels() {

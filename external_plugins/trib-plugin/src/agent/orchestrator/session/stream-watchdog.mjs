@@ -29,15 +29,24 @@ export class StreamStalledAbortError extends Error {
 }
 
 function computeStaleSeconds(entry) {
-    if (!entry || !entry.lastStreamDeltaAt) return null;
-    return Math.round((Date.now() - entry.lastStreamDeltaAt) / 1000);
+    if (!entry) return null;
+    // Prefer the last stream delta when one has arrived; fall back to
+    // askStartedAt so a provider that never streams the first token still
+    // accumulates a stale window the watchdog can act on.
+    const ref = entry.lastStreamDeltaAt || entry.askStartedAt;
+    if (!ref) return null;
+    return Math.round((Date.now() - ref) / 1000);
 }
 
 function shouldSkip(sessionId, entry) {
     if (!sessionId || !entry) return true;
     if (entry.closed) return true;
     if (!entry.controller || entry.controller.signal?.aborted) return true;
-    if (!entry.lastStreamDeltaAt) return true;
+    // Watchdog is active once an ask has started, even before the first
+    // stream delta lands. Connect-phase hangs were invisible before — a
+    // provider that accepted the request but never returned a first token
+    // would stay 'running' forever. askStartedAt closes that gap.
+    if (!entry.lastStreamDeltaAt && !entry.askStartedAt) return true;
     // Server silence while the client runs a tool is expected, not a stall.
     // The next streaming phase refreshes lastStreamDeltaAt on its own.
     if (entry.stage === 'tool_running') return true;

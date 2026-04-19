@@ -475,6 +475,14 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                             usage.raw = { ...(usage.raw || {}), ...event.usage };
                         }
                     }
+                    // Unified prompt volume — what the model actually ingested.
+                    // Anthropic splits input into three billable slots (uncached
+                    // input + cache_read + cache_create); keep them separate for
+                    // cost math but also expose the sum so cross-provider logs
+                    // have a consistent `promptTokens` meaning.
+                    usage.promptTokens = (usage.inputTokens || 0)
+                        + (usage.cachedTokens || 0)
+                        + (usage.cacheWriteTokens || 0);
                 } catch { /* skip malformed events */ }
             }
         }
@@ -807,6 +815,7 @@ export class AnthropicOAuthProvider {
                 outputTokens: result.usage?.outputTokens || 0,
                 cachedTokens: result.usage?.cachedTokens || 0,
                 cacheWriteTokens: result.usage?.cacheWriteTokens || 0,
+                promptTokens: result.usage?.promptTokens || 0,
                 model: liveModel,
                 modelDisplay: _displayModel(liveModel),
                 rawUsage: result.usage?.raw || null,

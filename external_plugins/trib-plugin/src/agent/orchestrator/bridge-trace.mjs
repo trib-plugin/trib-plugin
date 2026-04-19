@@ -147,7 +147,7 @@ function traceBridgeSse({ sessionId, sseParseMs }) {
     });
 }
 
-function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, model, modelDisplay, responseId, rawUsage, provider }) {
+function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cachedTokens, cacheWriteTokens, promptTokens, model, modelDisplay, responseId, rawUsage, provider }) {
     // Phase H: attach normalized cache observation when provider info is available
     let normalized = undefined;
     if (rawUsage && provider) {
@@ -170,6 +170,11 @@ function traceBridgeUsage({ sessionId, iteration, inputTokens, outputTokens, cac
         output_tokens: outputTokens,
         cached_tokens: cachedTokens,
         cache_write_tokens: cacheWriteTokens || 0,
+        // Unified total-prompt field. Anthropic = input+cache_read+cache_write,
+        // OpenAI/Gemini = input_tokens (cached is already a subset).
+        prompt_tokens: typeof promptTokens === 'number'
+            ? promptTokens
+            : ((inputTokens || 0) + (cachedTokens || 0) + (cacheWriteTokens || 0)),
         model: model || null,
         model_display: modelDisplay || null,
         response_id: responseId || null,

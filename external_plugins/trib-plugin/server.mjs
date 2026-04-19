@@ -330,12 +330,35 @@ loadModule('agent')
         {
           def: {
             name: 'memory_search',
-            description: 'Search long-term memory. Returns ranked entries matching the query.',
+            description: 'Search long-term memory. Returns ranked root entries matching the query. Supports exact time filtering via `period`, pagination via `offset`, alternate sort order, and child-member expansion.',
             inputSchema: {
               type: 'object',
               properties: {
-                query: { type: 'string' },
-                limit: { type: 'number' },
+                query: {
+                  type: 'string',
+                  description: 'Natural-language query. Hybrid text + vector search.',
+                },
+                limit: {
+                  type: 'number',
+                  description: 'Max root entries to return (default 10).',
+                },
+                offset: {
+                  type: 'number',
+                  description: 'Skip this many top entries — use for paging (default 0).',
+                },
+                period: {
+                  type: 'string',
+                  description: 'Time filter. Accepted forms: "1h"/"6h"/"24h" (hours back), "1d"/"7d"/"30d" (days back), "YYYY-MM-DD" (specific day), "YYYY-MM-DD~YYYY-MM-DD" (inclusive range), "last" (pre-boot only), "all" (disable — default is 30d when query is set).',
+                },
+                sort: {
+                  type: 'string',
+                  enum: ['importance', 'date'],
+                  description: 'Sort order. "importance" (default) = score-weighted; "date" = reverse chronological.',
+                },
+                includeMembers: {
+                  type: 'boolean',
+                  description: 'When true, expand each root entry with its member chunk ids (default false).',
+                },
               },
               required: ['query'],
             },
@@ -346,13 +369,43 @@ loadModule('agent')
         {
           def: {
             name: 'web_search',
-            description: 'Search the web. Returns ranked results.',
+            description: 'Search the web, GitHub, or restricted domains. Supports plain web search, site filters, search type (web/news/images), and GitHub search/read (repositories, code, issues, files). For GitHub read ops (file/repo/issue/pulls), omit `keywords` and pass `owner`+`repo` (+ `path`/`number` as needed).',
             inputSchema: {
               type: 'object',
               properties: {
-                keywords: { type: 'string' },
+                keywords: {
+                  type: 'string',
+                  description: 'Search query. Required unless running a GitHub read op (file/repo/issue/pulls).',
+                },
+                site: {
+                  type: 'string',
+                  description: 'Restrict results to a domain (e.g. "github.com", "anthropic.com").',
+                },
+                type: {
+                  type: 'string',
+                  enum: ['web', 'news', 'images'],
+                  description: 'Search surface. Default: web.',
+                },
+                github_type: {
+                  type: 'string',
+                  enum: ['repositories', 'code', 'issues', 'file', 'repo', 'issue', 'pulls'],
+                  description: 'GitHub mode. Search (repositories/code/issues) uses keywords. Read (file/repo/issue/pulls) uses owner+repo.',
+                },
+                owner: { type: 'string', description: 'GitHub owner (user or org). Required for github_type file/repo/issue/pulls.' },
+                repo:  { type: 'string', description: 'GitHub repo name. Required for github_type file/repo/issue/pulls.' },
+                path:  { type: 'string', description: 'File path within repo. Required for github_type=file.' },
+                number: { type: 'number', description: 'Issue or PR number. Required for github_type=issue.' },
+                ref:   { type: 'string', description: 'Git ref (branch/tag/SHA). Optional for github_type=file.' },
+                state: {
+                  type: 'string',
+                  enum: ['open', 'closed', 'all'],
+                  description: 'PR filter state for github_type=pulls. Default: open.',
+                },
+                maxResults: {
+                  type: 'number',
+                  description: 'Max results returned (1-20).',
+                },
               },
-              required: ['keywords'],
             },
             annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
           },

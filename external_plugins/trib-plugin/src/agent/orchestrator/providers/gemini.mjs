@@ -302,11 +302,17 @@ export class GeminiProvider {
             content,
             model: useModel,
             toolCalls,
-            usage: response.usageMetadata ? {
-                inputTokens: response.usageMetadata.promptTokenCount || 0,
-                outputTokens: response.usageMetadata.candidatesTokenCount || 0,
-                cachedTokens: response.usageMetadata.cachedContentTokenCount || 0,
-            } : undefined,
+            usage: response.usageMetadata ? (() => {
+                const input = response.usageMetadata.promptTokenCount || 0;
+                return {
+                    inputTokens: input,
+                    outputTokens: response.usageMetadata.candidatesTokenCount || 0,
+                    cachedTokens: response.usageMetadata.cachedContentTokenCount || 0,
+                    // Gemini promptTokenCount is total (cachedContentTokenCount
+                    // is a subset). Alias directly into promptTokens.
+                    promptTokens: input,
+                };
+            })() : undefined,
         };
     }
 

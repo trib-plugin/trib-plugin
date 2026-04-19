@@ -161,10 +161,18 @@ export class OpenAICompatProvider {
             content: choice?.message?.content || '',
             model: response.model,
             toolCalls,
-            usage: response.usage ? {
-                inputTokens: response.usage.prompt_tokens || 0,
-                outputTokens: response.usage.completion_tokens || 0,
-            } : undefined,
+            usage: response.usage ? (() => {
+                const input = response.usage.prompt_tokens || 0;
+                const cached = response.usage.prompt_tokens_details?.cached_tokens || 0;
+                return {
+                    inputTokens: input,
+                    outputTokens: response.usage.completion_tokens || 0,
+                    cachedTokens: cached,
+                    // Chat Completions prompt_tokens is already the total prompt
+                    // the model ingested (cached is a subset) — alias directly.
+                    promptTokens: input,
+                };
+            })() : undefined,
         };
     }
     async _sendViaResponsesAPI(messages, model, tools, opts) {
@@ -251,10 +259,19 @@ export class OpenAICompatProvider {
             content,
             model: response.model,
             toolCalls: toolCalls.length ? toolCalls : undefined,
-            usage: response.usage ? {
-                inputTokens: response.usage.input_tokens || 0,
-                outputTokens: response.usage.output_tokens || 0,
-            } : undefined,
+            usage: response.usage ? (() => {
+                const input = response.usage.input_tokens || 0;
+                const cached = response.usage.input_tokens_details?.cached_tokens
+                    || response.usage.prompt_tokens_details?.cached_tokens
+                    || 0;
+                return {
+                    inputTokens: input,
+                    outputTokens: response.usage.output_tokens || 0,
+                    cachedTokens: cached,
+                    // Responses API input_tokens is total (cached is subset).
+                    promptTokens: input,
+                };
+            })() : undefined,
         };
     }
     async listModels() {

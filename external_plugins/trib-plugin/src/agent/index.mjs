@@ -731,11 +731,26 @@ export async function handleToolCall(name, args, opts = {}) {
           try {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, effectiveCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-            const inTok = fmtTokens(result.usage?.inputTokens);
-            const outTok = fmtTokens(result.usage?.outputTokens);
+            // Usage display — `in` now means "total prompt tokens the model
+            // ingested" (cross-provider unified via usage.promptTokens). The
+            // parenthetical breaks down the cached subset so Anthropic's
+            // cache-heavy calls remain legible without giving the impression
+            // that raw input was huge. Fallback math handles providers that
+            // didn't ship promptTokens yet.
+            const u = result.usage || {};
+            const inputTokens = u.inputTokens || 0;
+            const cacheRead = u.cachedTokens || 0;
+            const cacheWrite = u.cacheWriteTokens || 0;
+            const promptTokens = typeof u.promptTokens === 'number'
+                ? u.promptTokens
+                : (inputTokens + cacheRead + cacheWrite);
+            const cacheTotal = cacheRead + cacheWrite;
+            const inTok = fmtTokens(promptTokens);
+            const outTok = fmtTokens(u.outputTokens || 0);
+            const cacheSeg = cacheTotal > 0 ? ` (cache ${fmtTokens(cacheTotal)})` : '';
             const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
             const content = result.content || '(empty response)';
-            const footer = `${modelLabel} · ${inTok} in · ${outTok} out · ${elapsed}s${loopNote}`;
+            const footer = `${modelLabel} · ${inTok} in${cacheSeg} · ${outTok} out · ${elapsed}s${loopNote}`;
             emit(`[${role}] ${content}\n\n${footer}`);
             updateSessionStatus(session.id, 'idle');
           } catch (err) {

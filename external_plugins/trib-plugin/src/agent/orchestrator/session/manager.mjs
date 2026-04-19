@@ -466,6 +466,20 @@ export function createSession(opts) {
         }
     }
 
+    // allowedTools is a hard whitelist applied after the deny filters. Used by
+    // Pool C hidden roles to shrink the tool schema to the minimum their job
+    // needs (e.g. recall-agent only sees memory_search + read/grep/glob).
+    // Unlike deny, this flips the default from "everything except X" to
+    // "nothing except X" — drops BP_1 cache prefix size dramatically.
+    if (Array.isArray(opts.allowedTools) && opts.allowedTools.length > 0) {
+        const allowSet = new Set(opts.allowedTools.map(n => String(n).toLowerCase()));
+        const before = tools.length;
+        tools = tools.filter(t => allowSet.has(String(t?.name || '').toLowerCase()));
+        if (tools.length !== before) {
+            process.stderr.write(`[session] allowedTools=${opts.allowedTools.join(',')} kept ${tools.length}/${before} tools\n`);
+        }
+    }
+
     // Phase L invariants — throw at session create if role/tools contract
     // is violated. Better to fail loudly here than to spawn a reviewer that
     // silently has Write access.
@@ -628,6 +642,11 @@ export function markSessionAskStart(id) {
     entry.lastStreamDeltaAt = null;
     entry.lastToolCall = null;
     entry.lastError = null;
+    // askStartedAt is the watchdog's fallback reference when a session
+    // hangs before any stream delta arrives. Without it, a provider that
+    // never returns a first token would stall forever because the watchdog
+    // keys solely on lastStreamDeltaAt.
+    entry.askStartedAt = Date.now();
     entry.updatedAt = Date.now();
 }
 export function markSessionStreamDelta(id) {
@@ -653,6 +672,7 @@ export function markSessionDone(id) {
     const entry = _touchRuntime(id);
     entry.stage = 'done';
     entry.lastError = null;
+    entry.askStartedAt = null;
     entry.updatedAt = Date.now();
 }
 export function markSessionError(id, msg) {
@@ -660,6 +680,7 @@ export function markSessionError(id, msg) {
     const entry = _touchRuntime(id);
     entry.stage = 'error';
     entry.lastError = msg ? String(msg).slice(0, 200) : null;
+    entry.askStartedAt = null;
     entry.updatedAt = Date.now();
 }
 export function getSessionRuntime(id) {
@@ -912,6 +933,11 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                 const outputTokens = result.usage.outputTokens || 0;
                 const cacheReadTokens = result.usage.cachedTokens || 0;
                 const cacheWriteTokens = result.usage.cacheWriteTokens || 0;
+                // Unified total-prompt field. Providers set it explicitly;
+                // fallback sums the billable slots when missing (Anthropic-shape).
+                const promptTokens = typeof result.usage.promptTokens === 'number'
+                    ? result.usage.promptTokens
+                    : (inputTokens + cacheReadTokens + cacheWriteTokens);
                 let costUsd = result.usage.costUsd || 0;
                 if (!costUsd) {
                     try {
@@ -936,6 +962,7 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
                     outputTokens,
                     cacheReadTokens,
                     cacheWriteTokens,
+                    promptTokens,
                     prefixHash: prefixHashForLog,
                     costUsd,
                 });

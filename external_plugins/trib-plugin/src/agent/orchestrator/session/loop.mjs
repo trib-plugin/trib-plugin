@@ -191,6 +191,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 lastUsage.outputTokens += response.usage.outputTokens || 0;
                 lastUsage.cachedTokens = (lastUsage.cachedTokens || 0) + (response.usage.cachedTokens || 0);
                 lastUsage.cacheWriteTokens = (lastUsage.cacheWriteTokens || 0) + (response.usage.cacheWriteTokens || 0);
+                lastUsage.promptTokens = (lastUsage.promptTokens || 0) + (response.usage.promptTokens || 0);
             }
             else {
                 lastUsage = {
@@ -198,6 +199,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     outputTokens: response.usage.outputTokens || 0,
                     cachedTokens: response.usage.cachedTokens || 0,
                     cacheWriteTokens: response.usage.cacheWriteTokens || 0,
+                    promptTokens: response.usage.promptTokens || 0,
                     raw: response.usage.raw,
                 };
             }

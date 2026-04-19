@@ -37,6 +37,28 @@ function pluginRoot() {
         || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
 }
 
+// Per-role tool whitelist for Pool C hidden roles. Only the tools a role
+// actually needs survive the `allowedTools` filter in manager.mjs; the rest
+// are stripped so the BP_1 tool schema (and the shard it caches) shrinks to
+// the minimum. Roles not listed here fall through to tools=full minus the
+// read-permission deny list (legacy behaviour).
+const POOL_C_TOOL_KEEP = Object.freeze({
+    // recall-agent is well-scoped: the only call path is memory_search, with
+    // read/grep/glob as optional sanity checks. Narrow whitelist is safe.
+    'recall-agent':  ['memory_search', 'read', 'grep', 'glob'],
+    // search-agent fan-outs to web_search; fetch and read help when a query
+    // contains a URL or `owner/repo` hint (the agent sometimes follows up).
+    'search-agent':  ['web_search', 'fetch', 'read'],
+    // explorer is deliberately left OPEN (tools=full). Bench showed broad
+    // "find me X across the codebase" queries regress (prompt +60k, iter×3)
+    // when narrowed to read/grep/glob — the explorer legitimately needs
+    // fetch/bash for edge cases the narrow set can't cover. Keep it full
+    // until we build scenario coverage that proves a safe subset.
+    //
+    // cycle1/cycle2 also left as fallthrough — they run as monolithic
+    // chunkers and the exact tool set they touch hasn't been profiled yet.
+});
+
 /**
  * Lazy-cached per-role snippet loader for Pool C hidden roles.
  *
@@ -181,6 +203,13 @@ export function makeBridgeLlm(opts = {}) {
             // per-role snippet rides in the user-message header instead so the
             // system prompt stays bit-identical with Pool B.
             sessionOpts.skipRoleReminder = true;
+            // Per-role tool whitelist — shrinks the BP_1 tool schema from
+            // tools=full (~15 after read-deny) to the 3–5 a hidden role
+            // actually uses. Saves ~3k prompt tokens per Pool C session;
+            // compounding with N-agent parallel fan-out. Unrecognised roles
+            // fall through to tools=full minus the permission deny list.
+            const keep = POOL_C_TOOL_KEEP[opts.role];
+            if (keep) sessionOpts.allowedTools = keep;
         }
         const header = buildUnifiedHeader({ permission, role: opts.role });
         const snippet = isPoolC ? getRoleSnippet(opts.role) : '';

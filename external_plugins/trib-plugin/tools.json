@@ -273,6 +273,10 @@
             { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
           ],
           "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional workspace hint forwarded to the recall agent. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL."
         }
       },
       "required": ["query"],
@@ -294,6 +298,10 @@
             { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
           ],
           "description": "Natural language query, or an array of queries for multi-angle parallel fan-out. Include a URL to trigger scrape; mention `owner/repo` for GitHub code/issues."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies."
         }
       },
       "required": ["query"],

@@ -387,6 +387,12 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                             inputTokens: u.input_tokens || 0,
                             outputTokens: u.output_tokens || 0,
                             cachedTokens: extractCachedTokens(u),
+                            // OpenAI Codex reports input_tokens as the total
+                            // prompt volume (cached portion is a subset, not
+                            // additive). Alias into the cross-provider
+                            // `promptTokens` field so downstream loggers have
+                            // uniform semantics.
+                            promptTokens: u.input_tokens || 0,
                             raw: u,
                         };
                     }
@@ -526,6 +532,7 @@ export async function sendViaWebSocket({
         inputTokens: result.usage?.inputTokens || 0,
         outputTokens: result.usage?.outputTokens || 0,
         cachedTokens: result.usage?.cachedTokens || 0,
+        promptTokens: result.usage?.promptTokens || 0,
         model: liveModel,
         modelDisplay: displayModel ? displayModel(liveModel) : liveModel,
         responseId: result.responseId || null,
