@@ -254,9 +254,11 @@ export function composeSystemPrompt(opts) {
 
     // ── BP4-adjacent: tier3Reminder (messages user, not system) ─────────
     // Per-call variance only — task brief, skills hint, project context,
-    // memory recap. This rides in the user message as <system-reminder>
-    // and is never cached stably across calls.
+    // memory recap, effective cwd. This rides in the user message as
+    // <system-reminder> so the tool user sees it once up front without
+    // polluting the per-turn prompt body.
     const tier3Parts = [];
+    if (opts.cwd) tier3Parts.push('# cwd\n' + opts.cwd);
     if (opts.taskBrief) tier3Parts.push('# task-brief\n' + opts.taskBrief);
     if (opts.hasSkills && !skip.skills) {
         tier3Parts.push('# skills\nCall `skills_list` to discover available skills.');

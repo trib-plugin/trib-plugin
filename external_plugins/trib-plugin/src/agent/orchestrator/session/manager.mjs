@@ -419,6 +419,10 @@ export function createSession(opts) {
         roleSnippet: opts.roleSnippet || null,
         taskBrief: opts.taskBrief || null,
         projectContext: projectContext || null,
+        // Effective cwd rides in tier3Reminder so explore-like tools know
+        // their search root without needing to shove "Override cwd:" into
+        // the user message body (that used to fragment the shard prefix).
+        cwd: opts.cwd || null,
     });
     // Two system blocks — BP2 (shared invariant) and BP3 (role-specific
     // invariant). Anthropic multi-block system pins each with its own

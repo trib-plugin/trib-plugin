@@ -168,25 +168,32 @@ function requiresSystemPrefix(model) {
 // falls into the standard pool and Opus/Sonnet return 429. Splitting into
 // two blocks — [prefix, rest] — keeps both routing and user instructions.
 function buildSystemBlocks(systemText, model, cacheControl) {
-    const stripped = typeof systemText === 'string' ? systemText.trim() : '';
+    // Accept either a single string (legacy callers) or an array of strings —
+    // the manager pushes multiple system messages (systemBase, systemRole)
+    // under the unified-shard policy, and each one becomes its own Anthropic
+    // content block with its own cache_control breakpoint (BP2 + BP3 + …).
+    const texts = Array.isArray(systemText)
+        ? systemText.map(s => typeof s === 'string' ? s.trim() : '').filter(Boolean)
+        : (typeof systemText === 'string' && systemText.trim()) ? [systemText.trim()] : [];
     const gated = requiresSystemPrefix(model);
 
-    if (!gated) {
-        if (!stripped) return [];
-        const block = { type: 'text', text: stripped };
+    const blocks = [];
+    if (gated) {
+        blocks.push({ type: 'text', text: CLAUDE_CODE_SYSTEM_PREFIX });
+    }
+    for (let i = 0; i < texts.length; i++) {
+        let body = texts[i];
+        // Strip a duplicated Claude Code prefix only from the first block
+        // (legacy callers sometimes baked it in).
+        if (gated && i === 0 && body.startsWith(CLAUDE_CODE_SYSTEM_PREFIX)) {
+            body = body.slice(CLAUDE_CODE_SYSTEM_PREFIX.length).trim();
+            if (!body) continue;
+        }
+        const block = { type: 'text', text: body };
         if (cacheControl) block.cache_control = cacheControl;
-        return [block];
+        blocks.push(block);
     }
-
-    const prefixBlock = { type: 'text', text: CLAUDE_CODE_SYSTEM_PREFIX };
-    let rest = stripped;
-    if (rest.startsWith(CLAUDE_CODE_SYSTEM_PREFIX)) {
-        rest = rest.slice(CLAUDE_CODE_SYSTEM_PREFIX.length).trim();
-    }
-    if (!rest) return [prefixBlock];
-    const restBlock = { type: 'text', text: rest };
-    if (cacheControl) restBlock.cache_control = cacheControl;
-    return [prefixBlock, restBlock];
+    return blocks;
 }
 
 const MODELS = [
@@ -538,17 +545,21 @@ function findTier3Index(chatMsgs) {
 function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
-    const rawSystemText = systemMsgs.map(m => m.content).join('\n\n') || '';
+    // Pass each system message text as its own entry so the Anthropic body
+    // gets N separate content blocks — role-variant systemRole can then
+    // have its own BP independent of the shared systemBase.
+    const systemTexts = systemMsgs.map(m => m.content);
     const maxTokens = resolveMaxTokens(model);
     const opts = sendOpts || {};
     const ttls = resolveCacheTtls(opts);
-    const systemBlocks = buildSystemBlocks(rawSystemText, model, ttls?.system);
+    const systemBlocks = buildSystemBlocks(systemTexts, model, ttls?.system);
 
-    // 4-BP budget layout: tools + system + tier3 + messages-tail.
-    // Tier 3 gets a dedicated 1h slot (role/permission meta, stable per
-    // dispatch) so it hits across the whole tool loop. messages-tail claims
-    // whatever remains (typically 1 slot, sliding 5m).
-    const systemBpUsed = ttls.system && systemBlocks.some(b => b.cache_control) ? 1 : 0;
+    // 4-BP budget layout: tools + system (N-1 BPs for N system blocks) +
+    // tier3 + messages-tail. systemBpUsed now counts each cacheable system
+    // block — under Stage 3 the manager produces two (systemBase, systemRole)
+    // so this typically lands on 2 slots. The messages-tail budget shrinks
+    // accordingly.
+    const systemBpUsed = ttls.system ? systemBlocks.filter(b => b.cache_control).length : 0;
     const toolsBpUsed = ttls.tools && tools?.length ? 1 : 0;
     const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
     const tier3BpUsed = tier3Idx >= 0 ? 1 : 0;

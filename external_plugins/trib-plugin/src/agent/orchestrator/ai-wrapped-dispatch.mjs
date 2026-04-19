@@ -72,40 +72,19 @@ export async function dispatchAiWrapped(name, args, ctx) {
   return ok(merged)
 }
 
-function buildExplorerPrompt(query, cwdOverride) {
-  const lines = []
-  if (cwdOverride) {
-    lines.push(`Override cwd: ${cwdOverride}`)
-    lines.push('')
-  }
-  lines.push(`Query: ${query}`)
-  lines.push('')
-  lines.push('Use your read-only tools (glob / grep / read) to find grounded answers. Return concise prose with concrete file paths.')
-  return lines.join('\n')
+function buildExplorerPrompt(query, _cwdOverride) {
+  // cwd now rides in the session's tier3Reminder (<system-reminder># cwd),
+  // not in the user message body — keeps the message prefix shareable with
+  // recall/search calls for cache hit purposes.
+  return `Query: ${query}\n\nUse your read-only tools (glob / grep / read / multi_read) to find grounded answers. Return concise prose with concrete file paths.`
 }
 
-function buildRecallPrompt(query, cwdOverride) {
-  const lines = []
-  if (cwdOverride) {
-    lines.push(`Override cwd: ${cwdOverride}`)
-    lines.push('')
-  }
-  lines.push(`Query: ${query}`)
-  lines.push('')
-  lines.push('Use the `memory_search` tool to retrieve ranked entries. Return concise prose citing entry ids inline.')
-  return lines.join('\n')
+function buildRecallPrompt(query, _cwdOverride) {
+  return `Query: ${query}\n\nUse the \`memory_search\` tool to retrieve ranked entries. Return concise prose citing entry ids inline.`
 }
 
-function buildSearchPrompt(query, cwdOverride) {
-  const lines = []
-  if (cwdOverride) {
-    lines.push(`Override cwd: ${cwdOverride}`)
-    lines.push('')
-  }
-  lines.push(`Query: ${query}`)
-  lines.push('')
-  lines.push('Use the `web_search` tool to retrieve ranked results. Return concise prose with cited URLs.')
-  return lines.join('\n')
+function buildSearchPrompt(query, _cwdOverride) {
+  return `Query: ${query}\n\nUse the \`web_search\` tool to retrieve ranked results. Return concise prose with cited URLs.`
 }
 
 function ok(text) {
