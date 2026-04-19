@@ -118,6 +118,7 @@ async function startServer(cwd) {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
+      windowsHide: true,
     });
     _state.child = child;
     child.on('error', (e) => {

@@ -22,7 +22,41 @@ function logSchedule(msg) {
 }
 import { isHoliday } from "./holidays.mjs";
 import { tryRead } from "./settings.mjs";
+import cron from "node-cron";
 const TICK_INTERVAL = 6e4;
+// Legacy time formats handled by the tick() path. Anything else is
+// forwarded to node-cron for parsing/scheduling.
+const LEGACY_TIME_RE = /^(?:\d{2}:\d{2}|every\d+m|hourly|daily)$/;
+function isCronExpression(time) {
+  if (typeof time !== "string" || !time) return false;
+  if (LEGACY_TIME_RE.test(time)) return false;
+  const tokens = time.trim().split(/\s+/);
+  if (tokens.length !== 5 && tokens.length !== 6) return false;
+  try { return cron.validate(time); } catch { return false; }
+}
+// Build a {hhmm, dateStr, dow} snapshot in the given IANA TZ. Falls
+// back to local Date math when tz is absent.
+function tzSnapshot(now, tz) {
+  if (!tz) {
+    return {
+      hhmm: `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+      dateStr: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`,
+      dow: now.getDay(),
+    };
+  }
+  const parts = new Intl.DateTimeFormat("en-US", {
+    hour12: false, timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", weekday: "short",
+  }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  const dowMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    hhmm: `${hour}:${parts.minute}`,
+    dateStr: `${parts.year}-${parts.month}-${parts.day}`,
+    dow: dowMap[parts.weekday] ?? now.getDay(),
+  };
+}
 const FREQUENCY_MAP = {
   1: { daily: 3, idleMinutes: 180 },
   // 3/day, 3h guard
@@ -71,6 +105,8 @@ class Scheduler {
   // cached result for today
   quietSchedule = null;
   // global quiet hours "HH:MM-HH:MM"
+  cronJobs = /* @__PURE__ */ new Map();
+  // name -> node-cron ScheduledTask for cron-expression entries
   constructor(nonInteractive, interactive, proactive, channelsConfig, botConfig) {
     this.nonInteractive = nonInteractive.filter((s) => s.enabled !== false);
     this.interactive = interactive.filter((s) => s.enabled !== false);
@@ -200,20 +236,82 @@ ${Scheduler.INSTANCE_UUID}`;
     });
     logSchedule(`${this.nonInteractive.length} non-interactive, ${this.interactive.length} interactive, proactive=${this.proactive ? 'on' : 'off'}
 `);
+    this.registerCronJobs();
     this.tick();
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL);
+  }
+  /** Register any cron-expression entries with node-cron. Legacy
+   *  HH:MM / everyNm / hourly / daily entries stay on the tick() path. */
+  registerCronJobs() {
+    const all = [
+      ...this.nonInteractive.map((s) => ({ schedule: s, type: "non-interactive" })),
+      ...this.interactive.map((s) => ({ schedule: s, type: "interactive" })),
+    ];
+    for (const { schedule: s, type } of all) {
+      if (!isCronExpression(s.time)) continue;
+      try {
+        const task = cron.schedule(s.time, () => this.onCronFire(s, type), {
+          timezone: s.timezone || undefined,
+          name: s.name,
+        });
+        this.cronJobs.set(s.name, task);
+        logSchedule(`registered cron "${s.name}" = "${s.time}"${s.timezone ? ` tz=${s.timezone}` : ""}\n`);
+      } catch (err) {
+        process.stderr.write(`trib-plugin scheduler: failed to register cron "${s.name}" (${s.time}): ${err}\n`);
+      }
+    }
+  }
+  /** Fire path for a cron-triggered entry. Applies day/quiet/holiday
+   *  guards against the schedule's TZ (or local when absent). */
+  async onCronFire(schedule, type) {
+    const now = /* @__PURE__ */ new Date();
+    const tz = schedule.timezone || null;
+    const snap = tzSnapshot(now, tz);
+    const isWeekend = snap.dow === 0 || snap.dow === 6;
+    const days = schedule.days ?? "daily";
+    if (!this.matchesDays(days, snap.dow, isWeekend)) return;
+    if (this.holidayCountry) {
+      try {
+        const holiday = await isHoliday(this.tzDate(now, tz), this.holidayCountry);
+        if (holiday && (schedule.skipHolidays || days === "weekday")) {
+          logSchedule(`skipping "${schedule.name}" \u2014 public holiday\n`);
+          return;
+        }
+      } catch {}
+    }
+    if (schedule.dnd && this.isQuietHours(now, tz)) return;
+    if (this.shouldSkip(schedule.name)) return;
+    this.lastFired.set(schedule.name, now.toISOString());
+    this.fireTimed(schedule, type).catch(
+      (err) => process.stderr.write(`trib-plugin scheduler: ${schedule.name} failed: ${err}\n`)
+    );
+  }
+  /** Produce a Date whose calendar day matches the TZ-adjusted dateStr,
+   *  so holiday lookups by country work against the right day. */
+  tzDate(now, tz) {
+    if (!tz) return now;
+    const snap = tzSnapshot(now, tz);
+    return new Date(`${snap.dateStr}T12:00:00Z`);
   }
   stop() {
     if (this.tickTimer) {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
+    this.destroyCronJobs();
+  }
+  destroyCronJobs() {
+    for (const [, task] of this.cronJobs) {
+      try { task.destroy(); } catch {}
+    }
+    this.cronJobs.clear();
   }
   restart() {
     if (this.tickTimer) {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
+    this.destroyCronJobs();
     try {
       unlinkSync(Scheduler.SCHEDULER_LOCK);
     } catch {
@@ -247,7 +345,11 @@ ${Scheduler.INSTANCE_UUID}`;
     }
     this.deferred.clear();
     this.skippedToday.clear();
-    if (options.restart === false) return;
+    if (options.restart === false) {
+      // Caller owns lifecycle; still drop stale cron bindings so they don't fire against old config.
+      this.destroyCronJobs();
+      return;
+    }
     this.restart();
   }
   getStatus() {
@@ -350,9 +452,15 @@ ${Scheduler.INSTANCE_UUID}`;
       ...this.interactive.map((s) => ({ schedule: s, type: "interactive" }))
     ];
     for (const { schedule: s, type } of allTimed) {
+      // Cron-expression entries are handled by node-cron; skip here to avoid double-fire.
+      if (this.cronJobs.has(s.name)) continue;
+      const tz = s.timezone || null;
+      const snap = tz ? tzSnapshot(now, tz) : { hhmm, dateStr, dow };
+      const snapIsWeekend = snap.dow === 0 || snap.dow === 6;
+      const snapKey = `${snap.dateStr}T${snap.hhmm}`;
       const days = s.days ?? "daily";
-      if (!this.matchesDays(days, dow, isWeekend)) continue;
-      if (this.todayIsHoliday && (s.skipHolidays || days === "weekday")) {
+      if (!this.matchesDays(days, snap.dow, snapIsWeekend)) continue;
+      if (this.todayIsHoliday && !tz && (s.skipHolidays || days === "weekday")) {
         const skipKey = `holiday:${dateStr}:${s.name}`;
         if (!this.lastFired.has(skipKey)) {
           this.lastFired.set(skipKey, dateStr);
@@ -361,7 +469,7 @@ ${Scheduler.INSTANCE_UUID}`;
         }
         continue;
       }
-      if (s.dnd && this.isQuietHours(now)) continue;
+      if (s.dnd && this.isQuietHours(now, tz)) continue;
       const intervalMatch = s.time.match(/^every(\d+)m$/);
       let shouldFire = false;
       if (intervalMatch) {
@@ -370,12 +478,22 @@ ${Scheduler.INSTANCE_UUID}`;
         const lastTime = lastKey ? new Date(lastKey).getTime() : 0;
         shouldFire = Date.now() - lastTime >= intervalMs;
       } else if (s.time === "hourly") {
-        shouldFire = now.getMinutes() === 0 && this.lastFired.get(s.name) !== key;
+        shouldFire = snap.hhmm.endsWith(":00") && this.lastFired.get(s.name) !== snapKey;
       } else {
-        shouldFire = s.time === hhmm && this.lastFired.get(s.name) !== key;
+        shouldFire = s.time === snap.hhmm && this.lastFired.get(s.name) !== snapKey;
       }
       if (!shouldFire) continue;
       if (this.shouldSkip(s.name)) continue;
+      // TZ-specific holiday check for tz-bound schedules (local-TZ schedules use the cached todayIsHoliday above).
+      if (tz && this.holidayCountry && (s.skipHolidays || days === "weekday")) {
+        try {
+          const holiday = await isHoliday(this.tzDate(now, tz), this.holidayCountry);
+          if (holiday) {
+            logSchedule(`skipping "${s.name}" \u2014 public holiday\n`);
+            continue;
+          }
+        } catch {}
+      }
       this.lastFired.set(s.name, now.toISOString());
       this.fireTimed(s, type).catch(
         (err) => process.stderr.write(`trib-plugin scheduler: ${s.name} failed: ${err}
@@ -424,13 +542,16 @@ ${Scheduler.INSTANCE_UUID}`;
     const dayList = days.split(",").map((d) => d.trim().toLowerCase());
     return dayList.some((d) => Scheduler.DAY_ABBRS[d] === dow);
   }
-  /** Check if current time is within global quiet hours (quiet.schedule) */
-  isQuietHours(now) {
+  /** Check if current time is within global quiet hours (quiet.schedule).
+   *  tz optional — when set, HH:MM is evaluated in the given IANA zone. */
+  isQuietHours(now, tz) {
     if (!this.quietSchedule) return false;
     const parts = this.quietSchedule.split("-");
     if (parts.length !== 2) return false;
     const [start, end] = parts;
-    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const hhmm = tz
+      ? tzSnapshot(now, tz).hhmm
+      : `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     if (start > end) return hhmm >= start || hhmm < end;
     return hhmm >= start && hhmm < end;
   }

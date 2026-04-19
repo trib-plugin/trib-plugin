@@ -375,15 +375,16 @@ ${item.bufferText.trim()}` : item.bufferText.trim();
   /** Forward tool log line to Discord */
   async forwardToolLog(toolLine) {
     if (!this.channelId) return;
-    const { text: newText, nextFileSize } = this.extractNewText();
-    const message = newText ? formatForDiscord(newText) + "\n\n" + toolLine : toolLine;
+    // Advance the transcript marker without embedding newText into the
+    // toolLog payload — the text transcript is already delivered through
+    // the regular auto-forward path (forwardNewText), so duplicating it
+    // here is what caused double-posts to Discord.
+    const { nextFileSize } = this.extractNewText();
     this.sendQueue.push({
       type: "toolLog",
-      text: message,
+      text: toolLine,
       nextFileSize,
-      bufferText: newText,
-      preformatted: true,
-      skipHashDedup: true
+      preformatted: true
     });
     void this.drainQueue();
   }

@@ -776,7 +776,7 @@ export async function handleToolCall(name, args, opts = {}) {
           let result = null;
           const toolCallLog = [];
           updateSessionStatus(session.id, 'running');
-          emit(`[${role}] started · ${modelLabel}`);
+          emit(`${role} started`);
           try {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, effectiveCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
@@ -806,7 +806,7 @@ export async function handleToolCall(name, args, opts = {}) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
             if (err instanceof SessionClosedError) {
-              emit(`[${role}] ⏹ cancelled\n\n${modelLabel}`);
+              emit(`${role} cancelled`);
               // Cancellation isn't an error; flip to idle so the next sweep
               // pass can reclaim the file instead of leaving a 'running'
               // zombie until the 24h tombstone window expires.
@@ -815,7 +815,7 @@ export async function handleToolCall(name, args, opts = {}) {
               const info = err.info || {};
               const header = `⚠ stream stalled — ${info.staleSeconds}s no delta (stage: ${info.stage || 'unknown'})`;
               const body = `last tool call: ${info.lastToolCall || 'none'}\nprovider likely hung. Retry with a shorter prompt or a different provider.`;
-              emit(`[${role}] ${header}\n${body}\n\n${modelLabel}`);
+              emit(`${role} error: ${header}\n${body}`);
               updateSessionStatus(session.id, 'error');
             } else if (err instanceof ToolLoopAbortError) {
               const info = err.info || {};
@@ -825,10 +825,10 @@ export async function handleToolCall(name, args, opts = {}) {
                 `last error: ${String(info.errorSample || '').slice(0, 200)}`,
                 `args: ${String(info.argsSample || '').slice(0, 200)}`,
               ].join('\n');
-              emit(`[${role}] ${header}\n${body}\n\n${modelLabel}`);
+              emit(`${role} error: ${header}\n${body}`);
               updateSessionStatus(session.id, 'error');
             } else {
-              emit(`[${role}] ❌ ${errorMessage}\n\n${modelLabel}`);
+              emit(`${role} error: ${errorMessage}`);
               updateSessionStatus(session.id, 'error');
             }
           } finally {

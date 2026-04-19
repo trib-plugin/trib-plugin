@@ -571,7 +571,7 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     // so this typically lands on 2 slots. The messages-tail budget shrinks
     // accordingly.
     const systemBpUsed = ttls.system ? systemBlocks.filter(b => b.cache_control).length : 0;
-    const toolsBpUsed = ttls.tools && tools?.length ? 1 : 0;
+    const toolsBpUsed = 0;
     const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
     const tier3BpUsed = tier3Idx >= 0 ? 1 : 0;
     const usedSlots = toolsBpUsed + systemBpUsed + tier3BpUsed;
@@ -598,15 +598,10 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     if (systemBlocks.length) body.system = systemBlocks;
 
     if (tools?.length) {
-        const converted = toAnthropicTools(tools);
-        // Place cache_control on the last tool to cache the entire tools array.
-        if (ttls.tools && converted.length > 0) {
-            converted[converted.length - 1] = {
-                ...converted[converted.length - 1],
-                cache_control: ttls.tools,
-            };
-        }
-        body.tools = converted;
+        // Tools ride on system[0]'s prefix cache — Anthropic evaluates tools
+        // before system, so the first system block's cache_control already
+        // covers the whole tools array. No separate BP needed here.
+        body.tools = toAnthropicTools(tools);
     }
 
     if (opts.effort && EFFORT_BUDGET[opts.effort]) {
