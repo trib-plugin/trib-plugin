@@ -781,71 +781,6 @@ function acquireSessionLock(sessionId) {
     });
 }
 
-// Phase D-2 — Shard-level cold-cache singleflight.
-//
-// The relevant cache-concurrency unit is the provider shard, not the logical
-// profile. Anthropic's Sonnet shard and OpenAI's Codex shard are completely
-// separate caches even when both serve the same `sub-task` profile; locking
-// them under one key (v0.6.50 behaviour) either over-serialised warm warm
-// crossings or under-locked concurrent cold writes. The shard key used here
-// is `${provider}:${model}:${profileId}` — provider separates physical
-// shards, model guards against cross-model prefix reuse, and profileId
-// stands in for prefix-hash until the registry has a hash on file. The
-// first concurrent cold ask goes through and pays the write premium; peers
-// on the same shard wait up to COLD_FLIGHT_TIMEOUT_MS and then ride warm.
-const _shardColdFlight = new Map();
-const COLD_FLIGHT_TIMEOUT_MS = 60_000;
-
-function _shardKey(provider, model, profileId) {
-    if (!provider || !profileId) return null;
-    const modelPart = model || '_';
-    return `${provider}:${modelPart}:${profileId}`;
-}
-
-function _isShardWarm(provider, model, profileId) {
-    if (!provider || !profileId || !_smartBridgeApi) return false;
-    const entry = _smartBridgeApi.registry?.data?.profiles?.[profileId]?.[provider];
-    if (!entry) return false;
-    // Registry does not yet track `model` per entry; treat model mismatch as
-    // unknown-warm rather than cold because Anthropic/OpenAI prefix caches
-    // are keyed on prompt content (which encodes the model implicitly when
-    // tools embed the model name). Good enough for singleflight gating.
-    return (entry.expiresAt || 0) > Date.now();
-}
-
-async function _waitForColdShard(provider, model, profileId) {
-    const key = _shardKey(provider, model, profileId);
-    if (!key || _isShardWarm(provider, model, profileId)) return;
-    const inFlight = _shardColdFlight.get(key);
-    if (!inFlight) return;
-    try {
-        await Promise.race([
-            inFlight,
-            new Promise((_, reject) => setTimeout(
-                () => reject(new Error('cold-flight timeout')),
-                COLD_FLIGHT_TIMEOUT_MS,
-            )),
-        ]);
-    } catch {
-        // Timeout or in-flight failure — proceed anyway. Worst case we pay a
-        // second write premium, which is the bounded fallback.
-    }
-}
-
-function _registerShardColdFlight(provider, model, profileId) {
-    const key = _shardKey(provider, model, profileId);
-    if (!key) return () => {};
-    let resolve;
-    const flight = new Promise(r => { resolve = r; });
-    _shardColdFlight.set(key, flight);
-    return () => {
-        resolve();
-        if (_shardColdFlight.get(key) === flight) {
-            _shardColdFlight.delete(key);
-        }
-    };
-}
-
 export async function askSession(sessionId, prompt, context, onToolCall, cwdOverride) {
     const _askStartedAt = Date.now();
     const unlock = await acquireSessionLock(sessionId);
@@ -860,14 +795,6 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         unlock();
         throw new SessionClosedError(sessionId, 'session already closed');
     }
-    // Phase D-2 — shard-level cold-cache singleflight. Serialise only when
-    // the specific (provider, model, profile) shard is cold. Same profile on
-    // a different provider holds its own warm/cold state, so Anthropic
-    // traffic never blocks OpenAI traffic or vice versa.
-    await _waitForColdShard(preSession.provider, preSession.model, preSession.profileId);
-    const releaseColdFlight = !_isShardWarm(preSession.provider, preSession.model, preSession.profileId)
-        ? _registerShardColdFlight(preSession.provider, preSession.model, preSession.profileId)
-        : () => {};
     const askGeneration = typeof preSession.generation === 'number' ? preSession.generation : 0;
     const runtime = _touchRuntime(sessionId);
     // Fresh controller per ask — the previous ask's controller may have aborted.
@@ -1030,10 +957,6 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         if (entry && entry.generation === askGeneration) {
             entry.controller = null;
         }
-        // Phase C Ship 5 — release cold-flight waiters. Called unconditionally
-        // so a failed cache write doesn't leave peers blocked until the
-        // 60s timeout.
-        try { releaseColdFlight(); } catch { /* ignore */ }
         unlock();
     }
 }

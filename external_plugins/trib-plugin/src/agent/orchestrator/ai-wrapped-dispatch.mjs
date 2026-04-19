@@ -10,9 +10,10 @@
  * pays the cold-write; peers ride the warm prefix.
  *
  * Async completion pushes into the caller's session via the existing
- * `notifications/claude/channel` bridge with `meta.type = 'async_result'`
- * so the Lead integrates the answer on its next turn instead of burning
- * LLM round-trips polling session_result.
+ * `notifications/claude/channel` bridge. The notify meta carries
+ * `type: 'async_result'` plus an `instruction` string so the Lead
+ * integrates the answer on its next turn instead of burning LLM
+ * round-trips polling session_result.
  */
 
 import { homedir } from 'os'
@@ -197,7 +198,7 @@ function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
     : `[async-result ${id}] ${tool} complete — ${querySummary}`
   const content = `${header}\n\n${body}`
   try {
-    notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step and do not re-poll session_result for this handle.` })
+    notify(content, { type: 'async_result', tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step and do not re-poll session_result for this handle.` })
   } catch {
     // Telemetry-style best-effort — never let the push crash the dispatch.
   }

@@ -6,15 +6,18 @@
  *
  * Thresholds:
  *    60s — soft: emit tool_stream_stalled telemetry once per session.
- *   120s — hard: abort the session's controller with a StreamStalledAbortError,
+ *   600s — hard: abort the session's controller with a StreamStalledAbortError,
  *                emit tool_stream_aborted telemetry, stop tracking it.
+ *                Kept well above the provider adapter's own idle ceiling
+ *                (openai-oauth-ws.mjs WS_STREAM_IDLE_MS = 300s) so this
+ *                watchdog acts as a backup net, not the primary cutoff.
  *
  * Tick interval is 15s, so a real stall is noticed within (threshold + 15s).
  */
 import { traceStreamAborted, traceStreamStalled } from '../bridge-trace.mjs';
 
 const SOFT_STALL_MS = 60_000;
-const HARD_STALL_MS = 120_000;
+const HARD_STALL_MS = 600_000;
 const TICK_MS = 15_000;
 
 let _tickHandle = null;

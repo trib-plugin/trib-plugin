@@ -37,9 +37,11 @@ const WS_IDLE_MS = 5 * 60_000;
 const WS_HANDSHAKE_TIMEOUT_MS = 30_000;
 // Codex can stall for 50+s between chunks on long reasoning requests
 // (observed: iter 5 of a multi-file review produced sse_parse_ms=58265).
-// 60s was too tight — raising to 120s gives headroom without letting a
-// truly dead socket hang forever.
-const WS_STREAM_IDLE_MS = 120_000;
+// Iter-boundary reasoning pauses after large tool_output batches (e.g.
+// 8× multi_read) have been observed past 120s, so raising the ceiling
+// to 300s. armPreStreamWatchdog releases on first chunk, so healthy
+// requests are unaffected by the larger cap.
+const WS_STREAM_IDLE_MS = 300_000;
 // WS socket pool buckets are keyed by `poolKey` (the per-call sessionId)
 // to isolate parallel bridge invocations — each gets its own socket so
 // a second caller cannot grab a sibling's mid-turn entry (Codex would
