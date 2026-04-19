@@ -133,13 +133,25 @@ export const BUILTIN_TOOLS = [
     {
         name: 'grep',
         searchHint: 'search regex content ripgrep',
-        description: 'A powerful search tool built on ripgrep.\n\nUsage:\n- ALWAYS use grep for content search. NEVER invoke `grep` or `rg` via the bash tool.\n- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+").\n- Filter files with the `glob` parameter (e.g., "*.ts", "*.{js,jsx}").\n- Output modes: "files_with_matches" (default — paths only, lowest token cost), "content" (matched lines with path+line number), "count" (per-file match counts). Prefer `files_with_matches` for broad searches and chase down specific files with `read` afterwards.\n- `head_limit` caps output entries (default 100 across all modes).',
+        description: 'A powerful search tool built on ripgrep.\n\nUsage:\n- ALWAYS use grep for content search. NEVER invoke `grep` or `rg` via the bash tool.\n- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+").\n- `pattern` accepts a single regex or an array of regexes — an array is OR-joined inside one rg invocation (a single turn replaces N separate grep calls).\n- Filter files with the `glob` parameter (e.g., "*.ts", "*.{js,jsx}"); `glob` also accepts an array for multi-extension OR filtering.\n- Output modes: "files_with_matches" (default — paths only, lowest token cost), "content" (matched lines with path+line number), "count" (per-file match counts). Prefer `files_with_matches` for broad searches and chase down specific files with `read` afterwards.\n- `head_limit` caps output entries (default 100 across all modes).',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { type: 'string', description: 'Regex pattern to search for in file contents' },
+                pattern: {
+                    anyOf: [
+                        { type: 'string' },
+                        { type: 'array', items: { type: 'string' }, minItems: 1 },
+                    ],
+                    description: 'Regex pattern (or array for OR-join).',
+                },
                 path: { type: 'string', description: 'Directory or file to search in (default: cwd)' },
-                glob: { type: 'string', description: 'File pattern filter (e.g., "*.ts")' },
+                glob: {
+                    anyOf: [
+                        { type: 'string' },
+                        { type: 'array', items: { type: 'string' }, minItems: 1 },
+                    ],
+                    description: 'File pattern filter — string or array of globs (OR-joined).',
+                },
                 output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'], description: 'Output mode. Defaults to "files_with_matches".' },
                 head_limit: { type: 'number', description: 'Max entries to return (default 100). Pass 0 for unlimited.' },
             },
@@ -149,11 +161,17 @@ export const BUILTIN_TOOLS = [
     {
         name: 'glob',
         searchHint: 'find files filename pattern wildcard',
-        description: 'Find files matching a glob pattern.\n\nUsage:\n- Use for filename / path-pattern search. NEVER invoke `find` or `ls` via the bash tool when glob suffices.\n- Returns file paths only (not contents). Use `grep` for content search and `read` to inspect specific files.\n- Patterns like "**/*.ts" or "src/**/*.{js,jsx}" are supported.',
+        description: 'Find files matching a glob pattern.\n\nUsage:\n- Use for filename / path-pattern search. NEVER invoke `find` or `ls` via the bash tool when glob suffices.\n- Returns file paths only (not contents). Use `grep` for content search and `read` to inspect specific files.\n- `pattern` accepts a single glob or an array of globs — an array is OR-joined (one call replaces N separate glob calls).\n- Patterns like "**/*.ts" or "src/**/*.{js,jsx}" are supported.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { type: 'string', description: 'Glob pattern (e.g., "**/*.ts", "src/**/*.js")' },
+                pattern: {
+                    anyOf: [
+                        { type: 'string' },
+                        { type: 'array', items: { type: 'string' }, minItems: 1 },
+                    ],
+                    description: 'Glob pattern or array of patterns (OR-joined).',
+                },
                 path: { type: 'string', description: 'Base directory (default: cwd)' },
             },
             required: ['pattern'],
@@ -307,11 +325,17 @@ export async function executeBuiltinTool(name, args, cwd) {
             }
         }
         case 'grep': {
-            const pattern = args.pattern;
-            if (!pattern)
+            const rawPattern = args.pattern;
+            const patterns = Array.isArray(rawPattern)
+                ? rawPattern.filter(p => typeof p === 'string' && p)
+                : (rawPattern ? [String(rawPattern)] : []);
+            if (patterns.length === 0)
                 return 'Error: pattern is required';
             const searchPath = args.path || '.';
-            const fileGlob = args.glob;
+            const rawGlob = args.glob;
+            const globPatterns = Array.isArray(rawGlob)
+                ? rawGlob.filter(g => typeof g === 'string' && g)
+                : (rawGlob ? [String(rawGlob)] : []);
             // output_mode mirrors Anthropic GrepTool: files_with_matches
             // (default — paths only, lowest token cost), content (matched
             // lines + path + line number), count (per-file match counts).
@@ -328,9 +352,12 @@ export async function executeBuiltinTool(name, args, cwd) {
                     rgArgs.push('--no-heading', '--line-number');
                 }
                 for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
-                if (fileGlob)
-                    rgArgs.push('--glob', fileGlob);
-                rgArgs.push(pattern, searchPath);
+                for (const g of globPatterns) rgArgs.push('--glob', g);
+                // Use -e for each pattern so rg OR-joins them in a single
+                // process. `-e` takes the pattern as a flag value, which also
+                // avoids ambiguity with patterns starting with `-`.
+                for (const p of patterns) rgArgs.push('-e', p);
+                rgArgs.push(searchPath);
                 const { stdout } = await execAsync(`rg ${rgArgs.map(a => `"${a}"`).join(' ')}`, {
                     encoding: 'utf-8',
                     timeout: 10000,
@@ -348,8 +375,11 @@ export async function executeBuiltinTool(name, args, cwd) {
             }
         }
         case 'glob': {
-            const pattern = args.pattern;
-            if (!pattern)
+            const rawPattern = args.pattern;
+            const patterns = Array.isArray(rawPattern)
+                ? rawPattern.filter(p => typeof p === 'string' && p)
+                : (rawPattern ? [String(rawPattern)] : []);
+            if (patterns.length === 0)
                 return 'Error: pattern is required';
             const basePath = args.path || '.';
             try {
@@ -360,7 +390,8 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Defender piggybacks on every file open.
                 const rgArgs = ['--files'];
                 for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
-                rgArgs.push('--glob', pattern, basePath);
+                for (const p of patterns) rgArgs.push('--glob', p);
+                rgArgs.push(basePath);
                 const { stdout } = await execAsync(`rg ${rgArgs.map(a => `"${a}"`).join(' ')}`, {
                     encoding: 'utf-8',
                     timeout: 10000,
