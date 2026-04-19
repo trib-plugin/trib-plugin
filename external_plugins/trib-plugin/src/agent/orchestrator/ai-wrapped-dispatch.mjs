@@ -131,7 +131,8 @@ export async function dispatchAiWrapped(name, args, ctx) {
       }
       pushAsyncResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
     })
-    return ok(`Async dispatch started (${name}, ${queries.length} ${queries.length === 1 ? 'query' : 'queries'}). Poll with session_result id="${id}".`)
+    const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`
+    return ok(`${name} started — ${queryCount}. Result via session_result('${id}').`)
   }
 
   // One Pool C session per query, dispatched concurrently. allSettled so a
@@ -190,15 +191,15 @@ function resolveCwd(input) {
 function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
   const notify = ctx?.notifyFn
   if (typeof notify !== 'function') return
-  const querySummary = queries.length === 1
-    ? String(queries[0]).slice(0, 160)
+  const queryCount = queries.length === 1
+    ? `1 query`
     : `${queries.length} queries`
   const header = flags.error
-    ? `[async-result ${id}] ${tool} failed`
-    : `[async-result ${id}] ${tool} complete — ${querySummary}`
+    ? `${tool} failed`
+    : `${tool} — ${queryCount}`
   const content = `${header}\n\n${body}`
   try {
-    notify(content, { type: 'async_result', tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step and do not re-poll session_result for this handle.` })
+    notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step and do not re-poll session_result for this handle.` })
   } catch {
     // Telemetry-style best-effort — never let the push crash the dispatch.
   }
