@@ -229,6 +229,36 @@ export const BUILTIN_TOOLS = [
         },
     },
 ];
+// --- Short-TTL result cache for idempotent read-only tools ---
+//
+// Anthropic prompt cache already covers the messages layer; this layer
+// dedupes back-to-back builtin tool calls with identical args so spawning
+// ripgrep or re-reading the same file is avoided when the agent loops on
+// the same query in a tight iter. Any mutation (write / edit / bash /
+// multi_edit / batch_edit) invalidates the whole cache — safer than
+// trying to invalidate a subset, and the TTL is short enough that the
+// lost hit ratio is small.
+const RESULT_CACHE = new Map(); // key → { ts, value }
+const RESULT_CACHE_TTL_MS = 30_000;
+const RESULT_CACHE_MAX_ENTRIES = 200;
+function _cacheGet(key) {
+    const entry = RESULT_CACHE.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.ts > RESULT_CACHE_TTL_MS) {
+        RESULT_CACHE.delete(key);
+        return null;
+    }
+    return entry.value;
+}
+function _cacheSet(key, value) {
+    if (RESULT_CACHE.size >= RESULT_CACHE_MAX_ENTRIES) {
+        const oldest = RESULT_CACHE.keys().next().value;
+        if (oldest) RESULT_CACHE.delete(oldest);
+    }
+    RESULT_CACHE.set(key, { ts: Date.now(), value });
+}
+function _cacheInvalidateAll() { RESULT_CACHE.clear(); }
+
 // --- Blocked commands for safety ---
 const BLOCKED_PATTERNS = [
     /\brm\s+-rf\s+[/~]/i,
@@ -279,7 +309,11 @@ export async function executeBuiltinTool(name, args, cwd) {
             catch (err) {
                 const e = err;
                 const combined = `${e.stdout || ''}${e.stderr || e.message || 'Command failed'}`.trim();
+                _cacheInvalidateAll();
                 return capShellOutput(combined);
+            }
+            finally {
+                _cacheInvalidateAll();
             }
         }
         case 'read': {
@@ -289,6 +323,9 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir))
                 return `Error: path outside allowed scope — ${filePath}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
+            const cacheKey = `read|${fullPath}|${args.offset || 0}|${args.limit || 2000}`;
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
             // throw a small error response when the file is too big rather
             // than truncating to 25K tokens of content. Throw is decisively
@@ -368,6 +405,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     }
                 }
                 writeFileSync(fullPath, content, 'utf-8');
+                _cacheInvalidateAll();
                 return `Edited: ${filePath} (${edits.length} replacements applied)`;
             } catch (err) {
                 return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -401,6 +439,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return `Error: path outside allowed scope — ${filePath}`;
             try {
                 writeFileSync(resolveAgainstCwd(filePath, workDir), content, 'utf-8');
+                _cacheInvalidateAll();
                 return `Written: ${filePath}`;
             }
             catch (err) {
@@ -425,6 +464,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     return `Error: old_string found ${count} times — must be unique`;
                 const updated = content.replace(oldStr, newStr);
                 writeFileSync(fullPath, updated, 'utf-8');
+                _cacheInvalidateAll();
                 return `Edited: ${filePath}`;
             }
             catch (err) {
@@ -449,6 +489,9 @@ export async function executeBuiltinTool(name, args, cwd) {
             const outputMode = args.output_mode || 'files_with_matches';
             const headLimitRaw = args.head_limit;
             const headLimit = headLimitRaw === 0 ? Infinity : (headLimitRaw || 100);
+            const cacheKey = `grep|${patterns.join('\x01')}|${searchPath}|${globPatterns.join('\x01')}|${outputMode}|${headLimit}`;
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             try {
                 const rgArgs = ['--color', 'never'];
                 if (outputMode === 'files_with_matches') {
@@ -475,7 +518,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 const truncated = allLines.length > lines.length
                     ? `\n... [${allLines.length - lines.length} more entries]`
                     : '';
-                return capShellOutput((lines.join('\n') + truncated) || '(no matches)');
+                const out = capShellOutput((lines.join('\n') + truncated) || '(no matches)');
+                _cacheSet(cacheKey, out);
+                return out;
             }
             catch {
                 return '(no matches)';
@@ -489,6 +534,9 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (patterns.length === 0)
                 return 'Error: pattern is required';
             const basePath = args.path || '.';
+            const cacheKey = `glob|${patterns.join('\x01')}|${basePath}`;
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             try {
                 // Use rg --files with glob for cross-platform compatibility.
                 // Default ignores keep rg from walking node_modules / .git /
@@ -505,7 +553,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                     cwd: workDir,
                 });
                 const files = stdout.split('\n').filter(Boolean).slice(0, 100);
-                return capShellOutput(files.join('\n') || '(no files found)');
+                const out = capShellOutput(files.join('\n') || '(no files found)');
+                _cacheSet(cacheKey, out);
+                return out;
             }
             catch {
                 return '(no files found)';
