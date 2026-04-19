@@ -177,10 +177,19 @@ export function buildSkillToolDefs(skills) {
  * Read <cwd>/PROJECT.md if present. Used to inject project-scoped guidance
  * into Tier 3 `# project-context` without polluting Tier 2 (Pool B prefix).
  */
+// PROJECT.md lookup per cwd — single readFileSync but still happens on
+// every createSession. Memoise for consistency with the other template
+// caches; the 60s TTL means a manually edited PROJECT.md shows up on the
+// next window.
+const _projectMdCache = new Map();
+const PROJECT_MD_TTL = 60_000;
 export function collectProjectMd(cwd) {
     const projectDir = cwd || process.cwd();
-    const content = readSafe(join(projectDir, 'PROJECT.md'));
-    return content || '';
+    const cached = _projectMdCache.get(projectDir);
+    if (cached && Date.now() - cached.ts < PROJECT_MD_TTL) return cached.value;
+    const content = readSafe(join(projectDir, 'PROJECT.md')) || '';
+    _projectMdCache.set(projectDir, { ts: Date.now(), value: content });
+    return content;
 }
 
 // --- Role template loading (Phase B §4 — UI-managed) ---
