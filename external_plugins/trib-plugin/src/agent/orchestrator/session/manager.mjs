@@ -25,14 +25,30 @@ const _rulesBuilder = (() => {
     try { return _require('../../../../lib/rules-builder.cjs'); } catch { return null; }
 })();
 
+// bridgeRules is the Pool B shared prefix (MCP instructions + agent rules +
+// CLAUDE.md common sections + user agent configs). It's rebuilt from disk
+// by rules-builder.cjs on every call; since createSession fires on every
+// Pool B/C bridge turn, that's a lot of redundant readFileSync + concat.
+// 60s TTL is short enough that a user rule edit propagates quickly while
+// the hot path reuses the cached string.
+let _bridgeRulesCache = null;
+let _bridgeRulesCacheTime = 0;
+const BRIDGE_RULES_CACHE_TTL = 60_000;
 function _buildBridgeRules() {
     if (!_rulesBuilder || typeof _rulesBuilder.buildBridgeInjectionContent !== 'function') return '';
+    const now = Date.now();
+    if (_bridgeRulesCache !== null && now - _bridgeRulesCacheTime < BRIDGE_RULES_CACHE_TTL) {
+        return _bridgeRulesCache;
+    }
     const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
         || join(homedir(), '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
     const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
         || join(homedir(), '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
     try {
-        return _rulesBuilder.buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR });
+        const built = _rulesBuilder.buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR });
+        _bridgeRulesCache = built;
+        _bridgeRulesCacheTime = now;
+        return built;
     } catch (e) {
         process.stderr.write(`[session] bridge rules build failed: ${e.message}\n`);
         return '';

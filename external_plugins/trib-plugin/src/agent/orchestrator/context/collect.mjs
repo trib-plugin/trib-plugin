@@ -180,20 +180,34 @@ export function collectProjectMd(cwd) {
  * each spawn and injects the result into the Tier 3 system-reminder via
  * composeSystemPrompt's `roleTemplate` slot.
  */
+// Role template cache — file read + frontmatter parse on every
+// createSession under the unified-shard policy becomes measurable when a
+// long session fan-outs N Pool C sub-sessions. 60s TTL keeps UI edits
+// visible without hammering the disk on every bridge turn.
+const _roleTemplateCache = new Map();
+const ROLE_TEMPLATE_TTL = 60_000;
 export function loadRoleTemplate(role, dataDir) {
     if (!role || !dataDir) return null;
+    const key = `${role}|${dataDir}`;
+    const cached = _roleTemplateCache.get(key);
+    if (cached && Date.now() - cached.ts < ROLE_TEMPLATE_TTL) return cached.value;
     const path = join(dataDir, 'roles', `${role}.md`);
     const content = readSafe(path);
-    if (!content) return null;
+    if (!content) {
+        _roleTemplateCache.set(key, { ts: Date.now(), value: null });
+        return null;
+    }
     const fm = parseFrontmatter(content);
     const body = content.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
     const description = (fm.description || '').trim();
     const permission = (fm.permission || '').trim().toLowerCase();
-    return {
+    const template = {
         description: description || null,
         permission: permission || null,
         body: body || null,
     };
+    _roleTemplateCache.set(key, { ts: Date.now(), value: template });
+    return template;
 }
 
 // --- Compose system prompt — Phase B Tier 2 / Tier 3 split ---
