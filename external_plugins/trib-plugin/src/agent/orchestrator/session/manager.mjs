@@ -505,10 +505,17 @@ export function createSession(opts) {
     // surfaces. Stripping them shrinks the tool-schema prefix (~9 KB from
     // BP1) without losing any capability agents actually use during work.
     const bridgeDeny = opts.owner === 'bridge' ? [
+        // Discord / channel (Lead-only)
         'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
         'activate_channel_bridge',
+        // Session lifecycle (Lead-only)
         'create_session', 'close_session', 'list_sessions', 'list_models',
+        // Schedule / config admin (Lead-only)
         'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
+        // Bridge dispatch — Pool B/C agents do the work; Lead does the
+        // dispatch. Recall/search/explore stay (they're info retrieval,
+        // not role delegation).
+        'bridge',
     ] : [];
     const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {

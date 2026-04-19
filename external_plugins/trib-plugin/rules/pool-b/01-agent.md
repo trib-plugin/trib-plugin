@@ -106,7 +106,9 @@ on it.
 - File mutation: `write`, `edit`, `multi_edit`, `batch_edit`
 - Shell: `bash`
 - Memory writes: `memory` (remember / cycle actions)
-- Cross-agent dispatch: `bridge` (nested call to other roles)
+
+Agents cannot delegate to other bridges — `bridge` is Lead's tool. If
+a task needs another role, report back and let Lead dispatch.
 
 If a denied tool seems necessary to complete the task, stop and report
 back to Lead instead of invoking it. No loopholes.
