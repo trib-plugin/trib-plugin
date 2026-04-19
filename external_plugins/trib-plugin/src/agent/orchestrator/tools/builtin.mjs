@@ -106,6 +106,31 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
+        name: 'multi_read',
+        searchHint: 'read multiple files batch parallel',
+        description: 'Read several files in a single tool call — each entry in `reads` is processed with the same rules as `read` (size cap, offset/limit, cat -n formatting). Prefer this over chaining multiple `read` calls when you already know the paths you want, because it collapses N iterations into 1 and saves a round-trip of prompt growth per file.\n\nReturns a single string with each file delimited by a `### <path>` header. Per-file errors are surfaced inline and do not abort the batch.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                reads: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Absolute or cwd-relative file path to read' },
+                            offset: { type: 'number', description: 'Start line (0-based). Defaults to 0.' },
+                            limit: { type: 'number', description: 'Max lines to read. Defaults to 2000.' },
+                        },
+                        required: ['path'],
+                    },
+                    minItems: 1,
+                    description: 'Per-file read specs. Each entry accepts the same arguments as `read`.',
+                },
+            },
+            required: ['reads'],
+        },
+    },
+    {
         name: 'grep',
         searchHint: 'search regex content ripgrep',
         description: 'A powerful search tool built on ripgrep.\n\nUsage:\n- ALWAYS use grep for content search. NEVER invoke `grep` or `rg` via the bash tool.\n- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+").\n- Filter files with the `glob` parameter (e.g., "*.ts", "*.{js,jsx}").\n- Output modes: "files_with_matches" (default — paths only, lowest token cost), "content" (matched lines with path+line number), "count" (per-file match counts). Prefer `files_with_matches` for broad searches and chase down specific files with `read` afterwards.\n- `head_limit` caps output entries (default 100 across all modes).',
@@ -225,6 +250,20 @@ export async function executeBuiltinTool(name, args, cwd) {
             catch (err) {
                 return `Error: ${err instanceof Error ? err.message : String(err)}`;
             }
+        }
+        case 'multi_read': {
+            const reads = Array.isArray(args.reads) ? args.reads : [];
+            if (reads.length === 0) return 'Error: reads array is required';
+            // Parallel dispatch of the individual reads via the same case
+            // above — reuses size cap, isSafePath, line-number formatting.
+            // Per-file errors come back as their own string and are pasted
+            // into the aggregate rather than aborting the whole batch.
+            const results = await Promise.all(reads.map(async (entry) => {
+                if (!entry || !entry.path) return { path: '(missing-path)', body: 'Error: path is required' };
+                const body = await executeBuiltinTool('read', entry, workDir);
+                return { path: entry.path, body };
+            }));
+            return results.map(r => `### ${r.path}\n${r.body}`).join('\n\n');
         }
         case 'write': {
             const filePath = args.path;

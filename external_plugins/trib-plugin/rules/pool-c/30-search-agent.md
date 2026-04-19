@@ -51,3 +51,23 @@ or issues:
 
 When the caller phrasing is unambiguous, pass the structured arguments
 rather than hoping the dispatcher infers them from `keywords` alone.
+
+## Per-query cost cap
+
+Hard budget per caller query slot: **exactly 1 `web_search` tool call
+when possible, 2 calls absolute maximum**. First call should already
+carry the right filters (`site`, `github_type`, `type`) and a narrow
+`maxResults: 5` so a single round fills the answer. A second call is
+only justified when the first came back truly sparse (0–1 results);
+in that case widen `maxResults` to 10 and drop the filters that
+likely over-constrained it. Never issue a third call for the same
+query slot.
+
+Default `maxResults: 3`. Raise to 5 only for broad-survey questions
+("summarize the state of X"); never pass it unset — the provider
+default is large and returns more snippets than you need to write a
+tight answer.
+
+For multi-query batches (array input), each query slot gets its own
+1–2 call budget independently — do not carry over budget across
+slots to corroborate a different query's answer.

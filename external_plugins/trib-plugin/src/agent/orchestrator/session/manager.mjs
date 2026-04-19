@@ -172,22 +172,21 @@ function _getMcpToolsCached() {
 // MCP tools are not filtered by name here — MCP surfaces too many per-plugin
 // actions to pattern-match reliably. Role system-prompts declare which MCP
 // actions are allowed (see "Tool Categories" in the common guide).
-const WRITE_TOOL_NAMES = new Set(['write', 'edit', 'multi_edit', 'notebook_edit']);
+const WRITE_TOOL_NAMES = new Set(['write', 'edit']);
 
 // Permission → hard deny list. Applied on top of the soft permission filter so
-// high-risk tools (bash, write/edit) cannot slip through even when they carry
-// no readOnlyHint:false annotation. Callers can still pass `opts.disallowedTools`
+// high-risk tools cannot slip through even when they carry no
+// readOnlyHint:false annotation. Callers can still pass `opts.disallowedTools`
 // to extend the list per dispatch; that merges with the permission default.
-// `recall` / `search` / `explore` / `bridge` are the orchestrator-managed
-// aiWrapped MCP tools. Every Pool C hidden role (recall-agent / search-agent /
-// explorer / cycle1-agent / …) would otherwise see them in the tools=full
-// shared shard and could call them back, spawning another Pool C session —
-// an infinite recursion. Keep them in the read deny list so hidden roles
-// can only use their dedicated executors (memory_search / web_search / glob
-// / grep / read) and never re-enter dispatchAiWrapped.
+//
+// Scope discipline: this list only encodes the PERMISSION semantics — what a
+// given permission level means as a tool category. Cross-cutting concerns
+// (like the Pool C recursion-break on recall/search/explore/bridge) belong
+// at the caller site via `opts.disallowedTools` (see bridge-llm.mjs Pool C
+// branch) so that Pool B read-permission callers keep their investigation
+// tools intact.
 const PERMISSION_DENY = {
-    read:      ['bash', 'write', 'edit', 'notebookedit', 'notebook_edit', 'multi_edit',
-                'recall', 'search', 'explore', 'bridge'],
+    read:      ['bash', 'write', 'edit'],
     readwrite: [],
     'read-write': [],
     full:      [],

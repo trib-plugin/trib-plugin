@@ -330,13 +330,16 @@ loadModule('agent')
         {
           def: {
             name: 'memory_search',
-            description: 'Search long-term memory. Returns ranked root entries matching the query. Supports exact time filtering via `period`, pagination via `offset`, alternate sort order, and child-member expansion.',
+            description: 'Search long-term memory. Returns ranked root entries matching the query. Supports exact time filtering via `period`, pagination via `offset`, alternate sort order, and child-member expansion. Pass `query` as an array to fan out across multiple angles in a single tool call — output groups results per query with `### Query: <text>` headers.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: {
-                  type: 'string',
-                  description: 'Natural-language query. Hybrid text + vector search.',
+                  anyOf: [
+                    { type: 'string', minLength: 1 },
+                    { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+                  ],
+                  description: 'Natural-language query, or an array of queries to fan out in one tool call. Hybrid text + vector search per entry.',
                 },
                 limit: {
                   type: 'number',

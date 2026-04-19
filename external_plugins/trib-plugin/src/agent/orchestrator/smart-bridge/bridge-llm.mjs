@@ -43,20 +43,16 @@ function pluginRoot() {
 // the minimum. Roles not listed here fall through to tools=full minus the
 // read-permission deny list (legacy behaviour).
 const POOL_C_TOOL_KEEP = Object.freeze({
-    // recall-agent is well-scoped: the only call path is memory_search, with
-    // read/grep/glob as optional sanity checks. Narrow whitelist is safe.
-    'recall-agent':  ['memory_search', 'read', 'grep', 'glob'],
-    // search-agent fan-outs to web_search; fetch and read help when a query
-    // contains a URL or `owner/repo` hint (the agent sometimes follows up).
+    // recall-agent: memory_search + read/multi_read/grep/glob for sanity checks.
+    'recall-agent':  ['memory_search', 'read', 'multi_read', 'grep', 'glob'],
+    // search-agent: web_search + fetch/read for URL follow-up.
     'search-agent':  ['web_search', 'fetch', 'read'],
-    // explorer is deliberately left OPEN (tools=full). Bench showed broad
-    // "find me X across the codebase" queries regress (prompt +60k, iter×3)
-    // when narrowed to read/grep/glob — the explorer legitimately needs
-    // fetch/bash for edge cases the narrow set can't cover. Keep it full
-    // until we build scenario coverage that proves a safe subset.
-    //
-    // cycle1/cycle2 also left as fallthrough — they run as monolithic
-    // chunkers and the exact tool set they touch hasn't been profiled yet.
+    // explorer: read-only filesystem navigation. `multi_read` lets a single
+    // turn ingest multiple files after a `grep` narrowed the candidates —
+    // direct answer to the `grep → read → read → …` chain that used to
+    // dominate iter cost.
+    'explorer':      ['read', 'multi_read', 'grep', 'glob'],
+    // cycle1/cycle2 left as fallthrough — unprofiled.
 });
 
 /**
@@ -210,6 +206,13 @@ export function makeBridgeLlm(opts = {}) {
             // fall through to tools=full minus the permission deny list.
             const keep = POOL_C_TOOL_KEEP[opts.role];
             if (keep) sessionOpts.allowedTools = keep;
+            // Recursion break — Pool C sessions must never re-enter the
+            // aiWrapped dispatchers. A recall-agent calling `recall` would
+            // spawn another recall-agent session, and so on. Applied here
+            // instead of PERMISSION_DENY.read so that Pool B (user custom)
+            // roles with permission=read keep their investigation tools
+            // intact for legitimate use.
+            sessionOpts.disallowedTools = ['recall', 'search', 'explore', 'bridge'];
         }
         const header = buildUnifiedHeader({ permission, role: opts.role });
         const snippet = isPoolC ? getRoleSnippet(opts.role) : '';

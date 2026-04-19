@@ -567,6 +567,21 @@ function formatTs(tsMs) {
 }
 
 async function handleSearch(args) {
+  // Array query — fan out in parallel, each query runs its own hybrid search
+  // path, and results are grouped in the response so the caller sees one
+  // ranked list per angle. Collapses what would otherwise be N sequential
+  // tool calls into a single invocation.
+  if (Array.isArray(args.query)) {
+    const queries = args.query.map(q => String(q || '').trim()).filter(Boolean)
+    if (queries.length === 0) return { text: '' }
+    const rest = { ...args }
+    delete rest.query
+    const parts = await Promise.all(queries.map(async (q) => {
+      const sub = await handleSearch({ ...rest, query: q })
+      return `### Query: ${q}\n${sub.text || '(no results)'}`
+    }))
+    return { text: parts.join('\n\n---\n\n') }
+  }
   const query = String(args.query ?? '').trim()
   const period = String(args.period ?? '').trim() || undefined
   const limit = Math.max(1, Number(args.limit ?? 10))
