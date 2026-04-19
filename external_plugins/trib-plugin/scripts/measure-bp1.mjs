@@ -37,6 +37,8 @@ const BRIDGE_UNSAFE_TOOLS = new Set([
     'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
     // Role delegation
     'bridge',
+    // Memory admin (recall stays for reads)
+    'memory',
 ]);
 
 const TOKENS_PER_BYTE = 0.25; // ≈ 4 chars/token for English-ish prose

@@ -516,6 +516,10 @@ export function createSession(opts) {
         // dispatch. Recall/search/explore stay (they're info retrieval,
         // not role delegation).
         'bridge',
+        // Memory admin — cycle1/cycle2/flush/rebuild/prune are maintenance;
+        // remember() is user-triggered via Lead. Agents read memory via
+        // `recall` (kept), so there's no capability loss for the work path.
+        'memory',
     ] : [];
     const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {
