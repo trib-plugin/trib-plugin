@@ -545,9 +545,9 @@ const toolDefinitions = [
 
 const SEARCH_INSTRUCTIONS = (() => {
   try {
-    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'pool-b', '03-mcp-search.md'), 'utf8').trim();
+    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'search.md'), 'utf8').trim();
   } catch (e) {
-    process.stderr.write(`[search] rules/pool-b/03-mcp-search.md load failed: ${e.message}\n`);
+    process.stderr.write(`[search] rules/search.md load failed: ${e.message}\n`);
     return '';
   }
 })();

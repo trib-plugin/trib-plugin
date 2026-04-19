@@ -8,10 +8,10 @@
  *
  * Pool A injection order (lead):
  *   1.  general.md        (rules/pool-a/01-general.md)
- *   2.  memory.md         (rules/_shared/memory.md — when memory-config.json enabled)
- *   3.  search.md         (rules/_shared/search.md — when search-config.json enabled)
- *   3b. explore.md        (rules/_shared/explore.md — always; internal file search)
- *   3c. lsp.md            (rules/_shared/lsp.md — always; TS/JS semantic symbol lookup)
+ *   2.  memory.md         (rules/memory.md — when memory-config.json enabled)
+ *   3.  search.md         (rules/memory.md — when search-config.json enabled)
+ *   3b. explore.md        (rules/explore.md — always; internal file search)
+ *   3c. lsp.md            (rules/lsp.md — always; TS/JS semantic symbol lookup)
  *   4.  channels.md       (rules/pool-a/02-channels.md)
  *   5.  team.md           (rules/pool-a/03-team.md)
  *   6.  workflow.md       (rules/pool-a/04-workflow.md)
@@ -93,7 +93,7 @@ function extractCommonClaudeMdSections(content) {
 function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
   const POOL_A_DIR = path.join(RULES_DIR, 'pool-a');
-  const SHARED_DIR = path.join(RULES_DIR, '_shared');
+  const SHARED_DIR = RULES_DIR;
   const HISTORY_DIR = path.join(DATA_DIR, 'history');
 
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
@@ -182,12 +182,11 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  * Build the Pool B injection content (Bridge sessions — Worker / Sub / Maintenance).
  *
  * Included:
- *   - MCP instructions (rules/pool-b/02-mcp-memory.md, 03-mcp-search.md, 04-mcp-explore.md)
  *   - Agent MD (rules/pool-b/01-agent.md, plugin-fixed Pool B rules)
- *   - rules/_shared/memory.md (when memory enabled)
- *   - rules/_shared/search.md (when search enabled)
- *   - rules/_shared/explore.md (always; internal file search)
- *   - rules/_shared/lsp.md (always; TS/JS semantic symbol lookup)
+ *   - rules/memory.md (when memory enabled)
+ *   - rules/search.md (when search enabled)
+ *   - rules/explore.md (always; internal file search)
+ *   - rules/lsp.md (always; TS/JS semantic symbol lookup)
  *   - CLAUDE.md common sections (user-authored custom sections outside the
  *     managed block and outside the Lead-only H1/H2 blacklist)
  *   - User: <name> (<title>)
@@ -205,17 +204,10 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
   const POOL_B_DIR = path.join(RULES_DIR, 'pool-b');
-  const SHARED_DIR = path.join(RULES_DIR, '_shared');
+  const SHARED_DIR = RULES_DIR;
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
-
-  const mcpBlocks = ['02-mcp-memory.md', '03-mcp-search.md', '04-mcp-explore.md']
-    .map(f => readOptional(path.join(POOL_B_DIR, f)))
-    .filter(Boolean);
-  if (mcpBlocks.length > 0) {
-    parts.push(['# MCP Instructions', '', mcpBlocks.join('\n\n')].join('\n'));
-  }
 
   const agentContent = readOptional(path.join(POOL_B_DIR, '01-agent.md'));
   if (agentContent) parts.push(agentContent);
