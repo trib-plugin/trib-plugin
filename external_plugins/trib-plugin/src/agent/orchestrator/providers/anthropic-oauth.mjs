@@ -520,11 +520,22 @@ function resolveCacheTtls(opts) {
         if (v === 'none') return null;
         return fallback;
     };
+    // BP budget (4 total) under Stage 3 unified-shard:
+    //   BP1 tools       — 1h
+    //   BP2 systemBase  — 1h  (shared across roles)
+    //   BP3 systemRole  — 1h  (role-specific, one shard per hidden role)
+    //   BP4 messages    — 5m sliding tail (tool_result cache across iter)
+    // Tier 3 no longer gets its own BP: the stable parts of tier3 (cwd,
+    // skills, project-context) still ride in a system-reminder user message
+    // whose prefix gets covered by the messages-tail BP once the sliding
+    // tail reaches back that far (iter 2+). Burning a dedicated BP on tier3
+    // starves messages-tail, which turned every tool_result in a multi-iter
+    // loop into uncached input.
     return {
-        tools: pick('tools', CACHE_TTL_STABLE),        // default: 1h
-        system: pick('system', CACHE_TTL_STABLE),      // default: 1h
-        tier3: pick('tier3', CACHE_TTL_STABLE),        // default: 1h (role meta)
-        messages: pick('messages', CACHE_TTL_VOLATILE), // default: 5m (sliding tail)
+        tools: pick('tools', CACHE_TTL_STABLE),
+        system: pick('system', CACHE_TTL_STABLE),
+        tier3: pick('tier3', null),
+        messages: pick('messages', CACHE_TTL_VOLATILE),
     };
 }
 
