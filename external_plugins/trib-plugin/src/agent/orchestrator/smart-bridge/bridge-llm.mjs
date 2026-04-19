@@ -43,12 +43,10 @@ function pluginRoot() {
 // the minimum. Roles not listed here fall through to tools=full minus the
 // read-permission deny list (legacy behaviour).
 // Unified-shard policy — Pool C roles keep the same tool schema as every
-// other Pool B session so that BP_1 is bit-identical across roles and all
-// bridge sessions share one provider-side cache shard. Enforcement of
-// per-role tool usage (e.g. "recall-agent only calls memory_search + read
-// + grep + glob") lives in the role prompts (rules/pool-c/*.md), not in
-// the tool schema. Recursion break for aiWrapped tools is handled in
-// ai-wrapped-dispatch.mjs via the callerSessionId → hidden-role check.
+// other Pool B session so BP_1 is bit-identical across roles and the
+// provider-side cache shard is shared. Per-role behaviour is steered via
+// rules/pool-c/*.md (system BP3) and runtime guards (loop.mjs write-block
+// + ai-wrapped-dispatch recursion break).
 const POOL_C_TOOL_KEEP = Object.freeze({});
 
 /**
@@ -191,24 +189,16 @@ export function makeBridgeLlm(opts = {}) {
         };
         if (permission) sessionOpts.permission = permission;
         if (isPoolC) {
-            // Hidden roles don't get the Pool B role-template reminder — their
-            // per-role snippet rides in the user-message header instead so the
-            // system prompt stays bit-identical with Pool B.
             sessionOpts.skipRoleReminder = true;
-            // Unified-shard policy — no allowedTools/disallowedTools here.
-            // Every session (Pool B or Pool C) receives the same tool array
-            // so they all share one provider-side cache shard. Behaviour
-            // is shaped by rules/pool-c/<role>.md and runtime guards:
-            //   - loop.mjs READ_BLOCKED_TOOLS rejects bash/write/edit for
-            //     permission=read sessions at call time.
-            //   - ai-wrapped-dispatch.mjs rejects aiWrapped re-entry when
-            //     the caller session is a hidden role (recursion break).
+            // Pool C role snippet rides in the session's systemRole block
+            // (BP3) now, not in the user message — keeps the user message
+            // a clean query so its prefix is shareable across roles.
+            sessionOpts.roleSnippet = getRoleSnippet(opts.role) || null;
         }
-        const header = buildUnifiedHeader({ permission, role: opts.role });
-        const snippet = isPoolC ? getRoleSnippet(opts.role) : '';
-        const finalPrompt = (header || snippet)
-            ? `${header}${snippet ? snippet + '\n\n---\n\n' : ''}${prompt}`
-            : prompt;
+        // User message = pure query. Permission / role / snippet all live
+        // in systemRole (composeSystemPrompt → BP3) so BP2 + BP3 carry the
+        // invariant, and only the query varies per call.
+        const finalPrompt = prompt;
 
         // Stateless ephemeral session — created fresh per call, never pooled
         // or resumed. Cache prefix matching happens at the provider layer

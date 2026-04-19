@@ -208,63 +208,71 @@ export function composeSystemPrompt(opts) {
     const profile = opts.profile || null;
     const skip = profile?.skip || {};
 
-    // ── Tier 2 block ─────────────────────────────────────────────────────
-    const tier2Parts = [];
-    if (opts.bridgeRules) {
-        tier2Parts.push(opts.bridgeRules);
-    }
-    if (opts.userPrompt) {
-        tier2Parts.push(opts.userPrompt);
-    }
-    const systemTier2 = tier2Parts.join('\n\n---\n\n');
+    // ── BP2: systemBase ──────────────────────────────────────────────────
+    // Bit-identical across every role in the same provider. This is what
+    // BP_2 pins for prompt cache. Contains bridgeRules (MCP instructions,
+    // Pool B shared agent md, _shared/memory|search|explore, CLAUDE.md
+    // common sections, user agents) and any explicit systemPrompt override.
+    const baseParts = [];
+    if (opts.bridgeRules) baseParts.push(opts.bridgeRules);
+    if (opts.userPrompt) baseParts.push(opts.userPrompt);
+    const systemBase = baseParts.join('\n\n---\n\n');
 
-    // ── Tier 3 block ─────────────────────────────────────────────────────
-    const tier3Parts = [];
-    // Pool C callers set skipRoleReminder=true: the role is already conveyed
-    // by the "## Agent: <name>" header prepended to the user prompt, so
-    // emitting "# role\n<role>" here would just shard the cache prefix (one
-    // per Pool C agent) for zero information gain.
+    // ── BP3: systemRole ──────────────────────────────────────────────────
+    // Role-specific invariant. Permission, role template, and Pool C role
+    // snippet ride here (previously they were prepended to the user message,
+    // which fragmented the shard prefix per role). Anthropic cache_control
+    // can pin BP3 so the role-specific chunk caches independently of the
+    // shared BP2.
+    const roleParts = [];
+    const permission = opts.permission || opts.roleTemplate?.permission || null;
+    if (permission) {
+        const allow =
+            permission === 'read'
+                ? 'Allowed: read-only tools. Bash, write, and edit are rejected at call time for this session.'
+                : permission === 'read-write'
+                    ? 'Allowed: read and read-write tools.'
+                    : `Unknown permission "${permission}" — treat as read-only and report.`;
+        roleParts.push(`# permission\n${permission}\n${allow}`);
+    }
     if (opts.role && !opts.skipRoleReminder) {
-        tier3Parts.push('# role\n' + opts.role);
+        roleParts.push('# role\n' + opts.role);
     }
     if (opts.roleTemplate) {
         const t = opts.roleTemplate;
         const segs = [];
         if (t.description) segs.push(t.description);
-        if (t.permission) {
-            const allow =
-                t.permission === 'read'
-                    ? 'Allowed: read tools only. Do not invoke read-write tools.'
-                    : t.permission === 'read-write'
-                        ? 'Allowed: read and read-write tools.'
-                        : `Unknown permission "${t.permission}" — treat as read-only and report.`;
-            segs.push(
-                `Permission: ${t.permission} — see "Tool Categories" in your common guide.\n` +
-                allow
-            );
-        }
         if (t.body) segs.push(t.body);
-        if (segs.length > 0) {
-            tier3Parts.push('# agent-role\n' + segs.join('\n\n'));
-        }
+        if (segs.length > 0) roleParts.push('# agent-role\n' + segs.join('\n\n'));
     } else if (opts.agentTemplate) {
-        tier3Parts.push('# agent-role\n' + opts.agentTemplate);
+        roleParts.push('# agent-role\n' + opts.agentTemplate);
     }
-    if (opts.taskBrief) {
-        tier3Parts.push('# task-brief\n' + opts.taskBrief);
+    if (opts.roleSnippet) {
+        roleParts.push(`# agent-snippet\n${opts.roleSnippet}`);
     }
+    const systemRole = roleParts.length > 0 ? roleParts.join('\n\n') : '';
+
+    // ── BP4-adjacent: tier3Reminder (messages user, not system) ─────────
+    // Per-call variance only — task brief, skills hint, project context,
+    // memory recap. This rides in the user message as <system-reminder>
+    // and is never cached stably across calls.
+    const tier3Parts = [];
+    if (opts.taskBrief) tier3Parts.push('# task-brief\n' + opts.taskBrief);
     if (opts.hasSkills && !skip.skills) {
         tier3Parts.push('# skills\nCall `skills_list` to discover available skills.');
     }
-    if (opts.projectContext) {
-        tier3Parts.push('# project-context\n' + opts.projectContext);
-    }
+    if (opts.projectContext) tier3Parts.push('# project-context\n' + opts.projectContext);
     if (opts.memoryContext && !skip.memory) {
         tier3Parts.push('# memory-context\n' + opts.memoryContext);
     }
     const tier3Reminder = tier3Parts.length > 0 ? tier3Parts.join('\n\n') : '';
 
-    return { systemTier2, tier3Reminder };
+    // `systemTier2` kept as a back-compat alias for the older single-block
+    // consumer (= systemBase + systemRole concatenated). Prefer the split
+    // fields on new callers.
+    const systemTier2 = [systemBase, systemRole].filter(Boolean).join('\n\n---\n\n');
+
+    return { systemBase, systemRole, systemTier2, tier3Reminder };
 }
 // --- Helpers ---
 function readSafe(path) {

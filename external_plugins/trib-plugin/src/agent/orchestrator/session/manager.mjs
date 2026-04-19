@@ -215,12 +215,10 @@ function _isWriteTool(t) {
 }
 
 function _applyPermissionFilter(tools, _permission) {
-    // Unified-shard policy: the tool schema NEVER changes with permission.
-    // Every Pool B and Pool C session receives BUILTIN_TOOLS + MCP + internal
-    // in its entirety so that BP_1 (tools prefix) is bit-identical across
-    // all roles and the provider-side cache shard can be shared. Enforcement
-    // of write-blocking for permission=read happens in loop.mjs via the
-    // READ_BLOCKED_TOOLS set, at call time — not at schema time.
+    // Unified-shard policy — tool schema never changes with permission.
+    // Write-blocking for permission=read happens at call time in loop.mjs
+    // (READ_BLOCKED_TOOLS), not at schema build time, so BP_1 stays
+    // bit-identical across every role.
     return Array.isArray(tools) ? tools : tools;
 }
 
@@ -408,7 +406,7 @@ export function createSession(opts) {
         ? loadRoleTemplate(resolvedRole, dataDir)
         : null;
 
-    const { systemTier2, tier3Reminder } = composeSystemPrompt({
+    const { systemBase, systemRole, tier3Reminder } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
         agentTemplate: agentTemplate || undefined,
@@ -417,11 +415,21 @@ export function createSession(opts) {
         profile: profile || undefined,
         role: resolvedRole,
         skipRoleReminder: opts.skipRoleReminder || false,
+        permission: opts.permission || null,
+        roleSnippet: opts.roleSnippet || null,
         taskBrief: opts.taskBrief || null,
         projectContext: projectContext || null,
     });
-    if (systemTier2) {
-        messages.push({ role: 'system', content: systemTier2 });
+    // Two system blocks — BP2 (shared invariant) and BP3 (role-specific
+    // invariant). Anthropic multi-block system pins each with its own
+    // cache_control; OpenAI/Gemini concatenate but the split structure
+    // keeps role-specific text bounded to the second block, which
+    // minimizes the byte range re-written when a role swaps.
+    if (systemBase) {
+        messages.push({ role: 'system', content: systemBase });
+    }
+    if (systemRole) {
+        messages.push({ role: 'system', content: systemRole });
     }
     if (tier3Reminder) {
         messages.push({ role: 'user', content: `<system-reminder>\n${tier3Reminder}\n</system-reminder>` });
