@@ -241,11 +241,11 @@ function agentContext() {
     // land back in dispatchTool, which routes to the same worker IPC /
     // in-process module the MCP call handler uses. Replaces the MCP HTTP
     // loopback path. agent-module tools are refused to prevent recursion.
-    toolExecutor: async (name, args) => {
+    toolExecutor: async (name, args, callerCtx = {}) => {
       if (TOOL_MODULE[name] === 'agent') {
         throw new Error(`tool "${name}" is agent-internal and cannot be invoked via bridge`)
       }
-      return dispatchTool(name, args)
+      return dispatchTool(name, args, callerCtx)
     },
     internalTools: TOOL_DEFS.filter(t => t.module && t.module !== 'agent'),
   }
@@ -266,7 +266,7 @@ async function loadModule(name) {
 
 // Shared dispatcher — used by the MCP call handler AND the agent's
 // toolExecutor passed through agentContext(). Single source of tool routing.
-async function dispatchTool(name, args) {
+async function dispatchTool(name, args, callerCtx = {}) {
   const def = TOOL_BY_NAME[name]
   if (!def) throw new Error(`Unknown tool: ${name}`)
 
@@ -277,6 +277,11 @@ async function dispatchTool(name, args) {
     return dispatchAiWrapped(name, args ?? {}, {
       PLUGIN_ROOT,
       callMemoryWorker: (n, a) => callWorker('memory', n, a),
+      // Caller session id propagates from loop.mjs → executeInternalTool →
+      // toolExecutor → dispatchTool → dispatchAiWrapped. Used there to reject
+      // recursion when a hidden-role session (recall-agent / search-agent /
+      // explorer / cycle1/2) tries to re-enter an aiWrapped dispatcher.
+      callerSessionId: callerCtx.callerSessionId,
     })
   }
 

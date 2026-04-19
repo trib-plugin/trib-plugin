@@ -14,6 +14,10 @@ import {
 } from './compressor.mjs';
 const SAFETY_TRIM_PERCENT = 0.90;
 const MAX_ITERATIONS = 100;
+// Write-class tools that a permission=read session must not execute. The
+// schema still advertises them to keep one unified shard; this runtime set
+// is the fail-safe reject at call time.
+const READ_BLOCKED_TOOLS = new Set(['bash', 'write', 'edit']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
@@ -45,7 +49,7 @@ function executeSkill(cwd, name, _args) {
     const content = loadSkillContent(name, cwd);
     return content || `Error: skill "${name}" not found`;
 }
-async function executeTool(name, args, cwd) {
+async function executeTool(name, args, cwd, callerSessionId) {
     if (name === 'skills_list') {
         return buildSkillsListResponse(cwd);
     }
@@ -59,7 +63,10 @@ async function executeTool(name, args, cwd) {
         return executeMcpTool(name, args);
     }
     if (isInternalTool(name)) {
-        return executeInternalTool(name, args);
+        // callerSessionId propagates into server.mjs dispatchTool so that
+        // dispatchAiWrapped can detect and reject recursive calls from a
+        // hidden-role session (recall/search/explore → self).
+        return executeInternalTool(name, args, { callerSessionId });
     }
     if (isBuiltinTool(name)) {
         return executeBuiltinTool(name, args, cwd);
@@ -162,7 +169,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             // consumes the result (otherwise later eager calls would inflate
             // by the await delay of earlier ones).
             const entry = { startedAt: Date.now(), endedAt: null };
-            entry.promise = executeTool(call.name, call.arguments, cwd)
+            entry.promise = executeTool(call.name, call.arguments, cwd, sessionId)
                 .finally(() => { entry.endedAt = Date.now(); });
             pending.set(call.id, entry);
         };
@@ -240,8 +247,17 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                     toolEndedAt = eager.endedAt ?? Date.now();
                 } else {
                     toolStartedAt = Date.now();
-                    result = await executeTool(call.name, call.arguments, cwd);
-                    toolEndedAt = Date.now();
+                    // Runtime permission guard — block write-class tools for
+                    // read-permission sessions before dispatch. tools schema
+                    // stays full so every role shares one cache shard; the
+                    // guard happens at call time, not at schema build time.
+                    if (sessionRef?.permission === 'read' && READ_BLOCKED_TOOLS.has(call.name)) {
+                        result = `Error: tool "${call.name}" is not available on this session (permission=read). Use read/multi_read/grep/glob/recall/search/explore or the read-only MCP tools instead.`;
+                        toolEndedAt = Date.now();
+                    } else {
+                        result = await executeTool(call.name, call.arguments, cwd, sessionId);
+                        toolEndedAt = Date.now();
+                    }
                 }
             }
             catch (err) {

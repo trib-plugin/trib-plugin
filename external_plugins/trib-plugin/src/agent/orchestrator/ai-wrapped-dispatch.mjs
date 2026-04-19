@@ -25,6 +25,28 @@ export async function dispatchAiWrapped(name, args, ctx) {
   const spec = ROLE_BY_TOOL[name]
   if (!spec) throw new Error(`Unknown aiWrapped tool: ${name}`)
 
+  // Recursion break — the tool schema stays full across every session so
+  // that all roles share one cache shard. The counterweight lives here:
+  // when a hidden-role session (recall-agent / search-agent / explorer /
+  // cycle1 / cycle2) calls back into an aiWrapped dispatcher, we reject
+  // the call at runtime. Without this, `recall` inside a recall-agent turn
+  // would spawn another recall-agent session and fan out forever.
+  if (ctx?.callerSessionId) {
+    try {
+      const { loadSession } = await import('./session/store.mjs')
+      const { isHiddenRole } = await import('./internal-roles.mjs')
+      const caller = loadSession(ctx.callerSessionId)
+      if (caller && isHiddenRole(caller.role)) {
+        return fail(
+          `"${name}" is blocked inside the "${caller.role}" hidden role (recursion break). `
+          + `Use the direct executor (memory_search / web_search / read / grep / glob / multi_read) for your query.`,
+        )
+      }
+    } catch {
+      // Fail-open on introspection errors — one stray call beats a broken session.
+    }
+  }
+
   const { makeBridgeLlm } = await import('./smart-bridge/bridge-llm.mjs')
 
   // One Pool C session per query, dispatched concurrently. allSettled so a

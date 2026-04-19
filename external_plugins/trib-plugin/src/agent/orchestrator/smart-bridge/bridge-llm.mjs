@@ -42,18 +42,14 @@ function pluginRoot() {
 // are stripped so the BP_1 tool schema (and the shard it caches) shrinks to
 // the minimum. Roles not listed here fall through to tools=full minus the
 // read-permission deny list (legacy behaviour).
-const POOL_C_TOOL_KEEP = Object.freeze({
-    // recall-agent: memory_search + read/multi_read/grep/glob for sanity checks.
-    'recall-agent':  ['memory_search', 'read', 'multi_read', 'grep', 'glob'],
-    // search-agent: web_search + fetch/read for URL follow-up.
-    'search-agent':  ['web_search', 'fetch', 'read'],
-    // explorer: read-only filesystem navigation. `multi_read` lets a single
-    // turn ingest multiple files after a `grep` narrowed the candidates —
-    // direct answer to the `grep → read → read → …` chain that used to
-    // dominate iter cost.
-    'explorer':      ['read', 'multi_read', 'grep', 'glob'],
-    // cycle1/cycle2 left as fallthrough — unprofiled.
-});
+// Unified-shard policy — Pool C roles keep the same tool schema as every
+// other Pool B session so that BP_1 is bit-identical across roles and all
+// bridge sessions share one provider-side cache shard. Enforcement of
+// per-role tool usage (e.g. "recall-agent only calls memory_search + read
+// + grep + glob") lives in the role prompts (rules/pool-c/*.md), not in
+// the tool schema. Recursion break for aiWrapped tools is handled in
+// ai-wrapped-dispatch.mjs via the callerSessionId → hidden-role check.
+const POOL_C_TOOL_KEEP = Object.freeze({});
 
 /**
  * Lazy-cached per-role snippet loader for Pool C hidden roles.
@@ -199,20 +195,14 @@ export function makeBridgeLlm(opts = {}) {
             // per-role snippet rides in the user-message header instead so the
             // system prompt stays bit-identical with Pool B.
             sessionOpts.skipRoleReminder = true;
-            // Per-role tool whitelist — shrinks the BP_1 tool schema from
-            // tools=full (~15 after read-deny) to the 3–5 a hidden role
-            // actually uses. Saves ~3k prompt tokens per Pool C session;
-            // compounding with N-agent parallel fan-out. Unrecognised roles
-            // fall through to tools=full minus the permission deny list.
-            const keep = POOL_C_TOOL_KEEP[opts.role];
-            if (keep) sessionOpts.allowedTools = keep;
-            // Recursion break — Pool C sessions must never re-enter the
-            // aiWrapped dispatchers. A recall-agent calling `recall` would
-            // spawn another recall-agent session, and so on. Applied here
-            // instead of PERMISSION_DENY.read so that Pool B (user custom)
-            // roles with permission=read keep their investigation tools
-            // intact for legitimate use.
-            sessionOpts.disallowedTools = ['recall', 'search', 'explore', 'bridge'];
+            // Unified-shard policy — no allowedTools/disallowedTools here.
+            // Every session (Pool B or Pool C) receives the same tool array
+            // so they all share one provider-side cache shard. Behaviour
+            // is shaped by rules/pool-c/<role>.md and runtime guards:
+            //   - loop.mjs READ_BLOCKED_TOOLS rejects bash/write/edit for
+            //     permission=read sessions at call time.
+            //   - ai-wrapped-dispatch.mjs rejects aiWrapped re-entry when
+            //     the caller session is a hidden role (recursion break).
         }
         const header = buildUnifiedHeader({ permission, role: opts.role });
         const snippet = isPoolC ? getRoleSnippet(opts.role) : '';

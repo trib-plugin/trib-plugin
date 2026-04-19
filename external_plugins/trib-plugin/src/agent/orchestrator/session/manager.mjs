@@ -185,16 +185,18 @@ const WRITE_TOOL_NAMES = new Set(['write', 'edit']);
 // at the caller site via `opts.disallowedTools` (see bridge-llm.mjs Pool C
 // branch) so that Pool B read-permission callers keep their investigation
 // tools intact.
+// Unified-shard policy — no schema-level deny lists. Every tool stays in the
+// session's tool array regardless of permission. Write-class tools are still
+// rejected at call time by loop.mjs's READ_BLOCKED_TOOLS guard.
 const PERMISSION_DENY = {
-    read:      ['bash', 'write', 'edit'],
+    read:      [],
     readwrite: [],
     'read-write': [],
     full:      [],
 };
 
-function denyListFor(permission) {
-    if (!permission) return [];
-    return PERMISSION_DENY[permission] || [];
+function denyListFor() {
+    return [];
 }
 
 // A tool counts as write-capable if:
@@ -212,16 +214,14 @@ function _isWriteTool(t) {
     return false;
 }
 
-function _applyPermissionFilter(tools, permission) {
-    if (!Array.isArray(tools)) return tools;
-    if (!permission || permission === 'full') return tools;
-    if (permission === 'read') {
-        return tools.filter(t => !_isWriteTool(t));
-    }
-    if (permission === 'read-write') {
-        return tools;
-    }
-    return tools;
+function _applyPermissionFilter(tools, _permission) {
+    // Unified-shard policy: the tool schema NEVER changes with permission.
+    // Every Pool B and Pool C session receives BUILTIN_TOOLS + MCP + internal
+    // in its entirety so that BP_1 (tools prefix) is bit-identical across
+    // all roles and the provider-side cache shard can be shared. Enforcement
+    // of write-blocking for permission=read happens in loop.mjs via the
+    // READ_BLOCKED_TOOLS set, at call time — not at schema time.
+    return Array.isArray(tools) ? tools : tools;
 }
 
 function resolveSessionTools(toolSpec, skills, permission) {
@@ -479,29 +479,12 @@ export function createSession(opts) {
         }
     }
 
-    // Phase L invariants — throw at session create if role/tools contract
-    // is violated. Better to fail loudly here than to spawn a reviewer that
-    // silently has Write access.
-    const toolNameSet = new Set(tools.map(t => String(t?.name || '')));
-    if (resolvedRole === 'researcher') {
-        // Accept either a bare in-process search (internal-tools registry) or
-        // an MCP-prefixed search tool from an external server. The old check
-        // required `mcp__…search…`, which broke after we moved search into
-        // the in-process registry with the bare name `search`.
-        const hasSearch = [...toolNameSet].some(n => n === 'search' || (/search/.test(n) && /mcp/.test(n)));
-        if (!hasSearch) {
-            throw new Error('Phase L invariant: role=researcher requires a search tool (bare "search" or an MCP search) in the session tool list.');
-        }
-    }
-    if (resolvedRole === 'reviewer' && permission === 'read') {
-        // Use the same write-tool definition as the permission filter so we
-        // don't accept annotation-based write tools (reply/react/etc.) that
-        // the bare-name check would miss.
-        const forbidden = tools.filter(_isWriteTool).map(t => String(t?.name || ''));
-        if (forbidden.length) {
-            throw new Error(`Phase L invariant: role=reviewer permission=read must not contain write tools (found: ${forbidden.join(', ')}).`);
-        }
-    }
+    // Phase L invariants have been retired under the unified-shard policy —
+    // the session's tool array is always the full set regardless of role or
+    // permission, so a schema-time invariant on "this role must lack write
+    // tools" would always trip. Write-blocking for permission=read is now
+    // handled at call time in loop.mjs (READ_BLOCKED_TOOLS guard).
+    // (Kept this block as documentation — do not re-add filter logic here.)
     if (resolvedRole) {
         process.stderr.write(`[session] role=${resolvedRole} permission=${permission || 'full'} tools=${tools.length}\n`);
     }
@@ -531,6 +514,10 @@ export function createSession(opts) {
         lastUsedAt: Date.now(),
         tokensCumulative: 0,
         role: opts.role || null,
+        // Permission persisted on the session so loop.mjs can apply the
+        // runtime call-time guard (READ_BLOCKED_TOOLS) without having to
+        // re-derive it from the profile / role each turn.
+        permission: permission || null,
         // Origin tag written into every bridge-trace usage row so analytics
         // can slice by (sourceType, sourceName) — e.g. maintenance/cycle1,
         // scheduler/daily-standup, webhook/github-push, lead/worker.

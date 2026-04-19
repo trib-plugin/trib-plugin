@@ -62,15 +62,15 @@ export function isInternalTool(name) {
     return _names.has(name);
 }
 
-export async function executeInternalTool(name, args) {
+export async function executeInternalTool(name, args, callerCtx = {}) {
     if (!_names.has(name)) throw new Error(`internal-tools: "${name}" is not registered`);
     const override = _overrides.get(name);
     if (override) {
-        const result = await override(args ?? {});
+        const result = await override(args ?? {}, callerCtx);
         return _normalize(result);
     }
     if (!_executor) throw new Error(`internal-tools: executor not initialized (tool=${name})`);
-    const result = await _executor(name, args ?? {});
+    const result = await _executor(name, args ?? {}, callerCtx);
     return _normalize(result);
 }
 
