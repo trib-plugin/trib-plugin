@@ -134,9 +134,14 @@ Pool A injection set.
   still dispatch sessions with an explicit preset because they run
   outside the MCP surface. Agents must not try to mimic this — stay on
   the MCP `bridge` tool with `role`.
-- Each Bridge call carries the Pool B prefix (this file plus rules and
-  CLAUDE.md common sections). The prefix is bit-identical across roles
-  by design — variance lives only in the Tier 3 system-reminder.
+- Each Bridge call carries the shared Pool B/C prefix (this file plus
+  rules and CLAUDE.md common sections) in **systemBase (BP2)** — bit-identical
+  across every role and provider. Role-specific variance (permission, role
+  template, Pool C snippet) lives in **systemRole (BP3)** — one shard per
+  hidden role, and per-permission shard for Pool B custom roles. Per-call
+  context (task-brief, cwd, project-context) rides in a user-message
+  `<system-reminder>` whose prefix is covered by the sliding **messages-tail
+  BP4** from iter 2 onward.
 - Bridge sessions live up to 5 minutes idle or until a token threshold.
   After that, the next call spawns a fresh session that rides the same
   warm prefix.
@@ -228,23 +233,31 @@ Lead asks for a review of a change.
 
 ## 15. Tool Categories (Permissions)
 
-Your role-specific Tier 3 system-reminder declares a `permission` value
-that maps to one of these categories. The full tool schema is always
-present, but you must restrict your invocations to the allowed category.
+Your systemRole block declares a `permission` value that maps to one of
+these categories. The full tool schema is always present in every
+session (the unified-shard policy keeps BP1+BP2 bit-identical across
+roles), but you must restrict your invocations to the allowed category.
+Enforcement is at call time, not schema time — the runtime rejects
+`bash` / `write` / `edit` for `permission=read` sessions with a clear
+error and does not consume the turn.
 
 **read** (information gathering only):
-- File / code: `Read`, `Glob`, `Grep`
+- File / code: `Read`, `Glob`, `Grep`, `multi_read`
 - External info: `search`, `fetch`
-- Memory recall: `recall`, `memory` actions `status`
+- Memory recall: `recall`, `memory` actions `status`, `memory_search`
+- Codebase navigation: `explore`
+- Web aggregation: `web_search`
 - Skills: `skills_list`, `skill_view`
 - Channel observation: read-only MCP tools
+- Cross-agent dispatch: `bridge` (hidden-role sessions are blocked here
+  at runtime — see recursion break)
 
 **read-write** (read + state change):
 - All `read` tools
 - File / code mutation: `Write`, `Edit`, `Bash`
 - Memory writes: `memory` actions `remember`, `forget`, `cycle1`, `cycle2`
 - Skills: `skill_execute`
-- Channel / agent control: `reply`, `react`, `edit_message`, `bridge`,
+- Channel / agent control: `reply`, `react`, `edit_message`,
   `create_session`, `close_session`, `schedule_control`, `trigger_schedule`
 
 Native `Agent`, `TaskCreate`, `TeamCreate` are FORBIDDEN for agent

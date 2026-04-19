@@ -320,7 +320,7 @@
   {
     "name": "explore",
     "title": "Explore",
-    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; each is translated to glob + grep patterns (Haiku) and executed in parallel, returning matched paths with snippet lines. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
+    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
     "inputSchema": {
       "type": "object",
       "properties": {
