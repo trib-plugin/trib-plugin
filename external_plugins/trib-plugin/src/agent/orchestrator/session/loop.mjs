@@ -17,7 +17,7 @@ const MAX_ITERATIONS = 100;
 // Write-class tools that a permission=read session must not execute. The
 // schema still advertises them to keep one unified shard; this runtime set
 // is the fail-safe reject at call time.
-const READ_BLOCKED_TOOLS = new Set(['bash', 'write', 'edit', 'multi_edit']);
+const READ_BLOCKED_TOOLS = new Set(['bash', 'write', 'edit', 'multi_edit', 'batch_edit']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.

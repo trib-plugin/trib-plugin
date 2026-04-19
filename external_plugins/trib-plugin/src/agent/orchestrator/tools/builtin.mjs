@@ -107,8 +107,34 @@ export const BUILTIN_TOOLS = [
     },
     {
         name: 'multi_edit',
-        searchHint: 'edit multiple files batch replace',
-        description: 'Apply several edits in a single tool call — each entry in `edits` is processed with the same unique-match rules as `edit`. Collapses N sequential edit calls into one turn, which is the biggest cost driver in long tool loops. Per-entry errors are reported inline and do not abort the batch; subsequent entries still run.\n\nReturns one line per edit: `OK <path>` or `FAIL <path>: <reason>`.',
+        searchHint: 'edit same file many replacements',
+        description: 'Apply several replacements to ONE file in a single tool call. Each entry in `edits` is {old_string, new_string, replace_all?} and is applied in order against the same path; each old_string must match uniquely at its turn (unless `replace_all:true`). If any entry fails, the call reports the error and leaves the file untouched — all-or-nothing semantics (matches Claude Code native MultiEdit).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path to edit' },
+                edits: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            old_string: { type: 'string', description: 'Exact text to find (must be unique at apply time unless replace_all is true)' },
+                            new_string: { type: 'string', description: 'Replacement text' },
+                            replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match.' },
+                        },
+                        required: ['old_string', 'new_string'],
+                    },
+                    minItems: 1,
+                    description: 'Replacements applied in order to the same file.',
+                },
+            },
+            required: ['path', 'edits'],
+        },
+    },
+    {
+        name: 'batch_edit',
+        searchHint: 'edit multiple files batch replace cross',
+        description: 'Apply edits across SEVERAL files in a single tool call — each entry is {path, old_string, new_string} with the same unique-match rules as `edit`. Per-entry errors are reported inline and do not abort the batch; subsequent entries still run. Use this when the change set touches many files; use `multi_edit` when it is many replacements inside one file.\n\nReturns one line per edit: `OK <path>` or `FAIL <path>: <reason>`.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -124,7 +150,7 @@ export const BUILTIN_TOOLS = [
                         required: ['path', 'old_string', 'new_string'],
                     },
                     minItems: 1,
-                    description: 'Edits in apply order. Same file can appear multiple times — each entry re-reads the file, so chained replacements are safe as long as each old_string remains unique at its turn.',
+                    description: 'Edits in apply order across any paths. Same file can appear multiple times — each entry re-reads the file.',
                 },
             },
             required: ['edits'],
@@ -309,13 +335,51 @@ export async function executeBuiltinTool(name, args, cwd) {
             return results.map(r => `### ${r.path}\n${r.body}`).join('\n\n');
         }
         case 'multi_edit': {
+            // Claude Code native MultiEdit semantics: one file, many ordered
+            // replacements, all-or-nothing. We apply the chain in memory
+            // first — any failure aborts before the file is written so the
+            // tree never lands in a half-edited state.
+            const filePath = args.path;
+            const edits = Array.isArray(args.edits) ? args.edits : [];
+            if (!filePath) return 'Error: path is required';
+            if (edits.length === 0) return 'Error: edits array is required';
+            if (!isSafePath(filePath, workDir)) return `Error: path outside allowed scope — ${filePath}`;
+            try {
+                const fullPath = resolveAgainstCwd(filePath, workDir);
+                let content;
+                try { content = readFileSync(fullPath, 'utf-8'); }
+                catch (err) { return `Error: ${err instanceof Error ? err.message : String(err)}`; }
+                for (let i = 0; i < edits.length; i++) {
+                    const entry = edits[i];
+                    if (!entry || typeof entry.old_string !== 'string' || typeof entry.new_string !== 'string') {
+                        return `Error: edit ${i} must have old_string and new_string`;
+                    }
+                    const { old_string, new_string, replace_all } = entry;
+                    if (replace_all === true) {
+                        if (!content.includes(old_string)) {
+                            return `Error: edit ${i} — old_string not found in ${filePath}`;
+                        }
+                        content = content.split(old_string).join(new_string);
+                    } else {
+                        const count = content.split(old_string).length - 1;
+                        if (count === 0) return `Error: edit ${i} — old_string not found in ${filePath}`;
+                        if (count > 1) return `Error: edit ${i} — old_string found ${count} times in ${filePath}; use replace_all:true or a more specific old_string`;
+                        content = content.replace(old_string, new_string);
+                    }
+                }
+                writeFileSync(fullPath, content, 'utf-8');
+                return `Edited: ${filePath} (${edits.length} replacements applied)`;
+            } catch (err) {
+                return `Error: ${err instanceof Error ? err.message : String(err)}`;
+            }
+        }
+        case 'batch_edit': {
             const edits = Array.isArray(args.edits) ? args.edits : [];
             if (edits.length === 0) return 'Error: edits array is required';
-            // Sequential dispatch through the same `edit` case so size caps,
-            // isSafePath checks, and unique-match enforcement stay consistent.
-            // Parallel would race on writes to the same file; sequential is
-            // the honest shape for file mutation and still collapses N tool
-            // iterations into 1.
+            // Cross-file sequential dispatch through the same `edit` case so
+            // size caps, isSafePath checks, and unique-match enforcement stay
+            // consistent across files. Sequential (not parallel) to avoid
+            // concurrent writes to the same path.
             const lines = [];
             for (const entry of edits) {
                 if (!entry || !entry.path) { lines.push('FAIL (missing-path): path is required'); continue; }
