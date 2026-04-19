@@ -577,6 +577,21 @@ export async function handleToolCall(name, args, opts = {}) {
         }));
       }
 
+      case 'session_result': {
+        const id = String(args.id || '').trim();
+        if (!id) return fail('id is required');
+        const { getAsyncResult } = await import('./orchestrator/ai-wrapped-dispatch.mjs');
+        const entry = getAsyncResult(id);
+        if (!entry) return fail(`unknown async handle "${id}" (expired or never dispatched)`);
+        if (entry.status === 'running') {
+          const ageMs = Date.now() - entry.createdAt;
+          return ok(`still running (${entry.tool}, ${entry.role}, age=${Math.round(ageMs / 1000)}s). Call session_result again in a few seconds.`);
+        }
+        if (entry.status === 'error') return fail(`${entry.tool} failed: ${entry.error}`);
+        // Done — return the merged content. Leave the entry in the map so
+        // follow-up polls from late observers still get the same answer.
+        return ok(entry.content || '(empty result)');
+      }
       case 'close_session': {
         // Fire-and-forget: plant tombstone, abort in-flight controller, defer
         // cleanup. We don't wait for the abort to unwind — callers get an

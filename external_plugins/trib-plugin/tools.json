@@ -263,7 +263,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context — prior decisions, preferences, conversation and work history from the memory store. Accepts a natural-language query or an array of queries; an internal agent fans out in parallel and returns a synthesized answer. Not for external web (use `search`) or codebase files (use `explore`).",
+    "description": "Past context — prior decisions, preferences, conversation and work history from the memory store. Accepts a natural-language query or an array of queries; an internal agent fans out in parallel. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for external web (use `search`) or codebase files (use `explore`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -277,6 +277,10 @@
         "cwd": {
           "type": "string",
           "description": "Optional workspace hint forwarded to the recall agent. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL."
+        },
+        "wait": {
+          "type": "boolean",
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
         }
       },
       "required": ["query"],
@@ -288,7 +292,7 @@
   {
     "name": "search",
     "title": "Search",
-    "description": "External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel, picks the provider per query, and returns a synthesized answer. Not for past context (use `recall`) or codebase files (use `explore`).",
+    "description": "External web — live web search, URL scrape, GitHub code/issues/repos. Accepts a natural-language query or an array of queries; include a URL to trigger scrape or mention `owner/repo` for GitHub. An internal agent fans out in parallel and picks the provider per query. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline until the merged answer comes back. Not for past context (use `recall`) or codebase files (use `explore`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -302,6 +306,10 @@
         "cwd": {
           "type": "string",
           "description": "Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies."
+        },
+        "wait": {
+          "type": "boolean",
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
         }
       },
       "required": ["query"],
@@ -320,7 +328,7 @@
   {
     "name": "explore",
     "title": "Explore",
-    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
+    "description": "Internal codebase — local filesystem file and code search. Accepts a natural-language query or an array of queries; an internal explorer agent fans out `glob` / `grep` / `read` / `multi_read` in parallel and returns a synthesized answer with concrete file paths. DEFAULT IS ASYNC (bridge-style): returns an `async_...` handle immediately and the answer is collected later via `session_result`. Pass `wait:true` to block inline. Root auto-detection picks between the launch workspace and `~/.claude`; pass `cwd` to override. Not for past context (use `recall`) or external web (use `search`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -334,6 +342,10 @@
         "cwd": {
           "type": "string",
           "description": "Override the search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the server auto-picks between the launch workspace (`cwd`) and `~/.claude` based on the query."
+        },
+        "wait": {
+          "type": "boolean",
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
         }
       },
       "required": ["query"],
@@ -348,6 +360,27 @@
     },
     "module": "memory",
     "aiWrapped": true
+  },
+  {
+    "name": "session_result",
+    "title": "Session Result",
+    "annotations": {
+      "title": "Session Result",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Poll a background dispatch started via `recall` / `search` / `explore` with `wait:false`. Pass the `async_...` id returned by the original call. Returns the merged answer once the dispatch is done, a short `still running` message while in flight, or an error description on failure. Not for regular Pool B / Pool C session ids — those are managed internally.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The `async_...` handle returned by the original wait:false dispatch." }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "module": "agent"
   },
   {
     "name": "read",
