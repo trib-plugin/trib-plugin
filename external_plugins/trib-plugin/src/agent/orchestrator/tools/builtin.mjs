@@ -106,6 +106,31 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
+        name: 'multi_edit',
+        searchHint: 'edit multiple files batch replace',
+        description: 'Apply several edits in a single tool call — each entry in `edits` is processed with the same unique-match rules as `edit`. Collapses N sequential edit calls into one turn, which is the biggest cost driver in long tool loops. Per-entry errors are reported inline and do not abort the batch; subsequent entries still run.\n\nReturns one line per edit: `OK <path>` or `FAIL <path>: <reason>`.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                edits: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'File path to edit' },
+                            old_string: { type: 'string', description: 'Exact text to find (must be unique in the file)' },
+                            new_string: { type: 'string', description: 'Replacement text' },
+                        },
+                        required: ['path', 'old_string', 'new_string'],
+                    },
+                    minItems: 1,
+                    description: 'Edits in apply order. Same file can appear multiple times — each entry re-reads the file, so chained replacements are safe as long as each old_string remains unique at its turn.',
+                },
+            },
+            required: ['edits'],
+        },
+    },
+    {
         name: 'multi_read',
         searchHint: 'read multiple files batch parallel',
         description: 'Read several files in a single tool call — each entry in `reads` is processed with the same rules as `read` (size cap, offset/limit, cat -n formatting). Prefer this over chaining multiple `read` calls when you already know the paths you want, because it collapses N iterations into 1 and saves a round-trip of prompt growth per file.\n\nReturns a single string with each file delimited by a `### <path>` header. Per-file errors are surfaced inline and do not abort the batch.',
@@ -282,6 +307,24 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return { path: entry.path, body };
             }));
             return results.map(r => `### ${r.path}\n${r.body}`).join('\n\n');
+        }
+        case 'multi_edit': {
+            const edits = Array.isArray(args.edits) ? args.edits : [];
+            if (edits.length === 0) return 'Error: edits array is required';
+            // Sequential dispatch through the same `edit` case so size caps,
+            // isSafePath checks, and unique-match enforcement stay consistent.
+            // Parallel would race on writes to the same file; sequential is
+            // the honest shape for file mutation and still collapses N tool
+            // iterations into 1.
+            const lines = [];
+            for (const entry of edits) {
+                if (!entry || !entry.path) { lines.push('FAIL (missing-path): path is required'); continue; }
+                const body = await executeBuiltinTool('edit', entry, workDir);
+                const first = String(body).split('\n')[0] || '';
+                if (first.startsWith('Error:')) lines.push(`FAIL ${entry.path}: ${first.slice(7)}`);
+                else lines.push(`OK ${entry.path}`);
+            }
+            return lines.join('\n');
         }
         case 'write': {
             const filePath = args.path;
