@@ -520,6 +520,13 @@ export function createSession(opts) {
         // remember() is user-triggered via Lead. Agents read memory via
         // `recall` (kept), so there's no capability loss for the work path.
         'memory',
+        // LSP tools — TS/JS-only semantic symbol lookup. Stripped by
+        // default because typical Pool B/C workloads cover symbol search
+        // fine via `grep` (+ `rules/lsp.md` is still in Pool A for Lead).
+        // Per-role opt-in (allowedTools override) isn't currently wired —
+        // this is a hard strip. If a role needs LSP, revisit the filter
+        // ordering in this file (deny runs before whitelist today).
+        'lsp_definition', 'lsp_references', 'lsp_symbols',
     ] : [];
     const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {

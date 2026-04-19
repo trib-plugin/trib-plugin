@@ -39,6 +39,8 @@ const BRIDGE_UNSAFE_TOOLS = new Set([
     'bridge',
     // Memory admin (recall stays for reads)
     'memory',
+    // LSP on-demand (roles opt in via allowedTools)
+    'lsp_definition', 'lsp_references', 'lsp_symbols',
 ]);
 
 const TOKENS_PER_BYTE = 0.25; // ≈ 4 chars/token for English-ish prose
