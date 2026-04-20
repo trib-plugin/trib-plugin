@@ -26,6 +26,7 @@ import { join } from 'path';
 import { loadConfig } from '../config.mjs';
 import { resolveRuntimeSpec } from '../config.mjs';
 import { getHiddenRole } from '../internal-roles.mjs';
+import { traceBridgePreset } from '../bridge-trace.mjs';
 import {
     askSession,
     createSession,
@@ -197,6 +198,16 @@ export function makeBridgeLlm(opts = {}) {
             lane: 'bridge',
             agentId: roleLabel,
         });
+
+        try {
+            traceBridgePreset({
+                sessionId: null,
+                role: roleLabel,
+                presetName,
+                model: runtimeSpec?.model || null,
+                provider: runtimeSpec?.provider || null,
+            });
+        } catch { /* telemetry best-effort */ }
 
         // Callers (e.g. aiWrapped explore dispatch) may pass an explicit
         // `cwd` to scope the agent's filesystem view. Absolute path expected

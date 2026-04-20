@@ -130,6 +130,21 @@ function traceStreamAborted({ sessionId, info }) {
     });
 }
 
+function traceBridgePreset({ sessionId, role, presetName, model, provider }) {
+    // Fires once per dispatch right after the preset has been resolved and
+    // its runtime spec (provider/model) assembled. Useful for after-the-fact
+    // routing analysis: "which role landed on which preset / provider / model
+    // on this request?"
+    appendBridgeTrace({
+        sessionId,
+        kind: 'preset_assign',
+        role: role || null,
+        preset_name: presetName || null,
+        model: model || null,
+        provider: provider || null,
+    });
+}
+
 function traceBridgeFetch({ sessionId, headersMs, httpStatus }) {
     appendBridgeTrace({
         sessionId,
@@ -203,6 +218,7 @@ export {
     extractCachedTokens,
     traceBridgeFetch,
     traceBridgeLoop,
+    traceBridgePreset,
     traceBridgeSse,
     traceBridgeTool,
     traceBridgeUsage,
