@@ -391,7 +391,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context from the memory store. `query` accepts a string or an array (parallel fan-out). Async by default: returns an `async_...` handle; merged answer is pushed back via the channel bridge. Pass `wait:true` to block inline. Not for external web (use `search`) or codebase files (use `explore`).",
+    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). Async; merged answer auto-pushed. External web → `search`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -410,15 +410,15 @@
               "minItems": 1
             }
           ],
-          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
+          "description": "Natural language query or array (parallel fan-out)."
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint forwarded to the recall agent. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL."
+          "description": "Optional workspace hint. Absolute path; `~` and forward slashes supported."
         },
         "wait": {
           "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise the merged answer is pushed into your session automatically via the channel bridge."
+          "description": "Async by default. Pass `wait:true` to block inline."
         }
       },
       "required": [
@@ -439,7 +439,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase file and code search. `query` accepts a string or array (parallel fan-out). `cwd` is the authoritative search root (no silent fan-out between roots). Async by default: returns `async_...` handle; merged answer is pushed back via the channel bridge, or use `wait:true` inline. Not for past context (use `recall`) or external web (use `search`).",
+    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Async; merged answer auto-pushed. Past context → `recall`, external web → `search`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -458,15 +458,15 @@
               "minItems": 1
             }
           ],
-          "description": "Natural language query, or an array of queries for multi-angle parallel fan-out."
+          "description": "Natural language query or array (parallel fan-out)."
         },
         "cwd": {
           "type": "string",
-          "description": "Authoritative search root. Absolute path recommended; `~` expansion supported; forward slashes work on Windows/WSL. When omitted, the launch workspace is used — pass `cwd: \"~/.claude/...\"` explicitly to target the plugin install tree or other directories outside the workspace. No silent fan-out between roots."
+          "description": "Authoritative search root. Absolute path; `~` and forward slashes supported. Omit → launch workspace. Target plugin tree via `cwd: \"~/.claude/...\"`. No silent fan-out."
         },
         "wait": {
           "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise the merged answer is pushed into your session automatically via the channel bridge."
+          "description": "Async by default. Pass `wait:true` to block inline."
         }
       },
       "required": [
@@ -480,7 +480,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "External web search, URL scrape, GitHub code/issues/repos. `query` accepts a string or array (parallel fan-out); include a URL to trigger scrape or `owner/repo` for GitHub. Async by default: returns `async_...` handle; merged answer is pushed back via the channel bridge, or use `wait:true` inline. Not for past context (use `recall`) or codebase files (use `explore`).",
+    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Async; merged answer auto-pushed. Past context → `recall`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -503,11 +503,11 @@
         },
         "cwd": {
           "type": "string",
-          "description": "Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies."
+          "description": "Optional workspace hint. Rarely needed."
         },
         "wait": {
           "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise the merged answer is pushed into your session automatically via the channel bridge."
+          "description": "Async by default. Pass `wait:true` to block inline."
         }
       },
       "required": [

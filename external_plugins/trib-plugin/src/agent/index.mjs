@@ -235,20 +235,6 @@ function fmtTokens(n) {
 // sees them).
 const TOOLS = [
   {
-    name: 'session_result',
-    title: 'Session Result',
-    annotations: { title: 'Session Result', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Collect a background dispatch started via `recall` / `search` / `explore` with `wait:false`. As of v0.6.186, completed async dispatches are auto-pushed into the Lead session via the channel bridge (`notifications/claude/channel`, `meta.type = \'async_result\'`) — no polling needed in the common case. Use this tool to explicitly pull by `async_...` id, or as a fallback if you missed the channel notification. Returns the merged answer, a short `still running` message, or an error description. Not for regular Pool B / Pool C session ids — those are managed internally.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: 'The `async_...` handle returned by the original wait:false dispatch.' },
-      },
-      required: ['id'],
-      additionalProperties: false,
-    },
-  },
-  {
     name: 'create_session',
     title: 'Create Session',
     annotations: { title: 'Create Session', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -602,21 +588,6 @@ export async function handleToolCall(name, args, opts = {}) {
         }));
       }
 
-      case 'session_result': {
-        const id = String(args.id || '').trim();
-        if (!id) return fail('id is required');
-        const { getAsyncResult } = await import('./orchestrator/ai-wrapped-dispatch.mjs');
-        const entry = getAsyncResult(id);
-        if (!entry) return fail(`unknown async handle "${id}" (expired or never dispatched)`);
-        if (entry.status === 'running') {
-          const ageMs = Date.now() - entry.createdAt;
-          return ok(`still running (${entry.tool}, ${entry.role}, age=${Math.round(ageMs / 1000)}s). Call session_result again in a few seconds.`);
-        }
-        if (entry.status === 'error') return fail(`${entry.tool} failed: ${entry.error}`);
-        // Done — return the merged content. Leave the entry in the map so
-        // follow-up polls from late observers still get the same answer.
-        return ok(entry.content || '(empty result)');
-      }
       case 'close_session': {
         // Fire-and-forget: plant tombstone, abort in-flight controller, defer
         // cleanup. We don't wait for the abort to unwind — callers get an

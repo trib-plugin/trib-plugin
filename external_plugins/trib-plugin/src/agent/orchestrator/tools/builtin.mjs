@@ -179,13 +179,13 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read a file from disk with cat -n line-numbered output, byte-size cap, and optional offset/limit windowing.',
+        description: 'Read a file with cat -n line numbering, size cap, optional offset/limit.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Absolute or cwd-relative file path.' },
+                path: { type: 'string', description: 'File path.' },
                 offset: { type: 'number', description: 'Start line (0-based).' },
-                limit: { type: 'number', description: 'Max lines to read.' },
+                limit: { type: 'number', description: 'Max lines.' },
             },
             required: ['path'],
         },
@@ -194,13 +194,13 @@ export const BUILTIN_TOOLS = [
         name: 'edit',
         title: 'Edit',
         annotations: { title: 'Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Replace one unique occurrence of `old_string` with `new_string` in a file. `old_string` must match exactly once.',
+        description: 'Replace one unique occurrence of `old_string` with `new_string`. Must match exactly once.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Absolute or cwd-relative file path.' },
-                old_string: { type: 'string', description: 'Must appear exactly once.' },
-                new_string: { type: 'string', description: 'Replacement text.' },
+                path: { type: 'string', description: 'File path.' },
+                old_string: { type: 'string', description: 'Text to find (exactly once).' },
+                new_string: { type: 'string', description: 'Replacement.' },
             },
             required: ['path', 'old_string', 'new_string'],
         },
@@ -209,12 +209,12 @@ export const BUILTIN_TOOLS = [
         name: 'write',
         title: 'Write',
         annotations: { title: 'Write', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Create or overwrite a file with the provided content.',
+        description: 'Create or overwrite a file.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Absolute or cwd-relative file path. File is created if missing, overwritten if it exists.' },
-                content: { type: 'string', description: 'Full file content to write (UTF-8).' },
+                path: { type: 'string', description: 'File path.' },
+                content: { type: 'string', description: 'UTF-8 content.' },
             },
             required: ['path', 'content'],
         },
@@ -223,12 +223,12 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command with a configurable timeout. A small blocked-pattern safety list rejects `rm -rf /`, `git push --force`, `format c:`, etc.',
+        description: 'Execute a shell command. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
-                command: { type: 'string', description: 'Shell command to execute in the workspace cwd. Rejected if it matches a blocked safety pattern (e.g. `rm -rf /`, `git push --force`, `format c:`).' },
-                timeout: { type: 'number', description: 'Milliseconds (default 30000, max 600000).' },
+                command: { type: 'string', description: 'Shell command.' },
+                timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
             },
             required: ['command'],
         },
@@ -237,16 +237,16 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep-backed content search. `pattern` and `glob` both accept a string or an array of strings (OR-joined in one invocation). Output modes: `files_with_matches` (default), `content`, `count`; `head_limit` caps the return set.',
+        description: 'ripgrep content search. `pattern` / `glob` accept string or array (OR-joined). Output modes: `files_with_matches` (default), `content`, `count`.',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Regex pattern(s) passed to ripgrep via `-e`. A string searches for one pattern; an array OR-joins multiple patterns in a single rg invocation.' },
-                path: { type: 'string', description: 'Directory or file to search under. Defaults to the workspace cwd (`.`).' },
-                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Optional glob filter(s) applied on top of the default ignore list (node_modules, .git, dist, build, etc.). String or array of strings.' },
-                output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'], description: '`files_with_matches` (default, paths only), `content` (matched lines with path and line number), or `count` (per-file match counts).' },
-                head_limit: { type: 'number', description: 'Cap on returned entries. Default 100; pass 0 for no limit. Extra entries are summarised as `... [N more entries]`.' },
-                offset: { type: 'number', description: 'Skip the first N entries from the ripgrep result before applying `head_limit`. Default 0. Paginate large result sets by combining with `head_limit`.' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Regex pattern(s). String or array (OR-joined).' },
+                path: { type: 'string', description: 'Search root. Default: cwd.' },
+                glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob filter(s). String or array.' },
+                output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
+                head_limit: { type: 'number', description: 'Default 100; 0 = unlimited.' },
+                offset: { type: 'number', description: 'Skip N entries before head_limit.' },
             },
             required: ['pattern'],
         },
@@ -255,12 +255,12 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File name / path search via ripgrep --files. `pattern` accepts a string or an array of globs (OR-joined in one invocation).',
+        description: 'File path search via `rg --files`. `pattern` accepts string or array (OR-joined).',
         inputSchema: {
             type: 'object',
             properties: {
-                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s) passed to `rg --files --glob`. A string matches one glob; an array OR-joins multiple globs in a single rg invocation.' },
-                path: { type: 'string', description: 'Base directory to walk. Defaults to the workspace cwd (`.`). Results are capped at 100 files.' },
+                pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s).' },
+                path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100.' },
             },
             required: ['pattern'],
         },
@@ -269,20 +269,19 @@ export const BUILTIN_TOOLS = [
         name: 'multi_edit',
         title: 'Multi Edit',
         annotations: { title: 'Multi Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Apply several ordered replacements to ONE file in a single call. Edits are chained in memory first; if any `old_string` fails to match uniquely (or at all) the file is left untouched. `replace_all:true` per entry drops the uniqueness requirement.',
+        description: 'Apply ordered replacements to ONE file. Any match failure aborts the batch (no partial writes). `replace_all:true` drops uniqueness check.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Absolute or cwd-relative path to the single file receiving all edits.' },
+                path: { type: 'string', description: 'File path.' },
                 edits: {
                     type: 'array',
-                    description: 'Ordered list of replacements applied in sequence to the in-memory content. Any failure aborts before the file is written, so the tree never lands in a half-edited state.',
                     items: {
                         type: 'object',
                         properties: {
-                            old_string: { type: 'string', description: 'Exact text to find. Must be unique in the current (post-prior-edits) content unless `replace_all:true`.' },
-                            new_string: { type: 'string', description: 'Replacement text.' },
-                            replace_all: { type: 'boolean', description: 'When true, replace every occurrence and skip the uniqueness check. Defaults to false.' },
+                            old_string: { type: 'string', description: 'Text to find (unique unless replace_all).' },
+                            new_string: { type: 'string', description: 'Replacement.' },
+                            replace_all: { type: 'boolean', description: 'Replace all, skip uniqueness.' },
                         },
                         required: ['old_string', 'new_string'],
                     },
@@ -296,19 +295,18 @@ export const BUILTIN_TOOLS = [
         name: 'multi_read',
         title: 'Multi Read',
         annotations: { title: 'Multi Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read several files in one call. Each entry in `reads` is { path, offset?, limit? } with the same semantics as a single read. Returns `### <path>` delimited sections; per-file errors appear inline and do not abort the batch.',
+        description: 'Read several files in parallel. Returns `### <path>` sections; per-file errors inline.',
         inputSchema: {
             type: 'object',
             properties: {
                 reads: {
                     type: 'array',
-                    description: 'List of read requests dispatched in parallel. Each entry reuses the single-read size cap and line-number formatting; per-file errors are inlined into the aggregate instead of aborting the batch.',
                     items: {
                         type: 'object',
                         properties: {
-                            path: { type: 'string', description: 'Absolute file path (relative paths resolve against the plugin server cwd).' },
-                            offset: { type: 'number', description: 'Start line (0-based).' },
-                            limit: { type: 'number', description: 'Max lines to read.' },
+                            path: { type: 'string', description: 'File path.' },
+                            offset: { type: 'number' },
+                            limit: { type: 'number' },
                         },
                         required: ['path'],
                     },
@@ -322,19 +320,18 @@ export const BUILTIN_TOOLS = [
         name: 'batch_edit',
         title: 'Batch Edit',
         annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Apply edits across several files in one call. Each entry in `edits` is { path, old_string, new_string } with the same unique-match rule as a single edit. Per-entry failures are reported inline (`FAIL <path>: <reason>`) and do not abort the batch.',
+        description: 'Apply edits across multiple files. Per-entry failures reported as `FAIL <path>`; batch continues.',
         inputSchema: {
             type: 'object',
             properties: {
                 edits: {
                     type: 'array',
-                    description: 'Cross-file edits dispatched sequentially through the single-edit path. Each entry is independent; failures are reported inline as `FAIL <path>: <reason>` and the batch continues.',
                     items: {
                         type: 'object',
                         properties: {
-                            path: { type: 'string', description: 'Absolute file path.' },
-                            old_string: { type: 'string', description: 'Exact text to find (must be unique in the file).' },
-                            new_string: { type: 'string', description: 'Replacement text.' },
+                            path: { type: 'string' },
+                            old_string: { type: 'string', description: 'Text to find (unique).' },
+                            new_string: { type: 'string', description: 'Replacement.' },
                         },
                         required: ['path', 'old_string', 'new_string'],
                     },

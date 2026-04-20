@@ -276,11 +276,11 @@ export function composeSystemPrompt(opts) {
     if (permission) {
         const allow =
             permission === 'read'
-                ? 'Allowed: read-only tools. Bash, write, and edit are rejected at call time for this session.'
+                ? 'read-only; write/edit/bash rejected'
                 : permission === 'read-write'
-                    ? 'Allowed: read and read-write tools.'
-                    : `Unknown permission "${permission}" — treat as read-only and report.`;
-        roleParts.push(`# permission\n${permission}\n${allow}`);
+                    ? 'read + write/edit/bash'
+                    : 'unknown — treat as read-only';
+        roleParts.push(`# permission\n${permission} — ${allow}.`);
     }
     if (opts.role && !opts.skipRoleReminder) {
         roleParts.push('# role\n' + opts.role);

@@ -250,38 +250,7 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   return parts.join('\n\n');
 }
 
-/**
- * Build the Pool C injection content (Orchestrator agent system prompt).
- *
- * Returns the concatenated content of all `rules/pool-c/*.md` modules in
- * filename order. This is the SYSTEM prompt for Pool C agents (explorer,
- * recall-agent, search-agent) invoked via bridge-llm. Pool C is monolithic
- * like Pool D — every agent gets the same system, and per-agent routing
- * happens in the user message (`## Agent: explorer` header) so the cache
- * prefix stays shared across all Pool C callers.
- *
- * @param {object} opts
- * @param {string} opts.PLUGIN_ROOT — absolute path to the plugin root
- * @returns {string} joined Pool C content
- */
-function buildPoolCSystem({ PLUGIN_ROOT }) {
-  const POOL_C_DIR = path.join(PLUGIN_ROOT, 'rules', 'pool-c');
-  let entries;
-  try {
-    entries = fs.readdirSync(POOL_C_DIR)
-      .filter(f => f.endsWith('.md'))
-      .sort();
-  } catch {
-    return '';
-  }
-  const parts = entries
-    .map(f => readOptional(path.join(POOL_C_DIR, f)))
-    .filter(Boolean);
-  return parts.join('\n\n');
-}
-
 module.exports = {
   buildInjectionContent,
-  buildPoolCSystem,
   buildBridgeInjectionContent,
 };

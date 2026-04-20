@@ -45,8 +45,10 @@ function pluginRoot() {
 // Unified-shard policy — Pool C roles keep the same tool schema as every
 // other Pool B session so BP_1 is bit-identical across roles and the
 // provider-side cache shard is shared. Per-role behaviour is steered via
-// rules/pool-c/*.md (system BP3) and runtime guards (loop.mjs write-block
-// + ai-wrapped-dispatch recursion break).
+// rules/pool-c/*.md (injected into the tier3Reminder user message by
+// composeSystemPrompt) and runtime guards (loop.mjs write-block +
+// ai-wrapped-dispatch recursion break). The historical `systemRole` /
+// BP3 split is force-disabled; role content migrates to tier3 today.
 const POOL_C_TOOL_KEEP = Object.freeze({});
 
 /**
@@ -194,14 +196,16 @@ export function makeBridgeLlm(opts = {}) {
         if (permission) sessionOpts.permission = permission;
         if (isPoolC) {
             sessionOpts.skipRoleReminder = true;
-            // Pool C role snippet rides in the session's systemRole block
-            // (BP3) now, not in the user message — keeps the user message
-            // a clean query so its prefix is shareable across roles.
+            // Pool C role snippet is loaded from rules/pool-c/<role>.md and
+            // ends up in the tier3Reminder user message (composeSystemPrompt
+            // concatenates it into roleParts → tier3Parts). Keeps the tail
+            // user message a pure query and lets BP1+BP2 stay shared across
+            // every Pool B/C role.
             sessionOpts.roleSnippet = getRoleSnippet(opts.role) || null;
         }
-        // User message = pure query. Permission / role / snippet all live
-        // in systemRole (composeSystemPrompt → BP3) so BP2 + BP3 carry the
-        // invariant, and only the query varies per call.
+        // User message = pure query. Permission / role / snippet ride in
+        // tier3Reminder (composeSystemPrompt) — only the query varies per
+        // call, so provider cache reuses the shared prefix.
         const finalPrompt = prompt;
 
         // Stateless ephemeral session — created fresh per call, never pooled
