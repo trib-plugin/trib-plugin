@@ -187,6 +187,71 @@ function extractGlobBaseDirectory(pattern) {
 // cache, so the cap is the primary guard.
 const SHELL_OUTPUT_MAX_CHARS = 30_000;
 
+// v0.6.231 smart truncation. Big raw payloads (large `read`, 500-line `bash`
+// dumps) bloat Pool B cache_write by 30-40k tokens per iter. These thresholds
+// trigger head/tail summarisation so the agent still sees the interesting
+// frames (start of file, tail of log) without paying for the middle mass.
+// Explicit offset/limit on `read` — or `full:true` — bypasses the cap so
+// targeted reads remain byte-exact.
+const SMART_READ_MAX_BYTES = 30 * 1024;
+const SMART_READ_MAX_LINES = 600;
+const SMART_READ_HEAD_LINES = 200;
+const SMART_READ_TAIL_LINES = 100;
+const SMART_BASH_MAX_LINES = 400;
+const SMART_BASH_MAX_BYTES = 30 * 1024;
+const SMART_BASH_HEAD_LINES = 80;
+const SMART_BASH_TAIL_LINES = 80;
+
+// Middle-elision helper for shell output. Head + tail framed with a
+// self-describing marker so the agent sees both the command prologue and the
+// tail (exit-code, final log entries) instead of losing the tail to a pure
+// head slice. Arrow-function replacer convention (see B35 comment elsewhere)
+// is honoured; no String.prototype.replace calls here.
+function smartMiddleTruncate(content) {
+    const s = typeof content === 'string' ? content : String(content ?? '');
+    if (s.length <= SMART_BASH_MAX_BYTES) {
+        // Byte cap clear. Still gate on line count — a narrow file of 500
+        // single-byte rows slips under the byte cap yet prints 500 lines.
+        const fastLines = s.split('\n');
+        if (fastLines.length <= SMART_BASH_MAX_LINES) return s;
+        const head = fastLines.slice(0, SMART_BASH_HEAD_LINES).join('\n');
+        const tail = fastLines.slice(-SMART_BASH_TAIL_LINES).join('\n');
+        const middle = fastLines.length - SMART_BASH_HEAD_LINES - SMART_BASH_TAIL_LINES;
+        return `${head}\n\n... [TRUNCATED — ${middle} lines middle elided; total ${fastLines.length} lines. Rerun with tighter filters for more] ...\n\n${tail}`;
+    }
+    const lines = s.split('\n');
+    if (lines.length <= SMART_BASH_MAX_LINES) {
+        // Byte cap tripped but line count is moderate (one giant row). Fall
+        // back to the legacy head-only cap so we don't invent a split that
+        // cuts a single logical line in half.
+        const head = s.slice(0, SMART_BASH_MAX_BYTES);
+        return `${head}\n\n... [TRUNCATED — output exceeded ${Math.round(SMART_BASH_MAX_BYTES / 1024)} KB on a single line] ...`;
+    }
+    const head = lines.slice(0, SMART_BASH_HEAD_LINES).join('\n');
+    const tail = lines.slice(-SMART_BASH_TAIL_LINES).join('\n');
+    const middle = lines.length - SMART_BASH_HEAD_LINES - SMART_BASH_TAIL_LINES;
+    const totalKb = Math.round(s.length / 1024);
+    return `${head}\n\n... [TRUNCATED — ${middle} lines middle elided; total ${lines.length} lines / ${totalKb} KB. Rerun with tighter filters for more] ...\n\n${tail}`;
+}
+
+// Shared smart-truncate for file bodies (read / multi_read). Returns the
+// original rendered text unchanged when the file is small. When the file is
+// big AND the caller didn't pin a range, returns a head/tail framed summary
+// plus a truncation flag so multi_read can annotate its per-file header.
+function smartReadTruncate(renderedWithLineNos, totalLines, fileBytes) {
+    const overByBytes = fileBytes > SMART_READ_MAX_BYTES;
+    const overByLines = totalLines > SMART_READ_MAX_LINES;
+    if (!overByBytes && !overByLines) {
+        return { text: renderedWithLineNos, truncated: false, totalLines };
+    }
+    const rows = renderedWithLineNos.split('\n');
+    const head = rows.slice(0, SMART_READ_HEAD_LINES).join('\n');
+    const tail = rows.slice(-SMART_READ_TAIL_LINES).join('\n');
+    const kb = Math.round(fileBytes / 1024);
+    const marker = `... [TRUNCATED — file is ${totalLines} lines / ${kb} KB. Use offset/limit for a specific range, or full:true for the whole file] ...`;
+    return { text: `${head}\n${marker}\n${tail}`, truncated: true, totalLines };
+}
+
 // Default ignores for grep/glob shell-outs. Matches the directories ripgrep
 // already skips when a repo is initialized (.gitignore-driven) plus the
 // common build-artefact dirs that are almost never interesting to search.
@@ -384,13 +449,14 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read a file with cat -n line numbering, size cap, optional offset/limit.',
+        description: 'Read a file with cat -n line numbering, size cap, optional offset/limit. Big files (>30 KB or >600 lines) return a head+tail summary unless `full:true` or an explicit offset/limit is supplied.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'File path.' },
                 offset: { type: 'number', description: 'Start line (0-based).' },
                 limit: { type: 'number', description: 'Max lines (default 2000).' },
+                full: { type: 'boolean', description: 'Opt out of the smart head/tail cap for big files. Default false.' },
             },
             required: ['path'],
         },
@@ -536,6 +602,7 @@ export const BUILTIN_TOOLS = [
                             path: { type: 'string', description: 'File path.' },
                             offset: { type: 'number' },
                             limit: { type: 'number' },
+                            full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
                         },
                         required: ['path'],
                     },
@@ -987,16 +1054,20 @@ export async function executeBuiltinTool(name, args, cwd) {
                     // merged form. Concatenate stdout + stderr; no separator
                     // block, just a marker prefix on failure.
                     const merged = stdout + stderr;
-                    if (statusMarker) return capShellOutput(`${statusMarker}\n\n${merged || '(no output)'}`);
-                    return capShellOutput(merged || '(no output)');
+                    if (statusMarker) return smartMiddleTruncate(`${statusMarker}\n\n${merged || '(no output)'}`);
+                    return smartMiddleTruncate(merged || '(no output)');
                 }
                 // Default: stdout primary, stderr appended as a labelled block
-                // only when non-empty so clean runs stay noise-free.
-                const body = stdout || (stderr ? '' : '(no output)');
-                const stderrBlock = stderr ? `\n\n[stderr]\n${stderr}` : '';
+                // only when non-empty so clean runs stay noise-free. Smart
+                // middle-truncation is applied per stream so a massive stdout
+                // cannot blot out a short stderr diagnostic (and vice versa).
+                const truncatedStdout = smartMiddleTruncate(stdout);
+                const truncatedStderr = stderr ? smartMiddleTruncate(stderr) : '';
+                const body = truncatedStdout || (truncatedStderr ? '' : '(no output)');
+                const stderrBlock = truncatedStderr ? `\n\n[stderr]\n${truncatedStderr}` : '';
                 const payload = `${body}${stderrBlock}`;
-                if (statusMarker) return capShellOutput(`${statusMarker}\n\n${payload}`);
-                return capShellOutput(payload);
+                if (statusMarker) return `${statusMarker}\n\n${payload}`;
+                return payload;
             }
             finally {
                 _cacheInvalidateAll();
@@ -1010,7 +1081,8 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
-            const cacheKey = `read|${fullPath}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}`;
+            const wantFull = args.full === true;
+            const cacheKey = `read|${fullPath}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}|${wantFull ? 'f' : 's'}`;
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
@@ -1059,6 +1131,14 @@ export async function executeBuiltinTool(name, args, cwd) {
                 } else {
                     out = rendered;
                 }
+                // v0.6.231 smart cap. Only engages when the caller asked for
+                // the default read (no offset/limit, full:false) AND the file
+                // is over the line/byte threshold. Explicit ranges always see
+                // byte-exact output.
+                if (!hasRangeArgs && !wantFull) {
+                    const { text } = smartReadTruncate(out, lines.length, st.size);
+                    out = text;
+                }
                 _cacheSet(cacheKey, out);
                 _recordReadSnapshot(fullPath, st);
                 return out;
@@ -1081,8 +1161,14 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return { path: entry.path, body };
             }));
             // Header path → forward slash; error bodies already normalised
-            // inside the read case's catch blocks.
-            return results.map(r => `### ${normalizeOutputPath(r.path)}\n${r.body}`).join('\n\n');
+            // inside the read case's catch blocks. When `read` emitted a
+            // smart-cap marker, surface the truncation state in the header
+            // so downstream skimming spots it without parsing the body.
+            return results.map(r => {
+                const match = /\[TRUNCATED — file is (\d+) lines \/ (\d+) KB\./.exec(r.body || '');
+                const suffix = match ? ` (truncated, ${match[1]} total lines / ${match[2]} KB — pass full:true or offset/limit for more)` : '';
+                return `### ${normalizeOutputPath(r.path)}${suffix}\n${r.body}`;
+            }).join('\n\n');
         }
         case 'multi_edit': {
             // Claude Code native MultiEdit semantics: one file, many ordered

@@ -32,6 +32,20 @@ import {
     updateSessionStatus,
 } from '../session/manager.mjs';
 
+// v0.6.231: cap sub-agent synthesis to ~3000 tokens (~12 KB at the 4 B/tok
+// working average). Pool B explore/recall/search answers occasionally land
+// 8-10k-token walls that then ride in the Lead context for the rest of the
+// turn; the cap keeps those outliers bounded without touching the 95%+ of
+// answers already under the threshold.
+const BRIEF_CAP_BYTES = 12 * 1024;
+function applyBriefCap(text) {
+    if (typeof text !== 'string') return text;
+    if (text.length <= BRIEF_CAP_BYTES) return text;
+    const head = text.slice(0, BRIEF_CAP_BYTES);
+    const approxTokens = Math.round(text.length / 4);
+    return `${head}\n\n... [TRUNCATED — full answer was ~${approxTokens} tokens / ${Math.round(text.length / 1024)} KB. Re-run with brief:false for the complete synthesis]`;
+}
+
 function pluginRoot() {
     return process.env.CLAUDE_PLUGIN_ROOT
         || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
@@ -239,7 +253,15 @@ export function makeBridgeLlm(opts = {}) {
         let terminalStatus = 'idle';
         try {
             const result = await askSession(session.id, finalPrompt, null, null, cwd);
-            return result?.content || '';
+            const raw = result?.content || '';
+            // v0.6.231 brief cap. Sub-agent answers (explore/recall/search)
+            // occasionally balloon to 8-10k token walls that then ride in the
+            // parent Lead's context for the rest of the turn. A 3000-token
+            // (~12 KB) ceiling trims the long tail while leaving the vast
+            // majority of answers untouched. Opt-out via `brief:false` when
+            // the caller explicitly wants the full synthesis.
+            if (opts.brief === false) return raw;
+            return applyBriefCap(raw);
         } catch (err) {
             terminalStatus = 'error';
             throw err;

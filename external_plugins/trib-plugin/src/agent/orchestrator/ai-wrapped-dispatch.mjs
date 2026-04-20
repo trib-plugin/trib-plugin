@@ -84,6 +84,12 @@ export async function dispatchAiWrapped(name, args, ctx) {
 
   const { makeBridgeLlm } = await import('./smart-bridge/bridge-llm.mjs')
 
+  // `brief` (default true) applies a ~3000-token cap to each sub-agent
+  // answer before it rides back into the Lead context. Pass `brief:false`
+  // when the caller explicitly wants the uncapped synthesis. See
+  // bridge-llm.mjs::applyBriefCap for the cap shape.
+  const brief = args.brief !== false;
+
   // Default mode is ASYNC (bridge-style): spawn the dispatch in the
   // background and return a polling handle so the caller (typically Lead)
   // continues its turn without blocking. To wait inline for the merged
@@ -107,7 +113,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
     const resolvedCwd = resolveCwd(args.cwd)
     Promise.allSettled(
       queries.map((q) => {
-        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd })
+        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
         return llm({ prompt: spec.build(q, resolvedCwd) })
       }),
     ).then((settled) => {
@@ -146,7 +152,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
   const resolvedCwd = resolveCwd(args.cwd)
   const settled = await Promise.allSettled(
     queries.map((q) => {
-      const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd })
+      const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
       return llm({ prompt: spec.build(q, resolvedCwd) })
     }),
   )
