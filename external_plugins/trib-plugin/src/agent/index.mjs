@@ -2,6 +2,7 @@ import { initProviders } from './orchestrator/providers/registry.mjs';
 import { createSession, askSession, listSessions, closeSession, findSessionByScopeKey, updateSessionStatus, getSessionRuntime, SessionClosedError, setSmartBridge, forEachSessionRuntime } from './orchestrator/session/manager.mjs';
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
+import { startBridgeStallWatchdog } from './bridge-stall-watchdog.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
@@ -758,10 +759,33 @@ export async function handleToolCall(name, args, opts = {}) {
           let errorMessage = null;
           let result = null;
           const toolCallLog = [];
+          let lastIteration = 0;
           updateSessionStatus(session.id, 'running');
           emit(`${modelTag}${role} started`);
+          // Per-session stall watchdog — complements the orchestrator's
+          // stream-watchdog (which fires at 300s/600s on raw stream silence).
+          // This one catches the bridge-specific case where the lead is
+          // waiting on a `worker finished` notification that never arrives:
+          // if the SSE stream is quiet beyond STALL_TIMEOUT_S (default 90s)
+          // and the session isn't in `tool_running`, emit via notifyFn and
+          // abort so the outer catch renders a normal error footer.
+          const stallWatch = startBridgeStallWatchdog({
+            sessionId: session.id,
+            getRuntime: () => getSessionRuntime(session.id),
+            getIteration: () => lastIteration,
+            abort: (reason) => {
+              const rt = getSessionRuntime(session.id);
+              rt?.controller?.abort?.(reason);
+            },
+            notify: emit,
+            modelTag,
+            role,
+          });
           try {
-            result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, effectiveCwd);
+            result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => {
+              if (typeof iteration === 'number' && iteration > lastIteration) lastIteration = iteration;
+              for (const c of calls) toolCallLog.push({ name: c.name, iteration });
+            }, effectiveCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             // Usage display — `ctx` is the LAST turn's promptTokens (how big
             // the context was at the end, actionable for compaction decisions).
@@ -798,7 +822,13 @@ export async function handleToolCall(name, args, opts = {}) {
           } catch (err) {
             completed = false;
             errorMessage = err instanceof Error ? err.message : String(err);
-            if (err instanceof SessionClosedError) {
+            if (stallWatch.fired()) {
+              // The stall watchdog already emitted a user-facing message
+              // before aborting; whatever error bubbled up here (likely a
+              // SessionClosedError or provider-side abort surface) is just
+              // the unwind. Mark the session as errored and fall through.
+              updateSessionStatus(session.id, 'error');
+            } else if (err instanceof SessionClosedError) {
               emit(`${role} cancelled`);
               // Cancellation isn't an error; flip to idle so the next sweep
               // pass can reclaim the file instead of leaving a 'running'
@@ -819,6 +849,7 @@ export async function handleToolCall(name, args, opts = {}) {
               updateSessionStatus(session.id, 'error');
             }
           } finally {
+            try { stallWatch.stop(); } catch { /* idempotent */ }
             try {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {
