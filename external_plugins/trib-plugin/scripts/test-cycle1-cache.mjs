@@ -1,6 +1,14 @@
 // Manual cache verification for cycle1 prompt structure.
 // Run from the plugin repo root:
-//   CLAUDE_PLUGIN_DATA=<path> node scripts/test-cycle1-cache.mjs
+//   CLAUDE_PLUGIN_DATA=<path> RUN_NETWORK_TESTS=1 node scripts/test-cycle1-cache.mjs
+//
+// Skipped by default — hits the live openai-oauth endpoint and therefore
+// blocks run-all-tests for the full 120s timeout when OAuth is not ready.
+// Opt-in with RUN_NETWORK_TESTS=1 when explicitly validating cycle1 cache.
+if (!process.env.RUN_NETWORK_TESTS) {
+    console.log('skipped — set RUN_NETWORK_TESTS=1 to hit live openai-oauth');
+    process.exit(0);
+}
 
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
