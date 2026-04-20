@@ -93,88 +93,66 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // bridge-llm.mjs::applyBriefCap for the cap shape.
   const brief = args.brief !== false;
 
-  // Default mode is ASYNC (bridge-style): spawn the dispatch in the
-  // background and return a polling handle so the caller (typically Lead)
-  // continues its turn without blocking. To wait inline for the merged
-  // answer, pass `wait: true` explicitly.
-  if (args.wait !== true) {
-    _pruneAsyncResults()
-    const id = `async_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    _asyncResults.set(id, {
-      status: 'running',
-      tool: name,
-      role: spec.role,
-      queries,
-      createdAt: Date.now(),
-    })
-    // Emit a channel notification mirroring the bridge worker UX — the
-    // Discord user sees "<tool> started" the instant dispatch begins. The
-    // `silent_to_agent` flag keeps this status ping out of Lead's context
-    // window; Lead still receives the async_result push later (pushAsyncResult)
-    // which carries the merged answer it needs to integrate.
-    if (typeof ctx?.notifyFn === 'function') {
-      try { ctx.notifyFn(`${name} started`, { silent_to_agent: true }) } catch { /* best-effort */ }
-    }
-    const resolvedCwd = resolveCwd(args.cwd)
-    Promise.allSettled(
-      queries.map((q) => {
-        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
-        return llm({ prompt: spec.build(q, resolvedCwd) })
-      }),
-    ).then((settled) => {
-      const merged = queries.length === 1
-        ? (settled[0].status === 'fulfilled'
-            ? (settled[0].value || '(no response)')
-            : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
-        : settled.map((r, i) => {
-            const header = `### Query ${i + 1}: ${queries[i]}`
-            if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
-            return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
-          }).join('\n\n---\n\n')
-      const entry = _asyncResults.get(id)
-      if (entry) {
-        entry.status = 'done'
-        entry.content = merged
-        entry.completedAt = Date.now()
-      }
-      pushAsyncResult(ctx, id, name, queries, merged)
-    }).catch((err) => {
-      const msg = err?.message || String(err)
-      const entry = _asyncResults.get(id)
-      if (entry) {
-        entry.status = 'error'
-        entry.error = msg
-        entry.completedAt = Date.now()
-      }
-      pushAsyncResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
-    })
-    const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`
-    return ok(`${name} started — ${queryCount}. Merged answer will be auto-pushed via the channel (handle ${id}).`)
+  // Always async + notification. There is no synchronous mode. Spawning
+  // inline would block the MCP response for 14+ seconds while the
+  // sub-agents stream, long enough for Claude Code's MCP client to drop
+  // the connection. Dispatching in the background and returning a handle
+  // immediately — with the merged answer delivered later via the channel
+  // notification bridge — eliminates that failure mode entirely.
+  _pruneAsyncResults()
+  const id = `async_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  _asyncResults.set(id, {
+    status: 'running',
+    tool: name,
+    role: spec.role,
+    queries,
+    createdAt: Date.now(),
+  })
+  // Emit a channel notification mirroring the bridge worker UX — the
+  // Discord user sees "<tool> started" the instant dispatch begins. The
+  // `silent_to_agent` flag keeps this status ping out of Lead's context
+  // window; Lead still receives the async_result push later (pushAsyncResult)
+  // which carries the merged answer it needs to integrate.
+  if (typeof ctx?.notifyFn === 'function') {
+    try { ctx.notifyFn(`${name} started`, { silent_to_agent: true }) } catch { /* best-effort */ }
   }
-
-  // One Pool C session per query, dispatched concurrently. allSettled so a
-  // single agent failure doesn't nullify the remaining answers.
   const resolvedCwd = resolveCwd(args.cwd)
-  const settled = await Promise.allSettled(
+  Promise.allSettled(
     queries.map((q) => {
       const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
       return llm({ prompt: spec.build(q, resolvedCwd) })
     }),
-  )
-
-  if (queries.length === 1) {
-    const r = settled[0]
-    if (r.status === 'fulfilled') return ok(r.value || '(no response)')
-    return fail(`${spec.label} error: ${r.reason?.message || String(r.reason)}`)
-  }
-
-  const merged = settled.map((r, i) => {
-    const header = `### Query ${i + 1}: ${queries[i]}`
-    if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
-    return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
-  }).join('\n\n---\n\n')
-  return ok(merged)
+  ).then((settled) => {
+    const merged = queries.length === 1
+      ? (settled[0].status === 'fulfilled'
+          ? (settled[0].value || '(no response)')
+          : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
+      : settled.map((r, i) => {
+          const header = `### Query ${i + 1}: ${queries[i]}`
+          if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
+          return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
+        }).join('\n\n---\n\n')
+    const entry = _asyncResults.get(id)
+    if (entry) {
+      entry.status = 'done'
+      entry.content = merged
+      entry.completedAt = Date.now()
+    }
+    pushAsyncResult(ctx, id, name, queries, merged)
+  }).catch((err) => {
+    const msg = err?.message || String(err)
+    const entry = _asyncResults.get(id)
+    if (entry) {
+      entry.status = 'error'
+      entry.error = msg
+      entry.completedAt = Date.now()
+    }
+    pushAsyncResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
+  })
+  const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`
+  return ok(`${name} started — ${queryCount}. Merged answer will be auto-pushed via the channel (handle ${id}).`)
 }
+
 
 function buildExplorerPrompt(query, cwd) {
   // cwd rides in the session's tier3Reminder (<system-reminder># cwd) via

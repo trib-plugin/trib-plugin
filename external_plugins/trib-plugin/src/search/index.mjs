@@ -495,7 +495,6 @@ const toolDefinitions = [
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
         cwd: { type: 'string', description: 'Optional workspace hint. Rarely needed.' },
-        wait: { type: 'boolean', description: 'Async by default. Pass `wait:true` to block inline.' },
       },
       required: ['query'],
       additionalProperties: false,

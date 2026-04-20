@@ -898,7 +898,6 @@ const TOOL_DEFS = [
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
         cwd: { type: 'string', description: 'Optional workspace hint. Absolute path; `~` and forward slashes supported.' },
-        wait: { type: 'boolean', description: 'Async by default. Pass `wait:true` to block inline.' },
       },
       required: ['query'],
       additionalProperties: false,
@@ -915,7 +914,6 @@ const TOOL_DEFS = [
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
         cwd: { type: 'string', description: 'Authoritative search root. Absolute path; `~` and forward slashes supported. Omit → launch workspace. Target plugin tree via `cwd: "~/.claude/..."`. No silent fan-out.' },
-        wait: { type: 'boolean', description: 'Async by default. Pass `wait:true` to block inline.' },
       },
       required: ['query'],
       additionalProperties: false,
