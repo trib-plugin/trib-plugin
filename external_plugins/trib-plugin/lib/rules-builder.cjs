@@ -212,6 +212,13 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const agentContent = readOptional(path.join(POOL_B_DIR, '01-agent.md'));
   if (agentContent) parts.push(agentContent);
 
+  // Shared tool-efficiency fragment — single source of truth, injected into
+  // every Pool B agent (worker/debugger/reviewer/tester/researcher + any
+  // user-defined role). Pool C sub-agents load the same file from
+  // bridge-llm.getRoleSnippet so all bridge-issued sessions share these 5 rules.
+  const toolEfficiency = readOptional(path.join(SHARED_DIR, '_shared', 'tool-efficiency.md'));
+  if (toolEfficiency) parts.push(toolEfficiency);
+
   // rules/{memory,search,explore,lsp}.md intentionally NOT included here.
   // Bridge sessions receive full tool schemas (non-deferred) so the
   // Anthropic tool description already carries canonical usage info for

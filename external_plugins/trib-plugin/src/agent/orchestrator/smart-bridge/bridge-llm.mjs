@@ -60,6 +60,23 @@ const POOL_C_TOOL_KEEP = Object.freeze({});
  * bit-identical). Only the per-call suffix diverges.
  */
 const _roleSnippetCache = new Map();
+// Shared tool-efficiency fragment — loaded once, appended to every Pool C
+// role snippet so Haiku sub-agents get the same 5-rule guidance as Pool B.
+// Single source of truth: rules/_shared/tool-efficiency.md (also consumed by
+// lib/rules-builder.cjs::buildBridgeInjectionContent for Pool B).
+let _toolEfficiencyFragment = null;
+function getToolEfficiencyFragment() {
+    if (_toolEfficiencyFragment !== null) return _toolEfficiencyFragment;
+    try {
+        _toolEfficiencyFragment = readFileSync(
+            join(pluginRoot(), 'rules', '_shared', 'tool-efficiency.md'),
+            'utf8',
+        ).trim();
+    } catch {
+        _toolEfficiencyFragment = '';
+    }
+    return _toolEfficiencyFragment;
+}
 function getRoleSnippet(role) {
     if (!role) return '';
     if (_roleSnippetCache.has(role)) return _roleSnippetCache.get(role);
@@ -71,6 +88,10 @@ function getRoleSnippet(role) {
         } catch {
             content = '';
         }
+    }
+    const toolEff = getToolEfficiencyFragment();
+    if (toolEff) {
+        content = content ? `${content}\n\n${toolEff}` : toolEff;
     }
     _roleSnippetCache.set(role, content);
     return content;
