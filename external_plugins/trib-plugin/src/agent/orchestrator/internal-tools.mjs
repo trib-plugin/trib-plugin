@@ -22,7 +22,24 @@ const _overrides = new Map();
 export function setInternalToolsProvider({ executor, tools }) {
     if (typeof executor !== 'function') throw new Error('internal-tools: executor must be a function');
     _executor = executor;
-    _tools = Array.isArray(tools) ? [...tools] : [];
+    const base = Array.isArray(tools) ? [...tools] : [];
+    // Re-registration (handleToolCall idempotent fallback) must preserve any
+    // override-backed synthetic tools previously registered via
+    // addInternalTools. Without this, the boot-time memory_search /
+    // web_search entries got wiped out the moment the first agent tool call
+    // landed — Pool C hidden roles (recall-agent / search-agent / explorer)
+    // then saw a registry missing their native executors and looped back
+    // into the aiWrapped dispatcher, hitting the recursion guard.
+    // Regression reintroduced after v0.6.208; fix restores override survival.
+    if (_overrides.size > 0) {
+        const baseNames = new Set(base.map(t => t?.name).filter(Boolean));
+        for (const [name] of _overrides) {
+            if (baseNames.has(name)) continue;
+            const existing = _tools.find(t => t?.name === name);
+            if (existing) base.push(existing);
+        }
+    }
+    _tools = base;
     _names = new Set(_tools.map(t => t?.name).filter(Boolean));
 }
 
