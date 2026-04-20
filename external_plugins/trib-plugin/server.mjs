@@ -573,6 +573,18 @@ try {
 await server.connect(new StdioServerTransport())
 log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
+// ── Dispatch restart recovery ──────────────────────────────────────
+// If this bootstrap follows a process death that interrupted any async
+// dispatch (recall / search / explore), emit one Aborted notification per
+// orphaned handle so the Lead can close the loop instead of waiting forever.
+try {
+  const { recoverPending } = await import('./src/agent/orchestrator/dispatch-persist.mjs')
+  const recovered = recoverPending(PLUGIN_DATA, pushChannelNotification)
+  if (recovered > 0) log(`dispatch-recovery: emitted ${recovered} Aborted notifications`)
+} catch (err) {
+  log(`dispatch-recovery failed: ${err instanceof Error ? err.message : String(err)}`)
+}
+
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
 // Writes static rules into the managed block. Session recap is NOT
 // written here — the SessionStart hook injects it live from sqlite.

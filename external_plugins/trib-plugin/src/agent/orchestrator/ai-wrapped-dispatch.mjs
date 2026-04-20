@@ -20,6 +20,7 @@ import { resolve as resolvePath, isAbsolute } from 'path'
 import { loadConfig } from './config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
+import { addPending, removePending } from './dispatch-persist.mjs'
 
 const ROLE_BY_TOOL = Object.freeze({
   recall:  { role: 'recall-agent',  build: buildRecallPrompt,   label: 'recall-agent' },
@@ -108,13 +109,16 @@ export async function dispatchAiWrapped(name, args, ctx) {
     queries,
     createdAt: Date.now(),
   })
-  // Emit a channel notification mirroring the bridge worker UX — the
-  // Discord user sees "<tool> started" the instant dispatch begins. The
-  // `silent_to_agent` flag keeps this status ping out of Lead's context
-  // window; Lead still receives the dispatch_result push later (pushDispatchResult)
-  // which carries the merged answer it needs to integrate.
+  // Persist so a plugin restart mid-dispatch can emit a single Aborted
+  // notification on next bootstrap instead of silently orphaning the handle.
+  addPending(process.env.CLAUDE_PLUGIN_DATA, id, name, queries)
+  // Emit a channel notification mirroring the bridge worker UX — a short
+  // "<tool> started" banner that lets both Lead and user terminal see the
+  // lifecycle begin. Non-silent so the MCP notification reaches the terminal
+  // (silent forwarding skips MCP and only hits the external channel IPC).
+  // The merged result itself still arrives later via pushDispatchResult.
   if (typeof ctx?.notifyFn === 'function') {
-    try { ctx.notifyFn(`${name} started`, { silent_to_agent: true }) } catch { /* best-effort */ }
+    try { ctx.notifyFn(`${name} started`) } catch { /* best-effort */ }
   }
   const resolvedCwd = resolveCwd(args.cwd)
   Promise.allSettled(
@@ -138,6 +142,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
       entry.content = merged
       entry.completedAt = Date.now()
     }
+    removePending(process.env.CLAUDE_PLUGIN_DATA, id)
     pushDispatchResult(ctx, id, name, queries, merged)
   }).catch((err) => {
     const msg = err?.message || String(err)
@@ -147,6 +152,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
       entry.error = msg
       entry.completedAt = Date.now()
     }
+    removePending(process.env.CLAUDE_PLUGIN_DATA, id)
     pushDispatchResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
   })
   const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`

@@ -5,10 +5,10 @@
  *   1. Default (no flag) → notification reaches Lead via sendNotifyToParent.
  *   2. silent_to_agent:true → Lead hop skipped, Discord forward still fires.
  *   3. Event-log (memoryAppendEntry) records in BOTH cases.
- *   4. Bridge lifecycle "started" banner carries silent_to_agent:true.
+ *   4. Bridge lifecycle "started" banner is NOT silent (non-silent MCP Noti — terminal + Lead both see it).
  *   5. Final "Done" result payload does NOT carry silent_to_agent.
  *   6. Stall watchdog notifications are NOT silent.
- *   7. aiWrapped "started" echo IS silent; dispatch_result push is NOT silent.
+ *   7. aiWrapped "started" echo is NOT silent; dispatch_result push is NOT silent.
  *
  * Strategy
  * ────────
@@ -154,10 +154,10 @@ const WATCHDOG_SRC = readFileSync(join(PLUGIN_ROOT, 'src/agent/bridge-stall-watc
 const SERVER_SRC = readFileSync(join(PLUGIN_ROOT, 'server.mjs'), 'utf8');
 const CHANNELS_SRC = readFileSync(join(PLUGIN_ROOT, 'src/channels/index.mjs'), 'utf8');
 
-// Bridge worker "started" banner emits with silent_to_agent:true.
+// Bridge worker "started" banner emits WITHOUT silent_to_agent (non-silent).
 {
-  const m = AGENT_SRC.match(/emit\(`\$\{modelTag\}\$\{role\} started`,\s*\{\s*silent_to_agent:\s*true\s*\}\)/);
-  assert(!!m, 'agent/index.mjs: `${role} started` emit carries silent_to_agent:true');
+  const m = AGENT_SRC.match(/emit\(`\$\{modelTag\}\$\{role\} started`\)/);
+  assert(!!m, 'agent/index.mjs: `${role} started` emit is non-silent (no meta arg)');
 }
 
 // Final Done / result emission stays non-silent (no silent_to_agent key).
@@ -182,10 +182,10 @@ const CHANNELS_SRC = readFileSync(join(PLUGIN_ROOT, 'src/channels/index.mjs'), '
   assert(!!call, 'bridge-stall-watchdog.mjs: notify(msg) single-arg call preserved (non-silent)');
 }
 
-// aiWrapped "<tool> started" echo carries silent_to_agent:true.
+// aiWrapped "<tool> started" echo emits WITHOUT silent_to_agent (non-silent).
 {
-  const echo = AIWRAP_SRC.match(/ctx\.notifyFn\(`\$\{name\} started`,\s*\{\s*silent_to_agent:\s*true\s*\}\)/);
-  assert(!!echo, 'ai-wrapped-dispatch.mjs: `<tool> started` echo carries silent_to_agent:true');
+  const echo = AIWRAP_SRC.match(/ctx\.notifyFn\(`\$\{name\} started`\)/);
+  assert(!!echo, 'ai-wrapped-dispatch.mjs: `<tool> started` echo is non-silent (no meta arg)');
 }
 
 // aiWrapped pushDispatchResult fires notify with type:'dispatch_result' and

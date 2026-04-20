@@ -832,11 +832,10 @@ export async function handleToolCall(name, args, opts = {}) {
           const toolCallLog = [];
           let lastIteration = 0;
           updateSessionStatus(session.id, 'running');
-          // `silent_to_agent` — lifecycle "started" banner is a status ping
-          // for the Discord user, not something Lead needs in-context. The
-          // final result emission (further below) stays NON-silent so Lead
-          // receives the deliverable.
-          emit(`${modelTag}${role} started`, { silent_to_agent: true });
+          // Bridge Start — non-silent MCP Noti so both Lead and user terminal
+          // see the lifecycle banner. Done / Error emissions (further below)
+          // also stay non-silent for consistent 3-event shape.
+          emit(`${modelTag}${role} started`);
           // Per-session stall watchdog — complements the orchestrator's
           // stream-watchdog (which fires at 300s/600s on raw stream silence).
           // This one catches the bridge-specific case where the lead is
