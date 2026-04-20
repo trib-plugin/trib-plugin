@@ -98,6 +98,12 @@ export async function dispatchAiWrapped(name, args, ctx) {
       queries,
       createdAt: Date.now(),
     })
+    // Emit a channel notification mirroring the bridge worker UX — Lead sees
+    // "<tool> started" the instant dispatch begins, before the async_result
+    // push fires later with the merged answer.
+    if (typeof ctx?.notifyFn === 'function') {
+      try { ctx.notifyFn(`${name} started`) } catch { /* best-effort */ }
+    }
     const resolvedCwd = resolveCwd(args.cwd)
     Promise.allSettled(
       queries.map((q) => {
