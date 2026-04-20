@@ -225,18 +225,32 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 
   // User-defined agent customizations (monolithic — all roles/schedules/webhooks
   // baked into the cached prefix). The active per-call task data lives in the
-  // tail (user message), not here. This keeps cache shard count at 1 across
-  // every Pool B caller in the workspace.
-  const agentsDir = path.join(DATA_DIR, 'agents');
+  // tail (user message, "# role\n<name>" header from composeSystemPrompt), not
+  // here. This keeps cache shard count at 1 across every Pool B caller in the
+  // workspace — each role differs only by its short tier3 header, not by the
+  // shared system prefix.
+  //
+  // roles/ is flat (<role>.md). schedules/ and webhooks/ are keyed by name
+  // with a nested prompt.md / instructions.md inside each entry, so we walk
+  // the tree recursively instead of only listing the top level.
   for (const subdir of ['roles', 'schedules', 'webhooks']) {
-    const dir = path.join(agentsDir, subdir);
-    let entries;
-    try { entries = fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort(); }
-    catch { entries = []; }
-    if (entries.length === 0) continue;
-    const blocks = entries
-      .map(f => readOptional(path.join(dir, f)))
-      .filter(Boolean);
+    const dir = path.join(DATA_DIR, subdir);
+    const collected = [];
+    try {
+      const stack = [dir];
+      while (stack.length) {
+        const current = stack.pop();
+        const entries = fs.readdirSync(current, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = path.join(current, entry.name);
+          if (entry.isDirectory()) stack.push(full);
+          else if (entry.isFile() && entry.name.endsWith('.md')) collected.push(full);
+        }
+      }
+    } catch { continue; }
+    if (collected.length === 0) continue;
+    collected.sort();
+    const blocks = collected.map(f => readOptional(f)).filter(Boolean);
     if (blocks.length === 0) continue;
     parts.push([`# Agent ${subdir}`, '', blocks.join('\n\n')].join('\n'));
   }
