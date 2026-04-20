@@ -361,6 +361,12 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
 
         messageHandler = (data) => {
             resetIdle();
+            // Every WebSocket frame (content deltas + non-content events like
+            // response.output_item.added + server keepalives) refreshes the
+            // stream-delta timestamp so bridge-stall-watchdog does not
+            // false-positive during long reasoning pauses. Parallels the
+            // `:ping` SSE handling in anthropic-oauth.mjs.
+            try { onStreamDelta?.(); } catch {}
             const text = typeof data === 'string' ? data : data.toString('utf-8');
             const event = _parseEvent(text);
             if (!event || typeof event.type !== 'string') return;

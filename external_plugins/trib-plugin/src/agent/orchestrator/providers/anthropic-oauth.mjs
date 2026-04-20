@@ -411,6 +411,15 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
             buffer = lines.pop() || '';
 
             for (const line of lines) {
+                if (line.startsWith(':')) {
+                    // SSE comment frame (Anthropic `:ping` keepalive). The HTML Standard SSE
+                    // spec says comments are silently ignored, but we surface them here so
+                    // the bridge-stall-watchdog sees the stream is still alive during Opus
+                    // extended-thinking pauses. No content is emitted — this only refreshes
+                    // the runtime's lastStreamDeltaAt timestamp.
+                    try { onStreamDelta?.(); } catch {}
+                    continue;
+                }
                 if (line.startsWith('event: ')) {
                     currentEvent = line.slice(7).trim();
                     continue;
@@ -948,3 +957,8 @@ export class AnthropicOAuthProvider {
         return this.credentials !== null || loadCredentials() !== null;
     }
 }
+
+// Additive export for test harness (scripts/test-sse-ping-keepalive.mjs).
+// Lets the SSE parser be exercised in isolation against a synthetic
+// ReadableStream without needing a live OAuth session.
+export { parseSSEStream };
