@@ -136,6 +136,10 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const workflow = readOptional(path.join(POOL_A_DIR, '04-workflow.md'));
   if (workflow) parts.push(workflow);
 
+  // --- 6b. Tool efficiency (always — single source of truth shared with Pool B/C) ---
+  const toolEfficiency = readOptional(path.join(SHARED_DIR, '_shared', 'tool-efficiency.md'));
+  if (toolEfficiency) parts.push(toolEfficiency);
+
   // --- 7. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
   const userWorkflowJsonPath = path.join(DATA_DIR, 'user-workflow.json');
   let userWorkflow = { roles: [] };

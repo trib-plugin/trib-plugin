@@ -347,6 +347,18 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
+  if (def.module === 'patch') {
+    // Unified-diff apply tool — inverse of `diff`. One-turn multi-file
+    // edits without Read-before-Edit (the patch's context lines are the
+    // read-proof). Scope-checked per file via isSafePath, mtime-guarded
+    // against concurrent writes. See src/agent/orchestrator/tools/patch.mjs.
+    const { executePatchTool } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/patch.mjs')).href,
+    )
+    const text = await executePatchTool(name, args ?? {}, process.cwd())
+    return { content: [{ type: 'text', text: String(text) }] }
+  }
+
   const moduleName = TOOL_MODULE[name]
   if (!moduleName) throw new Error(`Unknown tool: ${name}`)
 

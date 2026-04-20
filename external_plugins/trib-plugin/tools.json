@@ -1641,5 +1641,42 @@
       ]
     },
     "module": "astgrep"
+  },
+  {
+    "name": "apply_patch",
+    "title": "Apply Unified Diff",
+    "annotations": {
+      "title": "Apply Unified Diff",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Apply a unified-diff patch to the working tree in ONE turn — the inverse of the `diff` tool. Accepts single-file or multi-file diffs (git-style `--- a/foo` / `+++ b/foo` headers supported; leading `a/` `b/` prefixes stripped automatically). Skip the normal `read` → `edit` round-trip for non-trivial edits, especially multi-file refactors: the patch's context lines themselves verify the source matches, so no Read-before-Edit is required. Create (`/dev/null` → new file) and delete (file → `/dev/null`) sections supported. Default behaviour is atomic: if any hunk fails to apply, NO file is written (`reject_partial:true`). Use `dry_run:true` to preview which files would change and see the first failed hunk without touching disk. Paths in the diff resolve against `base_path` (or cwd) and are scope-checked like every other write tool.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string",
+          "description": "Unified diff content. Single-file or multi-file. Supports git-style `a/` / `b/` header prefixes and `/dev/null` for create/delete entries."
+        },
+        "base_path": {
+          "type": "string",
+          "description": "Directory to resolve relative paths from the diff headers against. Default: current working directory."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Preview which files would change without writing. Shows first failed hunk per failing file. Default false."
+        },
+        "reject_partial": {
+          "type": "boolean",
+          "description": "If any file's hunk fails, reject the whole patch and write nothing (atomic). Default true. Set false to apply every successful file even when others failed."
+        }
+      },
+      "required": [
+        "patch"
+      ]
+    },
+    "module": "patch"
   }
 ]
