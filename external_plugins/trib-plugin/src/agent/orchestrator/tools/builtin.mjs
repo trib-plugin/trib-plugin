@@ -406,6 +406,24 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
+        name: 'list',
+        title: 'List Directory',
+        annotations: { title: 'List Directory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Directory listing with metadata (name, type, size, mtime). Faster + more useful than `bash ls` because it returns parseable rows and respects head_limit. For pure path-pattern search use `glob` (rg --files backend); for content search use `grep`. Defaults to depth 1 — increase for recursive walk.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Directory to list. Defaults to cwd. Supports `~` expansion.' },
+                depth: { type: 'number', description: 'Recursion depth (1 = direct children only, max 10). Default 1.' },
+                hidden: { type: 'boolean', description: 'Include dotfiles (`.foo`). Default false.' },
+                sort: { type: 'string', enum: ['name', 'mtime', 'size'], description: 'Sort key. Default name.' },
+                type: { type: 'string', enum: ['any', 'file', 'dir'], description: 'Filter by entry type. Default any.' },
+                head_limit: { type: 'number', description: 'Max rows. Default 200, 0 = unlimited.' },
+            },
+            required: [],
+        },
+    },
+    {
         name: 'batch_edit',
         title: 'Batch Edit',
         annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -996,6 +1014,61 @@ export async function executeBuiltinTool(name, args, cwd) {
             const out = capShellOutput(capped.join('\n') || '(no files found)');
             _cacheSet(cacheKey, out);
             return out;
+        }
+        case 'list': {
+            args.path = normalizeInputPath(args.path);
+            const inputPath = args.path || '.';
+            const depth = Math.min(Math.max(parseInt(args.depth ?? 1, 10) || 1, 1), 10);
+            const hidden = Boolean(args.hidden);
+            const sort = ['name', 'mtime', 'size'].includes(args.sort) ? args.sort : 'name';
+            const typeFilter = ['any', 'file', 'dir'].includes(args.type) ? args.type : 'any';
+            const headLimit = parseInt(args.head_limit ?? 200, 10);
+            if (!isSafePath(inputPath, workDir)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            }
+            const fullPath = resolveAgainstCwd(inputPath, workDir);
+            let st;
+            try { st = statSync(fullPath); }
+            catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
+            if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
+
+            const rows = [];
+            const walk = (dir, currentDepth) => {
+                if (rows.length >= headLimit && headLimit > 0) return;
+                let entries;
+                try { entries = readdirSync(dir, { withFileTypes: true }); }
+                catch { return; }
+                for (const ent of entries) {
+                    if (!hidden && ent.name.startsWith('.')) continue;
+                    const entPath = join(dir, ent.name);
+                    const isDir = ent.isDirectory();
+                    const isFile = ent.isFile();
+                    const entType = isDir ? 'dir' : (isFile ? 'file' : (ent.isSymbolicLink() ? 'symlink' : 'other'));
+                    if (typeFilter === 'file' && !isFile) {
+                        if (isDir && currentDepth < depth) walk(entPath, currentDepth + 1);
+                        continue;
+                    }
+                    if (typeFilter === 'dir' && !isDir) continue;
+                    let size = 0, mtimeMs = 0;
+                    try { const s = statSync(entPath); size = s.size; mtimeMs = s.mtimeMs; }
+                    catch { /* keep zero */ }
+                    rows.push({ path: cwdRelativePath(entPath, workDir), type: entType, size, mtimeMs });
+                    if (isDir && currentDepth < depth) walk(entPath, currentDepth + 1);
+                }
+            };
+            walk(fullPath, 1);
+
+            if (sort === 'mtime') rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
+            else if (sort === 'size') rows.sort((a, b) => b.size - a.size);
+            else rows.sort((a, b) => a.path.localeCompare(b.path));
+
+            const sliced = headLimit > 0 ? rows.slice(0, headLimit) : rows;
+            const lines = sliced.map(r => {
+                const mtime = r.mtimeMs ? new Date(r.mtimeMs).toISOString().slice(0, 19).replace('T', ' ') : '-';
+                return `${normalizeOutputPath(r.path)}\t${r.type}\t${r.size}\t${mtime}`;
+            });
+            if (rows.length > sliced.length) lines.push(`... ${rows.length - sliced.length} more entries`);
+            return lines.join('\n') || '(empty directory)';
         }
         default:
             return `Error: unknown builtin tool "${name}"`;

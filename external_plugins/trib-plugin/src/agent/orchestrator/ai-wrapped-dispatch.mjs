@@ -108,7 +108,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
     Promise.allSettled(
       queries.map((q) => {
         const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd })
-        return llm({ prompt: spec.build(q) })
+        return llm({ prompt: spec.build(q, resolvedCwd) })
       }),
     ).then((settled) => {
       const merged = queries.length === 1
@@ -147,7 +147,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
   const settled = await Promise.allSettled(
     queries.map((q) => {
       const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd })
-      return llm({ prompt: spec.build(q) })
+      return llm({ prompt: spec.build(q, resolvedCwd) })
     }),
   )
 
@@ -165,18 +165,29 @@ export async function dispatchAiWrapped(name, args, ctx) {
   return ok(merged)
 }
 
-function buildExplorerPrompt(query) {
+function buildExplorerPrompt(query, cwd) {
   // cwd rides in the session's tier3Reminder (<system-reminder># cwd) via
-  // bridge-llm's opts.cwd plumbing — not in the user message body — so the
-  // message prefix stays shareable with recall/search calls for cache hit.
-  return `Query: ${query}\n\nUse your read-only tools (glob / grep / read / multi_read) to find grounded answers. Return concise prose with concrete file paths.`
+  // bridge-llm's opts.cwd plumbing, but B34 showed the inner explorer agent
+  // still drifts to its launch workspace when the reminder is missed or
+  // low-weighted — so we also pin the search root explicitly in the user
+  // message body. Only emitted when the caller supplied an explicit cwd;
+  // unspecified cwd keeps the original prompt prefix and preserves the
+  // cache-shared shape with recall/search builders.
+  const rootLine = cwd
+    ? `Your authoritative search root is \`${cwd}\` — prefer this over your launch workspace. Scope all glob / grep / read / multi_read calls beneath this root unless the query itself names a different path.\n\n`
+    : ''
+  return `${rootLine}Query: ${query}\n\nUse your read-only tools (glob / grep / read / multi_read) to find grounded answers. Return concise prose with concrete file paths.`
 }
 
-function buildRecallPrompt(query) {
+function buildRecallPrompt(query, _cwd) {
+  // cwd has no effect on memory_search semantics; second arg accepted for
+  // builder signature uniformity (caller always passes resolvedCwd).
   return `Query: ${query}\n\nUse the \`memory_search\` tool to retrieve ranked entries. Return concise prose citing entry ids inline.`
 }
 
-function buildSearchPrompt(query) {
+function buildSearchPrompt(query, _cwd) {
+  // cwd has no effect on web_search semantics; second arg accepted for
+  // builder signature uniformity.
   return `Query: ${query}\n\nUse the \`web_search\` tool to retrieve ranked results. Return concise prose with cited URLs.`
 }
 
