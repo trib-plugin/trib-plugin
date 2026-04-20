@@ -930,6 +930,51 @@ backend.onModalRequest = async (rawInteraction) => {
   await rawInteraction.showModal(modal);
 };
 const pendingPermRequests = new Map();
+// Watch for terminal-approved tool executions. The PostToolUse hook writes a
+// signal file per tool call; when we see one, find the oldest pending perm
+// request with a matching tool name and mark its Discord message as
+// "Allowed (terminal)" so users don't see stale active buttons.
+try {
+  try { if (!fs.existsSync(RUNTIME_ROOT)) fs.mkdirSync(RUNTIME_ROOT, { recursive: true }); } catch {}
+  const SIGNAL_RE = /^tool-exec-\d+-[0-9a-f]+\.signal$/;
+  fs.watch(RUNTIME_ROOT, { persistent: false }, (eventType, filename) => {
+    if (!filename || !SIGNAL_RE.test(filename)) return;
+    setTimeout(() => {
+      try {
+        const signalPath = path.join(RUNTIME_ROOT, filename);
+        let raw;
+        try { raw = fs.readFileSync(signalPath, 'utf8'); } catch { return; }
+        try { fs.unlinkSync(signalPath); } catch {}
+        let payload;
+        try { payload = JSON.parse(raw); } catch { return; }
+        const toolName = payload?.toolName;
+        if (!toolName) return;
+        let oldestKey = null;
+        let oldestEntry = null;
+        for (const [k, v] of pendingPermRequests) {
+          if (v.toolName !== toolName) continue;
+          if (!oldestEntry || v.createdAt < oldestEntry.createdAt) {
+            oldestKey = k;
+            oldestEntry = v;
+          }
+        }
+        if (!oldestKey || !oldestEntry) return;
+        if (oldestEntry.channelId && oldestEntry.messageId) {
+          try {
+            editDiscordMessage(oldestEntry.channelId, oldestEntry.messageId, 'Allowed (terminal)');
+          } catch (err) {
+            try { process.stderr.write(`trib-plugin channels: tool-exec signal edit failed: ${err && err.message || err}\n`); } catch {}
+          }
+        }
+        pendingPermRequests.delete(oldestKey);
+      } catch (err) {
+        try { process.stderr.write(`trib-plugin channels: tool-exec signal handler error: ${err && err.message || err}\n`); } catch {}
+      }
+    }, 50);
+  });
+} catch (err) {
+  try { process.stderr.write(`trib-plugin channels: tool-exec signal watcher setup failed: ${err && err.message || err}\n`); } catch {}
+}
 backend.onInteraction = (interaction) => {
   // Channel-route permission reply. Custom_id format: perm-ch-{request_id}-{allow|session|deny}.
   // request_id is the 5-letter short ID CC generates via shortRequestId().
@@ -2067,7 +2112,6 @@ if (_isWorkerMode && process.send) {
             if (v.createdAt < cutoff) pendingPermRequests.delete(k);
           }
         }
-        pendingPermRequests.set(request_id, { toolName: tool_name, createdAt: Date.now() });
         const mainLabel = config?.mainChannel || 'main';
         const target = (statusState?.read?.().channelId)
           || resolveChannelLabel(config?.channelsConfig, mainLabel)
@@ -2088,8 +2132,20 @@ if (_isWorkerMode && process.send) {
             { type: 2, style: 4, label: 'Deny', custom_id: `perm-ch-${request_id}-deny` },
           ],
         }];
-        await backend.sendMessage(target, content, { components }).catch((err) => {
+        let sentIds = null;
+        try {
+          const sendResult = await backend.sendMessage(target, content, { components });
+          sentIds = sendResult?.sentIds;
+        } catch (err) {
           process.stderr.write(`trib-plugin channels: permission_request Discord send failed: ${err && err.message || err}\n`);
+          return;
+        }
+        const messageId = Array.isArray(sentIds) && sentIds.length > 0 ? sentIds[0] : null;
+        pendingPermRequests.set(request_id, {
+          toolName: tool_name,
+          createdAt: Date.now(),
+          channelId: target,
+          messageId,
         });
       } catch (err) {
         try { process.stderr.write(`trib-plugin channels: permission_request handler error: ${err && err.message || err}\n`); } catch {}
