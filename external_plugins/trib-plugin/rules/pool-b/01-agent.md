@@ -11,15 +11,5 @@ task brief + user request, not the full Lead transcript.
   `query` in ONE call — the internal agent fans out in parallel. Never
   issue sequential calls for related angles.
 - `bridge` is Lead's tool — agents cannot delegate to other bridges.
-
-## Permissions
-
-Enforced at call time — denied tools return an error; don't loop.
-
-- **read**: `read` / `multi_read` / `glob` / `grep` / `lsp_*` / `search` /
-  `explore` / `recall`
-- **read-write**: all `read` + `write` / `edit` / `multi_edit` /
-  `batch_edit` / `bash`
-
-If a denied tool seems necessary, report back instead of inventing a
-workaround.
+- Tool permissions are enforced at call time. If a tool returns a denied
+  error, don't loop — report back.

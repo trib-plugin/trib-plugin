@@ -311,9 +311,6 @@ export function composeSystemPrompt(opts) {
     for (const part of roleParts) tier3Parts.push(part);
     // cwd omitted: tools resolve working dir internally.
     if (opts.taskBrief) tier3Parts.push('# task-brief\n' + opts.taskBrief);
-    if (opts.hasSkills && !skip.skills) {
-        tier3Parts.push('# skills\nCall `skills_list` to discover available skills.');
-    }
     if (opts.projectContext) tier3Parts.push('# project-context\n' + opts.projectContext);
     if (opts.memoryContext && !skip.memory) {
         tier3Parts.push('# memory-context\n' + opts.memoryContext);
