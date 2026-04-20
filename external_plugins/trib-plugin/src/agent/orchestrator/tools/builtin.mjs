@@ -1,5 +1,5 @@
 import { exec, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { promisify } from 'util';
@@ -572,6 +572,12 @@ export async function executeBuiltinTool(name, args, cwd) {
                 const result = spawnSync(shell, [shellArg, command], {
                     encoding: 'utf-8',
                     timeout,
+                    // spawnSync's 1MB default maxBuffer throws ENOBUFS on
+                    // large outputs (e.g. 200k-line dumps). capShellOutput
+                    // slices to SHELL_OUTPUT_MAX_CHARS anyway, so we just
+                    // need enough headroom for the raw capture. *4 keeps
+                    // the buffer proportional to the cap; cross-OS uniform.
+                    maxBuffer: SHELL_OUTPUT_MAX_CHARS * 4,
                     stdio: ['pipe', 'pipe', 'pipe'],
                     cwd: workDir,
                     windowsHide: true,
@@ -610,7 +616,9 @@ export async function executeBuiltinTool(name, args, cwd) {
             try {
                 st = statSync(fullPath);
             } catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                const similar = findSimilarFile(fullPath);
+                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
             }
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {
@@ -696,7 +704,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             try {
                 let content;
                 try { content = readFileSync(fullPath, 'utf-8'); }
-                catch (err) { return `Error: ${err instanceof Error ? err.message : String(err)}`; }
+                catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
                 for (let i = 0; i < edits.length; i++) {
                     const entry = edits[i];
                     if (!entry || typeof entry.old_string !== 'string' || typeof entry.new_string !== 'string') {
@@ -720,7 +728,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 _recordReadSnapshot(fullPath);
                 return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
             } catch (err) {
-                return `Error: ${err instanceof Error ? err.message : String(err)}`;
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
         }
         case 'batch_edit': {
@@ -761,6 +769,12 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             try {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
+                // Auto-create missing parent directories so deep new paths
+                // like `.v0610_test/deep/nested/file.txt` succeed in one
+                // shot, matching Claude Code's Write tool behaviour.
+                // `recursive:true` is a no-op when the directory already
+                // exists and is cross-OS safe (POSIX + NTFS).
+                mkdirSync(dirname(fullPath), { recursive: true });
                 writeFileSync(fullPath, content, 'utf-8');
                 _cacheInvalidateAll();
                 // Write establishes the on-disk state the model just
@@ -770,7 +784,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return `Written: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
-                return `Error: ${err instanceof Error ? err.message : String(err)}`;
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
         }
         case 'edit': {
@@ -827,7 +841,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return `Edited: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
-                return `Error: ${err instanceof Error ? err.message : String(err)}`;
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
         }
         case 'grep': {
