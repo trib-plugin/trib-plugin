@@ -421,6 +421,45 @@ async function definitionOrReferences(kind, args, cwd) {
   return formatLocations(result, cwd);
 }
 
+async function hoverAt(args, cwd) {
+  const { symbol, file } = args || {};
+  const normFile = normalizeInputPath(file);
+  if (!symbol) throw new Error('lsp_hover: "symbol" is required');
+  const abs = resolveAbs(cwd, normFile);
+  if (!abs) throw new Error('lsp_hover: "file" is required');
+  await startServer(cwd);
+  let doc;
+  try {
+    doc = await ensureDocOpen(abs);
+  } catch (e) {
+    if (e && /file does not exist/.test(e.message)) {
+      throw new Error(`lsp_hover: ${e.message}`);
+    }
+    throw e;
+  }
+  const pos = findSymbolPosition(doc.text, symbol);
+  if (!pos) return `symbol "${symbol}" not found in ${toDisplayPath(abs, cwd)}`;
+  const result = await queryWithRetry('textDocument/hover', {
+    textDocument: { uri: doc.uri },
+    position: pos,
+  });
+  resetIdleTimer();
+  return formatHover(result);
+}
+
+function formatHover(result) {
+  if (!result || !result.contents) return '(no hover info)';
+  const c = result.contents;
+  // LSP Hover.contents: MarkupContent | MarkedString | MarkedString[]
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    const parts = c.map(x => typeof x === 'string' ? x : (x && x.value) || '').filter(Boolean);
+    return parts.length ? parts.join('\n---\n') : '(no hover info)';
+  }
+  if (c.value) return c.value;
+  return '(no hover info)';
+}
+
 async function documentSymbols(args, cwd) {
   const { file } = args || {};
   const normFile = normalizeInputPath(file);
@@ -477,6 +516,20 @@ export const LSP_TOOL_DEFS = [
     },
   },
   {
+    name: 'lsp_hover',
+    title: 'LSP Hover',
+    annotations: { title: 'LSP Hover', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    description: 'Get hover info (type signature, JSDoc) for a symbol via the TypeScript language server. Faster than reading the file when you just need to know what a name resolves to. Pass `symbol` and `file` (same contract as `lsp_definition`). Returns the rendered hover content or "(no hover info)".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name to inspect.' },
+        file: { type: 'string', description: 'Absolute or cwd-relative path to a file that contains or imports the symbol.' },
+      },
+      required: ['symbol', 'file'],
+    },
+  },
+  {
     name: 'lsp_symbols',
     title: 'LSP Document Symbols',
     annotations: { title: 'LSP Document Symbols', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -496,6 +549,7 @@ export async function executeLspTool(name, args, cwd) {
   switch (name) {
     case 'lsp_definition': return definitionOrReferences('lsp_definition', args, effectiveCwd);
     case 'lsp_references': return definitionOrReferences('lsp_references', args, effectiveCwd);
+    case 'lsp_hover': return hoverAt(args, effectiveCwd);
     case 'lsp_symbols': return documentSymbols(args, effectiveCwd);
     default: throw new Error(`Unknown LSP tool: ${name}`);
   }

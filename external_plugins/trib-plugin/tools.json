@@ -1435,6 +1435,36 @@
     "module": "lsp"
   },
   {
+    "name": "lsp_hover",
+    "title": "LSP Hover",
+    "annotations": {
+      "title": "LSP Hover",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Get hover info (type signature, JSDoc) for a symbol via the TypeScript language server. Faster than reading the file when you just need to know what a name resolves to. Pass `symbol` and `file` (same contract as `lsp_definition`). Returns the rendered hover content or \"(no hover info)\".",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Symbol name to inspect."
+        },
+        "file": {
+          "type": "string",
+          "description": "Absolute or cwd-relative path to a file that contains or imports the symbol."
+        }
+      },
+      "required": [
+        "symbol",
+        "file"
+      ]
+    },
+    "module": "lsp"
+  },
+  {
     "name": "lsp_symbols",
     "title": "LSP Document Symbols",
     "annotations": {
