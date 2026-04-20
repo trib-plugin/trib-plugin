@@ -424,6 +424,42 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
+        name: 'tree',
+        title: 'Directory Tree',
+        annotations: { title: 'Directory Tree', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'ASCII directory tree visualization. Quick way to grasp project shape before diving in. For metadata (size/mtime) use `list`; for content search use `grep`. Defaults to depth 3.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Root directory. Defaults to cwd. Supports `~` expansion.' },
+                depth: { type: 'number', description: 'Tree depth (1-6). Default 3.' },
+                hidden: { type: 'boolean', description: 'Include dotfiles. Default false.' },
+                head_limit: { type: 'number', description: 'Max lines. Default 200, 0 = unlimited.' },
+            },
+            required: [],
+        },
+    },
+    {
+        name: 'find_files',
+        title: 'Find Files (metadata filter)',
+        annotations: { title: 'Find Files', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Find files by metadata — name pattern, size range, modification time range, type. Complements `glob` (path patterns) and `grep` (content). Useful for "files modified in the last 24h", "files larger than 10MB", etc.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Root directory. Defaults to cwd.' },
+                name: { type: 'string', description: 'Glob pattern for filename (e.g. `*.mjs`). Optional.' },
+                type: { type: 'string', enum: ['any', 'file', 'dir'], description: 'Entry type filter. Default any.' },
+                min_size: { type: 'number', description: 'Minimum size in bytes (file only). Optional.' },
+                max_size: { type: 'number', description: 'Maximum size in bytes (file only). Optional.' },
+                modified_after: { type: 'string', description: 'ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`). Optional.' },
+                modified_before: { type: 'string', description: 'ISO 8601 date or relative `Nh`/`Nd`. Optional.' },
+                head_limit: { type: 'number', description: 'Max results. Default 100, 0 = unlimited.' },
+            },
+            required: [],
+        },
+    },
+    {
         name: 'batch_edit',
         title: 'Batch Edit',
         annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -1069,6 +1105,121 @@ export async function executeBuiltinTool(name, args, cwd) {
             });
             if (rows.length > sliced.length) lines.push(`... ${rows.length - sliced.length} more entries`);
             return lines.join('\n') || '(empty directory)';
+        }
+        case 'tree': {
+            args.path = normalizeInputPath(args.path);
+            const inputPath = args.path || '.';
+            const depth = Math.min(Math.max(parseInt(args.depth ?? 3, 10) || 3, 1), 6);
+            const hidden = Boolean(args.hidden);
+            const headLimit = parseInt(args.head_limit ?? 200, 10);
+            if (!isSafePath(inputPath, workDir)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            }
+            const fullPath = resolveAgainstCwd(inputPath, workDir);
+            let st;
+            try { st = statSync(fullPath); }
+            catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
+            if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
+            const lines = [`${normalizeOutputPath(basename(fullPath))}/`];
+            const walk = (dir, prefix, currentDepth) => {
+                if (currentDepth > depth) return;
+                if (headLimit > 0 && lines.length >= headLimit) return;
+                let entries;
+                try { entries = readdirSync(dir, { withFileTypes: true }); }
+                catch { return; }
+                if (!hidden) entries = entries.filter(e => !e.name.startsWith('.'));
+                entries.sort((a, b) => {
+                    const ad = a.isDirectory(), bd = b.isDirectory();
+                    if (ad !== bd) return ad ? -1 : 1;
+                    return a.name.localeCompare(b.name);
+                });
+                for (let i = 0; i < entries.length; i++) {
+                    if (headLimit > 0 && lines.length >= headLimit) return;
+                    const ent = entries[i];
+                    const isLast = i === entries.length - 1;
+                    const branch = isLast ? '└── ' : '├── ';
+                    const childPrefix = prefix + (isLast ? '    ' : '│   ');
+                    const display = ent.isDirectory() ? `${ent.name}/` : ent.name;
+                    lines.push(`${prefix}${branch}${display}`);
+                    if (ent.isDirectory()) walk(join(dir, ent.name), childPrefix, currentDepth + 1);
+                }
+            };
+            walk(fullPath, '', 1);
+            if (headLimit > 0 && lines.length >= headLimit) lines.push('... (truncated, increase head_limit)');
+            return lines.join('\n');
+        }
+        case 'find_files': {
+            args.path = normalizeInputPath(args.path);
+            const inputPath = args.path || '.';
+            const namePattern = typeof args.name === 'string' ? args.name : null;
+            const typeFilter = ['any', 'file', 'dir'].includes(args.type) ? args.type : 'any';
+            const minSize = typeof args.min_size === 'number' ? args.min_size : null;
+            const maxSize = typeof args.max_size === 'number' ? args.max_size : null;
+            const headLimit = parseInt(args.head_limit ?? 100, 10);
+
+            const parseTime = (v) => {
+                if (typeof v !== 'string') return null;
+                const m = v.match(/^(\d+)([hd])$/);
+                if (m) {
+                    const n = parseInt(m[1], 10);
+                    const unit = m[2] === 'h' ? 3600 * 1000 : 86400 * 1000;
+                    return Date.now() - n * unit;
+                }
+                const t = Date.parse(v);
+                return isNaN(t) ? null : t;
+            };
+            const after = parseTime(args.modified_after);
+            const before = parseTime(args.modified_before);
+
+            const nameRegex = namePattern
+                ? new RegExp('^' + namePattern.replace(/[.+^${}()|[\]\\]/g, (ch) => '\\' + ch).replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i')
+                : null;
+
+            if (!isSafePath(inputPath, workDir)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
+            }
+            const fullPath = resolveAgainstCwd(inputPath, workDir);
+            let rootStat;
+            try { rootStat = statSync(fullPath); }
+            catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
+            if (!rootStat.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
+
+            const matches = [];
+            const walk = (dir) => {
+                if (headLimit > 0 && matches.length >= headLimit) return;
+                let entries;
+                try { entries = readdirSync(dir, { withFileTypes: true }); }
+                catch { return; }
+                for (const ent of entries) {
+                    if (ent.name.startsWith('.')) continue;
+                    const entPath = join(dir, ent.name);
+                    const isDir = ent.isDirectory();
+                    const isFile = ent.isFile();
+                    if (isDir) walk(entPath);
+                    if (headLimit > 0 && matches.length >= headLimit) return;
+                    if (typeFilter === 'file' && !isFile) continue;
+                    if (typeFilter === 'dir' && !isDir) continue;
+                    if (nameRegex && !nameRegex.test(ent.name)) continue;
+                    let stat;
+                    try { stat = statSync(entPath); } catch { continue; }
+                    if (isFile) {
+                        if (minSize !== null && stat.size < minSize) continue;
+                        if (maxSize !== null && stat.size > maxSize) continue;
+                    }
+                    if (after !== null && stat.mtimeMs < after) continue;
+                    if (before !== null && stat.mtimeMs > before) continue;
+                    matches.push({ path: cwdRelativePath(entPath, workDir), size: stat.size, mtimeMs: stat.mtimeMs });
+                    if (headLimit > 0 && matches.length >= headLimit) return;
+                }
+            };
+            walk(fullPath);
+
+            matches.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
+            const lines = matches.map(m => {
+                const mtime = new Date(m.mtimeMs).toISOString().slice(0, 19).replace('T', ' ');
+                return `${normalizeOutputPath(m.path)}\t${m.size}\t${mtime}`;
+            });
+            return lines.join('\n') || '(no matches)';
         }
         default:
             return `Error: unknown builtin tool "${name}"`;

@@ -1113,6 +1113,97 @@
     "module": "builtin"
   },
   {
+    "name": "tree",
+    "title": "Directory Tree",
+    "annotations": {
+      "title": "Directory Tree",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "ASCII directory tree visualization. Quick way to grasp project shape before diving in. For metadata (size/mtime) use `list`; for content search use `grep`. Defaults to depth 3.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Root directory. Defaults to cwd. Supports `~` expansion."
+        },
+        "depth": {
+          "type": "number",
+          "description": "Tree depth (1-6). Default 3."
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "Include dotfiles. Default false."
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Max lines. Default 200, 0 = unlimited."
+        }
+      },
+      "required": []
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "find_files",
+    "title": "Find Files (metadata filter)",
+    "annotations": {
+      "title": "Find Files",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Find files by metadata — name pattern, size range, modification time range, type. Complements `glob` (path patterns) and `grep` (content). Useful for \"files modified in the last 24h\", \"files larger than 10MB\", etc.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Root directory. Defaults to cwd."
+        },
+        "name": {
+          "type": "string",
+          "description": "Glob pattern for filename (e.g. `*.mjs`). Optional."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "any",
+            "file",
+            "dir"
+          ],
+          "description": "Entry type filter. Default any."
+        },
+        "min_size": {
+          "type": "number",
+          "description": "Minimum size in bytes (file only). Optional."
+        },
+        "max_size": {
+          "type": "number",
+          "description": "Maximum size in bytes (file only). Optional."
+        },
+        "modified_after": {
+          "type": "string",
+          "description": "ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`). Optional."
+        },
+        "modified_before": {
+          "type": "string",
+          "description": "ISO 8601 date or relative `Nh`/`Nd`. Optional."
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Max results. Default 100, 0 = unlimited."
+        }
+      },
+      "required": []
+    },
+    "module": "builtin"
+  },
+  {
     "name": "batch_edit",
     "title": "Batch Edit",
     "annotations": {
