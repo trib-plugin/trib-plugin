@@ -1,4 +1,5 @@
 import { createRequire } from 'module';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getProvider } from '../providers/registry.mjs';
@@ -34,6 +35,36 @@ const _rulesBuilder = (() => {
 let _bridgeRulesCache = null;
 let _bridgeRulesCacheTime = 0;
 const BRIDGE_RULES_CACHE_TTL = 60_000;
+
+// Pool C pre-seed playbook loader. Reads skills/pool-c/<name>.md, strips
+// optional YAML frontmatter, and wraps the body with a Base-directory
+// header matching Claude Code's SkillTool output shape. Cached per process
+// since playbooks rarely change and the same body is pushed into every
+// fresh Pool C session.
+const _preSeedPlaybookCache = new Map();
+function _pluginRootForManager() {
+    return process.env.CLAUDE_PLUGIN_ROOT
+        || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
+}
+function _loadPreSeedPlaybook(name) {
+    if (!name || typeof name !== 'string') return null;
+    if (!/^[a-z0-9_-]+-playbook$/i.test(name)) return null;
+    if (_preSeedPlaybookCache.has(name)) return _preSeedPlaybookCache.get(name);
+    const root = _pluginRootForManager();
+    const dir = join(root, 'skills', 'pool-c');
+    const filePath = join(dir, `${name}.md`);
+    let body = null;
+    try {
+        const raw = readFileSync(filePath, 'utf8');
+        const m = raw.match(/^---\n[\s\S]*?\n---\n/);
+        const stripped = m ? raw.slice(m[0].length) : raw;
+        body = `Base directory for this playbook: ${dir}\n\n${stripped.trim()}`;
+    } catch {
+        body = null;
+    }
+    _preSeedPlaybookCache.set(name, body);
+    return body;
+}
 function _buildBridgeRules() {
     if (!_rulesBuilder || typeof _rulesBuilder.buildBridgeInjectionContent !== 'function') return '';
     const now = Date.now();
@@ -478,6 +509,22 @@ export function createSession(opts) {
             .join('\n\n');
         messages.push({ role: 'user', content: `Reference files:\n\n${fileContext}` });
         messages.push({ role: 'assistant', content: 'Understood. I have the files in context.' });
+    }
+    // Pool C pre-seed: inject a fake skill_load tool_use / tool_result pair so
+    // the role playbook enters the transcript as a reusable cache-prefix block
+    // instead of a BP3 system message. BP3 stays empty for the role so Pool B
+    // and Pool C converge on a bit-identical system prefix (BP1+BP2 shard).
+    if (opts.preSeedSkill) {
+        const body = _loadPreSeedPlaybook(opts.preSeedSkill);
+        if (body) {
+            const toolCallId = `preseed_${opts.preSeedSkill}`;
+            messages.push({
+                role: 'assistant',
+                content: '',
+                toolCalls: [{ id: toolCallId, name: 'skill_load', arguments: { name: opts.preSeedSkill } }],
+            });
+            messages.push({ role: 'tool', toolCallId, content: body });
+        }
     }
     // Profile wins over preset.tools — profile.tools carries toolset ids
     // (['tools:filesystem','tools:search']) that expand to an explicit tool
