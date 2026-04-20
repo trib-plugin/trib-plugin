@@ -944,7 +944,6 @@ try {
         const signalPath = path.join(RUNTIME_ROOT, filename);
         let raw;
         try { raw = fs.readFileSync(signalPath, 'utf8'); } catch { return; }
-        try { fs.unlinkSync(signalPath); } catch {}
         let payload;
         try { payload = JSON.parse(raw); } catch { return; }
         const toolName = payload?.toolName;
@@ -958,6 +957,8 @@ try {
             oldestEntry = v;
           }
         }
+        // No matching pending request — leave the signal on disk so a
+        // sub-agent hook (or other consumer) gets a chance to claim it.
         if (!oldestKey || !oldestEntry) return;
         if (oldestEntry.channelId && oldestEntry.messageId) {
           try {
@@ -967,14 +968,35 @@ try {
           }
         }
         pendingPermRequests.delete(oldestKey);
+        // Only unlink once we've confirmed the match and handled it.
+        try { fs.unlinkSync(signalPath); } catch {}
       } catch (err) {
         try { process.stderr.write(`trib-plugin channels: tool-exec signal handler error: ${err && err.message || err}\n`); } catch {}
       }
     }, 50);
   });
+  // Stale-signal sweeper: any signal file older than 60s is removed so
+  // unclaimed files don't accumulate on disk. Runs every 30s.
+  setInterval(() => {
+    try {
+      const now = Date.now();
+      const entries = fs.readdirSync(RUNTIME_ROOT);
+      for (const name of entries) {
+        if (!SIGNAL_RE.test(name)) continue;
+        const p = path.join(RUNTIME_ROOT, name);
+        try {
+          const st = fs.statSync(p);
+          if (now - st.mtimeMs > 60_000) {
+            try { fs.unlinkSync(p); } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
+  }, 30_000).unref?.();
 } catch (err) {
   try { process.stderr.write(`trib-plugin channels: tool-exec signal watcher setup failed: ${err && err.message || err}\n`); } catch {}
 }
+
 backend.onInteraction = (interaction) => {
   // Channel-route permission reply. Custom_id format: perm-ch-{request_id}-{allow|session|deny}.
   // request_id is the 5-letter short ID CC generates via shortRequestId().
