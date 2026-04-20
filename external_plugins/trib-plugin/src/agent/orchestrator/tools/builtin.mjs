@@ -774,7 +774,14 @@ export async function executeBuiltinTool(name, args, cwd) {
                         const count = content.split(old_string).length - 1;
                         if (count === 0) return `Error [code 8]: edit ${i} — old_string not found in ${filePath}`;
                         if (count > 1) return `Error [code 9]: edit ${i} — old_string found ${count} times in ${filePath}; set replace_all:true or provide more unique context`;
-                        content = content.replace(old_string, new_string);
+                        // B35 fix: String.prototype.replace(str, str) interprets
+                        // substitution patterns (dollar-ampersand, dollar-digit,
+                        // double-dollar, etc.) in the second arg and splices the
+                        // matched text / capture groups / literal dollar into the
+                        // result. Corrupts any new_string that legitimately contains
+                        // such sequences (e.g. regex escape code in source). The
+                        // function form opts out of substitution entirely.
+                        content = content.replace(old_string, () => new_string);
                     }
                 }
                 writeFileSync(fullPath, content, 'utf-8');
@@ -885,7 +892,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     return `Error [code 9]: old_string found ${count} times — set replace_all:true or provide more unique context`;
                 const updated = replaceAll
                     ? content.split(oldStr).join(newStr)
-                    : content.replace(oldStr, newStr);
+                    : content.replace(oldStr, () => newStr);
                 writeFileSync(fullPath, updated, 'utf-8');
                 _cacheInvalidateAll();
                 // Refresh the snapshot to the post-write mtime so a chain
