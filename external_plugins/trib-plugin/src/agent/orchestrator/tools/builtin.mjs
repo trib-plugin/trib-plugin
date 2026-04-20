@@ -111,6 +111,20 @@ function cwdRelativePath(fullPath, workDir) {
     } catch { return fullPath; }
 }
 
+// Node's native fs errors embed the failing path wrapped in single quotes
+// using OS-native separators ('C:\\Users\\foo\\bar.mjs' on Windows). Without
+// this pass, read / multi_read error bodies surface backslash paths that
+// break the forward-slash convention the rest of the tool output keeps.
+// Only quoted drive-letter paths are rewritten so unrelated backslash
+// sequences in the message text are untouched.
+function normalizeErrorMessage(msg) {
+    if (process.platform !== 'win32' || typeof msg !== 'string') return msg;
+    return msg.replace(
+        /(['"])([A-Za-z]:[\\\/][^'"]+)\1/g,
+        (_m, q, p) => `${q}${p.replace(/\\/g, '/')}${q}`,
+    );
+}
+
 function extractGlobBaseDirectory(pattern) {
     const wildcardIdx = pattern.search(/[\*\?\[\{]/);
     const staticPrefix = wildcardIdx === -1 ? pattern : pattern.slice(0, wildcardIdx);
@@ -568,7 +582,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             try {
                 st = statSync(fullPath);
             } catch (err) {
-                return `Error: ${err instanceof Error ? err.message : String(err)}`;
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {
@@ -580,7 +594,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     _recordReadSnapshot(fullPath, st);
                     return out;
                 } catch (err) {
-                    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+                    return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
                 }
             }
             try {
@@ -602,7 +616,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return out;
             }
             catch (err) {
-                return `Error: ${err instanceof Error ? err.message : String(err)}`;
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
         }
         case 'multi_read': {
@@ -618,7 +632,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 const body = await executeBuiltinTool('read', entry, workDir);
                 return { path: entry.path, body };
             }));
-            return results.map(r => `### ${r.path}\n${r.body}`).join('\n\n');
+            // Header path → forward slash; error bodies already normalised
+            // inside the read case's catch blocks.
+            return results.map(r => `### ${normalizeOutputPath(r.path)}\n${r.body}`).join('\n\n');
         }
         case 'multi_edit': {
             // Claude Code native MultiEdit semantics: one file, many ordered
