@@ -261,6 +261,12 @@ function callWorker(name, toolName, args) {
 const modules = new Map()
 
 function pushChannelNotification(content, extraMeta) {
+  // Single exit path for BOTH channel notifications (proactive / schedule /
+  // webhook / queue / bridge lifecycle) AND dispatch results (recall / search
+  // / explore merged answers tagged `meta.type: 'dispatch_result'`). Despite
+  // the name, this function is bidirectional — the `extraMeta.type` field
+  // distinguishes the two flavours for downstream routing, not this function.
+  //
   // `silent_to_agent: true` — bridge lifecycle status pings (worker started,
   // iter N, role-start echoes) that should surface on Discord but NOT land
   // in the Lead agent's context window. When set we skip the Lead-notify
