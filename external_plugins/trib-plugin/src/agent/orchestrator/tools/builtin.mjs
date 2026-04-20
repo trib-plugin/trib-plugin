@@ -262,6 +262,44 @@ function formatMtime(mtimeMs) {
     return new Date(mtimeMs).toISOString().slice(0, 19).replace('T', ' ');
 }
 
+// Shared file-open prologue for read-flavoured tools (tail / wc / diff).
+// Consolidates the normalize → isSafePath → stat → findSimilarFile-hint →
+// size-cap sequence so every consumer funnels through the same pipeline
+// (F9 / F12). Throws tagged errors (code=EARG/EOUTSIDE/ENOENT/ETOOBIG)
+// instead of returning strings so callers can branch on ETOOBIG for
+// large-file fallbacks without resorting to message regexes.
+//
+// B35 note: `err.message` is returned verbatim by callers — no
+// String.prototype.replace with substitution-capable strings. If a caller
+// needs to massage the message, use an arrow-function replacer.
+async function openForRead(filePath, workDir) {
+    if (typeof filePath !== 'string' || !filePath) {
+        throw Object.assign(new Error('path is required'), { code: 'EARG' });
+    }
+    const norm = normalizeInputPath(filePath);
+    if (!isSafePath(norm, workDir)) {
+        throw Object.assign(
+            new Error(`path outside allowed scope — ${normalizeOutputPath(norm)}`),
+            { code: 'EOUTSIDE' });
+    }
+    const fullPath = resolveAgainstCwd(norm, workDir);
+    let st;
+    try { st = statSync(fullPath); }
+    catch (err) {
+        const similar = findSimilarFile(fullPath);
+        const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+        const msg = normalizeErrorMessage(err instanceof Error ? err.message : String(err)) + hint;
+        throw Object.assign(new Error(msg), { code: 'ENOENT' });
+    }
+    if (st.size > READ_MAX_SIZE_BYTES) {
+        throw Object.assign(
+            new Error(`file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap`),
+            { code: 'ETOOBIG', size: st.size, fullPath, st });
+    }
+    const content = await readFile(fullPath, 'utf-8');
+    return { fullPath, content, displayPath: normalizeOutputPath(norm), st };
+}
+
 // Simple glob-to-RegExp compiler for name filters (find_files, future
 // tools). Callers pass foo*.mjs style patterns, not full brace/POSIX-class
 // globs. The arrow-function form of .replace is mandatory here: B35
@@ -558,7 +596,7 @@ export const BUILTIN_TOOLS = [
         name: 'wc',
         title: 'Word Count',
         annotations: { title: 'Word Count', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics.',
+        description: 'Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics. Word count is skipped for files exceeding the read cap (256 KB) — lines/bytes only.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -1473,118 +1511,111 @@ export async function executeBuiltinTool(name, args, cwd) {
             return executeBuiltinTool('read', { path: args.path, offset: 0, limit: n }, workDir);
         }
         case 'tail': {
-            args.path = normalizeInputPath(args.path);
-            const filePath = args.path;
-            if (!filePath) return 'Error: path is required';
             const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
-            if (!isSafePath(filePath, workDir)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
-            }
-            const fullPath = resolveAgainstCwd(filePath, workDir);
-            let st;
-            try { st = statSync(fullPath); }
+            // F9: share normalize/isSafePath/stat/similar-hint with wc/diff
+            // via openForRead. ETOOBIG escapes to the large-file fallback
+            // so behaviour is unchanged for files past READ_MAX_SIZE_BYTES.
+            let opened;
+            try { opened = await openForRead(args.path, workDir); }
             catch (err) {
-                const similar = findSimilarFile(fullPath);
-                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
-            }
-            try {
-                if (st.size <= READ_MAX_SIZE_BYTES) {
-                    const content = await readFile(fullPath, 'utf-8');
-                    const lines = content.split('\n');
-                    // Trailing newline produces an empty element — drop it so
-                    // the reported line count matches what `wc -l` would show.
-                    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-                    const sliced = lines.slice(-n);
-                    const startIdx = lines.length - sliced.length;
-                    return sliced.map((l, i) => `${startIdx + i + 1}\t${l}`).join('\n');
+                if (err && err.code === 'ETOOBIG') {
+                    try {
+                        const { fullPath, st } = err;
+                        // Large-file fallback: read only the trailing window. 200
+                        // bytes/line is a rough average; the tail slice after split
+                        // may be slightly > or < n lines — marked as (approx) so
+                        // the caller knows line numbers are not from file start.
+                        const tailBytes = Math.min(st.size, Math.max(n * 200, 4096));
+                        const fd = openSync(fullPath, 'r');
+                        const buf = Buffer.alloc(tailBytes);
+                        try { readSync(fd, buf, 0, tailBytes, st.size - tailBytes); }
+                        finally { closeSync(fd); }
+                        const text = buf.toString('utf-8');
+                        const tailLines = text.split('\n');
+                        // First fragment is likely a partial line — drop it when
+                        // we didn't start from byte 0 of the file.
+                        if (tailBytes < st.size && tailLines.length > 1) tailLines.shift();
+                        if (tailLines.length > 0 && tailLines[tailLines.length - 1] === '') tailLines.pop();
+                        const sliced = tailLines.slice(-n);
+                        // F10: cap large-window output so a multi-MB last-chunk
+                        // doesn't blow past SHELL_OUTPUT_MAX_CHARS downstream.
+                        return capShellOutput(sliced.map((l, i) => `(approx)${i + 1}\t${l}`).join('\n'));
+                    } catch (err2) {
+                        return `Error: ${normalizeErrorMessage(err2 instanceof Error ? err2.message : String(err2))}`;
+                    }
                 }
-                // Large-file fallback: read only the trailing window. 200
-                // bytes/line is a rough average; the tail slice after split
-                // may be slightly > or < n lines — marked as (approx) so
-                // the caller knows line numbers are not from file start.
-                const tailBytes = Math.min(st.size, Math.max(n * 200, 4096));
-                const fd = openSync(fullPath, 'r');
-                const buf = Buffer.alloc(tailBytes);
-                try { readSync(fd, buf, 0, tailBytes, st.size - tailBytes); }
-                finally { closeSync(fd); }
-                const text = buf.toString('utf-8');
-                const tailLines = text.split('\n');
-                // First fragment is likely a partial line — drop it when we
-                // didn't start from byte 0 of the file.
-                if (tailBytes < st.size && tailLines.length > 1) tailLines.shift();
-                if (tailLines.length > 0 && tailLines[tailLines.length - 1] === '') tailLines.pop();
-                const sliced = tailLines.slice(-n);
-                return sliced.map((l, i) => `(approx)${i + 1}\t${l}`).join('\n');
-            } catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                return `Error: ${err.message}`;
             }
+            const lines = opened.content.split('\n');
+            // Trailing newline produces an empty element — drop it so
+            // the reported line count matches what `wc -l` would show.
+            if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+            const sliced = lines.slice(-n);
+            const startIdx = lines.length - sliced.length;
+            // F10: apply the same output cap used by shell/grep/find_files
+            // so pathological single-line files (e.g. minified bundles)
+            // don't dump 200 KB into the model context.
+            return capShellOutput(sliced.map((l, i) => `${startIdx + i + 1}\t${l}`).join('\n'));
         }
         case 'wc': {
-            args.path = normalizeInputPath(args.path);
-            const filePath = args.path;
-            if (!filePath) return 'Error: path is required';
-            if (!isSafePath(filePath, workDir)) {
-                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
-            }
-            const fullPath = resolveAgainstCwd(filePath, workDir);
-            let st;
-            try { st = statSync(fullPath); }
+            // F9: share normalize/isSafePath/stat/similar-hint with tail/diff
+            // via openForRead. ETOOBIG escapes to the streaming fallback so
+            // files past READ_MAX_SIZE_BYTES still report lines + bytes.
+            let opened;
+            try { opened = await openForRead(args.path, workDir); }
             catch (err) {
-                const similar = findSimilarFile(fullPath);
-                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
+                if (err && err.code === 'ETOOBIG') {
+                    // F11: words are skipped for files past the cap because
+                    // computing them needs the full content. The tool
+                    // description advertises this limitation explicitly.
+                    let lines = 0;
+                    const stream = createReadStream(err.fullPath, { encoding: 'utf-8' });
+                    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+                    for await (const _ of rl) lines++;
+                    return `lines\t${lines}\twords\t-\tbytes\t${err.size}\t(words skipped: file > cap)`;
+                }
+                return `Error: ${err.message}`;
             }
-            if (st.size > READ_MAX_SIZE_BYTES) {
-                // Stream-count lines for files past the read cap. Words are
-                // skipped because computing them would require the full
-                // content — lines + bytes alone are the common use-case
-                // (log size check, file growth monitoring).
-                let lines = 0;
-                const stream = createReadStream(fullPath, { encoding: 'utf-8' });
-                const rl = createInterface({ input: stream, crlfDelay: Infinity });
-                for await (const _ of rl) lines++;
-                return `lines\t${lines}\twords\t-\tbytes\t${st.size}\t(words skipped: file > cap)`;
-            }
-            try {
-                const content = await readFile(fullPath, 'utf-8');
-                // Trailing newline should not inflate the line count — this
-                // matches `wc -l` behaviour (final newline terminates, does
-                // not begin, a new line).
-                const lines = content.length === 0
-                    ? 0
-                    : content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
-                const words = (content.match(/\S+/g) || []).length;
-                return `lines\t${lines}\twords\t${words}\tbytes\t${st.size}`;
-            } catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
-            }
+            const { content, st } = opened;
+            // Trailing newline should not inflate the line count — this
+            // matches `wc -l` behaviour (final newline terminates, does
+            // not begin, a new line).
+            const lines = content.length === 0
+                ? 0
+                : content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
+            const words = (content.match(/\S+/g) || []).length;
+            return `lines\t${lines}\twords\t${words}\tbytes\t${st.size}`;
         }
         case 'diff': {
             let fromContent, toContent;
             let fromLabel = args.from_text ? '(text)' : String(args.from ?? '');
             let toLabel = args.to_text ? '(text)' : String(args.to ?? '');
+            // F12: route file-mode reads through openForRead so diff
+            // inherits the same size-cap (ETOOBIG), safe-path, and
+            // similar-file hint behaviour as read/tail/wc. Previously the
+            // raw readFile call sidestepped all three and would happily
+            // slurp a multi-MB file into memory with no hint on typos.
             try {
                 if (args.from_text) {
                     fromContent = String(args.from ?? '');
                 } else {
-                    const fp = normalizeInputPath(args.from);
-                    if (!fp) return 'Error: from is required';
-                    if (!isSafePath(fp, workDir)) return `Error: from path outside allowed scope — ${normalizeOutputPath(fp)}`;
-                    fromContent = await readFile(resolveAgainstCwd(fp, workDir), 'utf-8');
-                    fromLabel = normalizeOutputPath(fp);
+                    if (args.from == null || args.from === '') return 'Error: from is required';
+                    const opened = await openForRead(args.from, workDir);
+                    fromContent = opened.content;
+                    fromLabel = opened.displayPath;
                 }
                 if (args.to_text) {
                     toContent = String(args.to ?? '');
                 } else {
-                    const tp = normalizeInputPath(args.to);
-                    if (!tp) return 'Error: to is required';
-                    if (!isSafePath(tp, workDir)) return `Error: to path outside allowed scope — ${normalizeOutputPath(tp)}`;
-                    toContent = await readFile(resolveAgainstCwd(tp, workDir), 'utf-8');
-                    toLabel = normalizeOutputPath(tp);
+                    if (args.to == null || args.to === '') return 'Error: to is required';
+                    const opened = await openForRead(args.to, workDir);
+                    toContent = opened.content;
+                    toLabel = opened.displayPath;
                 }
             } catch (err) {
-                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+                // err.message is already normalized/hinted by openForRead —
+                // no String.replace with substitution-capable strings (B35).
+                return `Error: ${err.message}`;
             }
             const rawCtx = parseInt(args.context ?? 3, 10);
             const context = Math.max(0, Math.min(Number.isFinite(rawCtx) ? rawCtx : 3, 10));

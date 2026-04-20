@@ -388,27 +388,39 @@ function formatDocumentSymbols(result) {
   return lines.join('\n');
 }
 
-async function definitionOrReferences(kind, args, cwd) {
+// F13: shared prologue for symbol-anchored LSP queries. definition /
+// references / hover all need the same normalize → resolveAbs → open-doc
+// → findSymbolPosition pipeline; factoring it out keeps the "file that
+// hosts the symbol" convention and the ENOENT-rewrap behaviour in one
+// place. Returns { doc, abs, pos } — pos may be null when the symbol
+// name isn't present in the file's text.
+async function resolveSymbolDoc(label, args, cwd, { fileRequiredMsg } = {}) {
   const { symbol, file } = args || {};
   const normFile = normalizeInputPath(file);
-  if (!symbol) throw new Error(`${kind}: "symbol" is required`);
+  if (!symbol) throw new Error(`${label}: "symbol" is required`);
   const abs = resolveAbs(cwd, normFile);
-  if (!abs) throw new Error(`${kind}: "file" is required (path to a file that contains or imports the symbol)`);
+  if (!abs) throw new Error(`${label}: ${fileRequiredMsg || '"file" is required'}`);
   await startServer(cwd);
-  // F4 fix: ensureDocOpen handles ENOENT via a readFile catch so the
-  // separate access() probe is gone. Prefix the error with the tool name
-  // for callers that still pattern-match on the `kind:` prefix.
+  // F4: ensureDocOpen already catches ENOENT — prefix the tool label
+  // for callers that still pattern-match on `<label>:`.
   let doc;
   try {
     doc = await ensureDocOpen(abs);
   } catch (e) {
     if (e && /file does not exist/.test(e.message)) {
-      throw new Error(`${kind}: ${e.message}`);
+      throw new Error(`${label}: ${e.message}`);
     }
     throw e;
   }
   const pos = findSymbolPosition(doc.text, symbol);
-  if (!pos) return `symbol "${symbol}" not found in ${toDisplayPath(abs, cwd)}`;
+  return { doc, abs, pos };
+}
+
+async function definitionOrReferences(kind, args, cwd) {
+  const { doc, abs, pos } = await resolveSymbolDoc(kind, args, cwd, {
+    fileRequiredMsg: '"file" is required (path to a file that contains or imports the symbol)',
+  });
+  if (!pos) return `symbol "${args?.symbol}" not found in ${toDisplayPath(abs, cwd)}`;
   const method = kind === 'lsp_definition' ? 'textDocument/definition' : 'textDocument/references';
   const params = {
     textDocument: { uri: doc.uri },
@@ -422,23 +434,8 @@ async function definitionOrReferences(kind, args, cwd) {
 }
 
 async function hoverAt(args, cwd) {
-  const { symbol, file } = args || {};
-  const normFile = normalizeInputPath(file);
-  if (!symbol) throw new Error('lsp_hover: "symbol" is required');
-  const abs = resolveAbs(cwd, normFile);
-  if (!abs) throw new Error('lsp_hover: "file" is required');
-  await startServer(cwd);
-  let doc;
-  try {
-    doc = await ensureDocOpen(abs);
-  } catch (e) {
-    if (e && /file does not exist/.test(e.message)) {
-      throw new Error(`lsp_hover: ${e.message}`);
-    }
-    throw e;
-  }
-  const pos = findSymbolPosition(doc.text, symbol);
-  if (!pos) return `symbol "${symbol}" not found in ${toDisplayPath(abs, cwd)}`;
+  const { doc, abs, pos } = await resolveSymbolDoc('lsp_hover', args, cwd);
+  if (!pos) return `symbol "${args?.symbol}" not found in ${toDisplayPath(abs, cwd)}`;
   const result = await queryWithRetry('textDocument/hover', {
     textDocument: { uri: doc.uri },
     position: pos,

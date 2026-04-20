@@ -1271,7 +1271,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics.",
+    "description": "Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics. Word count is skipped for files exceeding the read cap (256 KB) — lines/bytes only.",
     "inputSchema": {
       "type": "object",
       "properties": {
