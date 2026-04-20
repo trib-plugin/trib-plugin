@@ -51,6 +51,7 @@ const MODULES = [
   { name: 'agent',    path: 'src/agent/index.mjs',                       key: 'TOOL_DEFS' },
   { name: 'builtin',  path: 'src/agent/orchestrator/tools/builtin.mjs',  key: 'BUILTIN_TOOLS' },
   { name: 'lsp',      path: 'src/agent/orchestrator/tools/lsp.mjs',      key: 'LSP_TOOL_DEFS' },
+  { name: 'astgrep',  path: 'src/agent/orchestrator/tools/astgrep.mjs',  key: 'ASTGREP_TOOL_DEFS' },
 ]
 
 const t0 = Date.now()

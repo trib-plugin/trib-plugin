@@ -1528,5 +1528,118 @@
       ]
     },
     "module": "lsp"
+  },
+  {
+    "name": "sg_search",
+    "title": "AST-Grep Search",
+    "annotations": {
+      "title": "AST-Grep Search",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / argument count. Prefer this over `grep` when you want to find a *code construct* (all class declarations, all try-catch blocks, all `foo(...).then(...)` chains) rather than a literal string. Pass `pattern` (ast-grep pattern), `path` (file or directory), and optionally `lang` (typescript|javascript|python|rust|go|...). Language defaults to auto-detect from the file extension; .mjs / .cjs are mapped to JavaScript via the bundled sgconfig.yml.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "ast-grep pattern. Use `$NAME` for single captures, `$$$` for sequences, `$$_` for single anonymous. Example: `function $NAME($$$) { $$$ }`."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search. Absolute or cwd-relative."
+        },
+        "lang": {
+          "type": "string",
+          "description": "Language override (typescript|javascript|python|rust|go|c|cpp|java|ruby|php|html|css|json|yaml|...). Omit to let ast-grep auto-detect from the file extension."
+        },
+        "globs": {
+          "description": "gitignore-style include / exclude glob(s). Prefix with `!` to exclude. Later globs take precedence over earlier ones.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "context": {
+          "type": "number",
+          "description": "Lines of context around each match (equivalent to ripgrep -C). Default 0."
+        },
+        "head_limit": {
+          "type": "number",
+          "description": "Max output lines. Default 100, 0 = unlimited."
+        }
+      },
+      "required": [
+        "pattern",
+        "path"
+      ]
+    },
+    "module": "astgrep"
+  },
+  {
+    "name": "sg_rewrite",
+    "title": "AST-Grep Rewrite",
+    "annotations": {
+      "title": "AST-Grep Rewrite",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Structural rewrite via ast-grep. Match a syntax pattern and substitute a rewrite template — far safer than text-based search-and-replace because matches respect the language AST (won't touch string literals, comments, or rebind identifiers in unrelated scopes). **Dry-run by default**: without `apply: true` this returns a unified-diff preview showing exactly which files would change and how. Pass `apply: true` to actually write the edits. Example: `pattern: \"$OBJ.foo($$$)\"` + `rewrite: \"$OBJ?.foo($$$)\"` converts every `x.foo(...)` call site to optional chaining.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "ast-grep pattern to match (same syntax as sg_search)."
+        },
+        "rewrite": {
+          "type": "string",
+          "description": "Rewrite template. Metavariables from the pattern (`$NAME`, `$$$`) are substituted. Empty string deletes the match."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to rewrite. Absolute or cwd-relative."
+        },
+        "lang": {
+          "type": "string",
+          "description": "Language override. See sg_search."
+        },
+        "globs": {
+          "description": "Include / exclude glob(s). See sg_search.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "apply": {
+          "type": "boolean",
+          "description": "Apply the rewrite and write to disk. Default false (dry-run preview only)."
+        }
+      },
+      "required": [
+        "pattern",
+        "rewrite",
+        "path"
+      ]
+    },
+    "module": "astgrep"
   }
 ]

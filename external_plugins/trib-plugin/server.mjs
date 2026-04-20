@@ -336,6 +336,17 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
+  if (def.module === 'astgrep') {
+    // Structural search / rewrite via the `sg` CLI. Stateless wrapper —
+    // each call spawns `sg run ...` with the bundled sgconfig.yml so
+    // `.mjs` / `.cjs` are recognised as JavaScript regardless of cwd.
+    const { executeAstGrepTool } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/astgrep.mjs')).href,
+    )
+    const text = await executeAstGrepTool(name, args ?? {}, process.cwd())
+    return { content: [{ type: 'text', text: String(text) }] }
+  }
+
   const moduleName = TOOL_MODULE[name]
   if (!moduleName) throw new Error(`Unknown tool: ${name}`)
 
