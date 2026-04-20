@@ -246,6 +246,73 @@ async function streamReadRange(fullPath, offset, limit) {
     });
 }
 
+// Shared display helper: produce the cwd-relative, forward-slash path the
+// model sees. list / tree / find_files / lsp.mjs all need the same recipe;
+// exporting it here keeps the convention (relative when inside cwd, normalized
+// separators) pinned to one location.
+export function toDisplayPath(abs, cwd) {
+    return normalizeOutputPath(cwdRelativePath(abs, cwd));
+}
+
+// ISO-ish mtime formatter shared by list / find_files. A single hyphen is
+// used for zero/missing mtime so entries that failed stat still render a
+// stable column.
+function formatMtime(mtimeMs) {
+    if (!mtimeMs) return '-';
+    return new Date(mtimeMs).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+// Simple glob-to-RegExp compiler for name filters (find_files, future
+// tools). Callers pass foo*.mjs style patterns, not full brace/POSIX-class
+// globs. The arrow-function form of .replace is mandatory here: B35
+// (v0.6.216) demonstrated that String.prototype.replace with a string
+// replacement interprets substitution sequences and silently corrupts
+// patterns that happen to contain them. The arrow form opts out of
+// substitution entirely.
+function compileSimpleGlob(pattern) {
+    if (!pattern) return null;
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, (ch) => '\\' + ch);
+    const body = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+    const DOLLAR = '\x24';
+    return new RegExp('^' + body + DOLLAR, 'i');
+}
+
+// Unified directory walk used by list / tree / find_files. The visitor
+// callback owns the "should I record this entry?" decision; returning
+// literal false aborts the whole walk (used by list / find_files to stop
+// as soon as head_limit is satisfied, fixing F1 where the old loops kept
+// stat-calling entries after reaching the cap).
+//
+// - hidden:false skips dotfiles before the visitor runs
+// - maxDepth limits recursion (1 = direct children only)
+// - sort runs per-directory before visiting, so ordering is stable
+// - visit(ent, entPath, ctx) where ctx = { depth, index, total, isLast }
+//   exposes per-level ordering so tree-style renderers can draw branch
+//   prefixes without reimplementing the walk.
+function walkDir(root, { hidden = false, maxDepth = Infinity, visit, sort } = {}) {
+    const _walk = (dir, depth) => {
+        if (depth > maxDepth) return true;
+        let entries;
+        try { entries = readdirSync(dir, { withFileTypes: true }); }
+        catch { return true; }
+        if (!hidden) entries = entries.filter(e => !e.name.startsWith('.'));
+        if (sort) entries.sort(sort);
+        const total = entries.length;
+        for (let i = 0; i < total; i++) {
+            const ent = entries[i];
+            const entPath = join(dir, ent.name);
+            const ctx = { depth, index: i, total, isLast: i === total - 1 };
+            const cont = visit(ent, entPath, ctx);
+            if (cont === false) return false;
+            if (ent.isDirectory()) {
+                if (_walk(entPath, depth + 1) === false) return false;
+            }
+        }
+        return true;
+    };
+    _walk(root, 1);
+}
+
 // --- Tool definitions for external models ---
 //
 // Ordered to match the previous hand-maintained tools.json entries
@@ -738,22 +805,26 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (edits.length === 0) return 'Error: edits array is required';
             if (!isSafePath(filePath, workDir)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
-            if (!existsSync(fullPath)) {
-                const similar = findSimilarFile(fullPath);
-                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                return `Error [code 4]: file not found: ${filePath}${hint}`;
+            // F2 fix: one stat syscall covers both existence check and mtime
+            // read. existsSync + statSync was a TOCTOU window where the file
+            // could vanish between probes; ENOENT from statSync now produces
+            // the same file-not-found hint the existsSync branch used to.
+            let mEditStat;
+            try { mEditStat = statSync(fullPath); }
+            catch (err) {
+                if (err && err.code === 'ENOENT') {
+                    const similar = findSimilarFile(fullPath);
+                    const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                    return `Error [code 4]: file not found: ${filePath}${hint}`;
+                }
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
             const mEditSnapshot = _readFiles.get(fullPath);
             if (!mEditSnapshot) {
                 return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
             }
-            try {
-                const currentMtime = statSync(fullPath).mtimeMs;
-                if (currentMtime > mEditSnapshot.mtimeMs + 1) {
-                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
-                }
-            } catch {
-                // File vanished mid-edit — fall through; readFileSync below surfaces it.
+            if (mEditStat.mtimeMs > mEditSnapshot.mtimeMs + 1) {
+                return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
             }
             try {
                 let content;
@@ -859,11 +930,19 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
-            // Error [code 4]: file does not exist on disk.
-            if (!existsSync(fullPath)) {
-                const similar = findSimilarFile(fullPath);
-                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
-                return `Error [code 4]: file not found: ${filePath}${hint}`;
+            // F2 fix: single stat syscall replaces existsSync + statSync pair.
+            // ENOENT -> Error [code 4] with similar-file hint; mtime drift ->
+            // Error [code 7]. Collapsing the two probes also closes the TOCTOU
+            // window where the file could be deleted between checks.
+            let editStat;
+            try { editStat = statSync(fullPath); }
+            catch (err) {
+                if (err && err.code === 'ENOENT') {
+                    const similar = findSimilarFile(fullPath);
+                    const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                    return `Error [code 4]: file not found: ${filePath}${hint}`;
+                }
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
             // Error [code 6]: Read-before-Edit enforcement. Prevents phantom
             // edits where the model invents an old_string based on cached
@@ -875,13 +954,8 @@ export async function executeBuiltinTool(name, args, cwd) {
             // Error [code 7]: detect stale read via mtime drift (Anthropic
             // readFileState timestamp check parity). +1ms slack absorbs
             // filesystem timestamp resolution noise on NTFS/exFAT.
-            try {
-                const currentMtime = statSync(fullPath).mtimeMs;
-                if (currentMtime > editSnapshot.mtimeMs + 1) {
-                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
-                }
-            } catch {
-                // Vanished — readFileSync below surfaces it.
+            if (editStat.mtimeMs > editSnapshot.mtimeMs + 1) {
+                return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
             }
             try {
                 const content = readFileSync(fullPath, 'utf-8');
@@ -1076,40 +1150,33 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
 
             const rows = [];
-            const walk = (dir, currentDepth) => {
-                if (rows.length >= headLimit && headLimit > 0) return;
-                let entries;
-                try { entries = readdirSync(dir, { withFileTypes: true }); }
-                catch { return; }
-                for (const ent of entries) {
-                    if (!hidden && ent.name.startsWith('.')) continue;
-                    const entPath = join(dir, ent.name);
+            // F5: walkDir handles dotfile filter, depth cap, and recursion.
+            // Visitor returns false to abort the walk once headLimit is
+            // satisfied (F1 fix — old loop kept stat-calling after cap).
+            walkDir(fullPath, {
+                hidden,
+                maxDepth: depth,
+                visit: (ent, entPath) => {
                     const isDir = ent.isDirectory();
                     const isFile = ent.isFile();
+                    if (typeFilter === 'file' && !isFile) return;
+                    if (typeFilter === 'dir' && !isDir) return;
                     const entType = isDir ? 'dir' : (isFile ? 'file' : (ent.isSymbolicLink() ? 'symlink' : 'other'));
-                    if (typeFilter === 'file' && !isFile) {
-                        if (isDir && currentDepth < depth) walk(entPath, currentDepth + 1);
-                        continue;
-                    }
-                    if (typeFilter === 'dir' && !isDir) continue;
                     let size = 0, mtimeMs = 0;
                     try { const s = statSync(entPath); size = s.size; mtimeMs = s.mtimeMs; }
                     catch { /* keep zero */ }
                     rows.push({ path: cwdRelativePath(entPath, workDir), type: entType, size, mtimeMs });
-                    if (isDir && currentDepth < depth) walk(entPath, currentDepth + 1);
-                }
-            };
-            walk(fullPath, 1);
+                    if (headLimit > 0 && rows.length >= headLimit) return false;
+                },
+            });
 
             if (sort === 'mtime') rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
             else if (sort === 'size') rows.sort((a, b) => b.size - a.size);
             else rows.sort((a, b) => a.path.localeCompare(b.path));
 
             const sliced = headLimit > 0 ? rows.slice(0, headLimit) : rows;
-            const lines = sliced.map(r => {
-                const mtime = r.mtimeMs ? new Date(r.mtimeMs).toISOString().slice(0, 19).replace('T', ' ') : '-';
-                return `${normalizeOutputPath(r.path)}\t${r.type}\t${r.size}\t${mtime}`;
-            });
+            const lines = sliced.map(r =>
+                `${normalizeOutputPath(r.path)}\t${r.type}\t${r.size}\t${formatMtime(r.mtimeMs)}`);
             if (rows.length > sliced.length) lines.push(`... ${rows.length - sliced.length} more entries`);
             return lines.join('\n') || '(empty directory)';
         }
@@ -1128,30 +1195,29 @@ export async function executeBuiltinTool(name, args, cwd) {
             catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
             if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
             const lines = [`${normalizeOutputPath(basename(fullPath))}/`];
-            const walk = (dir, prefix, currentDepth) => {
-                if (currentDepth > depth) return;
-                if (headLimit > 0 && lines.length >= headLimit) return;
-                let entries;
-                try { entries = readdirSync(dir, { withFileTypes: true }); }
-                catch { return; }
-                if (!hidden) entries = entries.filter(e => !e.name.startsWith('.'));
-                entries.sort((a, b) => {
+            // F5: share walkDir with list / find_files. Prefix state lives in
+            // a stack keyed by depth — walkDir exposes {depth, index, total,
+            // isLast} via ctx so branch drawing works without an own walk.
+            const prefixStack = [''];
+            walkDir(fullPath, {
+                hidden,
+                maxDepth: depth,
+                sort: (a, b) => {
                     const ad = a.isDirectory(), bd = b.isDirectory();
                     if (ad !== bd) return ad ? -1 : 1;
                     return a.name.localeCompare(b.name);
-                });
-                for (let i = 0; i < entries.length; i++) {
-                    if (headLimit > 0 && lines.length >= headLimit) return;
-                    const ent = entries[i];
-                    const isLast = i === entries.length - 1;
-                    const branch = isLast ? '└── ' : '├── ';
-                    const childPrefix = prefix + (isLast ? '    ' : '│   ');
+                },
+                visit: (ent, _entPath, ctx) => {
+                    const prefix = prefixStack[ctx.depth - 1] || '';
+                    const branch = ctx.isLast ? '└── ' : '├── ';
                     const display = ent.isDirectory() ? `${ent.name}/` : ent.name;
                     lines.push(`${prefix}${branch}${display}`);
-                    if (ent.isDirectory()) walk(join(dir, ent.name), childPrefix, currentDepth + 1);
-                }
-            };
-            walk(fullPath, '', 1);
+                    if (ent.isDirectory()) {
+                        prefixStack[ctx.depth] = prefix + (ctx.isLast ? '    ' : '│   ');
+                    }
+                    if (headLimit > 0 && lines.length >= headLimit) return false;
+                },
+            });
             if (headLimit > 0 && lines.length >= headLimit) lines.push('... (truncated, increase head_limit)');
             return lines.join('\n');
         }
@@ -1178,9 +1244,9 @@ export async function executeBuiltinTool(name, args, cwd) {
             const after = parseTime(args.modified_after);
             const before = parseTime(args.modified_before);
 
-            const nameRegex = namePattern
-                ? new RegExp('^' + namePattern.replace(/[.+^${}()|[\]\\]/g, (ch) => '\\' + ch).replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i')
-                : null;
+            // F6: glob-to-regex compiler extracted so the $-escape safety
+            // note lives in one place (see compileSimpleGlob).
+            const nameRegex = compileSimpleGlob(namePattern);
 
             if (!isSafePath(inputPath, workDir)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
@@ -1192,40 +1258,32 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!rootStat.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
 
             const matches = [];
-            const walk = (dir) => {
-                if (headLimit > 0 && matches.length >= headLimit) return;
-                let entries;
-                try { entries = readdirSync(dir, { withFileTypes: true }); }
-                catch { return; }
-                for (const ent of entries) {
-                    if (ent.name.startsWith('.')) continue;
-                    const entPath = join(dir, ent.name);
+            // F5: walkDir handles dotfile skip + recursion. Returning false
+            // stops the walk as soon as headLimit is satisfied (F1 fix).
+            walkDir(fullPath, {
+                hidden: false,
+                visit: (ent, entPath) => {
                     const isDir = ent.isDirectory();
                     const isFile = ent.isFile();
-                    if (isDir) walk(entPath);
-                    if (headLimit > 0 && matches.length >= headLimit) return;
-                    if (typeFilter === 'file' && !isFile) continue;
-                    if (typeFilter === 'dir' && !isDir) continue;
-                    if (nameRegex && !nameRegex.test(ent.name)) continue;
+                    if (typeFilter === 'file' && !isFile) return;
+                    if (typeFilter === 'dir' && !isDir) return;
+                    if (nameRegex && !nameRegex.test(ent.name)) return;
                     let stat;
-                    try { stat = statSync(entPath); } catch { continue; }
+                    try { stat = statSync(entPath); } catch { return; }
                     if (isFile) {
-                        if (minSize !== null && stat.size < minSize) continue;
-                        if (maxSize !== null && stat.size > maxSize) continue;
+                        if (minSize !== null && stat.size < minSize) return;
+                        if (maxSize !== null && stat.size > maxSize) return;
                     }
-                    if (after !== null && stat.mtimeMs < after) continue;
-                    if (before !== null && stat.mtimeMs > before) continue;
+                    if (after !== null && stat.mtimeMs < after) return;
+                    if (before !== null && stat.mtimeMs > before) return;
                     matches.push({ path: cwdRelativePath(entPath, workDir), size: stat.size, mtimeMs: stat.mtimeMs });
-                    if (headLimit > 0 && matches.length >= headLimit) return;
-                }
-            };
-            walk(fullPath);
+                    if (headLimit > 0 && matches.length >= headLimit) return false;
+                },
+            });
 
             matches.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
-            const lines = matches.map(m => {
-                const mtime = new Date(m.mtimeMs).toISOString().slice(0, 19).replace('T', ' ');
-                return `${normalizeOutputPath(m.path)}\t${m.size}\t${mtime}`;
-            });
+            const lines = matches.map(m =>
+                `${normalizeOutputPath(m.path)}\t${m.size}\t${formatMtime(m.mtimeMs)}`);
             return lines.join('\n') || '(no matches)';
         }
         default:

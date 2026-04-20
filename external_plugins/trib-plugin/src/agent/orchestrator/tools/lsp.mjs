@@ -28,10 +28,10 @@
 // compact display; absolute paths flow internally.
 
 import { spawn } from 'node:child_process';
-import { resolve as pathResolve, relative as pathRelative, extname, isAbsolute, join, dirname, sep as pathSep } from 'node:path';
-import { readFile, access } from 'node:fs/promises';
+import { resolve as pathResolve, extname, isAbsolute, dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { normalizeInputPath, normalizeOutputPath } from './builtin.mjs';
+import { normalizeInputPath, normalizeOutputPath, toDisplayPath } from './builtin.mjs';
 
 const LANG_BY_EXT = {
   '.ts': 'typescript',
@@ -233,22 +233,44 @@ async function ensureDocOpen(absPath) {
   const ext = extname(absPath).toLowerCase();
   const lang = LANG_BY_EXT[ext];
   if (!lang) throw new Error(`unsupported file extension for LSP: ${ext || '(none)'}`);
-  const text = await readFile(absPath, 'utf8');
+  // F4 fix: single readFile syscall replaces the prior access() + readFile
+  // pair. ENOENT is surfaced with the friendly "file does not exist"
+  // message the callers used to emit via access().catch, so the user-
+  // facing behaviour is unchanged but one fs round-trip is saved.
+  let text;
+  try {
+    text = await readFile(absPath, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      throw new Error(`file does not exist: ${normalizeOutputPath(absPath)}`);
+    }
+    throw e;
+  }
   const uri = pathToFileURL(absPath).href;
   sendNotification('textDocument/didOpen', {
     textDocument: { uri, languageId: lang, version: 1, text },
   });
   const doc = { uri, lang, text, version: 1 };
   _state.docs.set(absPath, doc);
-  // Give the server a tick to index the file before we query against
-  // it. The actual indexing is idempotent — subsequent queries against
-  // the same doc will return the cached analysis — but the very first
-  // request on a cold file often beats the server to the definition
-  // table and returns null. 150ms is enough in practice for the small
-  // files typical of a plugin tree; larger monorepo usage should switch
-  // to awaiting a specific server-ready notification.
-  await new Promise(r => setTimeout(r, 150));
+  // F3 fix: the fixed 150ms sleep was a hot-path penalty on every
+  // first-touch file. Cold-index races still happen, but callers now
+  // do a single short retry (see queryWithRetry below) only when the
+  // first response comes back empty, so the common fast-path incurs
+  // zero delay and cold queries pay 50ms once instead of 150ms always.
   return doc;
+}
+
+// Retry helper for cold-index races: if the first query returns a
+// null / empty-array result (typical on the very first request against
+// a file the server hasn't finished indexing), sleep 50ms and retry
+// exactly once. sendRequest already has a 30s hard timeout so this
+// cannot hang indefinitely. Definition / references / documentSymbol
+// all funnel through here so the retry logic is a single location.
+async function queryWithRetry(method, params) {
+  const first = await sendRequest(method, params);
+  if (first && (!Array.isArray(first) || first.length > 0)) return first;
+  await new Promise(r => setTimeout(r, 50));
+  return sendRequest(method, params);
 }
 
 // Lines that are entirely a comment — skip these when anchoring the
@@ -310,22 +332,9 @@ function uriToPath(uri) {
   }
 }
 
-function relativePath(cwd, abs) {
-  const a = String(abs || '');
-  const c = String(cwd || '');
-  if (!a || !c) return a;
-  // Use Node's path.relative for segment-aware computation; on Windows
-  // the result already uses backslashes, so we run it through
-  // normalizeOutputPath at the call site (formatLocations). On Unix
-  // case-sensitivity is preserved — no toLowerCase fold.
-  try {
-    const rel = pathRelative(c, a);
-    if (!rel || rel === '..' || rel.startsWith('..' + pathSep) || isAbsolute(rel)) return a;
-    return rel;
-  } catch {
-    return a;
-  }
-}
+// F7: the former `relativePath(cwd, abs)` helper is now `toDisplayPath`
+// in builtin.mjs — one shared function covers every tool that renders
+// a cwd-relative, forward-slash path for the model.
 
 // LSP SymbolKind enum (1..26) → short label.
 const SYMBOL_KIND = [
@@ -346,8 +355,7 @@ function formatLocations(result, cwd) {
     const uri = loc.uri || loc.targetUri;
     const range = loc.range || loc.targetRange || loc.targetSelectionRange;
     if (!uri || !range) continue;
-    let p = relativePath(cwd, uriToPath(uri));
-    p = normalizeOutputPath(p);
+    const p = toDisplayPath(uriToPath(uri), cwd);
     lines.push(`${p}:${range.start.line + 1}:${range.start.character + 1}`);
   }
   return lines.length ? lines.join('\n') : '(no locations)';
@@ -386,18 +394,29 @@ async function definitionOrReferences(kind, args, cwd) {
   if (!symbol) throw new Error(`${kind}: "symbol" is required`);
   const abs = resolveAbs(cwd, normFile);
   if (!abs) throw new Error(`${kind}: "file" is required (path to a file that contains or imports the symbol)`);
-  await access(abs).catch(() => { throw new Error(`${kind}: file does not exist: ${normalizeOutputPath(abs)}`); });
   await startServer(cwd);
-  const doc = await ensureDocOpen(abs);
+  // F4 fix: ensureDocOpen handles ENOENT via a readFile catch so the
+  // separate access() probe is gone. Prefix the error with the tool name
+  // for callers that still pattern-match on the `kind:` prefix.
+  let doc;
+  try {
+    doc = await ensureDocOpen(abs);
+  } catch (e) {
+    if (e && /file does not exist/.test(e.message)) {
+      throw new Error(`${kind}: ${e.message}`);
+    }
+    throw e;
+  }
   const pos = findSymbolPosition(doc.text, symbol);
-  if (!pos) return `symbol "${symbol}" not found in ${normalizeOutputPath(relativePath(cwd, abs))}`;
+  if (!pos) return `symbol "${symbol}" not found in ${toDisplayPath(abs, cwd)}`;
   const method = kind === 'lsp_definition' ? 'textDocument/definition' : 'textDocument/references';
   const params = {
     textDocument: { uri: doc.uri },
     position: pos,
   };
   if (kind === 'lsp_references') params.context = { includeDeclaration: true };
-  const result = await sendRequest(method, params);
+  // F3: cold-index safe retry instead of a blanket 150ms sleep.
+  const result = await queryWithRetry(method, params);
   resetIdleTimer();
   return formatLocations(result, cwd);
 }
@@ -407,10 +426,17 @@ async function documentSymbols(args, cwd) {
   const normFile = normalizeInputPath(file);
   const abs = resolveAbs(cwd, normFile);
   if (!abs) throw new Error('lsp_symbols: "file" is required');
-  await access(abs).catch(() => { throw new Error(`lsp_symbols: file does not exist: ${normalizeOutputPath(abs)}`); });
   await startServer(cwd);
-  const doc = await ensureDocOpen(abs);
-  const result = await sendRequest('textDocument/documentSymbol', {
+  let doc;
+  try {
+    doc = await ensureDocOpen(abs);
+  } catch (e) {
+    if (e && /file does not exist/.test(e.message)) {
+      throw new Error(`lsp_symbols: ${e.message}`);
+    }
+    throw e;
+  }
+  const result = await queryWithRetry('textDocument/documentSymbol', {
     textDocument: { uri: doc.uri },
   });
   resetIdleTimer();
