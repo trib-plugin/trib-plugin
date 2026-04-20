@@ -134,12 +134,14 @@ File / code          read, multi_read, write, edit, multi_edit,
 Shell                bash
 Codebase symbols     lsp_definition, lsp_references, lsp_symbols
 Info retrieval       recall, search, explore
-Async collection     session_result
 Memory               memory
 ```
 
-17 tools. Agents retain the full actual-work surface; only the Lead
-administrative surface is hidden.
+Agents retain the full actual-work surface; only the Lead
+administrative surface is hidden. (Async dispatch results from
+recall / search / explore are pushed back via the channel bridge
+with `meta.type = "async_result"` — no separate polling tool is
+exposed.)
 
 ## Runtime Enforcement (unchanged)
 

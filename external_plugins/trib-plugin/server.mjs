@@ -305,7 +305,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
       callerSessionId: callerCtx.callerSessionId,
       // Push merged answer into the Lead session when an async dispatch
       // (wait:false) completes, so Lead integrates the result on its next
-      // turn instead of polling session_result.
+      // turn via a channel notification (no polling tool exposed).
       notifyFn: pushChannelNotification,
     })
   }

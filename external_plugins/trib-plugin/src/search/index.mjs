@@ -489,13 +489,13 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'External web search, URL scrape, GitHub code/issues/repos. `query` accepts a string or array (parallel fan-out); include a URL to trigger scrape or `owner/repo` for GitHub. Async by default: returns `async_...` handle, collected via `session_result` or `wait:true` inline. Not for past context (use `recall`) or codebase files (use `explore`).',
+    description: 'External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Async; merged answer auto-pushed. Past context → `recall`, codebase → `explore`.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query, or an array of queries for multi-angle parallel fan-out. Include a URL to trigger scrape; mention `owner/repo` for GitHub code/issues.' },
-        cwd: { type: 'string', description: 'Optional workspace hint forwarded to the search agent. Rarely needed — only when the query is ambiguous about which repo context applies.' },
-        wait: { type: 'boolean', description: 'Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`.' },
+        query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
+        cwd: { type: 'string', description: 'Optional workspace hint. Rarely needed.' },
+        wait: { type: 'boolean', description: 'Async by default. Pass `wait:true` to block inline.' },
       },
       required: ['query'],
       additionalProperties: false,
