@@ -35,19 +35,18 @@ const USER_WORKFLOW_MD_PATH = join(DATA_DIR, 'user-workflow.md');
 
 const DEFAULT_USER_WORKFLOW = {
   roles: [
-    { name: 'worker', preset: 'SONNET MID' },
-    { name: 'reviewer', preset: 'OPUS MID' },
-    { name: 'debugger', preset: 'OPUS MID' },
-    { name: 'researcher', preset: 'HAIKU' },
-    { name: 'tester', preset: 'SONNET MID' },
+    { name: 'worker', preset: 'SONNET HIGH' },
+    { name: 'reviewer', preset: 'OPUS XHIGH' },
+    { name: 'debugger', preset: 'OPUS XHIGH' },
+    { name: 'tester', preset: 'SONNET HIGH' },
   ],
 };
 
-const DEFAULT_USER_WORKFLOW_MD = `- worker: general implementation tasks
-- reviewer: code review
-- debugger: debugging and issue investigation
-- researcher: research and exploration
-- tester: runtime testing and validation
+const DEFAULT_USER_WORKFLOW_MD = `Default role assignment:
+- Implementation → worker
+- Verification → reviewer
+- Debugging → debugger
+- Testing → tester
 `;
 
 // -- Memory paths --

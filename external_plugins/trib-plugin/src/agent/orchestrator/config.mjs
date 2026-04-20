@@ -77,7 +77,9 @@ function isLegacyPresetShape(p) {
 export const DEFAULT_PRESETS = Object.freeze([
     Object.freeze({ id: 'haiku', name: 'HAIKU', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('haiku'), tools: 'full' }),
     Object.freeze({ id: 'sonnet-mid', name: 'SONNET MID', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('sonnet'), effort: 'medium', tools: 'full' }),
+    Object.freeze({ id: 'sonnet-high', name: 'SONNET HIGH', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('sonnet'), effort: 'high', tools: 'full' }),
     Object.freeze({ id: 'opus-mid', name: 'OPUS MID', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('opus'), effort: 'medium', tools: 'full' }),
+    Object.freeze({ id: 'opus-xhigh', name: 'OPUS XHIGH', type: 'bridge', provider: 'anthropic-oauth', model: resolveAnthropicFamilyModel('opus'), effort: 'xhigh', tools: 'full' }),
 ]);
 function buildDefaultConfig() {
     const providers = {};
