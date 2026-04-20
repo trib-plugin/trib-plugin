@@ -286,6 +286,15 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
             });
             if (guardResult.action === 'detected') {
                 traceToolLoopDetected({ sessionId, iteration: iterations, info: guardResult.info });
+                // Soft-warn: prepend a synthetic sidecar onto the tool
+                // result the model is about to read so it gets a
+                // self-correction nudge BEFORE the hard abort at count 3.
+                if (guardResult.warnText) {
+                    const toolMsg = messages[messages.length - 1];
+                    if (toolMsg && toolMsg.role === 'tool') {
+                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
+                    }
+                }
             } else if (guardResult.action === 'abort') {
                 traceToolLoopAborted({ sessionId, iteration: iterations, info: guardResult.info });
                 throw new ToolLoopAbortError(guardResult.info);

@@ -3,6 +3,8 @@ import { createSession, askSession, listSessions, closeSession, findSessionBySco
 import { ToolLoopAbortError } from './orchestrator/tool-loop-guard.mjs';
 import { StreamStalledAbortError, startWatchdog as startStreamWatchdog } from './orchestrator/session/stream-watchdog.mjs';
 import { startBridgeStallWatchdog } from './bridge-stall-watchdog.mjs';
+import { attachBridgeAbort } from './bridge-abort.mjs';
+import { createWorkerWorktree, cleanupWorkerWorktree } from './bridge-worktree.mjs';
 import { loadConfig, getPluginData, listPresets, getDefaultPreset, setDefaultPreset, resolveRuntimeSpec } from './orchestrator/config.mjs';
 import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs';
 import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
@@ -433,6 +435,7 @@ export async function init() {
 export async function handleToolCall(name, args, opts = {}) {
   const notifyFn = typeof opts.notifyFn === 'function' ? opts.notifyFn : null;
   const elicit = typeof opts.elicitFn === 'function' ? opts.elicitFn : null;
+  const requestSignal = opts.requestSignal instanceof AbortSignal ? opts.requestSignal : null;
   // Idempotent fallback — server.mjs populates the registry at boot via
   // loadModule('agent').then(...), but if eager init failed (missing deps,
   // file error), the first tool call still restores it here. Re-registration
@@ -737,6 +740,37 @@ export async function handleToolCall(name, args, opts = {}) {
           sourceName: role,
         });
 
+        // ── Per-worker git worktree isolation (v0.6.243) ──────────────
+        // Parallel bridge workers editing overlapping files (plugin.json,
+        // same source module) caused version-bump races and mid-write
+        // corruption (worker 21's 0-byte openai-oauth-ws.mjs). Each
+        // dispatch now runs inside its own git worktree — structurally
+        // impossible for two workers to stomp the same working copy.
+        //
+        // On any failure (detached HEAD, mid-merge, disk full, old git,
+        // non-git root) createWorkerWorktree returns fallback=true with
+        // path=pluginRoot and emits `[bridge] worktree unavailable,
+        // running in shared mode` — the dispatch proceeds un-isolated
+        // rather than hard-failing the user's request.
+        //
+        // Cleanup is handled explicitly below: abort path calls
+        // cleanupWorkerWorktree via bridge-abort hook, failure/normal
+        // completion path calls it in the finally block. Successful
+        // completion with a clean `Done.` is the ONLY path that leaves
+        // the worktree in place — the Lead decides whether to merge.
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || effectiveCwd;
+        let workerWorktree = { path: pluginRoot, branch: null, fallback: true, reason: 'not-attempted' };
+        try {
+          workerWorktree = createWorkerWorktree(session.id, pluginRoot);
+        } catch (e) {
+          // Validation errors (unsafe sessionId, escape attempt) land
+          // here — log and fall back. Should never happen in practice
+          // because sessionIds come from a monotonic internal counter.
+          try { process.stderr.write(`[bridge] worktree create threw: ${e.message || e}\n`); } catch {}
+          workerWorktree = { path: pluginRoot, branch: null, fallback: true, reason: String(e.message || e) };
+        }
+        const workerCwd = workerWorktree.path;
+
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;
         const emit = notifyFn || (() => {});
@@ -753,6 +787,43 @@ export async function handleToolCall(name, args, opts = {}) {
           } catch { return ''; }
         })();
 
+        // ── Request-lifecycle cancellation (v0.6.242) ─────────────────
+        // When the MCP client cancels this CallTool — typically via a user
+        // reject/interrupt in Claude Code — `requestSignal` aborts. The
+        // async IIFE below has no tie to the MCP request otherwise, so
+        // without this hook askSession keeps running against the provider
+        // after the user bails out (the "zombie session" symptom).
+        //
+        // closeSession() tombstones on disk, flips runtime.closed, and
+        // aborts the in-flight controller — providers unwind, the finally
+        // block runs trajectory-record + notifyFn, and listSessions() no
+        // longer returns the id (tombstoned rows are filtered).
+        //
+        // See src/agent/bridge-abort.mjs for the extracted, unit-testable
+        // attach helper.
+        const abortHandle = attachBridgeAbort({
+          signal: requestSignal,
+          sessionId: session.id,
+          role,
+          jobId,
+          modelTag,
+          closeSession: (id) => {
+            // On user-abort: tear down the private worktree BEFORE closing
+            // the session so any half-written files inside don't survive
+            // into the next dispatch reusing the same dir name. Swallow —
+            // worktree cleanup must never block session close.
+            try {
+              if (!workerWorktree.fallback) {
+                cleanupWorkerWorktree(session.id, pluginRoot, { reason: 'user-abort' });
+              }
+            } catch (e) {
+              try { process.stderr.write(`[bridge] worktree cleanup on abort failed: ${e.message || e}\n`); } catch {}
+            }
+            closeSession(id);
+          },
+          emit,
+        });
+
         (async () => {
           const t0 = Date.now();
           let completed = true;
@@ -761,7 +832,11 @@ export async function handleToolCall(name, args, opts = {}) {
           const toolCallLog = [];
           let lastIteration = 0;
           updateSessionStatus(session.id, 'running');
-          emit(`${modelTag}${role} started`);
+          // `silent_to_agent` — lifecycle "started" banner is a status ping
+          // for the Discord user, not something Lead needs in-context. The
+          // final result emission (further below) stays NON-silent so Lead
+          // receives the deliverable.
+          emit(`${modelTag}${role} started`, { silent_to_agent: true });
           // Per-session stall watchdog — complements the orchestrator's
           // stream-watchdog (which fires at 300s/600s on raw stream silence).
           // This one catches the bridge-specific case where the lead is
@@ -785,7 +860,7 @@ export async function handleToolCall(name, args, opts = {}) {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => {
               if (typeof iteration === 'number' && iteration > lastIteration) lastIteration = iteration;
               for (const c of calls) toolCallLog.push({ name: c.name, iteration });
-            }, effectiveCwd);
+            }, workerCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             // Usage display — `ctx` is the LAST turn's promptTokens (how big
             // the context was at the end, actionable for compaction decisions).
@@ -850,6 +925,22 @@ export async function handleToolCall(name, args, opts = {}) {
             }
           } finally {
             try { stallWatch.stop(); } catch { /* idempotent */ }
+            // Detach request-abort listener — IIFE has settled, further
+            // aborts on the MCP request have nothing to tear down. Harmless
+            // if already removed via { once: true } on fire.
+            try { abortHandle.detach(); } catch { /* ignore */ }
+            // Worktree lifecycle (v0.6.243):
+            //   success  → leave it in place; Lead explicitly merges/discards
+            //   failure  → tear down so a fresh dispatch starts clean
+            // abortHandle.fired() already ran cleanup via its closeSession
+            // override, so we skip that branch here to avoid double-remove.
+            if (!completed && !abortHandle.fired() && !workerWorktree.fallback) {
+              try {
+                cleanupWorkerWorktree(session.id, pluginRoot, { reason: `failure: ${errorMessage || 'unknown'}` });
+              } catch (e) {
+                try { process.stderr.write(`[bridge] worktree cleanup on failure failed: ${e.message || e}\n`); } catch {}
+              }
+            }
             try {
               const cfg = loadConfig();
               if (cfg.trajectory?.enabled !== false) {

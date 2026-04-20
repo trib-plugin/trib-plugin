@@ -35,6 +35,17 @@ import {
 const CODEX_WS_URL = 'wss://chatgpt.com/backend-api/codex/responses';
 const WS_IDLE_MS = 5 * 60_000;
 const WS_HANDSHAKE_TIMEOUT_MS = 30_000;
+
+// Handshake retry policy. The `ws` library surfaces a bare
+// `Opening handshake has timed out` Error after handshakeTimeout; transient
+// network blips (DNS, reset, 5xx) similarly produce single-shot failures that
+// waste the caller's turn when they'd succeed on retry. We wrap the acquire
+// step with bounded exponential backoff. Permanent auth/quota (4xx) must NOT
+// retry because a second attempt will hit the same deterministic server
+// decision and just double the user-visible latency.
+const HANDSHAKE_MAX_ATTEMPTS = 3;
+const HANDSHAKE_BACKOFF_BASE_MS = 500;
+const HANDSHAKE_BACKOFF_CAP_MS = 5000;
 // Codex can stall for 50+s between chunks on long reasoning requests
 // (observed: iter 5 of a multi-file review produced sse_parse_ms=58265).
 // Iter-boundary reasoning pauses after large tool_output batches (e.g.
@@ -281,7 +292,7 @@ function _parseEvent(raw) {
     try { return JSON.parse(raw); } catch { return null; }
 }
 
-async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCall }) {
+async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCall, state }) {
     const socket = entry.socket;
     let content = '';
     let model = '';
@@ -291,6 +302,16 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
     let usage;
     let done = false;
     let terminalError = null;
+    // Mid-stream retry classifier needs to distinguish "stream died before we
+    // even saw response.created" from "stream died after we had a partial
+    // response but before completion". Mutate the shared state object so the
+    // caller can inspect flags on the error path without us having to attach
+    // them manually at every reject site.
+    const midState = state || {};
+    midState.sawResponseCreated = midState.sawResponseCreated || false;
+    midState.sawCompleted = midState.sawCompleted || false;
+    midState.wsCloseCode = null;
+    midState.responseFailedPayload = null;
     let idleTimer = null;
     let abortHandler = null;
     let messageHandler = null;
@@ -345,6 +366,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
             if (!event || typeof event.type !== 'string') return;
             switch (event.type) {
                 case 'response.created':
+                    midState.sawResponseCreated = true;
                     if (event.response?.model) model = event.response.model;
                     if (event.response?.id) responseId = event.response.id;
                     break;
@@ -409,6 +431,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                             }
                         }
                     }
+                    midState.sawCompleted = true;
                     done = true;
                     finish();
                     break;
@@ -418,6 +441,20 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                     done = true;
                     finish();
                     break;
+                case 'response.failed': {
+                    // Stash the payload so the mid-stream classifier can sniff
+                    // network_error / stream_disconnected without re-parsing.
+                    midState.responseFailedPayload = event;
+                    const msg = event.response?.error?.message
+                        || event.error?.message
+                        || event.message
+                        || 'response.failed';
+                    terminalError = Object.assign(new Error(`Codex WS response.failed: ${msg}`), {
+                        responseFailed: event,
+                    });
+                    finish();
+                    break;
+                }
                 case 'error':
                     terminalError = new Error(`Codex WS error: ${event.message || event.error?.message || 'unknown'}`);
                     finish();
@@ -429,9 +466,15 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
         };
         closeHandler = (code, reason) => {
             if (done) return;
+            midState.wsCloseCode = code;
             if (!terminalError) {
                 const r = reason?.toString?.('utf-8') || '';
-                terminalError = new Error(`Codex WS closed before response.completed (code=${code}${r ? `, reason=${r}` : ''})`);
+                terminalError = Object.assign(
+                    new Error(`Codex WS closed before response.completed (code=${code}${r ? `, reason=${r}` : ''})`),
+                    { wsCloseCode: code, wsCloseReason: r },
+                );
+            } else if (terminalError && !terminalError.wsCloseCode) {
+                try { terminalError.wsCloseCode = code; } catch {}
             }
             finish();
         };
@@ -446,6 +489,19 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
                 if (done) return;
                 const reason = externalSignal.reason;
                 terminalError = reason instanceof Error ? reason : new Error('Codex WS aborted by session close');
+                // Tag: was this a user/caller abort, or a watchdog abort?
+                // Mid-stream retry must skip user aborts but may retry watchdog
+                // aborts. The caller-owned AbortController surfaces through
+                // externalSignal; bridge-stall-watchdog signals via a reason
+                // object whose name === 'BridgeStallAbortError'. stream-watchdog
+                // uses StreamStalledAbortError. Anything else → treat as user.
+                const reasonName = reason?.name || '';
+                if (reasonName === 'BridgeStallAbortError'
+                    || reasonName === 'StreamStalledAbortError') {
+                    midState.watchdogAbort = reasonName;
+                } else {
+                    midState.userAbort = true;
+                }
                 try { socket.close(4002, 'aborted'); } catch {}
                 finish();
             };
@@ -457,6 +513,209 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
         socket.on('error', errorHandler);
         armPreStreamWatchdog();
     });
+}
+
+/**
+ * Classify a handshake error for retry eligibility.
+ *
+ * Default-deny: anything we don't recognize as transient returns null (treat
+ * as permanent). Permanent buckets (401/403/404/429) also return null — the
+ * server has made a deterministic decision that a retry can't change.
+ *
+ * Returns one of:
+ *   'timeout' — `ws` handshakeTimeout fired
+ *   'reset'   — ECONNRESET / socket hang up
+ *   'dns'     — EAI_AGAIN / ENOTFOUND / EAI_NODATA
+ *   'refused' — ECONNREFUSED
+ *   'network' — ENETUNREACH / EHOSTUNREACH / EPIPE
+ *   'http_5xx' (with specific status e.g. 'http_503') — server overload
+ *   null      — not retryable
+ */
+export function _classifyHandshakeError(err) {
+    if (!err) return null;
+    const code = err.code || '';
+    const msg = String(err.message || '');
+    const status = Number(err.httpStatus || 0);
+
+    // Permanent HTTP (auth / quota / not-found) short-circuits.
+    if (status === 401 || status === 403 || status === 404 || status === 429) {
+        return null;
+    }
+    // 5xx transient.
+    if (status >= 500 && status < 600) {
+        return `http_${status}`;
+    }
+
+    // Node errno codes.
+    if (code === 'ECONNRESET') return 'reset';
+    if (code === 'EAI_AGAIN' || code === 'ENOTFOUND' || code === 'EAI_NODATA') return 'dns';
+    if (code === 'ECONNREFUSED') return 'refused';
+    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT') return 'timeout';
+    if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH' || code === 'EPIPE') return 'network';
+
+    // `ws` library's handshake-timeout path: thrown as a bare Error.
+    if (/opening handshake has timed out/i.test(msg)) return 'timeout';
+    if (/socket hang up/i.test(msg)) return 'reset';
+
+    return null;
+}
+
+/**
+ * Classify a mid-stream error for single-shot retry eligibility.
+ *
+ * Only fires AFTER `response.created` is observed and BEFORE
+ * `response.completed`. The window is narrow on purpose: retrying a handshake
+ * or a pre-create connect failure is owned by _acquireWithRetry; retrying
+ * after completion would replay a finished turn.
+ *
+ * Retry buckets:
+ *   'bridge_stall'       — BridgeStallAbortError from bridge-stall-watchdog
+ *   'stream_stalled'     — StreamStalledAbortError from stream-watchdog
+ *   'ws_1006'            — abnormal close (connection lost)
+ *   'ws_1011'            — server unexpected condition
+ *   'ws_1012'            — service restart
+ *   'ws_4000'            — our armPreStreamWatchdog close with idle_timeout
+ *   'response_failed_network'       — response.failed with network_error
+ *   'response_failed_disconnected'  — response.failed with stream_disconnected
+ *
+ * Deny buckets (return null):
+ *   - externalSignal aborted by user (state.userAbort)
+ *   - state.sawCompleted === true (already done)
+ *   - state.sawResponseCreated === false (still pre-stream; handshake retry
+ *     owns that window)
+ *   - HTTP 401 / 403 / 429 surfaced on the error
+ *   - state.attemptIndex >= 1 (we've already retried once)
+ */
+export function _classifyMidstreamError(err, state) {
+    if (!state) return null;
+    // Already retried once — single-shot only, no laddering.
+    if ((state.attemptIndex | 0) >= 1) return null;
+    // Already completed (shouldn't throw, but defensive).
+    if (state.sawCompleted) return null;
+    // Pre-stream failures belong to the handshake retry layer, not this one.
+    if (!state.sawResponseCreated) return null;
+    // User/caller abort — never retry.
+    if (state.userAbort) return null;
+
+    if (!err) return null;
+    const status = Number(err?.httpStatus || 0);
+    if (status === 401 || status === 403 || status === 429) return null;
+
+    const name = err?.name || '';
+    if (name === 'BridgeStallAbortError') return 'bridge_stall';
+    if (name === 'StreamStalledAbortError') return 'stream_stalled';
+
+    // Watchdog abort surfaced via externalSignal handler → err is the reason
+    // itself. state.watchdogAbort captures the class name when the error
+    // shape was preserved but the name was stripped by some wrapper.
+    if (state.watchdogAbort === 'BridgeStallAbortError') return 'bridge_stall';
+    if (state.watchdogAbort === 'StreamStalledAbortError') return 'stream_stalled';
+
+    // WS close codes: prefer the decorated property, fall back to state.
+    const closeCode = Number(err?.wsCloseCode || state.wsCloseCode || 0);
+    if (closeCode === 1006) return 'ws_1006';
+    if (closeCode === 1011) return 'ws_1011';
+    if (closeCode === 1012) return 'ws_1012';
+    if (closeCode === 4000) return 'ws_4000';
+
+    // response.failed payload mentioning network_error / stream_disconnected.
+    const failed = err?.responseFailed || state.responseFailedPayload;
+    if (failed) {
+        try {
+            const blob = JSON.stringify(failed).toLowerCase();
+            if (blob.includes('stream_disconnected')) return 'response_failed_disconnected';
+            if (blob.includes('network_error')) return 'response_failed_network';
+        } catch {}
+    }
+
+    // Unknown → default-deny (don't risk a second full-cost turn for an error
+    // class we haven't proven is transient).
+    return null;
+}
+
+function _backoffFor(attempt) {
+    // attempt is 1-based. retry 1 → 500, retry 2 → 1000, retry 3 → 2000 … capped.
+    const raw = HANDSHAKE_BACKOFF_BASE_MS * (1 << (attempt - 1));
+    return Math.min(raw, HANDSHAKE_BACKOFF_CAP_MS);
+}
+
+const _defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Run `_acquire({auth, poolKey, cacheKey})` with bounded exponential-backoff
+ * retry on transient handshake failures. The injection seams (`_acquire`,
+ * `_sleepFn`, `onRetry`) let unit tests drive the state machine without
+ * opening real sockets.
+ *
+ * On exhaustion the thrown error is tagged with:
+ *   err.attempts         — 1..HANDSHAKE_MAX_ATTEMPTS
+ *   err.retryClassifier  — final classifier string, or null for permanent
+ */
+export async function _acquireWithRetry({
+    auth,
+    poolKey,
+    cacheKey,
+    forceFresh,
+    onRetry,
+    _acquire = acquireWebSocket,
+    _sleepFn = _defaultSleep,
+} = {}) {
+    let lastErr = null;
+    let lastClassifier = null;
+    for (let attempt = 1; attempt <= HANDSHAKE_MAX_ATTEMPTS; attempt++) {
+        try {
+            return await _acquire({ auth, poolKey, cacheKey, forceFresh });
+        } catch (err) {
+            lastErr = err;
+            const classifier = _classifyHandshakeError(err);
+            lastClassifier = classifier;
+            // Permanent (or unknown → default-deny): stop immediately.
+            if (!classifier) {
+                if (err && typeof err === 'object') {
+                    try { err.attempts = attempt; } catch {}
+                    try { err.retryClassifier = null; } catch {}
+                }
+                throw err;
+            }
+            // Transient but exhausted: surface with tagging.
+            if (attempt >= HANDSHAKE_MAX_ATTEMPTS) {
+                if (err && typeof err === 'object') {
+                    try { err.attempts = attempt; } catch {}
+                    try { err.retryClassifier = classifier; } catch {}
+                }
+                try {
+                    process.stderr.write(
+                        `[openai-oauth-ws] handshake failed after ${attempt}/${HANDSHAKE_MAX_ATTEMPTS} attempts: ${err?.message || err}\n`,
+                    );
+                } catch {}
+                throw err;
+            }
+            // Schedule backoff and emit progress.
+            const backoff = _backoffFor(attempt);
+            try {
+                process.stderr.write(
+                    `[openai-oauth-ws] worker retry ${attempt}/${HANDSHAKE_MAX_ATTEMPTS} (transient: ${classifier}, backoff ${backoff}ms)\n`,
+                );
+            } catch {}
+            try {
+                onRetry?.({
+                    attempt,
+                    max: HANDSHAKE_MAX_ATTEMPTS,
+                    classifier,
+                    backoffMs: backoff,
+                    error: err,
+                });
+            } catch {}
+            await _sleepFn(backoff);
+        }
+    }
+    // Unreachable — the loop either returns or throws above — but keep the
+    // typing honest.
+    if (lastErr && typeof lastErr === 'object') {
+        try { lastErr.attempts = HANDSHAKE_MAX_ATTEMPTS; } catch {}
+        try { lastErr.retryClassifier = lastClassifier; } catch {}
+    }
+    throw lastErr || new Error('acquireWithRetry: unreachable');
 }
 
 /**
@@ -476,87 +735,170 @@ export async function sendViaWebSocket({
     iteration,
     useModel,
     displayModel,
+    // Test seams (undefined in production). Let the unit test drive the
+    // retry state machine without opening real sockets or touching the
+    // handshake-retry layer.
+    _acquireWithRetryFn = _acquireWithRetry,
+    _streamFn = _streamResponse,
+    _sendFrameFn = null,
 }) {
-    const handshakeStart = Date.now();
-    let acquired;
-    try { onStageChange?.('requesting'); } catch {}
-    try {
-        acquired = await acquireWebSocket({ auth, poolKey, cacheKey });
-    } catch (err) {
-        if (err?.httpStatus) {
-            traceBridgeFetch({
-                sessionId: poolKey,
-                headersMs: Date.now() - handshakeStart,
-                httpStatus: err.httpStatus,
+    // Single-shot mid-stream retry: if the first attempt's stream dies after
+    // response.created but before response.completed from a transient cause
+    // (watchdog abort / ws 1006/1011/1012/4000 / response.failed with network
+    // error), tear down the socket and reissue the full request from scratch
+    // exactly once. No delta resume — content restarts, which is the accepted
+    // tradeoff for reviewer/worker flows that need the complete answer.
+    // Retries are layered ABOVE the handshake retry loop (_acquireWithRetry
+    // owns connect-level transience); the two never interleave because we
+    // force a brand-new acquire for the retry attempt.
+    const MAX_MIDSTREAM_RETRIES = 1;
+    let firstAttemptError = null;
+    let firstAttemptClassifier = null;
+    const emittedProgress = [];
+
+    for (let attemptIndex = 0; attemptIndex <= MAX_MIDSTREAM_RETRIES; attemptIndex++) {
+        const handshakeStart = Date.now();
+        let acquired;
+        try { onStageChange?.('requesting'); } catch {}
+        try {
+            acquired = await _acquireWithRetryFn({
+                auth,
+                poolKey,
+                cacheKey,
+                // Retry attempt must not reuse a pooled socket — the prior
+                // one is either torn down or in an unknown state.
+                forceFresh: attemptIndex > 0,
             });
+        } catch (err) {
+            if (err?.httpStatus) {
+                traceBridgeFetch({
+                    sessionId: poolKey,
+                    headersMs: Date.now() - handshakeStart,
+                    httpStatus: err.httpStatus,
+                });
+            }
+            // Handshake-layer failure. Don't double-wrap: if this is the retry
+            // attempt, surface the ORIGINAL first-attempt error (which is what
+            // the caller's turn actually tripped on).
+            if (attemptIndex > 0 && firstAttemptError) {
+                try { firstAttemptError.midstreamRetries = attemptIndex; } catch {}
+                throw firstAttemptError;
+            }
+            throw err;
         }
-        throw err;
-    }
-    const { entry, reused } = acquired;
-    traceBridgeFetch({
-        sessionId: poolKey,
-        headersMs: Date.now() - handshakeStart,
-        httpStatus: reused ? 0 : 101,
-    });
+        const { entry, reused } = acquired;
+        traceBridgeFetch({
+            sessionId: poolKey,
+            headersMs: Date.now() - handshakeStart,
+            httpStatus: reused ? 0 : 101,
+        });
 
-    const { mode, frame } = _computeDelta({ entry, body });
-    const deltaTokens = _estimateFrameTokens(frame);
+        const { mode, frame } = _computeDelta({ entry, body });
+        const deltaTokens = _estimateFrameTokens(frame);
 
-    try {
-        entry.socket.send(JSON.stringify(frame));
-    } catch (err) {
-        releaseWebSocket({ entry, poolKey, keep: false });
-        throw err instanceof Error ? err : new Error(String(err));
-    }
+        try {
+            if (_sendFrameFn) _sendFrameFn(entry, frame);
+            else entry.socket.send(JSON.stringify(frame));
+        } catch (err) {
+            releaseWebSocket({ entry, poolKey, keep: false });
+            const wrapped = err instanceof Error ? err : new Error(String(err));
+            if (attemptIndex > 0 && firstAttemptError) {
+                try { firstAttemptError.midstreamRetries = attemptIndex; } catch {}
+                throw firstAttemptError;
+            }
+            throw wrapped;
+        }
 
-    try { onStageChange?.('streaming'); } catch {}
-    const sseStart = Date.now();
-    let result;
-    try {
-        result = await _streamResponse({ entry, externalSignal, onStreamDelta, onToolCall });
-    } catch (err) {
-        releaseWebSocket({ entry, poolKey, keep: false });
-        throw err;
-    }
-    traceBridgeSse({ sessionId: poolKey, sseParseMs: Date.now() - sseStart });
+        try { onStageChange?.('streaming'); } catch {}
+        const sseStart = Date.now();
+        const midState = {
+            attemptIndex,
+            sawResponseCreated: false,
+            sawCompleted: false,
+        };
+        let result;
+        try {
+            result = await _streamFn({
+                entry,
+                externalSignal,
+                onStreamDelta,
+                onToolCall,
+                state: midState,
+            });
+        } catch (err) {
+            releaseWebSocket({ entry, poolKey, keep: false });
+            // Mid-stream classification.
+            const classifier = _classifyMidstreamError(err, midState);
+            if (classifier && attemptIndex < MAX_MIDSTREAM_RETRIES) {
+                // Retry-eligible: stash the first-attempt error, emit progress,
+                // and loop. The subsequent acquire uses forceFresh so no socket
+                // is shared between attempts.
+                firstAttemptError = err;
+                firstAttemptClassifier = classifier;
+                try { err.midstreamClassifier = classifier; } catch {}
+                try {
+                    const line = `[openai-oauth-ws] mid-stream recovered: retry ${attemptIndex + 1}/${MAX_MIDSTREAM_RETRIES} (cause: ${classifier})\n`;
+                    process.stderr.write(line);
+                    emittedProgress.push(line);
+                } catch {}
+                continue;
+            }
+            // Not retryable, OR we've already exhausted the one retry.
+            if (attemptIndex > 0 && firstAttemptError) {
+                // Exhausted path: surface the first-attempt error (the one
+                // the user's turn actually tripped on), tag retries=1.
+                try { firstAttemptError.midstreamRetries = attemptIndex; } catch {}
+                try { firstAttemptError.midstreamClassifier = firstAttemptClassifier; } catch {}
+                throw firstAttemptError;
+            }
+            throw err;
+        }
+        traceBridgeSse({ sessionId: poolKey, sseParseMs: Date.now() - sseStart });
 
-    // Update cache state for the next iteration in this session.
-    if (result.responseId) {
-        entry.lastResponseId = result.responseId;
-        entry.lastRequestSansInput = _stableStringify(_sansInput(body));
-        entry.lastInputLen = Array.isArray(body.input) ? body.input.length : 0;
-    }
+        // Update cache state for the next iteration in this session.
+        if (result.responseId) {
+            entry.lastResponseId = result.responseId;
+            entry.lastRequestSansInput = _stableStringify(_sansInput(body));
+            entry.lastInputLen = Array.isArray(body.input) ? body.input.length : 0;
+        }
 
-    const liveModel = result.model || useModel;
-    traceBridgeUsage({
-        sessionId: poolKey,
-        iteration,
-        inputTokens: result.usage?.inputTokens || 0,
-        outputTokens: result.usage?.outputTokens || 0,
-        cachedTokens: result.usage?.cachedTokens || 0,
-        promptTokens: result.usage?.promptTokens || 0,
-        model: liveModel,
-        modelDisplay: displayModel ? displayModel(liveModel) : liveModel,
-        responseId: result.responseId || null,
-        rawUsage: result.usage?.raw || null,
-        provider: 'openai-oauth',
-    });
-    // Extra WS-specific observability: transport + per-iteration delta bytes.
-    try {
-        appendBridgeTrace({
+        const liveModel = result.model || useModel;
+        traceBridgeUsage({
             sessionId: poolKey,
             iteration,
-            kind: 'transport',
-            transport: 'websocket',
-            ws_mode: mode,
-            iteration_delta_tokens: deltaTokens,
-            reused_connection: reused,
+            inputTokens: result.usage?.inputTokens || 0,
+            outputTokens: result.usage?.outputTokens || 0,
+            cachedTokens: result.usage?.cachedTokens || 0,
+            promptTokens: result.usage?.promptTokens || 0,
+            model: liveModel,
+            modelDisplay: displayModel ? displayModel(liveModel) : liveModel,
+            responseId: result.responseId || null,
+            rawUsage: result.usage?.raw || null,
+            provider: 'openai-oauth',
         });
-    } catch {}
+        // Extra WS-specific observability: transport + per-iteration delta bytes.
+        try {
+            appendBridgeTrace({
+                sessionId: poolKey,
+                iteration,
+                kind: 'transport',
+                transport: 'websocket',
+                ws_mode: mode,
+                iteration_delta_tokens: deltaTokens,
+                reused_connection: reused,
+                midstream_retries: attemptIndex,
+            });
+        } catch {}
 
-    releaseWebSocket({ entry, poolKey, keep: true });
-    const { responseId: _ignored, ...out } = result;
-    return out;
+        releaseWebSocket({ entry, poolKey, keep: true });
+        const { responseId: _ignored, ...out } = result;
+        // Leave a breadcrumb on the result so downstream callers can observe
+        // that a retry was used (0 = first-try success, 1 = one retry used).
+        try { Object.defineProperty(out, '__midstreamRetries', { value: attemptIndex, enumerable: false }); } catch {}
+        return out;
+    }
+    // Unreachable — the loop either returns or throws above.
+    throw firstAttemptError || new Error('sendViaWebSocket: unreachable');
 }
 
 // Test/debug surface — lets callers force-close all pooled sockets (e.g. on

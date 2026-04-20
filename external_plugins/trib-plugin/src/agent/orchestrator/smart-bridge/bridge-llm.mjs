@@ -129,7 +129,7 @@ function buildUnifiedHeader({ permission, role }) {
  * plugin-managed and take precedence over user-workflow.json — users cannot
  * override them by redefining the same name.
  */
-function resolvePresetName({ preset, optsPreset, role }) {
+export function resolvePresetName({ preset, optsPreset, role }) {
     if (preset) return preset;
     if (optsPreset) return optsPreset;
     if (!role) return null;

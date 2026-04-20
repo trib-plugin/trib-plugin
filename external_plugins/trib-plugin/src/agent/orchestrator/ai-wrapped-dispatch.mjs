@@ -17,6 +17,9 @@
 
 import { homedir } from 'os'
 import { resolve as resolvePath, isAbsolute } from 'path'
+import { loadConfig } from './config.mjs'
+import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
+import { smartReadTruncate } from './tools/builtin.mjs'
 
 const ROLE_BY_TOOL = Object.freeze({
   recall:  { role: 'recall-agent',  build: buildRecallPrompt,   label: 'recall-agent' },
@@ -104,11 +107,13 @@ export async function dispatchAiWrapped(name, args, ctx) {
       queries,
       createdAt: Date.now(),
     })
-    // Emit a channel notification mirroring the bridge worker UX — Lead sees
-    // "<tool> started" the instant dispatch begins, before the async_result
-    // push fires later with the merged answer.
+    // Emit a channel notification mirroring the bridge worker UX — the
+    // Discord user sees "<tool> started" the instant dispatch begins. The
+    // `silent_to_agent` flag keeps this status ping out of Lead's context
+    // window; Lead still receives the async_result push later (pushAsyncResult)
+    // which carries the merged answer it needs to integrate.
     if (typeof ctx?.notifyFn === 'function') {
-      try { ctx.notifyFn(`${name} started`) } catch { /* best-effort */ }
+      try { ctx.notifyFn(`${name} started`, { silent_to_agent: true }) } catch { /* best-effort */ }
     }
     const resolvedCwd = resolveCwd(args.cwd)
     Promise.allSettled(
@@ -211,16 +216,76 @@ function resolveCwd(input) {
   return isAbsolute(expanded) ? expanded : resolvePath(process.cwd(), expanded)
 }
 
-function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
+/**
+ * Resolve a short model tag for the given hidden role, mirroring the
+ * `modelTag` format that bridge/worker lifecycle notifications use in
+ * src/agent/index.mjs (e.g. `3-5-sonnet`). Best-effort — returns an
+ * empty string when the preset / config can't be resolved so the header
+ * still renders (falls back to `[{tool}] Done.`).
+ */
+export function resolveAgentModelTag(role) {
+  try {
+    const presetName = resolvePresetName({ role })
+    if (!presetName) return ''
+    const config = loadConfig()
+    const preset = config?.presets?.find((p) => p.id === presetName || p.name === presetName)
+    const raw = preset?.model
+    if (!raw || typeof raw !== 'string') return ''
+    const stripped = raw.startsWith('claude-') ? raw.slice('claude-'.length) : raw
+    return stripped || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Build the `Done.` header that wraps async-result notifications, mirroring
+ * the Pool B worker completion shape emitted in src/agent/index.mjs:
+ *     [{model-tag}] [{role}] <content>
+ * Async dispatch re-uses the same pattern so the user sees a consistent
+ * `Done.` header across bridge worker output and async recall/search/explore
+ * result delivery.
+ *
+ * When the model tag can't be resolved, falls back to `[{tool}] Done.`.
+ * When the tool is empty (shouldn't happen), falls back to `Done.`.
+ */
+export function buildAsyncResultHeader(tool, modelTag) {
+  const toolPart = tool ? `[${tool}] ` : ''
+  const tagPart = modelTag ? `[${modelTag}] ` : ''
+  return `${tagPart}${toolPart}Done.`
+}
+
+export function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
   const notify = ctx?.notifyFn
   if (typeof notify !== 'function') return
   const queryCount = queries.length === 1
     ? `1 query`
     : `${queries.length} queries`
-  const header = flags.error
+  const bodyHeader = flags.error
     ? `${tool} failed`
     : `${tool} — ${queryCount}`
-  const content = `${header}\n\n${body}`
+  // v0.6.249 smart truncation — large recall/search/explore merged bodies
+  // (multi-query fan-out) can blow past the 30 KB smart-read cap and waste
+  // Lead context. Apply the same head/tail summariser used by `read` /
+  // `multi_read` so Lead still sees the interesting frames (first queries
+  // and final queries) without paying for the middle mass. Truncation acts
+  // on the body only — the `Done.` header is prepended AFTER, so it never
+  // gets cut.
+  const bodyStr = typeof body === 'string' ? body : String(body ?? '')
+  const bodyBytes = Buffer.byteLength(bodyStr, 'utf8')
+  const bodyLines = bodyStr.length === 0 ? 0 : bodyStr.split('\n').length
+  const { text: cappedBody } = smartReadTruncate(bodyStr, bodyLines, bodyBytes)
+  const originalBody = `${bodyHeader}\n\n${cappedBody}`
+  // v0.6.241: prepend a `Done.` wrapper that mirrors the Pool B worker
+  // completion header in src/agent/index.mjs (`${modelTag}[${role}] ...`).
+  // When the model tag can't be resolved, the helper falls back to
+  // `[{tool}] Done.` — still better than no header.
+  const spec = ROLE_BY_TOOL[tool]
+  const modelTag = spec ? resolveAgentModelTag(spec.role) : ''
+  const doneHeader = flags.error
+    ? buildAsyncResultHeader(tool, modelTag).replace(/Done\.$/, 'Failed.')
+    : buildAsyncResultHeader(tool, modelTag)
+  const content = `${doneHeader}\n\n${originalBody}`
   try {
     notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step.` })
   } catch {

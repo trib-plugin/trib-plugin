@@ -391,7 +391,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). Async; merged answer auto-pushed. External web → `search`, codebase → `explore`.",
+    "description": "Past context from the memory store. `query`: string or array (parallel fan-out). External web → `search`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -439,7 +439,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Async; merged answer auto-pushed. Past context → `recall`, external web → `search`.",
+    "description": "Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Past context → `recall`, external web → `search`.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -480,7 +480,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Async; merged answer auto-pushed. Past context → `recall`, codebase → `explore`.",
+    "description": "External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Past context → `recall`, codebase → `explore`.",
     "inputSchema": {
       "type": "object",
       "properties": {

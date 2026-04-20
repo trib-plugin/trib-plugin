@@ -1,5 +1,5 @@
-// ast-grep (sg) structural search / rewrite tools. Wraps the globally
-// installed `sg` CLI (npm @ast-grep/cli) and exposes two MCP tools:
+// ast-grep (sg) structural search / rewrite tools. Wraps the
+// `sg` CLI (npm @ast-grep/cli) and exposes two MCP tools:
 //
 //   sg_search   — read-only structural search across files/dirs.
 //   sg_rewrite  — pattern→rewrite transform. Dry-run by default (prints a
@@ -9,8 +9,17 @@
 // handles .gitignore-driven walking, per-language parsing, the `--globs`
 // filter, and unified-diff preview output — re-implementing those in
 // Node would double the code size for no capability gain. The CLI is a
-// single binary on PATH via the npm global install and starts in <50ms
-// cold, so the wrapper tax is negligible.
+// single binary that starts in <50ms cold, so the wrapper tax is
+// negligible.
+//
+// Binary resolution (see resolveSgBinary below):
+//   1. Bundled `@ast-grep/cli` in the plugin's own node_modules — the
+//      package's postinstall fetches a prebuilt platform binary and drops
+//      it alongside its package.json, so `npm install` in the plugin dir
+//      is enough. No global install step for users.
+//   2. PATH-resolved `sg` as a fallback (legacy install path / globally
+//      installed @ast-grep/cli).
+//   3. Clean error naming both options when nothing is found.
 //
 // Language detection:
 //   sg ships built-in extension tables (.js .jsx .ts .tsx .py .rs .go ...)
@@ -24,6 +33,8 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve as pathResolve, isAbsolute, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import {
   normalizeInputPath,
   normalizeOutputPath,
@@ -34,6 +45,124 @@ const execAsync = promisify(exec);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SGCONFIG_PATH = join(__dirname, 'sgconfig.yml');
+
+// createRequire keeps `require.resolve` semantics (node_modules walk from
+// this .mjs's location) available inside an ESM module.
+const nodeRequire = createRequire(import.meta.url);
+
+// On Windows the postinstall leaves `sg.exe` next to the package's
+// package.json (the extensionless `sg` launcher is unlinked). On POSIX
+// the binary is just `sg`. We prefer these names in order.
+const SG_CANDIDATE_NAMES = process.platform === 'win32'
+  ? ['sg.exe', 'sg.cmd', 'sg']
+  : ['sg'];
+
+// node_modules/.bin shim names as a secondary location. `npm` creates
+// `.bin/sg`, `.bin/sg.cmd`, `.bin/sg.ps1` on Windows; just `.bin/sg`
+// (symlink) on POSIX. We try these after the package-dir binary because
+// the shim adds a layer of cmd-wrapping that isn't needed.
+const SG_BIN_SHIM_NAMES = process.platform === 'win32'
+  ? ['sg.cmd', 'sg.exe', 'sg']
+  : ['sg'];
+
+// Cached resolution result. `undefined` = unresolved, `null` = resolved to
+// the PATH fallback ('sg'), string = absolute binary path. A second cache
+// slot (`_cache.error`) carries the "not found" sentinel so every call
+// reports the same message instead of re-scanning the FS.
+const _sgResolverCache = { resolved: undefined, error: null };
+
+function findBundledSgPath() {
+  // `require.resolve('@ast-grep/cli/package.json')` walks up from this
+  // .mjs's node_modules chain. Works whether the plugin was installed
+  // standalone (own node_modules) or hoisted (workspace root).
+  let pkgPath;
+  try {
+    pkgPath = nodeRequire.resolve('@ast-grep/cli/package.json');
+  } catch {
+    return null;
+  }
+  const pkgDir = dirname(pkgPath);
+  // The `bin` field in @ast-grep/cli package.json points at the launcher
+  // filenames ({ sg: 'sg', 'ast-grep': 'ast-grep' }). After postinstall,
+  // Windows replaces those with sg.exe / ast-grep.exe. We probe both.
+  try {
+    const pkg = nodeRequire('@ast-grep/cli/package.json');
+    const sgBin = pkg?.bin?.sg;
+    if (sgBin) {
+      for (const candidate of [sgBin, `${sgBin}.exe`, `${sgBin}.cmd`]) {
+        const full = join(pkgDir, candidate);
+        if (existsSync(full)) return full;
+      }
+    }
+  } catch {
+    // Falls through to the directory probe below.
+  }
+  for (const name of SG_CANDIDATE_NAMES) {
+    const full = join(pkgDir, name);
+    if (existsSync(full)) return full;
+  }
+  return null;
+}
+
+function findNodeModulesBinShim() {
+  // `.bin/sg` is what `npm` creates for every dependency's bin field.
+  // We walk from the package's own package.json up to its parent
+  // node_modules (the `.bin` sibling of `@ast-grep`).
+  let pkgPath;
+  try {
+    pkgPath = nodeRequire.resolve('@ast-grep/cli/package.json');
+  } catch {
+    return null;
+  }
+  // pkgPath = .../node_modules/@ast-grep/cli/package.json
+  //  dirname ×3 → .../node_modules
+  const nodeModulesDir = dirname(dirname(dirname(pkgPath)));
+  const binDir = join(nodeModulesDir, '.bin');
+  for (const name of SG_BIN_SHIM_NAMES) {
+    const full = join(binDir, name);
+    if (existsSync(full)) return full;
+  }
+  return null;
+}
+
+// Returns either an absolute path (bundled binary) or the bare string
+// 'sg' meaning "trust PATH". Throws a clean error when neither is usable.
+function resolveSgBinary() {
+  if (_sgResolverCache.resolved !== undefined) {
+    if (_sgResolverCache.error) throw _sgResolverCache.error;
+    return _sgResolverCache.resolved;
+  }
+  const bundled = findBundledSgPath();
+  if (bundled) {
+    _sgResolverCache.resolved = bundled;
+    return bundled;
+  }
+  const shim = findNodeModulesBinShim();
+  if (shim) {
+    _sgResolverCache.resolved = shim;
+    return shim;
+  }
+  // PATH fallback: we can't verify without invoking, so commit to 'sg'
+  // and let exec surface a spawn failure on first use. The error-path
+  // test below exercises the "nothing on PATH either" case by forcing
+  // a clearly-non-existent PATH and catching the resulting failure.
+  _sgResolverCache.resolved = 'sg';
+  return 'sg';
+}
+
+// Escape hatch for tests: lets them drop the cached resolution so
+// findBundledSgPath / findNodeModulesBinShim re-run against (e.g.) a
+// monkey-patched nodeRequire or a freshly restored fixture tree.
+export function __resetSgResolverCache() {
+  _sgResolverCache.resolved = undefined;
+  _sgResolverCache.error = null;
+}
+
+// Exposed for tests — lets assertions check "did we pick the bundled
+// binary?" without shelling out and parsing stderr.
+export function __resolveSgBinaryForTest() {
+  return { bundled: findBundledSgPath(), shim: findNodeModulesBinShim() };
+}
 
 // Keep in sync with builtin.mjs's SHELL_OUTPUT_MAX_CHARS. Not imported
 // because builtin.mjs doesn't export it — duplicating the number is
@@ -119,8 +248,23 @@ function buildCommonArgs({ pattern, lang, globs }) {
   return args;
 }
 
+// Detect "binary literally not found" from a child_process.exec error.
+// cmd.exe: "is not recognized as an internal or external command"
+// /bin/sh: "sg: command not found" / "sg: not found"
+// Node errno: ENOENT when the shell itself rejects the command.
+function isBinaryMissingError(err) {
+  if (!err) return false;
+  if (err.code === 'ENOENT') return true;
+  const msg = String(err.stderr || err.message || '');
+  return /not recognized as an internal or external|command not found|: not found/i.test(msg);
+}
+
 async function runSg(args, cwd) {
-  const cmd = 'sg ' + args.map(quote).join(' ');
+  const bin = resolveSgBinary();
+  // Pass the resolved absolute path through quote() so paths with spaces
+  // survive cmd.exe / /bin/sh word splitting. Bare 'sg' (PATH fallback)
+  // quoting to `"sg"` is still a no-op for the shell.
+  const cmd = quote(bin) + ' ' + args.map(quote).join(' ');
   try {
     const { stdout, stderr } = await execAsync(cmd, {
       cwd,
@@ -134,10 +278,19 @@ async function runSg(args, cwd) {
     });
     return { stdout: stdout || '', stderr: stderr || '', code: 0 };
   } catch (err) {
-    // sg exits 0 when nothing matches (search) and when dry-run preview
+    // `sg` exits 0 when nothing matches (search) and when dry-run preview
     // has no changes (rewrite). A non-zero exit is either a real error
     // (bad pattern, unknown language) or a signal from the CLI. Surface
     // stderr + stdout so the caller can diagnose without guessing.
+    if (isBinaryMissingError(err) && bin === 'sg') {
+      // Only throw the install-hint error when we fell back to PATH and
+      // PATH came up empty. If the resolver picked a bundled path and it
+      // still spawn-failed, a different thing is wrong — surface the raw
+      // error rather than mislead the user into reinstalling.
+      throw Object.assign(
+        new Error('ast-grep binary not found. Run `npm install` in the plugin dir or install `@ast-grep/cli` globally.'),
+        { code: 'ESGNOTFOUND' });
+    }
     const code = typeof err?.code === 'number' ? err.code : -1;
     const stdout = err?.stdout || '';
     const stderr = err?.stderr || err?.message || '';
@@ -206,6 +359,32 @@ async function sgRewrite(args, cwd) {
   }
   scopeCheck('sg_rewrite', path, cwd);
   const absPath = resolvePath(cwd, path);
+
+  // ------------------------------------------------------------------
+  // ATOMICITY LIMITATION (known; see worker-28 brief, v0.6.248):
+  //
+  // `sg -U` rewrites matched files in-place using the ast-grep CLI's
+  // own writer. It does NOT expose a staging-directory flag (ast-grep
+  // 0.25 has no `--output` or `--dry-run-to-dir` option — only `--json`
+  // for preview, which doesn't give us byte-identical replacement
+  // content for every matched file). A crash during `sg -U` can
+  // therefore still leave individual files half-written.
+  //
+  // Workarounds considered and rejected:
+  //   1. Run `--json`, read back each original file, compute the post-
+  //      rewrite content ourselves, and atomicWrite each — ast-grep's
+  //      JSON output reports match ranges but not the assembled output,
+  //      so we'd be duplicating the rewrite engine. Fragile.
+  //   2. Copy the whole target tree to a temp dir, run `sg -U` there,
+  //      then atomic-rename each modified file — doubles disk IO and
+  //      fails on large repos. Not a clean win.
+  //
+  // Until ast-grep adds a staging-dir flag (upstream issue to file),
+  // `sg_rewrite apply:true` remains NON-ATOMIC per-file. Callers should
+  // prefer dry-run preview + explicit `edit` / `multi_edit` for
+  // crash-sensitive paths. TODO(trib-plugin): revisit when ast-grep
+  // ships `--output-dir` or equivalent.
+  // ------------------------------------------------------------------
 
   const cliArgs = buildCommonArgs({ pattern, lang, globs });
   cliArgs.push('-r', rewrite);

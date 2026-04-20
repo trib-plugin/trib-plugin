@@ -1,10 +1,12 @@
 import { exec, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync, openSync, readSync, closeSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync, openSync, readSync, closeSync, renameSync, unlinkSync } from 'fs';
+import * as fsPromises from 'fs/promises';
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { promisify } from 'util';
 import * as nodeUtil from 'node:util';
 import { homedir } from 'os';
+import { randomBytes } from 'crypto';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
@@ -24,6 +26,109 @@ function stripAnsi(s) {
     return _stripAnsi(s);
 }
 import { resolve, normalize, isAbsolute, relative, dirname, basename, extname, join, sep } from 'path';
+
+// --- Atomic file write helper ---
+//
+// A plain `writeFileSync(target, content)` is NOT crash-safe: the kernel
+// opens the target in O_TRUNC mode which zeroes the old bytes *before* the
+// new bytes arrive. If the process dies (or the SSE stream hangs while a
+// buffered bridge worker is mid-write) we're left with a 0-byte or
+// truncated file on disk and the old content is gone.
+//
+// Fix: write to a tempfile in the same directory (so `rename` is guaranteed
+// atomic on the same filesystem per POSIX / MSDN semantics), fsync the fd
+// to force the data to stable storage, close the fd, then `rename` the
+// tempfile over the target in one step. A crash at any point leaves
+// either the old content intact (if rename hasn't happened yet) or the
+// fully-new content (rename is atomic) — never a half-written file.
+//
+// Windows rename quirk: `MoveFileEx` can fail EACCES / EBUSY / EPERM when
+// the destination has another open handle (antivirus, indexing service,
+// another process with the file held). We retry up to 3 times with 50ms
+// spacing on those specific error codes. Non-transient failures bail and
+// clean up the tempfile so no residue is left behind.
+//
+// Tempfile naming: `.<basename>.trib-tmp-<8hex>` — the leading dot hides
+// it from most listing tools and the 8-hex random suffix guarantees no
+// collision between concurrent callers writing to adjacent paths.
+//
+// Exported so patch.mjs (and any future mutation tool) can reuse the
+// same atomic primitive instead of re-rolling it.
+const WINDOWS_RENAME_RETRY_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const WINDOWS_RENAME_RETRY_MAX = 3;
+const WINDOWS_RENAME_RETRY_DELAY_MS = 50;
+
+function _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+export async function atomicWrite(targetPath, content, { mode } = {}) {
+    const dir = dirname(targetPath);
+    const rnd = randomBytes(4).toString('hex');
+    const tmp = join(dir, `.${basename(targetPath)}.trib-tmp-${rnd}`);
+    // Preserve existing file mode on overwrite so we don't inadvertently
+    // widen permissions via the default 0o644. Only applied when the
+    // caller didn't pin an explicit mode.
+    let effectiveMode = mode;
+    if (effectiveMode === undefined) {
+        try {
+            const st = statSync(targetPath);
+            effectiveMode = st.mode & 0o777;
+        } catch { /* target doesn't exist — use default */ }
+    }
+    if (effectiveMode === undefined) effectiveMode = 0o644;
+
+    // Open + write + fsync + close. Any failure here is caught and the
+    // tempfile is unlinked before we rethrow so no residue remains.
+    let fh = null;
+    try {
+        fh = await fsPromises.open(tmp, 'w', effectiveMode);
+        if (typeof _atomicWriteOverride === 'function') {
+            await _atomicWriteOverride(fh, content, tmp);
+        } else {
+            await fh.writeFile(content);
+        }
+        try { await fh.sync(); } catch { /* fsync can fail on some FS — proceed anyway, rename is still the durability gate */ }
+    } catch (writeErr) {
+        try { if (fh) await fh.close(); } catch { /* already closed */ }
+        try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
+        throw writeErr;
+    }
+    try { await fh.close(); } catch { /* already closed */ }
+
+    // Rename with Windows-specific retry. On POSIX `rename(2)` is atomic
+    // within a filesystem and the retry loop is a no-op.
+    const renameFn = typeof _atomicRenameOverride === 'function'
+        ? _atomicRenameOverride
+        : (src, dst) => fsPromises.rename(src, dst);
+    let lastErr = null;
+    const maxAttempts = process.platform === 'win32' ? WINDOWS_RENAME_RETRY_MAX : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            await renameFn(tmp, targetPath);
+            return;
+        } catch (err) {
+            lastErr = err;
+            const code = err && err.code;
+            if (process.platform === 'win32' && WINDOWS_RENAME_RETRY_CODES.has(code) && attempt < maxAttempts - 1) {
+                await _sleep(WINDOWS_RENAME_RETRY_DELAY_MS);
+                continue;
+            }
+            break;
+        }
+    }
+    // Rename failed — clean up the tempfile so no residue is left.
+    try { await fsPromises.unlink(tmp); } catch { /* already gone */ }
+    throw lastErr;
+}
+
+// Test hook — tests monkeypatch this to simulate rename failures without
+// touching fsPromises.rename globally (which would affect unrelated callers).
+// Production path: `null` means "use real fsPromises.rename". Assigning a
+// function here makes atomicWrite call it instead, so a test can throw an
+// ENOSPC / EACCES / synthetic error on demand.
+let _atomicRenameOverride = null;
+export function __setAtomicRenameOverrideForTest(fn) { _atomicRenameOverride = fn; }
+let _atomicWriteOverride = null;
+export function __setAtomicWriteOverrideForTest(fn) { _atomicWriteOverride = fn; }
 
 function resolveShell() {
     if (process.platform !== 'win32') return { shell: '/bin/sh', shellArg: '-c' };
@@ -1232,7 +1337,10 @@ export async function executeBuiltinTool(name, args, cwd) {
                         content = content.replace(old_string, () => new_string);
                     }
                 }
-                writeFileSync(fullPath, content, 'utf-8');
+                // v0.6.248: atomic write — tempfile + fsync + rename.
+                // Serial edits all land in `content`; a single atomicWrite
+                // publishes the final state.
+                await atomicWrite(fullPath, content);
                 _cacheInvalidateAll();
                 _recordReadSnapshot(fullPath);
                 return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
@@ -1284,7 +1392,13 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // `recursive:true` is a no-op when the directory already
                 // exists and is cross-OS safe (POSIX + NTFS).
                 mkdirSync(dirname(fullPath), { recursive: true });
-                writeFileSync(fullPath, content, 'utf-8');
+                // v0.6.248: atomic write via tempfile + fsync + rename.
+                // Non-atomic writeFileSync leaves a 0-byte / truncated file
+                // on disk if the process dies mid-write (observed 2026-XX
+                // when a bridge worker's SSE stream hung during an Edit on
+                // openai-oauth-ws.mjs). atomicWrite preserves the file mode
+                // on overwrite so we don't inadvertently widen 0o600 → 0o644.
+                await atomicWrite(fullPath, content);
                 _cacheInvalidateAll();
                 // Write establishes the on-disk state the model just
                 // authored, so a subsequent Edit does not need a fresh
@@ -1344,7 +1458,8 @@ export async function executeBuiltinTool(name, args, cwd) {
                 const updated = replaceAll
                     ? content.split(oldStr).join(newStr)
                     : content.replace(oldStr, () => newStr);
-                writeFileSync(fullPath, updated, 'utf-8');
+                // v0.6.248: atomic write — see `write` handler for rationale.
+                await atomicWrite(fullPath, updated);
                 _cacheInvalidateAll();
                 // Refresh the snapshot to the post-write mtime so a chain
                 // of edits against the same file doesn't trip the stale
@@ -1405,7 +1520,8 @@ export async function executeBuiltinTool(name, args, cwd) {
                     ...lines.slice(endLine),
                 ];
                 const newFileContent = updated.join('\n');
-                writeFileSync(fullPath, newFileContent, 'utf-8');
+                // v0.6.248: atomic write — tempfile + fsync + rename.
+                await atomicWrite(fullPath, newFileContent);
                 _cacheInvalidateAll();
                 _recordReadSnapshot(fullPath);
                 const replacedCount = endLine - startLine + 1;
@@ -1859,3 +1975,20 @@ export async function executeBuiltinTool(name, args, cwd) {
 export function isBuiltinTool(name) {
     return BUILTIN_TOOLS.some(t => t.name === name);
 }
+
+// Test-only exports for smart truncation helpers (see
+// scripts/test-smart-truncation.mjs). Runtime callers inside this module
+// use the local bindings unchanged; these named exports just make the
+// same functions + constants reachable from the test harness.
+export {
+    smartMiddleTruncate,
+    smartReadTruncate,
+    SMART_READ_MAX_BYTES,
+    SMART_READ_MAX_LINES,
+    SMART_READ_HEAD_LINES,
+    SMART_READ_TAIL_LINES,
+    SMART_BASH_MAX_LINES,
+    SMART_BASH_MAX_BYTES,
+    SMART_BASH_HEAD_LINES,
+    SMART_BASH_TAIL_LINES,
+};

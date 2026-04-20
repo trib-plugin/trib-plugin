@@ -7,10 +7,12 @@
   "scripts": {
     "start": "node server.mjs",
     "build:tools": "node scripts/build-tools-manifest.mjs",
+    "test": "node scripts/run-all-tests.mjs",
     "postinstall": "node -e \"const{execSync:e}=require('child_process'),p=require('path'),f=require('fs');const d=p.join(__dirname,'services');const v=p.join(d,'.venv');const py=process.platform==='win32'?p.join(v,'Scripts','python.exe'):p.join(v,'bin','python3');if(!f.existsSync(py)){try{e('python3 -m venv '+v,{stdio:'ignore'});e(py+' -m pip install -r '+p.join(d,'requirements.txt'),{stdio:'ignore'})}catch{}}\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
+    "@ast-grep/cli": "^0.42.1",
     "@google/generative-ai": "^0.24.0",
     "@huggingface/transformers": "^4.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0",

@@ -2,17 +2,22 @@
  * Tool loop guard — detects repeated identical failures and aborts.
  *
  * Signature = sha256(toolName + normalizedArgs + errorCategory).
- * 2 consecutive same-signature failures -> 'detected' (telemetry only).
- * 3 consecutive same-signature failures -> 'abort' (throw ToolLoopAbortError).
+ * 4 consecutive same-signature failures -> 'detected' — telemetry + a
+ *   synthetic soft-warn string (see buildSoftWarn) that callers are
+ *   expected to PREPEND onto the just-returned tool result. This gives
+ *   the model a chance to self-correct before the hard abort.
+ * 5 consecutive same-signature failures -> 'abort' (throw ToolLoopAbortError).
  * Any success, different tool, or different error category resets the state.
  *
- * No hint injection. No retry logic. The guard only blocks; learning and
- * recovery guidance live elsewhere (auto-skill catalog, retro proposer).
+ * The warn is emitted exactly once per run-up (on the 4th call of a run;
+ * if the 5th call differs the counter resets without re-emitting).
+ * Recovery guidance lives here as a per-call sidecar — intentionally
+ * actionable rather than a standing system-prompt hint.
  */
 import { createHash } from 'crypto';
 
-const DETECT_THRESHOLD = 2;
-const ABORT_THRESHOLD = 3;
+const DETECT_THRESHOLD = 4;
+const ABORT_THRESHOLD = 5;
 
 const ERROR_RULES = [
     { cat: 'edit-match-fail', test: (t) => t.includes('old_string') && (t.includes('did not match') || t.includes('not found') || t.includes('match')) },
@@ -84,6 +89,26 @@ function signatureOf(toolName, args, errorCategory) {
 }
 
 /**
+ * Build the soft-warn sidecar text for a 'detected' event. Callers should
+ * prepend this onto the corresponding tool result so the model sees it
+ * while processing that result (not as a standalone message).
+ *
+ * @param {{toolName: string, signature: string, errorCategory: string}} info
+ * @returns {string}
+ */
+export function buildSoftWarn(info) {
+    const sigShort = String(info.signature || '').slice(0, 8) || 'unknown';
+    const toolName = info.toolName || 'tool';
+    return [
+        `⚠ Tool-loop soft-warn: the same \`${toolName}\` call (signature \`${sigShort}\`) has returned the same result/error 4 times in a row. Before calling this again, reconsider whether you need a different approach:`,
+        `- Different arguments (broader/narrower pattern, different path, different glob)`,
+        `- A different tool (explore instead of grep, read instead of glob, etc.)`,
+        `- Accept the current result and move on`,
+        `Calling \`${toolName}\` identically a fifth time WILL abort this session.`,
+    ].join('\n');
+}
+
+/**
  * Create a fresh guard state, one per agent loop / session.
  */
 export function createGuard() {
@@ -91,6 +116,7 @@ export function createGuard() {
         currentSig: null,
         count: 0,
         lastInfo: null,
+        warnedSig: null, // last signature we emitted a soft-warn for
     };
 }
 
@@ -109,6 +135,7 @@ export function checkToolCall(guard, event) {
         guard.currentSig = null;
         guard.count = 0;
         guard.lastInfo = null;
+        guard.warnedSig = null;
         return { action: 'continue' };
     }
 
@@ -120,6 +147,9 @@ export function checkToolCall(guard, event) {
     } else {
         guard.currentSig = signature;
         guard.count = 1;
+        // Any signature change clears the 'already warned' marker so a
+        // fresh run-up can re-emit a warn on its own 4th call.
+        guard.warnedSig = null;
     }
 
     const argsSample = (() => {
@@ -142,7 +172,13 @@ export function checkToolCall(guard, event) {
         return { action: 'abort', info };
     }
     if (guard.count >= DETECT_THRESHOLD) {
-        return { action: 'detected', info };
+        // Emit the soft-warn sidecar once per run-up. If the signature
+        // somehow ticks past the detect threshold more than once for the
+        // same run (shouldn't with count->5==abort, but defensive) we
+        // don't re-spam the warning.
+        const warnText = guard.warnedSig === signature ? null : buildSoftWarn(info);
+        guard.warnedSig = signature;
+        return { action: 'detected', info, warnText };
     }
     return { action: 'continue' };
 }

@@ -105,6 +105,26 @@ try {
   log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`)
 }
 
+// ── Bridge worktree sweeper (v0.6.243) ──────────────────────────────
+// Previous MCP process may have died mid-dispatch, leaving orphaned
+// worktrees under .trib-worktrees/<sessionId>/. Any directory whose
+// sessionId isn't in the live session set (after the stale-bridge
+// closeSession sweep above) is an orphan and safe to reclaim.
+try {
+  const { listSessions } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/session/manager.mjs')).href)
+  const { sweepOrphanedWorktrees } = await import(pathToFileURL(join(PLUGIN_ROOT, 'src/agent/bridge-worktree.mjs')).href)
+  const live = new Set()
+  for (const s of listSessions()) {
+    if (s.owner === 'bridge' && (s.status === 'running' || s.status === 'tool_running')) live.add(s.id)
+  }
+  const result = sweepOrphanedWorktrees(PLUGIN_ROOT, live, { log: (m) => log(m) })
+  if (result.scanned > 0) {
+    log(`[worktree-cleanup] scanned=${result.scanned} cleaned=${result.cleaned.length} failed=${result.failures.length}`)
+  }
+} catch (e) {
+  log(`[worktree-cleanup] failed: ${e && (e.stack || e.message) || e}`)
+}
+
 // ── MCP server ──────────────────────────────────────────────────────
 const SERVER_INSTRUCTIONS = [
   `trib-plugin MCP server v${PLUGIN_VERSION}.`,
@@ -118,10 +138,9 @@ const SERVER_INSTRUCTIONS = [
   '- `recall` — past context from the memory store.',
   '- `search` — external web / URL scrape / GitHub code / issues / repos.',
   '- `explore` — internal codebase search. `cwd` is authoritative.',
-  'Results are pushed back via `notifications/claude/channel` (`meta.type = "async_result"`).',
   '',
   'Channels:',
-  '- `notifications/claude/channel` also delivers schedule / webhook / queue / proactive events into the Lead session. `meta.type` identifies the event class.',
+  '- Schedule / webhook / queue / proactive events are delivered into the Lead session through the built-in channel mechanism; each carries its own event-class marker.',
 ].join('\n')
 
 const server = new Server(
@@ -242,12 +261,27 @@ function callWorker(name, toolName, args) {
 const modules = new Map()
 
 function pushChannelNotification(content, extraMeta) {
+  // `silent_to_agent: true` — bridge lifecycle status pings (worker started,
+  // iter N, role-start echoes) that should surface on Discord but NOT land
+  // in the Lead agent's context window. When set we skip the Lead-notify
+  // hop entirely and ask the channels worker to post the content directly
+  // to the currently-active bridge channel. The meta flag is otherwise
+  // forwarded downstream so any future consumer that sees it can recognise
+  // and drop it. Default (flag absent/false) → legacy behaviour preserved.
+  const meta = { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString(), ...(extraMeta || {}) }
+  const silent = meta.silent_to_agent === true
+  if (silent) {
+    const entry = workers.get('channels')
+    if (entry?.proc?.connected) {
+      try { entry.proc.send({ type: 'forward_to_discord', content, channelId: meta.chat_id || null }) } catch (err) {
+        log(`[agent-notify] silent forward IPC failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return Promise.resolve()
+  }
   return server.notification({
     method: 'notifications/claude/channel',
-    params: {
-      content,
-      meta: { user: 'trib-agent', user_id: 'system', ts: new Date().toISOString(), ...(extraMeta || {}) },
-    },
+    params: { content, meta },
   }).catch(err => {
     log(`[agent-notify] channel failed: ${err instanceof Error ? err.message : String(err)}`)
   })
@@ -381,16 +415,27 @@ async function dispatchTool(name, args, callerCtx = {}) {
   }
 
   const mod = await loadModule(moduleName)
-  if (moduleName === 'agent') return mod.handleToolCall(name, args ?? {}, agentContext())
+  if (moduleName === 'agent') {
+    // Merge shared agent context with the per-request abort signal so the
+    // bridge handler can tear down its async IIFE on client-side cancel.
+    const ctx = agentContext()
+    if (callerCtx?.requestSignal) ctx.requestSignal = callerCtx.requestSignal
+    return mod.handleToolCall(name, args ?? {}, ctx)
+  }
   return mod.handleToolCall(name, args ?? {})
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }))
 
-server.setRequestHandler(CallToolRequestSchema, async req => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params
-  return dispatchTool(name, args)
+  // `extra.signal` is an AbortSignal that fires when the MCP client cancels
+  // this request (e.g. user rejects / interrupts a tool call in Claude Code).
+  // Thread it down so long-running tools — specifically the async IIFE the
+  // `bridge` tool spawns to run askSession — can close their session and
+  // stop hitting the provider after the user bails out.
+  return dispatchTool(name, args, { requestSignal: extra?.signal })
 })
 
 // ── Eager init BEFORE transport connect ─────────────────────────────

@@ -806,7 +806,19 @@ function injectAndRecord(channelId, name, content, options, kind, prefix) {
   const meta = { chat_id: channelId, user: sourceLabel, user_id: "system", ts };
   if (options?.instruction) meta.instruction = options.instruction;
   if (options?.type) meta.type = options.type;
-  sendNotifyToParent("notifications/claude/channel", { content, meta });
+  // `silent_to_agent` — lifecycle status pings (worker/iter/started echoes)
+  // surface on Discord but should NOT land in Lead's context window. When
+  // set, skip the parent-notify hop but keep the Discord-forward + event-log
+  // record. The meta flag is also propagated downstream so consumers that
+  // still see the notification (e.g. Lead itself if emission changes later)
+  // can recognise and drop it. Default is false → legacy behaviour preserved.
+  if (options?.silent_to_agent) meta.silent_to_agent = true;
+  const silent = options?.silent_to_agent === true;
+  if (!silent) {
+    sendNotifyToParent("notifications/claude/channel", { content, meta });
+  } else {
+    forwardLifecycleToDiscord(channelId, content);
+  }
   void memoryAppendEntry({
     ts,
     role: "user",
@@ -814,6 +826,19 @@ function injectAndRecord(channelId, name, content, options, kind, prefix) {
     sourceRef: `${prefix}:${name}:${ts}`,
     sessionId: `${prefix}:${name}`,
   });
+}
+
+// Best-effort direct Discord emission for silent-to-agent lifecycle pings.
+// Only used when the parent-notify hop is skipped, so the user still sees
+// the status on Discord even though Lead will never echo it through the
+// transcript-tail forwarder. Falls back to a no-op when no channel is
+// resolvable — lifecycle pings are non-critical.
+function forwardLifecycleToDiscord(channelId, content) {
+  try {
+    const target = channelId || statusState?.read?.().channelId || null;
+    if (!target || !backend?.sendMessage) return;
+    void backend.sendMessage(target, content).catch(() => {});
+  } catch { /* best-effort */ }
 }
 scheduler.setInjectHandler((channelId, name, content, options) => {
   injectAndRecord(channelId, name, content, options, "schedule-inject", "schedule");
@@ -1976,6 +2001,21 @@ async function stop() {
 // ── IPC worker mode ──────────────────────────────────────────────
 if (_isWorkerMode && process.send) {
   process.on('message', async (msg) => {
+    // Silent-to-agent lifecycle forward — parent (server.mjs) asks the
+    // channels worker to post status pings to the active bridge Discord
+    // channel without the Lead-notify hop. Best-effort: unknown channel or
+    // backend failure is swallowed; lifecycle pings are non-critical.
+    if (msg && msg.type === 'forward_to_discord') {
+      try {
+        const target = msg.channelId
+          || (statusState?.read?.().channelId)
+          || null;
+        if (target && backend?.sendMessage && typeof msg.content === 'string' && msg.content) {
+          await backend.sendMessage(target, msg.content).catch(() => {});
+        }
+      } catch { /* best-effort */ }
+      return;
+    }
     if (msg.type !== 'call' || !msg.callId) return
     try {
       const result = await handleToolCallWithBridgeRetry(msg.name, msg.args || {})

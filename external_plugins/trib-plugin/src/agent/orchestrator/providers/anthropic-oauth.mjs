@@ -384,7 +384,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
             idleTimedOut = true;
             try { abortStream?.(); } catch {}
             try { reader.cancel('SSE idle timeout'); } catch {}
-        }, 60_000);
+        }, 300_000);
     };
 
     const onAbort = () => { try { reader.cancel('SSE aborted'); } catch {} };
@@ -398,7 +398,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
         while (true) {
             let chunk;
             try { chunk = await reader.read(); } catch (err) {
-                if (idleTimedOut) throw new Error('Anthropic OAuth SSE stream timed out after 60000ms of inactivity');
+                if (idleTimedOut) throw new Error('Anthropic OAuth SSE stream timed out after 300000ms of inactivity');
                 if (signal?.aborted) throw new Error('Anthropic OAuth SSE stream aborted');
                 throw err;
             }

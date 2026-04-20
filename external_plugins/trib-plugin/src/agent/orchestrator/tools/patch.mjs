@@ -35,6 +35,7 @@ import {
   normalizeInputPath,
   normalizeOutputPath,
   isSafePath,
+  atomicWrite,
 } from './builtin.mjs';
 
 const DEV_NULL = /^\/dev\/null$/;
@@ -164,9 +165,13 @@ async function apply_patch(args, cwd) {
         plan.push({ ok: false, index: i, displayPath, error: err?.message || String(err) });
         continue;
       }
+      // Read original bytes so rollback can recreate the file if a
+      // downstream rename fails mid-batch.
+      let preContent = '';
+      try { preContent = readFileSync(fullPath, 'utf-8'); } catch { /* best-effort; rollback may be lossy for binary deletes */ }
       plan.push({
         ok: true, index: i, kind, fullPath, displayPath,
-        preMtime: stat.mtimeMs,
+        preContent, preMtime: stat.mtimeMs,
         hunks_applied: entry.hunks?.length || 0,
         lines_changed: added + removed,
       });
@@ -221,6 +226,10 @@ async function apply_patch(args, cwd) {
       plan.push({ ok: false, index: i, displayPath, error: err?.message || String(err) });
       continue;
     }
+    // Keep the original content for rollback: when reject_partial:true and
+    // a mid-batch rename fails, we replay this snapshot back onto disk for
+    // every file we already rewrote.
+    const preContent = source;
     // `applyPatch(source, patch)` returns the new string, or `false` when
     // any hunk's context didn't match. There's no per-hunk error detail
     // from the library, so we locate the first rejected hunk by replaying
@@ -244,7 +253,7 @@ async function apply_patch(args, cwd) {
     }
     plan.push({
       ok: true, index: i, kind, fullPath, displayPath,
-      newContent: merged, preMtime: stat.mtimeMs,
+      newContent: merged, preContent, preMtime: stat.mtimeMs,
       hunks_applied: entry.hunks?.length || 0,
       lines_changed: added + removed,
     });
@@ -283,39 +292,112 @@ async function apply_patch(args, cwd) {
     return lines.join('\n');
   }
 
-  // Phase 2 — persist successful entries. Re-stat each modify/delete
-  // target to catch a concurrent external write between phase 1's read
-  // and now; if the mtime advanced we skip that entry with a code-7
-  // style message.
+  // Phase 2 — persist successful entries with atomic writes.
+  //
+  // Each entry is published via atomicWrite (tempfile + fsync + rename)
+  // so a crash mid-batch cannot leave a truncated target on disk. Two
+  // modes:
+  //
+  //  reject_partial:true  — "all or nothing". If any rename fails we
+  //    roll back every already-written file using the pre-patch
+  //    snapshots we captured in phase 1 (atomicWrite again, reversing
+  //    to preContent). This is best-effort: a rollback can itself fail
+  //    (disk full, permission change), in which case we report the
+  //    specific files left in a bad state so the operator can recover.
+  //
+  //  reject_partial:false — each file is independently atomic; a failure
+  //    on file N leaves files 1..N-1 persisted and N..M untouched.
+  //
+  // Re-stat-before-write mtime check stays in place to catch a concurrent
+  // external writer between phase-1 read and phase-2 publish.
   const { unlinkSync, mkdirSync } = await import('node:fs');
   const { dirname } = await import('node:path');
   const written = [];
   const skipped = [];
 
-  for (const p of successes) {
-    try {
-      if (p.kind === 'delete') {
-        const curStat = statSync(p.fullPath);
-        if (curStat.mtimeMs > p.preMtime + 1) {
-          skipped.push({ displayPath: p.displayPath, reason: 'file modified since read (mtime drift)' });
-          continue;
-        }
-        unlinkSync(p.fullPath);
-      } else if (p.kind === 'create') {
-        mkdirSync(dirname(p.fullPath), { recursive: true });
-        writeFileSync(p.fullPath, p.newContent, 'utf-8');
-      } else {
-        // modify — re-stat to detect concurrent external write.
-        const curStat = statSync(p.fullPath);
-        if (curStat.mtimeMs > p.preMtime + 1) {
-          skipped.push({ displayPath: p.displayPath, reason: 'file modified since read (mtime drift)' });
-          continue;
-        }
-        writeFileSync(p.fullPath, p.newContent, 'utf-8');
+  const persistOne = async (p) => {
+    if (p.kind === 'delete') {
+      const curStat = statSync(p.fullPath);
+      if (curStat.mtimeMs > p.preMtime + 1) {
+        throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
       }
-      written.push(p);
-    } catch (err) {
-      skipped.push({ displayPath: p.displayPath, reason: err?.message || String(err) });
+      unlinkSync(p.fullPath);
+    } else if (p.kind === 'create') {
+      mkdirSync(dirname(p.fullPath), { recursive: true });
+      await atomicWrite(p.fullPath, p.newContent);
+    } else {
+      const curStat = statSync(p.fullPath);
+      if (curStat.mtimeMs > p.preMtime + 1) {
+        throw Object.assign(new Error('file modified since read (mtime drift)'), { __skip: true });
+      }
+      await atomicWrite(p.fullPath, p.newContent);
+    }
+  };
+
+  const rollbackOne = async (p) => {
+    // Best-effort reversal. For modify/delete we have `preContent`; for
+    // create we unlink the newly-written file. Rollback failures are
+    // surfaced in the output so the operator knows which files are in a
+    // transient bad state.
+    if (p.kind === 'create') {
+      try { unlinkSync(p.fullPath); } catch (err) {
+        if (err?.code !== 'ENOENT') throw err;
+      }
+    } else {
+      // modify / delete — restore original bytes. For delete, this
+      // recreates the file; for modify, it rewrites with the pre-patch
+      // content. atomicWrite is crash-safe here too.
+      await atomicWrite(p.fullPath, p.preContent ?? '');
+    }
+  };
+
+  if (rejectPartial) {
+    // Staged all-or-nothing. Abort + rollback on first write failure.
+    const persistedForRollback = [];
+    let abortErr = null;
+    let abortedEntry = null;
+    for (const p of successes) {
+      try {
+        await persistOne(p);
+        persistedForRollback.push(p);
+        written.push(p);
+      } catch (err) {
+        abortErr = err;
+        abortedEntry = p;
+        break;
+      }
+    }
+    if (abortErr) {
+      // Unwind every file we already persisted. Collect rollback
+      // failures separately so they can be surfaced to the caller.
+      const rollbackFailures = [];
+      for (const done of persistedForRollback.reverse()) {
+        try { await rollbackOne(done); }
+        catch (rollbackErr) {
+          rollbackFailures.push({ displayPath: done.displayPath, reason: rollbackErr?.message || String(rollbackErr) });
+        }
+      }
+      const lines = [`Error: patch aborted mid-apply (reject_partial=true) — ${abortedEntry?.displayPath}: ${abortErr?.message || String(abortErr)}`];
+      lines.push(`  rolled back ${persistedForRollback.length} file(s)`);
+      for (const rf of rollbackFailures) {
+        lines.push(`  ROLLBACK-FAIL ${rf.displayPath} — ${rf.reason}`);
+      }
+      return lines.join('\n');
+    }
+  } else {
+    // Independent per-file atomic writes. Surviving successes are
+    // reported; failures land in `skipped`.
+    for (const p of successes) {
+      try {
+        await persistOne(p);
+        written.push(p);
+      } catch (err) {
+        if (err && err.__skip) {
+          skipped.push({ displayPath: p.displayPath, reason: err.message });
+        } else {
+          skipped.push({ displayPath: p.displayPath, reason: err?.message || String(err) });
+        }
+      }
     }
   }
 
