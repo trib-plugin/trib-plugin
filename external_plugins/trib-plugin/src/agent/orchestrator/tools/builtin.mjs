@@ -344,19 +344,6 @@ export const BUILTIN_TOOLS = [
             required: ['edits'],
         },
     },
-    {
-        name: 'skill_load',
-        title: 'Skill Load',
-        annotations: { title: 'Skill Load', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Load a Pool C role playbook by name. Internal dispatch only — normal callers should ignore.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                name: { type: 'string', description: 'Playbook name without extension (e.g. "explorer-playbook").' },
-            },
-            required: ['name'],
-        },
-    },
 ];
 // --- Short-TTL result cache for idempotent read-only tools ---
 //
@@ -797,26 +784,6 @@ export async function executeBuiltinTool(name, args, cwd) {
             const out = capShellOutput(capped.join('\n') || '(no files found)');
             _cacheSet(cacheKey, out);
             return out;
-        }
-        case 'skill_load': {
-            const rawName = String(args?.name || '').trim();
-            if (!rawName) return 'Error: name is required';
-            // Whitelist: only pool-c playbooks, kebab/underscore case ending in "-playbook"
-            if (!/^[a-z0-9_-]+-playbook$/i.test(rawName)) {
-                return `Error: playbook name must match /^[a-z0-9_-]+-playbook$/i — got ${JSON.stringify(rawName)}`;
-            }
-            const root = process.env.CLAUDE_PLUGIN_ROOT
-                || resolve(process.env.HOME || process.env.USERPROFILE || '', '.claude/plugins/marketplaces/trib-plugin/external_plugins/trib-plugin');
-            const filePath = resolve(root, 'skills/pool-c', `${rawName}.md`);
-            try {
-                const raw = readFileSync(filePath, 'utf8');
-                // Strip YAML frontmatter if present (--- ... ---)
-                const m = raw.match(/^---\n[\s\S]*?\n---\n/);
-                const body = m ? raw.slice(m[0].length) : raw;
-                return `Base directory for this playbook: ${resolve(root, 'skills/pool-c')}\n\n${body.trim()}`;
-            } catch (err) {
-                return `Error: failed to load playbook "${rawName}" — ${err instanceof Error ? err.message : String(err)}`;
-            }
         }
         default:
             return `Error: unknown builtin tool "${name}"`;

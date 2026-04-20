@@ -194,21 +194,10 @@ export function makeBridgeLlm(opts = {}) {
         if (permission) sessionOpts.permission = permission;
         if (isPoolC) {
             sessionOpts.skipRoleReminder = true;
-            // Per-role pre-seed migration map: roles listed here move their
-            // playbook from the BP3 system snippet to an in-transcript
-            // skill_load tool_use/tool_result pair (see manager.mjs's
-            // preSeedSkill handler). BP3 stays empty for these roles so BP2
-            // becomes bit-identical with Pool B and the shared cache shard
-            // covers them. Roles absent from the map keep the legacy BP3
-            // snippet path (rules/pool-c/*.md) until they migrate in turn.
-            const POOL_C_PRESEED = { explorer: 'explorer-playbook' };
-            const preSeedName = POOL_C_PRESEED[opts.role];
-            if (preSeedName) {
-                sessionOpts.preSeedSkill = preSeedName;
-                sessionOpts.roleSnippet = null;
-            } else {
-                sessionOpts.roleSnippet = getRoleSnippet(opts.role) || null;
-            }
+            // Pool C role snippet rides in the session's systemRole block
+            // (BP3) now, not in the user message — keeps the user message
+            // a clean query so its prefix is shareable across roles.
+            sessionOpts.roleSnippet = getRoleSnippet(opts.role) || null;
         }
         // User message = pure query. Permission / role / snippet all live
         // in systemRole (composeSystemPrompt → BP3) so BP2 + BP3 carry the
