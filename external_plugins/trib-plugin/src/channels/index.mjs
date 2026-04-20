@@ -929,7 +929,43 @@ backend.onModalRequest = async (rawInteraction) => {
   modal.addComponents(...rows);
   await rawInteraction.showModal(modal);
 };
+const pendingPermRequests = new Map();
 backend.onInteraction = (interaction) => {
+  // Channel-route permission reply. Custom_id format: perm-ch-{request_id}-{allow|session|deny}.
+  // request_id is the 5-letter short ID CC generates via shortRequestId().
+  // Emit notifications/claude/channel/permission back to Claude Code; the race
+  // logic in interactiveHandler.ts resolves the pending request and dismisses
+  // every other racer (local dialog, bridge, hook, classifier).
+  if (interaction.customId?.startsWith("perm-ch-")) {
+    const match = interaction.customId.match(/^perm-ch-([a-km-z]{5})-(allow|session|deny)$/);
+    if (!match) return;
+    const [, requestId, action] = match;
+    const access = config.access;
+    if (access?.allowFrom?.length > 0 && !access.allowFrom.includes(interaction.userId)) {
+      process.stderr.write(`trib-plugin: perm-ch button rejected — user ${interaction.userId} not in allowFrom\n`);
+      return;
+    }
+    const pending = pendingPermRequests.get(requestId);
+    pendingPermRequests.delete(requestId);
+    const params = { request_id: requestId };
+    if (action === 'deny') {
+      params.behavior = 'deny';
+    } else if (action === 'session') {
+      params.behavior = 'allow';
+      const toolName = pending?.toolName;
+      if (toolName) {
+        params.updatedPermissions = [{ type: 'addRules', rules: [{ toolName }], behavior: 'allow', destination: 'session' }];
+      }
+    } else {
+      params.behavior = 'allow';
+    }
+    sendNotifyToParent('notifications/claude/channel/permission', params);
+    const labels = { allow: 'Approved', session: 'Session Approved', deny: 'Denied' };
+    if (interaction.message?.id && interaction.channelId) {
+      editDiscordMessage(interaction.channelId, interaction.message.id, labels[action] || action);
+    }
+    return;
+  }
   if (interaction.customId?.startsWith("perm-")) {
     const match = interaction.customId.match(/^perm-([0-9a-f]{32})-(allow|session|deny)$/);
     if (!match) return;
@@ -2014,6 +2050,50 @@ if (_isWorkerMode && process.send) {
           await backend.sendMessage(target, msg.content).catch(() => {});
         }
       } catch { /* best-effort */ }
+      return;
+    }
+    // Claude Code permission request → Discord Allow/Deny prompt.
+    // Parent (server.mjs) receives notifications/claude/channel/permission_request
+    // from Claude Code and forwards the params here. We post a buttoned message;
+    // button clicks are handled in backend.onInteraction and sent back to CC as
+    // notifications/claude/channel/permission via sendNotifyToParent.
+    if (msg && msg.type === 'permission_request_inbound') {
+      try {
+        const { request_id, tool_name, description, input_preview } = msg.params || {};
+        if (!request_id || !tool_name) return;
+        if (pendingPermRequests.size > 100) {
+          const cutoff = Date.now() - 30 * 60 * 1000;
+          for (const [k, v] of pendingPermRequests) {
+            if (v.createdAt < cutoff) pendingPermRequests.delete(k);
+          }
+        }
+        pendingPermRequests.set(request_id, { toolName: tool_name, createdAt: Date.now() });
+        const mainLabel = config?.mainChannel || 'main';
+        const target = (statusState?.read?.().channelId)
+          || resolveChannelLabel(config?.channelsConfig, mainLabel)
+          || null;
+        if (!target || !backend?.sendMessage) {
+          process.stderr.write(`trib-plugin channels: permission_request dropped, no target channel (request_id=${request_id})\n`);
+          return;
+        }
+        const lines = [`🔐 **Permission Request**`, `Tool: \`${tool_name}\``];
+        if (description) lines.push(description);
+        if (input_preview) lines.push('```\n' + String(input_preview).slice(0, 800) + '\n```');
+        const content = lines.join('\n');
+        const components = [{
+          type: 1,
+          components: [
+            { type: 2, style: 3, label: 'Allow', custom_id: `perm-ch-${request_id}-allow` },
+            { type: 2, style: 1, label: 'Session Allow', custom_id: `perm-ch-${request_id}-session` },
+            { type: 2, style: 4, label: 'Deny', custom_id: `perm-ch-${request_id}-deny` },
+          ],
+        }];
+        await backend.sendMessage(target, content, { components }).catch((err) => {
+          process.stderr.write(`trib-plugin channels: permission_request Discord send failed: ${err && err.message || err}\n`);
+        });
+      } catch (err) {
+        try { process.stderr.write(`trib-plugin channels: permission_request handler error: ${err && err.message || err}\n`); } catch {}
+      }
       return;
     }
     if (msg.type !== 'call' || !msg.callId) return

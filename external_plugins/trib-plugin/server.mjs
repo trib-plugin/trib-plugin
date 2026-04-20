@@ -17,6 +17,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { z } from 'zod'
 import { fork } from 'child_process'
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch } from 'fs'
 import { join, resolve as pathResolve } from 'path'
@@ -153,6 +154,37 @@ const server = new Server(
     instructions: SERVER_INSTRUCTIONS,
   },
 )
+
+// ── Channel permission request forwarding ──────────────────────────
+// Claude Code's interactiveHandler races the terminal dialog against every
+// MCP channel server that declares `experimental['claude/channel/permission']`.
+// When CC fires this notification, forward it into the channels worker so it
+// can post the Discord prompt. The worker reports the outcome back through
+// the generic {type:'notify'} IPC path above, which becomes a
+// `notifications/claude/channel/permission` notification on the MCP server.
+const ChannelPermissionRequestNotificationSchema = z.object({
+  method: z.literal('notifications/claude/channel/permission_request'),
+  params: z.object({
+    request_id: z.string(),
+    tool_name: z.string(),
+    description: z.string().optional(),
+    input_preview: z.string().optional(),
+  }).passthrough(),
+})
+
+server.setNotificationHandler(ChannelPermissionRequestNotificationSchema, async (notification) => {
+  const entry = workers.get('channels')
+  const reqId = notification?.params?.request_id
+  if (!entry?.proc?.connected || !entry.ready) {
+    log(`permission_request dropped: channels worker not available (request_id=${reqId})`)
+    return
+  }
+  try {
+    entry.proc.send({ type: 'permission_request_inbound', params: notification.params })
+  } catch (err) {
+    log(`permission_request IPC send failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+})
 
 // ── Worker process management ──────────────────────────────────────
 const workers = new Map() // name → { proc, ready, pending }
