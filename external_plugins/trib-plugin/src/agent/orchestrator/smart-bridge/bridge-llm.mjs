@@ -62,8 +62,7 @@ function pluginRoot() {
 // provider-side cache shard is shared. Per-role behaviour is steered via
 // rules/pool-c/*.md (injected into the tier3Reminder user message by
 // composeSystemPrompt) and runtime guards (loop.mjs write-block +
-// ai-wrapped-dispatch recursion break). The historical `systemRole` /
-// BP3 split is force-disabled; role content migrates to tier3 today.
+// ai-wrapped-dispatch recursion break).
 const POOL_C_TOOL_KEEP = Object.freeze({});
 
 /**

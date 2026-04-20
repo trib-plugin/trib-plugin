@@ -169,9 +169,9 @@ function requiresSystemPrefix(model) {
 // two blocks — [prefix, rest] — keeps both routing and user instructions.
 function buildSystemBlocks(systemText, model, cacheControl) {
     // Accept either a single string (legacy callers) or an array of strings —
-    // the manager pushes multiple system messages (systemBase, systemRole)
+    // the manager pushes multiple system messages (baseRules, roleCatalog)
     // under the unified-shard policy, and each one becomes its own Anthropic
-    // content block with its own cache_control breakpoint (BP2 + BP3 + …).
+    // content block with its own cache_control breakpoint (BP1 + BP2).
     const texts = Array.isArray(systemText)
         ? systemText.map(s => typeof s === 'string' ? s.trim() : '').filter(Boolean)
         : (typeof systemText === 'string' && systemText.trim()) ? [systemText.trim()] : [];
@@ -529,17 +529,14 @@ function resolveCacheTtls(opts) {
         if (v === 'none') return null;
         return fallback;
     };
-    // BP budget (4 total) under Stage 3 unified-shard:
-    //   BP1 tools       — 1h
-    //   BP2 systemBase  — 1h  (shared across roles)
-    //   BP3 systemRole  — 1h  (role-specific, one shard per hidden role)
-    //   BP4 messages    — 5m sliding tail (tool_result cache across iter)
-    // Tier 3 no longer gets its own BP: the stable parts of tier3 (cwd,
-    // skills, project-context) still ride in a system-reminder user message
-    // whose prefix gets covered by the messages-tail BP once the sliding
-    // tail reaches back that far (iter 2+). Burning a dedicated BP on tier3
-    // starves messages-tail, which turned every tool_result in a multi-iter
-    // loop into uncached input.
+    // BP budget (4 total):
+    //   BP1 baseRules    — 1h (shared across ALL roles)
+    //   BP2 roleCatalog  — 1h (shared across ALL roles)
+    //   BP3 tier3        — 1h (sessionMarker: role + permission + project)
+    //   BP4 messages     — 5m sliding tail (tool_result cache across iter)
+    // tools BP is dropped — system BP covers the tools prefix via
+    // Anthropic's prompt cache prefix semantics (order: tools → system
+    // → messages).
     return {
         tools: pick('tools', CACHE_TTL_STABLE),
         system: pick('system', CACHE_TTL_STABLE),
@@ -566,19 +563,18 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const systemMsgs = messages.filter(m => m.role === 'system');
     const chatMsgs = messages.filter(m => m.role !== 'system');
     // Pass each system message text as its own entry so the Anthropic body
-    // gets N separate content blocks — role-variant systemRole can then
-    // have its own BP independent of the shared systemBase.
+    // gets N separate content blocks — each can have its own BP
+    // independent of the others.
     const systemTexts = systemMsgs.map(m => m.content);
     const maxTokens = resolveMaxTokens(model);
     const opts = sendOpts || {};
     const ttls = resolveCacheTtls(opts);
     const systemBlocks = buildSystemBlocks(systemTexts, model, ttls?.system);
 
-    // 4-BP budget layout. systemRole was removed (moved to tier3Reminder)
-    // so systemBpUsed is now 1 (systemBase only). tools BP is dropped —
-    // systemBase BP covers the tools prefix via Anthropic's prompt cache
-    // prefix semantics (order: tools → system → messages). That frees
-    // 2 slots for tier3 + messages-tail.
+    // 4-BP budget layout. tools BP is dropped — system BP covers the
+    // tools prefix via Anthropic's prompt cache prefix semantics
+    // (order: tools → system → messages). That frees slots for
+    // tier3 + messages-tail.
     const systemBpUsed = ttls.system ? systemBlocks.filter(b => b.cache_control).length : 0;
     const toolsBpUsed = 0;
     const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;

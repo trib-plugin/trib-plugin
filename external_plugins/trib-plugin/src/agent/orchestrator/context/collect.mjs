@@ -280,8 +280,6 @@ export function loadAllAgentBodies() {
 //   BP2 (1h, system block #2) = roleCatalog    — ALL role bodies concat (cross-role identical)
 //   BP3 (1h, first <system-reminder> user)     = sessionMarker (role + permission + project)
 //   BP4 (5m, messages tail)                    = volatileTail (task-brief + memory recap)
-// The `systemRole` field previously returned is removed — role content
-// now lives entirely in roleCatalog (shared) and sessionMarker (tiny).
 //
 // Tier 2 (BP_2 cache): plugin-lifetime invariant content only.
 //   - opts.bridgeRules    : rules-builder buildBridgeInjectionContent output
@@ -294,8 +292,7 @@ export function loadAllAgentBodies() {
 //   - opts.taskBrief      : Lead-issued task description (Sub only)
 //   - opts.hasSkills      : true → skills_list hint
 //   - opts.projectContext : cwd's PROJECT.md content (Phase B §5)
-//   - opts.memoryContext  : recap / history context (legacy — Pool B roles
-//                           generally exclude recap per §4.4)
+//   - opts.memoryContext  : recap / history context
 //
 // `profile.skip` still filters specific buckets (claudemd, skills, memory)
 // for backward compatibility with existing profiles.

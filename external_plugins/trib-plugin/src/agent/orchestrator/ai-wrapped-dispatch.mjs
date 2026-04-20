@@ -156,8 +156,8 @@ export async function dispatchAiWrapped(name, args, ctx) {
 
 function buildExplorerPrompt(query, cwd) {
   // cwd rides in the session's tier3Reminder (<system-reminder># cwd) via
-  // bridge-llm's opts.cwd plumbing, but B34 showed the inner explorer agent
-  // still drifts to its launch workspace when the reminder is missed or
+  // bridge-llm's opts.cwd plumbing, but the inner explorer agent can still
+  // drift to its launch workspace when the reminder is missed or
   // low-weighted — so we also pin the search root explicitly in the user
   // message body. Only emitted when the caller supplied an explicit cwd;
   // unspecified cwd keeps the original prompt prefix and preserves the
