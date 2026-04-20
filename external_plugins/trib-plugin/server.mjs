@@ -191,6 +191,47 @@ const workers = new Map() // name → { proc, ready, pending }
 const WORKER_MAX_RESTARTS = 3
 const workerRestarts = new Map() // name → count
 
+// Cached bridge-llm factory import — loaded on first agent_ipc_request and
+// reused thereafter. The agent module must be loaded before the first call
+// (loadModule('agent') runs at boot, well before any memory cycle fires).
+let _bridgeLlmFactory = null
+async function _getBridgeLlmFactory() {
+  if (_bridgeLlmFactory) return _bridgeLlmFactory
+  const mod = await import(
+    pathToFileURL(join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'smart-bridge', 'bridge-llm.mjs')).href
+  )
+  _bridgeLlmFactory = mod.makeBridgeLlm
+  return _bridgeLlmFactory
+}
+
+async function handleAgentIpcRequest(msg) {
+  const params = msg?.params || {}
+  try {
+    if (msg.tool !== 'bridge_llm') {
+      return { ok: false, error: `unsupported agent_ipc tool "${msg.tool}"` }
+    }
+    if (!params.prompt) {
+      return { ok: false, error: 'bridge_llm: prompt required' }
+    }
+    const makeBridgeLlm = await _getBridgeLlmFactory()
+    const llm = makeBridgeLlm({
+      role: params.role || undefined,
+      taskType: params.taskType || undefined,
+      mode: params.mode || undefined,
+      cwd: params.cwd || undefined,
+    })
+    const raw = await llm({
+      prompt: params.prompt,
+      mode: params.mode || undefined,
+      preset: params.preset || undefined,
+      timeout: params.timeout || undefined,
+    })
+    return { ok: true, result: raw }
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+}
+
 function spawnWorker(name) {
   const modulePath = join(PLUGIN_ROOT, 'src', name, 'index.mjs')
   const proc = fork(modulePath, [], {
@@ -232,6 +273,17 @@ function spawnWorker(name) {
         .catch(err => {
           log(`worker ${name} notify forward failed (${msg.method}): ${err instanceof Error ? err.message : String(err)}`)
         })
+      return
+    }
+    if (msg.type === 'agent_ipc_request' && msg.callId) {
+      // Worker → parent bridge LLM request. Memory worker cannot own the
+      // provider registry / session manager (those live in the parent
+      // process via loadModule('agent')), so cycle1 / cycle2 route every
+      // LLM call here. We run the bridge call in-process, then ship the
+      // raw assistant content back to the caller.
+      void handleAgentIpcRequest(msg).then(res => {
+        try { proc.send({ type: 'agent_ipc_response', callId: msg.callId, ...res }) } catch {}
+      })
       return
     }
   })

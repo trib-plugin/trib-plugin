@@ -413,17 +413,6 @@ function _initTranscriptWatcher() {
   }
 }
 
-// Maintenance LLM — always routes through bridge (anthropic-oauth with 1h cache).
-// The legacy `bridge.smartMaintenance` toggle has been removed; maintenance
-// always uses makeMaintenanceLlm. If loading fails, surface it immediately.
-async function _buildCycleOptions(subtype) {
-  const cycleOptions = {}
-  const { makeMaintenanceLlm } = await import('../agent/orchestrator/smart-bridge/maintenance-llm.mjs')
-  const role = subtype ? `maintenance:${subtype}` : 'maintenance'
-  cycleOptions.llm = makeMaintenanceLlm({ taskType: 'maintenance', role })
-  return cycleOptions
-}
-
 // Phase B §2.4 — cache-keeper health thresholds.
 // warning fires when cycle1 is overdue past HEALTH_OVERDUE_MS; an auto-
 // restart attempt fires when the warning has been emitted AND the most
@@ -461,8 +450,7 @@ async function checkCycles() {
     if (now - lastAutoRestart >= CYCLE1_AUTO_RESTART_COOLDOWN_MS) {
       setCycleLastRun('cycle1_autoRestart', now)
       try {
-        const cycle1Options = await _buildCycleOptions('cycle1')
-        const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycle1Options)
+        const result = await runCycle1(db, mainConfig?.cycle1 || {})
         setCycleLastRun('cycle1', Date.now())
         process.stderr.write(
           `[cycle1] auto-restart completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`
@@ -478,8 +466,7 @@ async function checkCycles() {
 
   if (now - last.cycle1 >= cycle1Ms) {
     try {
-      const cycle1Options = await _buildCycleOptions('cycle1')
-      const result = await runCycle1(db, mainConfig?.cycle1 || {}, cycle1Options)
+      const result = await runCycle1(db, mainConfig?.cycle1 || {})
       setCycleLastRun('cycle1', Date.now())
       process.stderr.write(`[cycle1] completed chunks=${result?.chunks ?? 0} processed=${result?.processed ?? 0}\n`)
     } catch (e) {
@@ -489,8 +476,7 @@ async function checkCycles() {
 
   if (now - last.cycle2 >= cycle2Ms) {
     try {
-      const cycle2Options = await _buildCycleOptions('cycle2')
-      await runCycle2(db, mainConfig?.cycle2 || {}, cycle2Options)
+      await runCycle2(db, mainConfig?.cycle2 || {})
       setCycleLastRun('cycle2', Date.now())
       process.stderr.write(`[cycle2] completed\n`)
     } catch (e) {
@@ -717,24 +703,21 @@ async function handleMemoryAction(args) {
   }
 
   if (action === 'cycle1') {
-    const cycleOptions = await _buildCycleOptions()
-    const result = await runCycle1(db, config?.cycle1 || {}, cycleOptions)
+    const result = await runCycle1(db, config?.cycle1 || {})
     setCycleLastRun('cycle1', Date.now())
     return { text: `cycle1: chunks=${result.chunks} processed=${result.processed} skipped=${result.skipped}` }
   }
 
   if (action === 'cycle2' || action === 'sleep') {
-    const cycleOptions = await _buildCycleOptions()
-    const result = await runCycle2(db, config?.cycle2 || {}, cycleOptions)
+    const result = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle2', Date.now())
     return { text: `cycle2: ${JSON.stringify(result)}` }
   }
 
   if (action === 'flush') {
-    const cycleOptions = await _buildCycleOptions()
-    const r1 = await runCycle1(db, config?.cycle1 || {}, cycleOptions)
+    const r1 = await runCycle1(db, config?.cycle1 || {})
     setCycleLastRun('cycle1', Date.now())
-    const r2 = await runCycle2(db, config?.cycle2 || {}, cycleOptions)
+    const r2 = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle2', Date.now())
     return { text: `flush: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
   }
@@ -749,9 +732,8 @@ async function handleMemoryAction(args) {
           embedding = NULL, summary_hash = NULL
       WHERE is_root = 1 OR (chunk_root IS NULL)
     `).run()
-    const cycleOptions = await _buildCycleOptions()
-    const r1 = await runCycle1(db, config?.cycle1 || {}, cycleOptions)
-    const r2 = await runCycle2(db, config?.cycle2 || {}, cycleOptions)
+    const r1 = await runCycle1(db, config?.cycle1 || {})
+    const r2 = await runCycle2(db, config?.cycle2 || {})
     setCycleLastRun('cycle1', Date.now())
     setCycleLastRun('cycle2', Date.now())
     return { text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}` }
