@@ -584,7 +584,16 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     const tier3Idx = ttls.tier3 ? findTier3Index(chatMsgs) : -1;
     const tier3BpUsed = tier3Idx >= 0 ? 1 : 0;
     const usedSlots = toolsBpUsed + systemBpUsed + tier3BpUsed;
-    const msgSlots = ttls.messages ? Math.max(0, 4 - usedSlots) : 0;
+    // Env override for smoke-testing BP-count strategies. ANTHROPIC_MSG_SLOTS
+    // caps how many sliding message-tail breakpoints we burn per request
+    // (default: fill whatever's left of the 4-BP budget). Set to 1 to reduce
+    // BP-position churn across iterations; set to 0 to disable messages-tail
+    // caching entirely and rely on the tools+system+tier3 prefix.
+    const msgSlotsCap = Number.parseInt(process.env.ANTHROPIC_MSG_SLOTS, 10);
+    const defaultMsgSlots = Math.max(0, 4 - usedSlots);
+    const msgSlots = ttls.messages
+        ? (Number.isFinite(msgSlotsCap) && msgSlotsCap >= 0 ? Math.min(msgSlotsCap, defaultMsgSlots) : defaultMsgSlots)
+        : 0;
     const cacheableIndexes = collectRecentCacheableIndexes(chatMsgs, msgSlots);
     // If the tail slot landed on the Tier 3 index, drop it from the sliding
     // set — Tier 3 already owns its own BP and we don't want to double-mark.

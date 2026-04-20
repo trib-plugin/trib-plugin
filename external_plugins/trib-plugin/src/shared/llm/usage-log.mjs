@@ -40,8 +40,18 @@ function getTracePath() {
  *   inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
  *   prefixHash, costUsd
  */
+const _missingProviderWarned = new Set();
+function warnMissingProviderOnce(key) {
+    if (_missingProviderWarned.has(key)) return;
+    _missingProviderWarned.add(key);
+    try {
+        process.stderr.write(`[usage-log] provider missing on usage entry (model=${key}). audit the caller.\n`);
+    } catch { /* logging only */ }
+}
+
 export function logLlmCall(entry, opts = {}) {
     try {
+        if (!entry.provider) warnMissingProviderOnce(entry.model || '?');
         const row = {
             ts: entry.ts || new Date().toISOString(),
             kind: 'usage',
