@@ -407,7 +407,8 @@ async function sgRewrite(args, cwd) {
     // sees the count; if both are empty it genuinely matched nothing.
     const err = (stderr || '').trim();
     if (!body && !err) return '(no changes applied)';
-    return capOutput([body, err].filter(Boolean).join('\n'));
+    const WARNING = '⚠ sg_rewrite apply is NOT atomic per-file — a crash during the `sg -U` run can leave individual files partially written. For crash-sensitive paths prefer dry-run preview + explicit `edit` / `multi_edit` (which use atomic rename).\n\n';
+    return WARNING + capOutput([body, err].filter(Boolean).join('\n'));
   }
 
   // Dry-run: sg already prints a unified-diff-ish preview. Forward it

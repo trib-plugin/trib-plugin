@@ -192,6 +192,8 @@ async function run() {
         'sg_rewrite: apply:true removes all original console.log calls');
       assert(/[Aa]pplied\s+2\s+changes?/.test(applied),
         `sg_rewrite: apply summary reports 2 changes (got: ${JSON.stringify(applied.slice(0, 120))})`);
+      assert(applied.startsWith('⚠') && /NOT atomic/.test(applied),
+        `sg_rewrite: apply:true prepends atomicity warning (got: ${JSON.stringify(applied.slice(0, 80))})`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
