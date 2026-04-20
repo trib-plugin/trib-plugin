@@ -393,6 +393,22 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
+        name: 'edit_lines',
+        title: 'Edit Lines (line-number based)',
+        annotations: { title: 'Edit Lines', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+        description: 'Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` / `multi_edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
+                start_line: { type: 'number', description: 'First line to replace (1-based, inclusive).' },
+                end_line: { type: 'number', description: 'Last line to replace (1-based, inclusive). Must be >= start_line.' },
+                new_content: { type: 'string', description: 'Replacement content. Newlines inside are preserved. Set empty string to delete the range.' },
+            },
+            required: ['path', 'start_line', 'end_line', 'new_content'],
+        },
+    },
+    {
         name: 'write',
         title: 'Write',
         annotations: { title: 'Write', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -1192,6 +1208,66 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // check on the second hop.
                 _recordReadSnapshot(fullPath);
                 return `Edited: ${normalizeOutputPath(filePath)}`;
+            }
+            catch (err) {
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+            }
+        }
+        case 'edit_lines': {
+            // v0.6.223: line-number based replacement. Complement to `edit` /
+            // `multi_edit` for cases where unique-substring match is awkward
+            // (large files, repeated lines, or pure line-replace). Shares the
+            // same Read-before-Edit + mtime-drift contract as `edit`.
+            args.path = normalizeInputPath(args.path);
+            const filePath = args.path;
+            const startLine = parseInt(args.start_line, 10);
+            const endLine = parseInt(args.end_line, 10);
+            const newContent = String(args.new_content ?? '');
+            if (!filePath) return 'Error: path is required';
+            if (!Number.isFinite(startLine) || startLine < 1) return 'Error: start_line must be >= 1';
+            if (!Number.isFinite(endLine) || endLine < startLine) return 'Error: end_line must be >= start_line';
+            if (!isSafePath(filePath, workDir))
+                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            const fullPath = resolveAgainstCwd(filePath, workDir);
+            let elStat;
+            try { elStat = statSync(fullPath); }
+            catch (err) {
+                if (err && err.code === 'ENOENT') {
+                    const similar = findSimilarFile(fullPath);
+                    const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                    return `Error [code 4]: file not found: ${filePath}${hint}`;
+                }
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+            }
+            const elSnapshot = _readFiles.get(fullPath);
+            if (!elSnapshot) {
+                return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+            }
+            if (elStat.mtimeMs > elSnapshot.mtimeMs + 1) {
+                return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+            }
+            try {
+                const content = readFileSync(fullPath, 'utf-8');
+                const lines = content.split('\n');
+                const totalLines = lines.length;
+                if (startLine > totalLines) return `Error: start_line ${startLine} exceeds file's ${totalLines} lines`;
+                if (endLine > totalLines) return `Error: end_line ${endLine} exceeds file's ${totalLines} lines`;
+                // Pure split/join — no String.prototype.replace second-arg
+                // substitution pattern risk (B35). new_content is spliced
+                // verbatim.
+                const newLines = newContent === '' ? [] : newContent.split('\n');
+                const updated = [
+                    ...lines.slice(0, startLine - 1),
+                    ...newLines,
+                    ...lines.slice(endLine),
+                ];
+                const newFileContent = updated.join('\n');
+                writeFileSync(fullPath, newFileContent, 'utf-8');
+                _cacheInvalidateAll();
+                _recordReadSnapshot(fullPath);
+                const replacedCount = endLine - startLine + 1;
+                const insertedCount = newLines.length;
+                return `Edited: ${normalizeOutputPath(filePath)} (lines ${startLine}-${endLine} replaced, ${replacedCount} -> ${insertedCount} lines)`;
             }
             catch (err) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;

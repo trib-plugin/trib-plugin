@@ -768,6 +768,46 @@
     "module": "builtin"
   },
   {
+    "name": "edit_lines",
+    "title": "Edit Lines (line-number based)",
+    "annotations": {
+      "title": "Edit Lines",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "description": "Replace lines [start_line, end_line] inclusive (1-based) with new_content. Use this when unique-string match in `edit` / `multi_edit` is awkward — large files, repeated substrings, or pure line-replace. Pair with `read` (note line numbers) -> `edit_lines`. mtime drift is enforced like `edit`: must `read` first; concurrent external writes return errorCode 7.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path. Supports `~` expansion."
+        },
+        "start_line": {
+          "type": "number",
+          "description": "First line to replace (1-based, inclusive)."
+        },
+        "end_line": {
+          "type": "number",
+          "description": "Last line to replace (1-based, inclusive). Must be >= start_line."
+        },
+        "new_content": {
+          "type": "string",
+          "description": "Replacement content. Newlines inside are preserved. Set empty string to delete the range."
+        }
+      },
+      "required": [
+        "path",
+        "start_line",
+        "end_line",
+        "new_content"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
     "name": "write",
     "title": "Write",
     "annotations": {
