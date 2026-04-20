@@ -858,6 +858,10 @@
         "timeout": {
           "type": "number",
           "description": "ms, default 30000, max 600000."
+        },
+        "merge_stderr": {
+          "type": "boolean",
+          "description": "Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block."
         }
       },
       "required": [

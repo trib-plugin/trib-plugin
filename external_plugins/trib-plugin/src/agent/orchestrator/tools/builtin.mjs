@@ -3,8 +3,26 @@ import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, re
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { promisify } from 'util';
+import * as nodeUtil from 'node:util';
 import { homedir } from 'os';
 const execAsync = promisify(exec);
+
+// ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
+// implementation that handles CSI + OSC + DCS edge cases; older runtimes
+// fall back to a regex covering CSI (ESC [ ... final-byte) and OSC
+// (ESC ] ... BEL | ESC \\ | ST). Captured on bash tool output so progress
+// bars / coloured diagnostics from CLIs (rg, cargo, npm, pytest) don't
+// reach the model as noise that burns tokens and confuses downstream
+// tooling. Function form of `.replace` is used to dodge the B35
+// substitution-pattern foot-gun.
+const _ANSI_REGEX = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\|\u009C))/g;
+const _stripAnsi = typeof nodeUtil.stripVTControlCharacters === 'function'
+    ? (s) => nodeUtil.stripVTControlCharacters(s)
+    : (s) => s.replace(_ANSI_REGEX, () => '');
+function stripAnsi(s) {
+    if (typeof s !== 'string' || s.length === 0) return s;
+    return _stripAnsi(s);
+}
 import { resolve, normalize, isAbsolute, relative, dirname, basename, extname, join, sep } from 'path';
 
 function resolveShell() {
@@ -432,6 +450,7 @@ export const BUILTIN_TOOLS = [
             properties: {
                 command: { type: 'string', description: 'Shell command.' },
                 timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
+                merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block.' },
             },
             required: ['command'],
         },
@@ -922,8 +941,19 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
             }
             const timeout = args.timeout || 30000;
+            const mergeStderr = args.merge_stderr === true;
             try {
                 const { shell, shellArg } = resolveShell();
+                // Locale normalisation: many CLI tools vary date / number /
+                // message formatting by LANG/LC_ALL, which makes output
+                // non-deterministic across machines and burns agent tokens
+                // on spurious "diff" chatter. Forcing C.UTF-8 (universally
+                // available on glibc and musl; Windows shells ignore but
+                // the key is still set for any embedded POSIX tool).
+                // process.env is merged underneath so user exports still
+                // win if they precede our override; we only set the locale
+                // pair, nothing else is mutated.
+                const spawnEnv = { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' };
                 const result = spawnSync(shell, [shellArg, command], {
                     encoding: 'utf-8',
                     timeout,
@@ -935,11 +965,38 @@ export async function executeBuiltinTool(name, args, cwd) {
                     maxBuffer: SHELL_OUTPUT_MAX_CHARS * 4,
                     stdio: ['pipe', 'pipe', 'pipe'],
                     cwd: workDir,
+                    env: spawnEnv,
                     windowsHide: true,
                 });
                 if (result.error) return `Error: ${result.error.message}`;
-                if (result.status !== 0) return capShellOutput((result.stdout || '') + (result.stderr || '') + `\n[exit code: ${result.status}]`);
-                return capShellOutput(result.stdout || '(no output)');
+                // Strip ANSI / VT control sequences before the model sees
+                // them — progress bars, coloured diagnostics, cursor moves.
+                const stdout = stripAnsi(result.stdout || '');
+                const stderr = stripAnsi(result.stderr || '');
+                // Exit code / signal surfacing. Non-zero status or a signal
+                // kill (timeout -> SIGTERM) prepends a marker line so the
+                // agent never has to guess at a silent failure. Zero exit
+                // + no signal stays quiet to avoid noise on the success path.
+                const signal = result.signal ? String(result.signal) : null;
+                const exitCode = signal ? null : result.status;
+                const statusMarker = signal
+                    ? `[signal: ${signal}]`
+                    : (exitCode !== 0 && exitCode !== null ? `[exit code: ${exitCode}]` : '');
+                if (mergeStderr) {
+                    // Legacy back-compat path for callers that parsed the old
+                    // merged form. Concatenate stdout + stderr; no separator
+                    // block, just a marker prefix on failure.
+                    const merged = stdout + stderr;
+                    if (statusMarker) return capShellOutput(`${statusMarker}\n\n${merged || '(no output)'}`);
+                    return capShellOutput(merged || '(no output)');
+                }
+                // Default: stdout primary, stderr appended as a labelled block
+                // only when non-empty so clean runs stay noise-free.
+                const body = stdout || (stderr ? '' : '(no output)');
+                const stderrBlock = stderr ? `\n\n[stderr]\n${stderr}` : '';
+                const payload = `${body}${stderrBlock}`;
+                if (statusMarker) return capShellOutput(`${statusMarker}\n\n${payload}`);
+                return capShellOutput(payload);
             }
             finally {
                 _cacheInvalidateAll();
