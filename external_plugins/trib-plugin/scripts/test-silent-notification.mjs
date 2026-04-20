@@ -8,7 +8,7 @@
  *   4. Bridge lifecycle "started" banner carries silent_to_agent:true.
  *   5. Final "Done" result payload does NOT carry silent_to_agent.
  *   6. Stall watchdog notifications are NOT silent.
- *   7. aiWrapped "started" echo IS silent; async_result push is NOT silent.
+ *   7. aiWrapped "started" echo IS silent; dispatch_result push is NOT silent.
  *
  * Strategy
  * ────────
@@ -123,9 +123,9 @@ function makePushChannelNotification(spies) {
     serverNotification: (p) => { serverCalls.push(p); return Promise.resolve(); },
     channelsWorkerSend: (m) => workerSends.push(m),
   });
-  push('async search result body', { type: 'async_result', async_id: 'async_search_1' });
+  push('async search result body', { type: 'dispatch_result', dispatch_id: 'dispatch_search_1' });
   assert(serverCalls.length === 1, 'default: server.notification called once');
-  assert(serverCalls[0].params.meta.type === 'async_result', 'default: async_result meta propagates');
+  assert(serverCalls[0].params.meta.type === 'dispatch_result', 'default: dispatch_result meta propagates');
   assert(workerSends.length === 0, 'default: channels worker IPC NOT invoked');
 }
 
@@ -188,14 +188,14 @@ const CHANNELS_SRC = readFileSync(join(PLUGIN_ROOT, 'src/channels/index.mjs'), '
   assert(!!echo, 'ai-wrapped-dispatch.mjs: `<tool> started` echo carries silent_to_agent:true');
 }
 
-// aiWrapped pushAsyncResult fires notify with type:'async_result' and
+// aiWrapped pushDispatchResult fires notify with type:'dispatch_result' and
 // does NOT carry silent_to_agent. Source line is long (nested template
 // literals with curly braces) so grab the whole line instead of matching
 // balanced braces.
 {
-  const asyncLine = AIWRAP_SRC.split(/\r?\n/).find(l => /notify\(content, \{ type: 'async_result'/.test(l));
-  assert(!!asyncLine, 'ai-wrapped-dispatch.mjs: pushAsyncResult notify call present');
-  assert(asyncLine && !/silent_to_agent/.test(asyncLine), 'ai-wrapped-dispatch.mjs: async_result push NOT silent');
+  const dispatchLine = AIWRAP_SRC.split(/\r?\n/).find(l => /notify\(content, \{ type: 'dispatch_result'/.test(l));
+  assert(!!dispatchLine, 'ai-wrapped-dispatch.mjs: pushDispatchResult notify call present');
+  assert(dispatchLine && !/silent_to_agent/.test(dispatchLine), 'ai-wrapped-dispatch.mjs: dispatch_result push NOT silent');
 }
 
 // server.mjs pushChannelNotification honours silent_to_agent.

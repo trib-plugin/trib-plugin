@@ -337,7 +337,7 @@ async function dispatchTool(name, args, callerCtx = {}) {
       // recursion when a hidden-role session (recall-agent / search-agent /
       // explorer / cycle1/2) tries to re-enter an aiWrapped dispatcher.
       callerSessionId: callerCtx.callerSessionId,
-      // Push merged answer into the Lead session when an async dispatch
+      // Push merged answer into the Lead session when a dispatch
       // (wait:false) completes, so Lead integrates the result on its next
       // turn via a channel notification (no polling tool exposed).
       notifyFn: pushChannelNotification,

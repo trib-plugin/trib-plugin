@@ -1,0 +1,36 @@
+{
+  "version": "0.6.196",
+  "measuredAt": "2026-04-19T20:47:09.033Z",
+  "tools": {
+    "count": 16,
+    "strippedCount": 16,
+    "totalBytes": 15624
+  },
+  "systemBase": {
+    "totalBytes": 3255,
+    "perFile": [
+      {
+        "path": "rules/pool-b/01-agent.md",
+        "bytes": 2470
+      },
+      {
+        "path": "rules/memory.md",
+        "bytes": 1248
+      },
+      {
+        "path": "rules/search.md",
+        "bytes": 986
+      },
+      {
+        "path": "rules/explore.md",
+        "bytes": 1294
+      },
+      {
+        "path": "rules/lsp.md",
+        "bytes": 1780
+      }
+    ]
+  },
+  "bp1Total": 18879,
+  "bp1Tokens": 4720
+}

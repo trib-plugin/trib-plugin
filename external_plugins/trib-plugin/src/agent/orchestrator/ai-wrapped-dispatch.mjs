@@ -9,9 +9,9 @@
  * count. Shared Pool B/C cache shards mean only the first concurrent agent
  * pays the cold-write; peers ride the warm prefix.
  *
- * Async completion pushes into the caller's session via the existing
+ * Dispatch completion pushes into the caller's session via the existing
  * `notifications/claude/channel` bridge. The notify meta carries
- * `type: 'async_result'` plus an `instruction` string so the Lead
+ * `type: 'dispatch_result'` plus an `instruction` string so the Lead
  * integrates the answer on its next turn automatically.
  */
 
@@ -31,27 +31,27 @@ const ROLE_BY_TOOL = Object.freeze({
 // process lifetime — the merged answer is auto-pushed via the channel,
 // and the registry is kept around for observability only. Pruned
 // opportunistically to keep the map bounded.
-const _asyncResults = new Map() // id → { status, role, tool, queries, createdAt, completedAt?, content?, error? }
-const ASYNC_RESULT_MAX_ENTRIES = 200
-const ASYNC_RESULT_TTL_MS = 30 * 60_000 // 30 minutes — enough for the Lead to loop back, short enough to not hoard memory
+const _dispatchResults = new Map() // id → { status, role, tool, queries, createdAt, completedAt?, content?, error? }
+const DISPATCH_RESULT_MAX_ENTRIES = 200
+const DISPATCH_RESULT_TTL_MS = 30 * 60_000 // 30 minutes — enough for the Lead to loop back, short enough to not hoard memory
 
-function _pruneAsyncResults() {
-  if (_asyncResults.size < ASYNC_RESULT_MAX_ENTRIES) return
+function _pruneDispatchResults() {
+  if (_dispatchResults.size < DISPATCH_RESULT_MAX_ENTRIES) return
   const now = Date.now()
-  for (const [id, entry] of _asyncResults) {
+  for (const [id, entry] of _dispatchResults) {
     const age = now - (entry.completedAt || entry.createdAt || now)
-    if (entry.status !== 'running' && age > ASYNC_RESULT_TTL_MS) _asyncResults.delete(id)
+    if (entry.status !== 'running' && age > DISPATCH_RESULT_TTL_MS) _dispatchResults.delete(id)
   }
-  if (_asyncResults.size >= ASYNC_RESULT_MAX_ENTRIES) {
+  if (_dispatchResults.size >= DISPATCH_RESULT_MAX_ENTRIES) {
     // Still full — evict the oldest regardless of status.
-    const oldest = _asyncResults.keys().next().value
-    if (oldest) _asyncResults.delete(oldest)
+    const oldest = _dispatchResults.keys().next().value
+    if (oldest) _dispatchResults.delete(oldest)
   }
 }
 
-export function getAsyncResult(id) {
+export function getDispatchResult(id) {
   if (!id) return null
-  return _asyncResults.get(String(id)) || null
+  return _dispatchResults.get(String(id)) || null
 }
 
 export async function dispatchAiWrapped(name, args, ctx) {
@@ -93,15 +93,15 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // bridge-llm.mjs::applyBriefCap for the cap shape.
   const brief = args.brief !== false;
 
-  // Always async + notification. There is no synchronous mode. Spawning
+  // Always dispatched + notification. There is no synchronous mode. Spawning
   // inline would block the MCP response for 14+ seconds while the
   // sub-agents stream, long enough for Claude Code's MCP client to drop
   // the connection. Dispatching in the background and returning a handle
   // immediately — with the merged answer delivered later via the channel
   // notification bridge — eliminates that failure mode entirely.
-  _pruneAsyncResults()
-  const id = `async_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  _asyncResults.set(id, {
+  _pruneDispatchResults()
+  const id = `dispatch_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  _dispatchResults.set(id, {
     status: 'running',
     tool: name,
     role: spec.role,
@@ -111,7 +111,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // Emit a channel notification mirroring the bridge worker UX — the
   // Discord user sees "<tool> started" the instant dispatch begins. The
   // `silent_to_agent` flag keeps this status ping out of Lead's context
-  // window; Lead still receives the async_result push later (pushAsyncResult)
+  // window; Lead still receives the dispatch_result push later (pushDispatchResult)
   // which carries the merged answer it needs to integrate.
   if (typeof ctx?.notifyFn === 'function') {
     try { ctx.notifyFn(`${name} started`, { silent_to_agent: true }) } catch { /* best-effort */ }
@@ -132,22 +132,22 @@ export async function dispatchAiWrapped(name, args, ctx) {
           if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
           return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
         }).join('\n\n---\n\n')
-    const entry = _asyncResults.get(id)
+    const entry = _dispatchResults.get(id)
     if (entry) {
       entry.status = 'done'
       entry.content = merged
       entry.completedAt = Date.now()
     }
-    pushAsyncResult(ctx, id, name, queries, merged)
+    pushDispatchResult(ctx, id, name, queries, merged)
   }).catch((err) => {
     const msg = err?.message || String(err)
-    const entry = _asyncResults.get(id)
+    const entry = _dispatchResults.get(id)
     if (entry) {
       entry.status = 'error'
       entry.error = msg
       entry.completedAt = Date.now()
     }
-    pushAsyncResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
+    pushDispatchResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
   })
   const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`
   return ok(`${name} started — ${queryCount}. Merged answer will be auto-pushed via the channel (handle ${id}).`)
@@ -220,20 +220,20 @@ export function resolveAgentModelTag(role) {
  * Build the `Done.` header that wraps async-result notifications, mirroring
  * the Pool B worker completion shape emitted in src/agent/index.mjs:
  *     [{model-tag}] [{role}] <content>
- * Async dispatch re-uses the same pattern so the user sees a consistent
- * `Done.` header across bridge worker output and async recall/search/explore
- * result delivery.
+ * Dispatch re-uses the same pattern so the user sees a consistent
+ * `Done.` header across bridge worker output and recall/search/explore
+ * dispatch result delivery.
  *
  * When the model tag can't be resolved, falls back to `[{tool}] Done.`.
  * When the tool is empty (shouldn't happen), falls back to `Done.`.
  */
-export function buildAsyncResultHeader(tool, modelTag) {
+export function buildDispatchResultHeader(tool, modelTag) {
   const toolPart = tool ? `[${tool}] ` : ''
   const tagPart = modelTag ? `[${modelTag}] ` : ''
   return `${tagPart}${toolPart}Done.`
 }
 
-export function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
+export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
   const notify = ctx?.notifyFn
   if (typeof notify !== 'function') return
   const queryCount = queries.length === 1
@@ -261,11 +261,11 @@ export function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
   const spec = ROLE_BY_TOOL[tool]
   const modelTag = spec ? resolveAgentModelTag(spec.role) : ''
   const doneHeader = flags.error
-    ? buildAsyncResultHeader(tool, modelTag).replace(/Done\.$/, 'Failed.')
-    : buildAsyncResultHeader(tool, modelTag)
+    ? buildDispatchResultHeader(tool, modelTag).replace(/Done\.$/, 'Failed.')
+    : buildDispatchResultHeader(tool, modelTag)
   const content = `${doneHeader}\n\n${originalBody}`
   try {
-    notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step.` })
+    notify(content, { type: 'dispatch_result', dispatch_id: id, tool, instruction: `The ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step.` })
   } catch {
     // Telemetry-style best-effort — never let the push crash the dispatch.
   }

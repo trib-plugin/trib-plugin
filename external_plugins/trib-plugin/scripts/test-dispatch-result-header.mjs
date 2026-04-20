@@ -1,27 +1,27 @@
 /**
- * Tests for the async-result `Done.` header that wraps recall / search /
+ * Tests for the dispatch-result `Done.` header that wraps recall / search /
  * explore notifications delivered via `notifications/claude/channel` with
- * `meta.type: "async_result"`.
+ * `meta.type: "dispatch_result"`.
  *
  * The header mirrors the Pool B worker "Done" shape emitted by
  * src/agent/index.mjs (`${modelTag}[${role}] ...`) so the user sees a
- * consistent format across bridge worker output and async sub-agent results.
+ * consistent format across bridge worker output and dispatch sub-agent results.
  *
  * Exercises:
- *   1. `buildAsyncResultHeader()` pure-function format across tools and
+ *   1. `buildDispatchResultHeader()` pure-function format across tools and
  *      model-tag variants.
- *   2. `pushAsyncResult()` integration path with a mock `notifyFn` spy —
+ *   2. `pushDispatchResult()` integration path with a mock `notifyFn` spy —
  *      one assertion per tool (recall / search / explore) that the emitted
  *      content starts with `[...] [tool] Done.\n\n` and that the original
  *      body is preserved verbatim after the header + blank line.
  *   3. Fallback path — no model tag available still emits a clean
  *      `[tool] Done.` header.
- *   4. `meta.type: "async_result"` is preserved (non-goal guardrail).
+ *   4. `meta.type: "dispatch_result"` is preserved (non-goal guardrail).
  */
 
 import {
-  buildAsyncResultHeader,
-  pushAsyncResult,
+  buildDispatchResultHeader,
+  pushDispatchResult,
 } from '../src/agent/orchestrator/ai-wrapped-dispatch.mjs';
 import {
   SMART_READ_MAX_BYTES,
@@ -35,32 +35,32 @@ function assert(cond, msg) {
   else { failed++; console.error(`  FAIL: ${msg}`); }
 }
 
-// ── buildAsyncResultHeader() ─────────────────────────────────────────────
+// ── buildDispatchResultHeader() ─────────────────────────────────────────────
 {
   assert(
-    buildAsyncResultHeader('recall', '3-5-haiku') === '[3-5-haiku] [recall] Done.',
-    `buildAsyncResultHeader('recall', '3-5-haiku') → "[3-5-haiku] [recall] Done." (got "${buildAsyncResultHeader('recall', '3-5-haiku')}")`,
+    buildDispatchResultHeader('recall', '3-5-haiku') === '[3-5-haiku] [recall] Done.',
+    `buildDispatchResultHeader('recall', '3-5-haiku') → "[3-5-haiku] [recall] Done." (got "${buildDispatchResultHeader('recall', '3-5-haiku')}")`,
   );
   assert(
-    buildAsyncResultHeader('search', 'opus-4-7') === '[opus-4-7] [search] Done.',
-    `buildAsyncResultHeader('search', 'opus-4-7') → "[opus-4-7] [search] Done."`,
+    buildDispatchResultHeader('search', 'opus-4-7') === '[opus-4-7] [search] Done.',
+    `buildDispatchResultHeader('search', 'opus-4-7') → "[opus-4-7] [search] Done."`,
   );
   assert(
-    buildAsyncResultHeader('explore', 'haiku-4-5') === '[haiku-4-5] [explore] Done.',
-    `buildAsyncResultHeader('explore', 'haiku-4-5') → "[haiku-4-5] [explore] Done."`,
+    buildDispatchResultHeader('explore', 'haiku-4-5') === '[haiku-4-5] [explore] Done.',
+    `buildDispatchResultHeader('explore', 'haiku-4-5') → "[haiku-4-5] [explore] Done."`,
   );
   // Fallback when model tag is unavailable — still emits `[tool] Done.`.
   assert(
-    buildAsyncResultHeader('recall', '') === '[recall] Done.',
-    `buildAsyncResultHeader('recall', '') → "[recall] Done." (fallback)`,
+    buildDispatchResultHeader('recall', '') === '[recall] Done.',
+    `buildDispatchResultHeader('recall', '') → "[recall] Done." (fallback)`,
   );
   assert(
-    buildAsyncResultHeader('search', null) === '[search] Done.',
-    `buildAsyncResultHeader('search', null) → "[search] Done." (fallback)`,
+    buildDispatchResultHeader('search', null) === '[search] Done.',
+    `buildDispatchResultHeader('search', null) → "[search] Done." (fallback)`,
   );
 }
 
-// ── pushAsyncResult() integration via mock notifyFn spy ─────────────────
+// ── pushDispatchResult() integration via mock notifyFn spy ─────────────────
 function mkSpy() {
   const calls = [];
   const fn = (content, meta) => { calls.push({ content, meta }); };
@@ -72,7 +72,7 @@ function mkSpy() {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   const body = '### Query 1: foo\nAnswer 1\n\n---\n\n### Query 2: bar\nAnswer 2';
-  pushAsyncResult(ctx, 'async_recall_1', 'recall', ['foo', 'bar'], body);
+  pushDispatchResult(ctx, 'dispatch_recall_1', 'recall', ['foo', 'bar'], body);
   assert(spy.calls.length === 1, 'recall: notify called exactly once');
   const { content, meta } = spy.calls[0];
   assert(
@@ -85,7 +85,7 @@ function mkSpy() {
     content.endsWith(expectedOriginal),
     `recall: original body preserved verbatim after the Done header`,
   );
-  assert(meta.type === 'async_result', 'recall: meta.type stays "async_result"');
+  assert(meta.type === 'dispatch_result', 'recall: meta.type stays "dispatch_result"');
   assert(meta.tool === 'recall', 'recall: meta.tool === "recall"');
 }
 
@@ -94,7 +94,7 @@ function mkSpy() {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   const body = 'Top hit: https://example.com\nSummary of findings.';
-  pushAsyncResult(ctx, 'async_search_1', 'search', ['what is x'], body);
+  pushDispatchResult(ctx, 'dispatch_search_1', 'search', ['what is x'], body);
   assert(spy.calls.length === 1, 'search: notify called exactly once');
   const { content, meta } = spy.calls[0];
   assert(
@@ -106,7 +106,7 @@ function mkSpy() {
     content.endsWith(expectedOriginal),
     'search: original body preserved verbatim',
   );
-  assert(meta.type === 'async_result', 'search: meta.type stays "async_result"');
+  assert(meta.type === 'dispatch_result', 'search: meta.type stays "dispatch_result"');
 }
 
 // explore — same assertions.
@@ -114,7 +114,7 @@ function mkSpy() {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   const body = 'Found files: src/foo.mjs, src/bar.mjs';
-  pushAsyncResult(ctx, 'async_explore_1', 'explore', ['find x'], body);
+  pushDispatchResult(ctx, 'dispatch_explore_1', 'explore', ['find x'], body);
   assert(spy.calls.length === 1, 'explore: notify called exactly once');
   const { content, meta } = spy.calls[0];
   assert(
@@ -126,14 +126,14 @@ function mkSpy() {
     content.endsWith(expectedOriginal),
     'explore: original body preserved verbatim',
   );
-  assert(meta.type === 'async_result', 'explore: meta.type stays "async_result"');
+  assert(meta.type === 'dispatch_result', 'explore: meta.type stays "dispatch_result"');
 }
 
 // Error path — header becomes `[tool] Failed.` (same prefix shape).
 {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
-  pushAsyncResult(ctx, 'async_err_1', 'recall', ['q'], '[explorer dispatch error] boom', { error: true });
+  pushDispatchResult(ctx, 'dispatch_err_1', 'recall', ['q'], '[explorer dispatch error] boom', { error: true });
   assert(spy.calls.length === 1, 'error: notify called once');
   const { content } = spy.calls[0];
   assert(
@@ -150,12 +150,12 @@ function mkSpy() {
 {
   // Should not throw.
   let threw = false;
-  try { pushAsyncResult({}, 'id', 'recall', ['q'], 'body'); } catch { threw = true; }
-  assert(!threw, 'no-notify ctx: pushAsyncResult is a safe no-op');
+  try { pushDispatchResult({}, 'id', 'recall', ['q'], 'body'); } catch { threw = true; }
+  assert(!threw, 'no-notify ctx: pushDispatchResult is a safe no-op');
 }
 
 // ── Smart truncation of merged body (reviewer coverage-gap #5) ───────────
-// Large recall/search/explore merged bodies flow through `pushAsyncResult`
+// Large recall/search/explore merged bodies flow through `pushDispatchResult`
 // → `smartReadTruncate` (30 KB / 600 line cap with head 200 / tail 100
 // framing). The `Done.` header must be prepended AFTER truncation so it is
 // never itself cut.
@@ -166,7 +166,7 @@ function mkSpy() {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   const smallBody = '### Query 1: foo\nShort answer.';
-  pushAsyncResult(ctx, 'async_small_1', 'recall', ['foo'], smallBody);
+  pushDispatchResult(ctx, 'dispatch_small_1', 'recall', ['foo'], smallBody);
   const { content } = spy.calls[0];
   assert(
     content.endsWith(`recall — 1 query\n\n${smallBody}`),
@@ -189,7 +189,7 @@ function mkLargeBody(lines) {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   const largeBody = mkLargeBody(SMART_READ_MAX_LINES + 100); // 700 lines
-  pushAsyncResult(ctx, 'async_big_1', 'recall', ['foo'], largeBody);
+  pushDispatchResult(ctx, 'dispatch_big_1', 'recall', ['foo'], largeBody);
   const { content } = spy.calls[0];
   assert(
     /^\[(?:[^\]]+\] )?\[recall\] Done\.\n\n/.test(content),
@@ -217,7 +217,7 @@ function mkLargeBody(lines) {
   for (const tool of ['recall', 'search', 'explore']) {
     const spy = mkSpy();
     const ctx = { notifyFn: spy.fn };
-    pushAsyncResult(ctx, `async_${tool}_big`, tool, ['q'], largeBody);
+    pushDispatchResult(ctx, `dispatch_${tool}_big`, tool, ['q'], largeBody);
     const { content } = spy.calls[0];
     assert(
       content.includes('... [TRUNCATED') && new RegExp(`\\[${tool}\\] Done\\.`).test(content),
@@ -234,7 +234,7 @@ function mkLargeBody(lines) {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   const largeBody = mkLargeBody(SMART_READ_MAX_LINES + 200);
-  pushAsyncResult(ctx, 'async_order_1', 'search', ['q'], largeBody);
+  pushDispatchResult(ctx, 'dispatch_order_1', 'search', ['q'], largeBody);
   const { content } = spy.calls[0];
   // Very first character must be `[` of the header — never a line of the
   // body, never a truncation marker.
@@ -256,7 +256,7 @@ function mkLargeBody(lines) {
 
 // Byte-threshold path — short-line body that crosses 30 KB by bytes even
 // though line count is low. Confirms the bytes-based trigger in
-// smartReadTruncate also engages through pushAsyncResult.
+// smartReadTruncate also engages through pushDispatchResult.
 {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
@@ -269,7 +269,7 @@ function mkLargeBody(lines) {
     Buffer.byteLength(byteHeavyBody, 'utf8') > SMART_READ_MAX_BYTES,
     'smart-trunc: fixture exceeds SMART_READ_MAX_BYTES',
   );
-  pushAsyncResult(ctx, 'async_bytes_1', 'explore', ['q'], byteHeavyBody);
+  pushDispatchResult(ctx, 'dispatch_bytes_1', 'explore', ['q'], byteHeavyBody);
   const { content } = spy.calls[0];
   assert(
     content.includes('... [TRUNCATED'),
@@ -282,7 +282,7 @@ function mkLargeBody(lines) {
   const spy = mkSpy();
   const ctx = { notifyFn: spy.fn };
   let threw = false;
-  try { pushAsyncResult(ctx, 'async_empty_1', 'recall', ['q'], ''); } catch { threw = true; }
+  try { pushDispatchResult(ctx, 'dispatch_empty_1', 'recall', ['q'], ''); } catch { threw = true; }
   assert(!threw, 'smart-trunc: empty body does not throw');
   assert(spy.calls.length === 1, 'smart-trunc: empty body still emits notify');
   const { content } = spy.calls[0];

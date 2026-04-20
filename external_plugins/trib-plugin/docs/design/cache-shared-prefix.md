@@ -138,9 +138,9 @@ Memory               memory
 ```
 
 Agents retain the full actual-work surface; only the Lead
-administrative surface is hidden. (Async dispatch results from
+administrative surface is hidden. (Dispatch results from
 recall / search / explore are pushed back via the channel bridge
-with `meta.type = "async_result"` — no separate polling tool is
+with `meta.type = "dispatch_result"` — no separate polling tool is
 exposed.)
 
 ## Runtime Enforcement (unchanged)
