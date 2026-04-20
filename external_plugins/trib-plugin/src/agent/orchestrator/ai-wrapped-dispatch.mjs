@@ -12,8 +12,7 @@
  * Async completion pushes into the caller's session via the existing
  * `notifications/claude/channel` bridge. The notify meta carries
  * `type: 'async_result'` plus an `instruction` string so the Lead
- * integrates the answer on its next turn instead of burning LLM
- * round-trips polling session_result.
+ * integrates the answer on its next turn automatically.
  */
 
 import { homedir } from 'os'
@@ -26,8 +25,9 @@ const ROLE_BY_TOOL = Object.freeze({
 })
 
 // Background dispatch registry. Entries live in-memory for the plugin server
-// process lifetime; poll via `session_result(id)`. Pruned opportunistically
-// to keep the map bounded even if callers forget to drain.
+// process lifetime — the merged answer is auto-pushed via the channel,
+// and the registry is kept around for observability only. Pruned
+// opportunistically to keep the map bounded.
 const _asyncResults = new Map() // id → { status, role, tool, queries, createdAt, completedAt?, content?, error? }
 const ASYNC_RESULT_MAX_ENTRIES = 200
 const ASYNC_RESULT_TTL_MS = 30 * 60_000 // 30 minutes — enough for the Lead to loop back, short enough to not hoard memory
@@ -138,7 +138,7 @@ export async function dispatchAiWrapped(name, args, ctx) {
       pushAsyncResult(ctx, id, name, queries, `[${spec.label} dispatch error] ${msg}`, { error: true })
     })
     const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`
-    return ok(`${name} started — ${queryCount}. Result via session_result('${id}').`)
+    return ok(`${name} started — ${queryCount}. Merged answer will be auto-pushed via the channel (handle ${id}).`)
   }
 
   // One Pool C session per query, dispatched concurrently. allSettled so a
@@ -205,7 +205,7 @@ function pushAsyncResult(ctx, id, tool, queries, body, flags = {}) {
     : `${tool} — ${queryCount}`
   const content = `${header}\n\n${body}`
   try {
-    notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step and do not re-poll session_result for this handle.` })
+    notify(content, { type: 'async_result', async_id: id, tool, instruction: `The async ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step.` })
   } catch {
     // Telemetry-style best-effort — never let the push crash the dispatch.
   }
