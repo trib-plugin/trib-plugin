@@ -1,5 +1,5 @@
 import { exec, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync, openSync, readSync, closeSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { promisify } from 'util';
@@ -524,6 +524,47 @@ export const BUILTIN_TOOLS = [
                 head_limit: { type: 'number', description: 'Max results. Default 100, 0 = unlimited.' },
             },
             required: [],
+        },
+    },
+    {
+        name: 'head',
+        title: 'Head N Lines',
+        annotations: { title: 'Head N Lines', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Read the first N lines of a file. Cleaner than `read` with offset:0+limit:N when you just want a quick peek at the top of a file. For middle-of-file ranges use `read` with offset/limit.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
+                n: { type: 'number', description: 'Number of lines to read from the top. Default 20.' },
+            },
+            required: ['path'],
+        },
+    },
+    {
+        name: 'tail',
+        title: 'Tail N Lines',
+        annotations: { title: 'Tail N Lines', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Read the last N lines of a file — typically used for log inspection. For full-file or specific ranges use `read`.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
+                n: { type: 'number', description: 'Number of lines from the bottom. Default 20.' },
+            },
+            required: ['path'],
+        },
+    },
+    {
+        name: 'wc',
+        title: 'Word Count',
+        annotations: { title: 'Word Count', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
+            },
+            required: ['path'],
         },
     },
     {
@@ -1285,6 +1326,100 @@ export async function executeBuiltinTool(name, args, cwd) {
             const lines = matches.map(m =>
                 `${normalizeOutputPath(m.path)}\t${m.size}\t${formatMtime(m.mtimeMs)}`);
             return lines.join('\n') || '(no matches)';
+        }
+        case 'head': {
+            // Thin wrapper around `read` with offset:0+limit:n. Keeps all
+            // caching, safe-path, and size-cap semantics in one place.
+            const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
+            return executeBuiltinTool('read', { path: args.path, offset: 0, limit: n }, workDir);
+        }
+        case 'tail': {
+            args.path = normalizeInputPath(args.path);
+            const filePath = args.path;
+            if (!filePath) return 'Error: path is required';
+            const n = Math.max(1, Math.min(parseInt(args.n ?? 20, 10) || 20, 2000));
+            if (!isSafePath(filePath, workDir)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            }
+            const fullPath = resolveAgainstCwd(filePath, workDir);
+            let st;
+            try { st = statSync(fullPath); }
+            catch (err) {
+                const similar = findSimilarFile(fullPath);
+                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
+            }
+            try {
+                if (st.size <= READ_MAX_SIZE_BYTES) {
+                    const content = await readFile(fullPath, 'utf-8');
+                    const lines = content.split('\n');
+                    // Trailing newline produces an empty element — drop it so
+                    // the reported line count matches what `wc -l` would show.
+                    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+                    const sliced = lines.slice(-n);
+                    const startIdx = lines.length - sliced.length;
+                    return sliced.map((l, i) => `${startIdx + i + 1}\t${l}`).join('\n');
+                }
+                // Large-file fallback: read only the trailing window. 200
+                // bytes/line is a rough average; the tail slice after split
+                // may be slightly > or < n lines — marked as (approx) so
+                // the caller knows line numbers are not from file start.
+                const tailBytes = Math.min(st.size, Math.max(n * 200, 4096));
+                const fd = openSync(fullPath, 'r');
+                const buf = Buffer.alloc(tailBytes);
+                try { readSync(fd, buf, 0, tailBytes, st.size - tailBytes); }
+                finally { closeSync(fd); }
+                const text = buf.toString('utf-8');
+                const tailLines = text.split('\n');
+                // First fragment is likely a partial line — drop it when we
+                // didn't start from byte 0 of the file.
+                if (tailBytes < st.size && tailLines.length > 1) tailLines.shift();
+                if (tailLines.length > 0 && tailLines[tailLines.length - 1] === '') tailLines.pop();
+                const sliced = tailLines.slice(-n);
+                return sliced.map((l, i) => `(approx)${i + 1}\t${l}`).join('\n');
+            } catch (err) {
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+            }
+        }
+        case 'wc': {
+            args.path = normalizeInputPath(args.path);
+            const filePath = args.path;
+            if (!filePath) return 'Error: path is required';
+            if (!isSafePath(filePath, workDir)) {
+                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            }
+            const fullPath = resolveAgainstCwd(filePath, workDir);
+            let st;
+            try { st = statSync(fullPath); }
+            catch (err) {
+                const similar = findSimilarFile(fullPath);
+                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
+            }
+            if (st.size > READ_MAX_SIZE_BYTES) {
+                // Stream-count lines for files past the read cap. Words are
+                // skipped because computing them would require the full
+                // content — lines + bytes alone are the common use-case
+                // (log size check, file growth monitoring).
+                let lines = 0;
+                const stream = createReadStream(fullPath, { encoding: 'utf-8' });
+                const rl = createInterface({ input: stream, crlfDelay: Infinity });
+                for await (const _ of rl) lines++;
+                return `lines\t${lines}\twords\t-\tbytes\t${st.size}\t(words skipped: file > cap)`;
+            }
+            try {
+                const content = await readFile(fullPath, 'utf-8');
+                // Trailing newline should not inflate the line count — this
+                // matches `wc -l` behaviour (final newline terminates, does
+                // not begin, a new line).
+                const lines = content.length === 0
+                    ? 0
+                    : content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
+                const words = (content.match(/\S+/g) || []).length;
+                return `lines\t${lines}\twords\t${words}\tbytes\t${st.size}`;
+            } catch (err) {
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+            }
         }
         default:
             return `Error: unknown builtin tool "${name}"`;

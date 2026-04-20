@@ -1204,6 +1204,89 @@
     "module": "builtin"
   },
   {
+    "name": "head",
+    "title": "Head N Lines",
+    "annotations": {
+      "title": "Head N Lines",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Read the first N lines of a file. Cleaner than `read` with offset:0+limit:N when you just want a quick peek at the top of a file. For middle-of-file ranges use `read` with offset/limit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path. Supports `~` expansion."
+        },
+        "n": {
+          "type": "number",
+          "description": "Number of lines to read from the top. Default 20."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "tail",
+    "title": "Tail N Lines",
+    "annotations": {
+      "title": "Tail N Lines",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Read the last N lines of a file — typically used for log inspection. For full-file or specific ranges use `read`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path. Supports `~` expansion."
+        },
+        "n": {
+          "type": "number",
+          "description": "Number of lines from the bottom. Default 20."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
+    "name": "wc",
+    "title": "Word Count",
+    "annotations": {
+      "title": "Word Count",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "description": "Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path. Supports `~` expansion."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "module": "builtin"
+  },
+  {
     "name": "batch_edit",
     "title": "Batch Edit",
     "annotations": {
