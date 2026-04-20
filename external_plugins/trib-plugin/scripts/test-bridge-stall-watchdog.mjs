@@ -169,5 +169,5 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   );
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\nPASS ${passed}/${passed + failed}`);
 process.exit(failed > 0 ? 1 : 0);

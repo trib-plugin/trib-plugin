@@ -62,10 +62,10 @@ function reset() {
 // ── 3. 120s stale — soft warning once ────────────────────────────────
 {
   reset();
-  const e = entryAt(125);
+  const e = entryAt(305);
   let softFired = 0;
   const r1 = inspectEntry('s3', e, { onSoft: () => softFired++ });
-  assert(r1 === 'soft', '3. 125s -> soft');
+  assert(r1 === 'soft', '3. 305s -> soft');
   assert(softFired === 1, '3. onSoft fired once');
   // Second tick at same stale should NOT re-warn
   const r2 = inspectEntry('s3', e, { onSoft: () => softFired++ });
@@ -77,20 +77,20 @@ function reset() {
 // ── 4. 180s stale — hard abort ───────────────────────────────────────
 {
   reset();
-  const e = entryAt(185);
+  const e = entryAt(605);
   let hardFired = 0;
   const result = inspectEntry('s4', e, { onHard: () => hardFired++ });
-  assert(result === 'hard', '4. 185s -> hard');
+  assert(result === 'hard', '4. 605s -> hard');
   assert(hardFired === 1, '4. onHard fired');
   assert(e.controller.wasAborted(), '4. controller aborted');
   assert(e.controller.abortReason() instanceof StreamStalledAbortError, '4. abort reason is StreamStalledAbortError');
-  assert(e.controller.abortReason().info.staleSeconds >= 180, '4. error info.staleSeconds >= 180');
+  assert(e.controller.abortReason().info.staleSeconds >= 600, '4. error info.staleSeconds >= 600');
 }
 
 // ── 5. Delta reset clears soft warning ───────────────────────────────
 {
   reset();
-  const e = entryAt(125);
+  const e = entryAt(305);
   let soft = 0;
   inspectEntry('s5', e, { onSoft: () => soft++ });
   assert(soft === 1, '5. first soft fired');
@@ -99,7 +99,7 @@ function reset() {
   const r2 = inspectEntry('s5', e, { onSoft: () => soft++ });
   assert(r2 === 'continue', '5. after delta reset -> continue');
   // Now stall again → should re-warn
-  e.lastStreamDeltaAt = Date.now() - 125_000;
+  e.lastStreamDeltaAt = Date.now() - 305_000;
   inspectEntry('s5', e, { onSoft: () => soft++ });
   assert(soft === 2, '5. re-warns after fresh stall cycle');
 }
@@ -107,12 +107,12 @@ function reset() {
 // ── 6. Closed or already-aborted entries are skipped ─────────────────
 {
   reset();
-  const e = entryAt(185, { closed: true });
+  const e = entryAt(605, { closed: true });
   const result = inspectEntry('s6', e);
   assert(result === 'skip', '6. closed entry -> skip');
   assert(!e.controller.wasAborted(), '6. closed entry not aborted');
 
-  const e2 = entryAt(185);
+  const e2 = entryAt(605);
   e2.controller.abort('prior');  // already aborted
   const r2 = inspectEntry('s7', e2);
   assert(r2 === 'skip', '6. already-aborted controller -> skip');
@@ -122,8 +122,8 @@ function reset() {
 {
   reset();
   const a = entryAt(60);
-  const b = entryAt(125);
-  const c = entryAt(185);
+  const b = entryAt(305);
+  const c = entryAt(605);
   assert(inspectEntry('m1', a) === 'continue', '7. session A continue');
   assert(inspectEntry('m2', b) === 'soft', '7. session B soft');
   assert(inspectEntry('m3', c) === 'hard', '7. session C hard');
@@ -143,8 +143,8 @@ function reset() {
 
 // ── 9. Thresholds sanity ─────────────────────────────────────────────
 {
-  assert(_thresholds.SOFT_STALL_MS === 120_000, '9. SOFT_STALL_MS = 120s');
-  assert(_thresholds.HARD_STALL_MS === 180_000, '9. HARD_STALL_MS = 180s');
+  assert(_thresholds.SOFT_STALL_MS === 300_000, '9. SOFT_STALL_MS = 300s');
+  assert(_thresholds.HARD_STALL_MS === 600_000, '9. HARD_STALL_MS = 600s');
   assert(_thresholds.TICK_MS === 15_000, '9. TICK_MS = 15s');
 }
 
@@ -162,11 +162,11 @@ function reset() {
 // ── 11. tool_running stage is skipped — tool execution silence is not a stall ─
 {
   reset();
-  const e = entryAt(185, { stage: 'tool_running' });
+  const e = entryAt(605, { stage: 'tool_running' });
   const result = inspectEntry('s_tool', e);
   assert(result === 'skip', '11. tool_running stage -> skip');
   assert(!e.controller.wasAborted(), '11. tool_running not aborted even past hard threshold');
 }
 
-console.log(`test-stream-watchdog: ${passed} pass / ${failed} fail`);
+console.log(`PASS ${passed}/${passed + failed}`);
 process.exit(failed ? 1 : 0);

@@ -181,5 +181,5 @@ x`;
   db.close();
 }
 
-console.log(`test-skill-suggest: ${passed} pass / ${failed} fail`);
+console.log(`PASS ${passed}/${passed + failed}`);
 process.exit(failed ? 1 : 0);

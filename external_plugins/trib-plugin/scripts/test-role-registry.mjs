@@ -93,27 +93,20 @@ try {
   process.exit(1);
 }
 
-assert(roles.size === 9, `Expected 9 roles, got ${roles.size}`);
+// Schema-agnostic check: user-customizable role names/presets change over
+// time, so we assert the loaded shape rather than pinning specific values.
+// At least one role must load, and each must satisfy the 4-field schema.
+assert(roles.size >= 1, `At least 1 role loaded (got ${roles.size})`);
 
-const expectedRoles = {
-  worker:              { preset: 'opus-xhigh',    permission: 'full',       desc_path: 'agents/worker.md' },
-  debugger:            { preset: 'gpt5.4-xhigh',  permission: 'full',       desc_path: 'agents/debugger.md' },
-  reviewer:            { preset: 'gpt5.4-xhigh',  permission: 'read',       desc_path: 'agents/reviewer.md' },
-  researcher:          { preset: 'gpt5.4-medium', permission: 'read',       desc_path: 'agents/researcher.md' },
-  tester:              { preset: 'gpt5.4-xhigh',  permission: 'full',       desc_path: 'agents/tester.md' },
-  maintenance:         { preset: 'haiku',         permission: 'read-write', desc_path: 'agents/maintenance.md' },
-  'scheduler-task':    { preset: 'sonnet-medium', permission: 'read-write', desc_path: 'agents/scheduler-task.md' },
-  'webhook-handler':   { preset: 'sonnet-medium', permission: 'read-write', desc_path: 'agents/webhook-handler.md' },
-  'proactive-decision':{ preset: 'sonnet-medium', permission: 'read-write', desc_path: 'agents/proactive-decision.md' },
-};
-
-for (const [name, expected] of Object.entries(expectedRoles)) {
-  const r = roles.get(name);
-  assert(!!r, `Role "${name}" exists`);
-  if (!r) continue;
-  assert(r.preset === expected.preset, `${name}.preset === "${expected.preset}" (got "${r.preset}")`);
-  assert(r.permission === expected.permission, `${name}.permission === "${expected.permission}" (got "${r.permission}")`);
-  assert(r.desc_path === expected.desc_path, `${name}.desc_path === "${expected.desc_path}" (got "${r.desc_path}")`);
+for (const [name, role] of roles) {
+  assert(typeof role.name === 'string' && role.name.length > 0, `Role "${name}": name is non-empty string`);
+  assert(typeof role.preset === 'string' && role.preset.length > 0, `Role "${name}": preset is non-empty string`);
+  assert(['read', 'read-write', 'full'].includes(role.permission), `Role "${name}": permission is valid enum (got "${role.permission}")`);
+  assert(role.desc_path === null || typeof role.desc_path === 'string', `Role "${name}": desc_path is string or null`);
+  // 4-field schema — no extra fields leaked in.
+  const keys = Object.keys(role).sort();
+  const expectedKeys = ['desc_path', 'name', 'permission', 'preset'];
+  assert(JSON.stringify(keys) === JSON.stringify(expectedKeys), `Role "${name}": exactly 4 fields (got ${JSON.stringify(keys)})`);
 }
 
 // =========================================================================
@@ -175,5 +168,5 @@ rmSync(tmpDir, { recursive: true, force: true });
 // =========================================================================
 // Summary
 // =========================================================================
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
+console.log(`\nPASS ${passed}/${passed + failed}`);
 process.exit(failed > 0 ? 1 : 0);

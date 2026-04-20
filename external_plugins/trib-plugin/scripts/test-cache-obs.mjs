@@ -238,5 +238,5 @@ console.log('\n=== Test 11: Null usage ===');
 // =========================================================================
 // Summary
 // =========================================================================
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
+console.log(`\nPASS ${passed}/${passed + failed}`);
 process.exit(failed > 0 ? 1 : 0);

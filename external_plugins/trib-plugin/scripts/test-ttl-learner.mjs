@@ -140,5 +140,5 @@ assert(arr[0] === base + 10 * 60_000, 'Oldest entry should be index 10');
 // =========================================================================
 // Summary
 // =========================================================================
-console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
+console.log(`\nPASS ${passed}/${passed + failed}`);
 process.exit(failed > 0 ? 1 : 0);
