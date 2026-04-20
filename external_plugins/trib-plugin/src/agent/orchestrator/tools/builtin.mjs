@@ -1,10 +1,10 @@
 import { exec, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync, statSync, existsSync, createReadStream } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { promisify } from 'util';
 const execAsync = promisify(exec);
-import { resolve, normalize, isAbsolute } from 'path';
+import { resolve, normalize, isAbsolute, relative, dirname, basename, extname, join } from 'path';
 
 function resolveShell() {
     if (process.platform !== 'win32') return { shell: '/bin/sh', shellArg: '-c' };
@@ -60,6 +60,55 @@ export function normalizeInputPath(p) {
     }
     try { out = out.normalize('NFC'); } catch { /* ignore */ }
     return out;
+}
+
+// Normalise output paths for display: on Windows, unify all separators to
+// forward slash so `C:/.../tools\lsp.mjs`-style mixed-slash strings don't
+// reach the model. Native Windows APIs accept forward slashes too, so this
+// is a purely cosmetic (and downstream copy-paste friendly) normalisation.
+export function normalizeOutputPath(p) {
+    if (typeof p !== 'string') return p;
+    return process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
+}
+
+// Grep output lines shaped as "<path>:<lineno>:<content>" (content mode),
+// "<path>:<count>" (count mode), or bare "<path>" (files_with_matches).
+// Only the path portion should have separators swapped; content that
+// happens to contain a backslash (regex escapes, string literals) must
+// survive intact. Drive-letter colon at position 1 is skipped when
+// locating the first path/value delimiter.
+function normalizeGrepLine(line) {
+    if (process.platform !== 'win32') return line;
+    const searchFrom = /^[A-Za-z]:/.test(line) ? 2 : 0;
+    const colonIdx = line.indexOf(':', searchFrom);
+    if (colonIdx === -1) return line.replace(/\\/g, '/');
+    return line.slice(0, colonIdx).replace(/\\/g, '/') + line.slice(colonIdx);
+}
+
+// Suggest a sibling file the caller may have meant when the requested
+// path is missing: same stem with a different extension, or a same-name
+// sibling differing only in case. Pure best-effort; any fs error returns
+// null so the caller falls back to the bare "not found" message.
+function findSimilarFile(fullPath) {
+    try {
+        const dir = dirname(fullPath);
+        const base = basename(fullPath);
+        const stem = basename(fullPath, extname(fullPath));
+        const entries = readdirSync(dir);
+        const sameStem = entries.find((e) => e !== base && basename(e, extname(e)) === stem);
+        if (sameStem) return join(dir, sameStem);
+        const caseMatch = entries.find((e) => e !== base && e.toLowerCase() === base.toLowerCase());
+        if (caseMatch) return join(dir, caseMatch);
+        return null;
+    } catch { return null; }
+}
+
+function cwdRelativePath(fullPath, workDir) {
+    try {
+        const rel = relative(workDir, fullPath);
+        if (!rel || rel.startsWith('..') || isAbsolute(rel)) return fullPath;
+        return rel;
+    } catch { return fullPath; }
 }
 
 function extractGlobBaseDirectory(pattern) {
@@ -185,7 +234,7 @@ export const BUILTIN_TOOLS = [
             properties: {
                 path: { type: 'string', description: 'File path.' },
                 offset: { type: 'number', description: 'Start line (0-based).' },
-                limit: { type: 'number', description: 'Max lines.' },
+                limit: { type: 'number', description: 'Max lines (default 2000).' },
             },
             required: ['path'],
         },
@@ -245,8 +294,15 @@ export const BUILTIN_TOOLS = [
                 path: { type: 'string', description: 'Search root. Default: cwd.' },
                 glob: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob filter(s). String or array.' },
                 output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'] },
-                head_limit: { type: 'number', description: 'Default 100; 0 = unlimited.' },
+                head_limit: { type: 'number', description: 'Default 250; 0 = unlimited.' },
                 offset: { type: 'number', description: 'Skip N entries before head_limit.' },
+                '-i': { type: 'boolean', description: 'Case-insensitive match.' },
+                '-n': { type: 'boolean', description: 'Show line numbers (content mode, default true).' },
+                '-A': { type: 'number', description: 'Lines after each match (content mode).' },
+                '-B': { type: 'number', description: 'Lines before each match (content mode).' },
+                '-C': { type: 'number', description: 'Lines before+after (content mode).' },
+                context: { type: 'number', description: 'Alias for -C.' },
+                multiline: { type: 'boolean', description: 'Allow patterns to span lines (rg -U --multiline-dotall).' },
             },
             required: ['pattern'],
         },
@@ -380,7 +436,25 @@ function _cacheInvalidateAll() { RESULT_CACHE.clear(); }
 // file that has drifted on disk. Also unblocks write-then-edit: after a
 // successful Write the path is marked read-known so a subsequent Edit
 // does not have to round-trip through Read.
-const _readFiles = new Set();
+//
+// Value stores the mtime + size at read-time. Edit/multi_edit stat the
+// file again and reject with error [code 7] when the current mtime has
+// advanced — detects lint/formatter/external-write drift the way
+// Anthropic's readFileState timestamp check does.
+const _readFiles = new Map(); // fullPath → { mtimeMs, size }
+
+function _recordReadSnapshot(fullPath, st) {
+    try {
+        if (st && typeof st.mtimeMs === 'number') {
+            _readFiles.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size });
+            return;
+        }
+        const fresh = statSync(fullPath);
+        _readFiles.set(fullPath, { mtimeMs: fresh.mtimeMs, size: fresh.size });
+    } catch {
+        _readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0 });
+    }
+}
 
 // --- Blocked commands for safety ---
 const BLOCKED_PATTERNS = [
@@ -394,10 +468,16 @@ const BLOCKED_PATTERNS = [
 function isSafePath(filePath, cwd) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
-    if (!normalized.startsWith(baseCwd)) {
-        // Allow home dir paths for reading configs
+    // Windows file paths are case-insensitive (NTFS default), but JS string
+    // comparison is case-sensitive. Without the case fold, `C:\Users\foo`
+    // and `c:\Users\foo` would resolve to the same file yet be rejected
+    // by the scope check.
+    const caseMatch = process.platform === 'win32'
+        ? (a, b) => a.toLowerCase().startsWith(b.toLowerCase())
+        : (a, b) => a.startsWith(b);
+    if (!caseMatch(normalized, baseCwd)) {
         const home = process.env.HOME || process.env.USERPROFILE || '';
-        if (home && normalized.startsWith(normalize(home)))
+        if (home && caseMatch(normalized, normalize(home)))
             return true;
         return false;
     }
@@ -470,7 +550,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir))
                 return `Error: path outside allowed scope — ${filePath}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
-            const cacheKey = `read|${fullPath}|${args.offset || 0}|${args.limit || 2000}`;
+            const cacheKey = `read|${fullPath}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}`;
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
@@ -497,7 +577,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 try {
                     const out = await streamReadRange(fullPath, offset, limit);
                     _cacheSet(cacheKey, out);
-                    _readFiles.add(fullPath);
+                    _recordReadSnapshot(fullPath, st);
                     return out;
                 } catch (err) {
                     return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -518,7 +598,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     out = rendered;
                 }
                 _cacheSet(cacheKey, out);
-                _readFiles.add(fullPath);
+                _recordReadSnapshot(fullPath, st);
                 return out;
             }
             catch (err) {
@@ -553,10 +633,21 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir)) return `Error: path outside allowed scope — ${filePath}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             if (!existsSync(fullPath)) {
-                return `Error [code 4]: file not found: ${filePath}`;
+                const similar = findSimilarFile(fullPath);
+                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                return `Error [code 4]: file not found: ${filePath}${hint}`;
             }
-            if (!_readFiles.has(fullPath)) {
+            const mEditSnapshot = _readFiles.get(fullPath);
+            if (!mEditSnapshot) {
                 return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+            }
+            try {
+                const currentMtime = statSync(fullPath).mtimeMs;
+                if (currentMtime > mEditSnapshot.mtimeMs + 1) {
+                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+                }
+            } catch {
+                // File vanished mid-edit — fall through; readFileSync below surfaces it.
             }
             try {
                 let content;
@@ -582,7 +673,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
                 writeFileSync(fullPath, content, 'utf-8');
                 _cacheInvalidateAll();
-                _readFiles.add(fullPath);
+                _recordReadSnapshot(fullPath);
                 return `Edited: ${filePath} (${edits.length} replacements applied)`;
             } catch (err) {
                 return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -601,8 +692,16 @@ export async function executeBuiltinTool(name, args, cwd) {
                 if (!entry || !entry.path) { lines.push('FAIL (missing-path): path is required'); continue; }
                 const body = await executeBuiltinTool('edit', entry, workDir);
                 const first = String(body).split('\n')[0] || '';
-                if (first.startsWith('Error:')) lines.push(`FAIL ${entry.path}: ${first.slice(7)}`);
-                else lines.push(`OK ${entry.path}`);
+                // `edit` returns either "Error: <msg>" (generic) or
+                // "Error [code N]: <msg>" (structured). Match either shape
+                // and surface the message portion verbatim.
+                if (/^Error(\s|\[)/.test(first)) {
+                    const colonIdx = first.indexOf(': ');
+                    const msg = colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
+                    lines.push(`FAIL ${entry.path}: ${msg}`);
+                } else {
+                    lines.push(`OK ${entry.path}`);
+                }
             }
             return lines.join('\n');
         }
@@ -623,7 +722,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Write establishes the on-disk state the model just
                 // authored, so a subsequent Edit does not need a fresh
                 // Read round-trip.
-                _readFiles.add(fullPath);
+                _recordReadSnapshot(fullPath);
                 return `Written: ${filePath}`;
             }
             catch (err) {
@@ -643,13 +742,27 @@ export async function executeBuiltinTool(name, args, cwd) {
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // Error [code 4]: file does not exist on disk.
             if (!existsSync(fullPath)) {
-                return `Error [code 4]: file not found: ${filePath}`;
+                const similar = findSimilarFile(fullPath);
+                const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
+                return `Error [code 4]: file not found: ${filePath}${hint}`;
             }
             // Error [code 6]: Read-before-Edit enforcement. Prevents phantom
             // edits where the model invents an old_string based on cached
             // assumptions against a file that has drifted.
-            if (!_readFiles.has(fullPath)) {
+            const editSnapshot = _readFiles.get(fullPath);
+            if (!editSnapshot) {
                 return `Error [code 6]: file has not been read yet — read before editing: ${filePath}`;
+            }
+            // Error [code 7]: detect stale read via mtime drift (Anthropic
+            // readFileState timestamp check parity). +1ms slack absorbs
+            // filesystem timestamp resolution noise on NTFS/exFAT.
+            try {
+                const currentMtime = statSync(fullPath).mtimeMs;
+                if (currentMtime > editSnapshot.mtimeMs + 1) {
+                    return `Error [code 7]: file modified since read (lint / formatter / external write) — read it again before editing: ${filePath}`;
+                }
+            } catch {
+                // Vanished — readFileSync below surfaces it.
             }
             try {
                 const content = readFileSync(fullPath, 'utf-8');
@@ -663,9 +776,10 @@ export async function executeBuiltinTool(name, args, cwd) {
                     : content.replace(oldStr, newStr);
                 writeFileSync(fullPath, updated, 'utf-8');
                 _cacheInvalidateAll();
-                // Keep the entry: file is still known to this session and
-                // subsequent edits against the just-written state are safe.
-                _readFiles.add(fullPath);
+                // Refresh the snapshot to the post-write mtime so a chain
+                // of edits against the same file doesn't trip the stale
+                // check on the second hop.
+                _recordReadSnapshot(fullPath);
                 return `Edited: ${filePath}`;
             }
             catch (err) {
@@ -690,11 +804,23 @@ export async function executeBuiltinTool(name, args, cwd) {
             // lines + path + line number), count (per-file match counts).
             const outputMode = args.output_mode || 'files_with_matches';
             const headLimitRaw = args.head_limit;
-            const headLimit = headLimitRaw === 0 ? Infinity : (headLimitRaw || 100);
+            const headLimit = headLimitRaw === 0 ? Infinity : (headLimitRaw || 250);
             const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
             const cacheKey = `grep|${patterns.join('\x01')}|${searchPath}|${globPatterns.join('\x01')}|${outputMode}|${headLimit}|${offset}`;
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
+            // Extended rg flag decoding (Anthropic GrepTool parity): case
+            // fold, line numbers, -A/-B/-C windowing, and multiline dot.
+            // Context flags and line numbers are silently ignored outside
+            // content mode since rg rejects them there.
+            const caseInsensitive = args['-i'] === true;
+            const showLineNumbers = args['-n'] !== false; // default true for content mode
+            const afterN = typeof args['-A'] === 'number' ? args['-A'] : null;
+            const beforeN = typeof args['-B'] === 'number' ? args['-B'] : null;
+            const contextN = typeof args['-C'] === 'number'
+                ? args['-C']
+                : (typeof args.context === 'number' ? args.context : null);
+            const multilineMode = args.multiline === true;
             try {
                 const rgArgs = ['--color', 'never'];
                 if (outputMode === 'files_with_matches') {
@@ -702,8 +828,14 @@ export async function executeBuiltinTool(name, args, cwd) {
                 } else if (outputMode === 'count') {
                     rgArgs.push('--count');
                 } else {
-                    rgArgs.push('--no-heading', '--line-number');
+                    rgArgs.push('--no-heading');
+                    if (showLineNumbers) rgArgs.push('--line-number');
+                    if (beforeN !== null) rgArgs.push('-B', String(beforeN));
+                    if (afterN !== null) rgArgs.push('-A', String(afterN));
+                    if (contextN !== null) rgArgs.push('-C', String(contextN));
                 }
+                if (caseInsensitive) rgArgs.push('-i');
+                if (multilineMode) rgArgs.push('-U', '--multiline-dotall');
                 for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
                 for (const g of globPatterns) rgArgs.push('--glob', g);
                 // Use -e for each pattern so rg OR-joins them in a single
@@ -717,16 +849,25 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // page 1 = offset 0, page 2 = offset + head_limit, etc.
                 const windowed = offset > 0 ? allLines.slice(offset) : allLines;
                 const lines = headLimit === Infinity ? windowed : windowed.slice(0, headLimit);
+                // Unify separators in the path portion so Windows results
+                // don't surface mixed `C:/.../foo\bar.mjs` lines.
+                const normalized = lines.map(normalizeGrepLine);
                 const remaining = windowed.length - lines.length;
                 const truncated = remaining > 0
                     ? `\n... [${remaining} more entries]`
                     : '';
-                const out = capShellOutput((lines.join('\n') + truncated) || '(no matches)');
+                const out = capShellOutput((normalized.join('\n') + truncated) || '(no matches)');
                 _cacheSet(cacheKey, out);
                 return out;
             }
-            catch {
-                return '(no matches)';
+            catch (err) {
+                // `runRg` swallows rg exit-1 (no match) and returns ''; any
+                // error reaching here is a real failure (invalid regex,
+                // permission denied, spawn error). Surface rg's stderr so
+                // the caller can diagnose rather than mistake it for no-match.
+                const stderr = err?.stderr ? String(err.stderr).trim() : '';
+                const msg = stderr || err?.message || String(err);
+                return `Error: ${msg.slice(0, 500)}`;
             }
         }
         case 'glob': {
@@ -777,7 +918,23 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
             }
             const unique = Array.from(new Set(allFiles));
-            const capped = unique.slice(0, 100);
+            // Sort by mtime descending (Anthropic GlobTool parity): recent
+            // edits surface first, so the agent sees the file it just
+            // touched at the top of a wide match. stat failures degrade
+            // to mtime=0 so missing/race-condition entries land at the
+            // end rather than aborting the whole sort.
+            const withStat = unique.map((p) => {
+                try { return { path: p, mtime: statSync(p).mtimeMs }; }
+                catch { return { path: p, mtime: 0 }; }
+            });
+            withStat.sort((a, b) => b.mtime - a.mtime);
+            const capped = withStat.slice(0, 100).map((entry) => {
+                // Relativise against workDir when the file lives inside it
+                // — matches Anthropic GlobTool toRelativePath and trims the
+                // redundant absolute prefix from the model's context.
+                const displayed = cwdRelativePath(entry.path, workDir);
+                return normalizeOutputPath(displayed);
+            });
             const out = capShellOutput(capped.join('\n') || '(no files found)');
             _cacheSet(cacheKey, out);
             return out;

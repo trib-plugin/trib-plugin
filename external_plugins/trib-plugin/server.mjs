@@ -356,14 +356,20 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
   return dispatchTool(name, args)
 })
 
-// ── Transport ───────────────────────────────────────────────────────
-await server.connect(new StdioServerTransport())
-log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
-
-// ── Eager init: search + agent (avoid first-call latency) ──────────
+// ── Eager init BEFORE transport connect ─────────────────────────────
+// Pool C sessions (recall-agent / search-agent / explorer) snapshot the
+// internal-tools registry at createSession time via _getMcpToolsCached.
+// If `loadModule('agent').then(...addInternalTools)` was still pending
+// when the first bridge call landed, the registry was empty, so
+// memory_search / web_search never made it into the session's tool
+// schema and the agent truthfully answered "I don't have access to
+// memory_search". Awaiting the agent module init here closes the race.
+//
+// Search eager-load stays fire-and-forget: it doesn't seed any registry,
+// just avoids the first-call compile-JIT cost.
 loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
-loadModule('agent')
-  .then(async () => {
+try {
+  await loadModule('agent').then(async () => {
     // Populate the in-process tool registry at boot so ALL session entry
     // points (direct createSession / resumeSession, not just handleToolCall)
     // see the bridge from the first call. handleToolCall still calls
@@ -479,7 +485,11 @@ loadModule('agent')
       log(`internal-tools registry populate failed: ${e.message}`)
     }
   })
-  .catch(e => log(`eager agent init failed: ${e.message}`))
+} catch (e) { log(`eager agent init failed: ${e.message}`) }
+
+// ── Transport ───────────────────────────────────────────────────────
+await server.connect(new StdioServerTransport())
+log(`connected pid=${process.pid} v${PLUGIN_VERSION} tools=${TOOL_DEFS.length}`)
 
 // ── CLAUDE.md managed block reconciliation ─────────────────────────
 // Writes static rules into the managed block. Session recap is NOT
