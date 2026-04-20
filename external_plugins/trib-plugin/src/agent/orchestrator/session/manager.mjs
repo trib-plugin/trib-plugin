@@ -439,7 +439,7 @@ export function createSession(opts) {
         ? loadRoleTemplate(resolvedRole, dataDir)
         : null;
 
-    const { systemBase, systemRole, tier3Reminder } = composeSystemPrompt({
+    const { systemBase, systemRole, tier3Reminder, roleMarker } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
         agentTemplate: agentTemplate || undefined,
@@ -471,6 +471,15 @@ export function createSession(opts) {
     if (tier3Reminder) {
         messages.push({ role: 'user', content: `<system-reminder>\n${tier3Reminder}\n</system-reminder>` });
         messages.push({ role: 'assistant', content: 'Understood. Context absorbed.' });
+    }
+    // roleMarker rides AFTER tier3 as its own user message so BP3 (tier3)
+    // stays byte-identical across roles. The small per-role signature
+    // (permission + role id + agent template) lives in the messages tail
+    // instead, where BP4+ naturally handles it without fragmenting the
+    // long shared prefix.
+    if (roleMarker) {
+        messages.push({ role: 'user', content: roleMarker });
+        messages.push({ role: 'assistant', content: 'Role noted.' });
     }
     if (opts.files?.length) {
         const fileContext = opts.files

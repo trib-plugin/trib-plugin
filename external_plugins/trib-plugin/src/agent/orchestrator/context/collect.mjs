@@ -301,14 +301,13 @@ export function composeSystemPrompt(opts) {
     // (systemBase) stays bit-identical across every role in the same pool/model.
     const systemRole = '';
 
-    // ── BP4-adjacent: tier3Reminder (messages user, not system) ─────────
-    // Per-call variance only — task brief, skills hint, project context,
-    // memory recap, effective cwd. This rides in the user message as
-    // <system-reminder> so the tool user sees it once up front without
-    // polluting the per-turn prompt body.
+    // ── BP3 (tier3Reminder, 1h cache): shared across ALL roles ─────────
+    // Only non-role-specific context lives here so BP3 stays byte-identical
+    // across worker / reviewer / tester / debugger etc. Role marker
+    // (permission + role id + agent template) moves to a separate short
+    // user message AFTER tier3 — it rides in the messages tail (BP4+) so
+    // each role's small signature does not fragment the shared prefix.
     const tier3Parts = [];
-    // Role content migrated from systemRole (BP1 stays shared).
-    for (const part of roleParts) tier3Parts.push(part);
     // cwd omitted: tools resolve working dir internally.
     if (opts.taskBrief) tier3Parts.push('# task-brief\n' + opts.taskBrief);
     if (opts.projectContext) tier3Parts.push('# project-context\n' + opts.projectContext);
@@ -317,12 +316,18 @@ export function composeSystemPrompt(opts) {
     }
     const tier3Reminder = tier3Parts.length > 0 ? tier3Parts.join('\n\n') : '';
 
+    // roleMarker — the small (≤150 token) role-specific block previously
+    // shoved into tier3. Emitted as a separate string so manager.mjs can
+    // insert it AFTER tier3 as its own user message, keeping BP3 identical
+    // cross-role while the role signature rides in the messages tail.
+    const roleMarker = roleParts.length > 0 ? roleParts.join('\n\n') : '';
+
     // `systemTier2` kept as a back-compat alias for the older single-block
     // consumer (= systemBase + systemRole concatenated). Prefer the split
     // fields on new callers.
     const systemTier2 = systemBase;
 
-    return { systemBase, systemRole, systemTier2, tier3Reminder };
+    return { systemBase, systemRole, systemTier2, tier3Reminder, roleMarker };
 }
 // --- Helpers ---
 function readSafe(path) {
