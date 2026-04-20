@@ -391,7 +391,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Past context from the memory store. `query` accepts a string or an array (parallel fan-out). Async by default: returns an `async_...` handle, collected later via `session_result`; pass `wait:true` to block inline. Not for external web (use `search`) or codebase files (use `explore`).",
+    "description": "Past context from the memory store. `query` accepts a string or an array (parallel fan-out). Async by default: returns an `async_...` handle; merged answer is pushed back via the channel bridge. Pass `wait:true` to block inline. Not for external web (use `search`) or codebase files (use `explore`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -418,7 +418,7 @@
         },
         "wait": {
           "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise the merged answer is pushed into your session automatically via the channel bridge."
         }
       },
       "required": [
@@ -439,7 +439,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Internal codebase file and code search. `query` accepts a string or array (parallel fan-out). `cwd` is the authoritative search root (no silent fan-out between roots). Async by default: returns `async_...` handle, collected via `session_result` or `wait:true` inline. Not for past context (use `recall`) or external web (use `search`).",
+    "description": "Internal codebase file and code search. `query` accepts a string or array (parallel fan-out). `cwd` is the authoritative search root (no silent fan-out between roots). Async by default: returns `async_...` handle; merged answer is pushed back via the channel bridge, or use `wait:true` inline. Not for past context (use `recall`) or external web (use `search`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -466,7 +466,7 @@
         },
         "wait": {
           "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise the merged answer is pushed into your session automatically via the channel bridge."
         }
       },
       "required": [
@@ -480,7 +480,7 @@
     "name": "search",
     "title": "Search",
     "aiWrapped": true,
-    "description": "External web search, URL scrape, GitHub code/issues/repos. `query` accepts a string or array (parallel fan-out); include a URL to trigger scrape or `owner/repo` for GitHub. Async by default: returns `async_...` handle, collected via `session_result` or `wait:true` inline. Not for past context (use `recall`) or codebase files (use `explore`).",
+    "description": "External web search, URL scrape, GitHub code/issues/repos. `query` accepts a string or array (parallel fan-out); include a URL to trigger scrape or `owner/repo` for GitHub. Async by default: returns `async_...` handle; merged answer is pushed back via the channel bridge, or use `wait:true` inline. Not for past context (use `recall`) or codebase files (use `explore`).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -507,7 +507,7 @@
         },
         "wait": {
           "type": "boolean",
-          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise poll the returned `async_...` handle with `session_result`."
+          "description": "Defaults to false (async). Pass `wait:true` to block inline until the merged answer comes back; otherwise the merged answer is pushed into your session automatically via the channel bridge."
         }
       },
       "required": [
@@ -523,32 +523,6 @@
       "openWorldHint": true
     },
     "module": "search"
-  },
-  {
-    "name": "session_result",
-    "title": "Session Result",
-    "annotations": {
-      "title": "Session Result",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Collect a background dispatch started via `recall` / `search` / `explore` with `wait:false`. As of v0.6.186, completed async dispatches are auto-pushed into the Lead session via the channel bridge (`notifications/claude/channel`, `meta.type = 'async_result'`) — no polling needed in the common case. Use this tool to explicitly pull by `async_...` id, or as a fallback if you missed the channel notification. Returns the merged answer, a short `still running` message, or an error description. Not for regular Pool B / Pool C session ids — those are managed internally.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "description": "The `async_...` handle returned by the original wait:false dispatch."
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "additionalProperties": false
-    },
-    "module": "agent"
   },
   {
     "name": "create_session",
