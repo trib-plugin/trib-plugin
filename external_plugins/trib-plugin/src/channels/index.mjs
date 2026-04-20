@@ -13,6 +13,8 @@ import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR } from "./lib/config.mjs";
+import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
+import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
 import { Scheduler } from "./lib/scheduler.mjs";
 import { WebhookServer } from "./lib/webhook.mjs";
 import { EventPipeline } from "./lib/event-pipeline.mjs";
@@ -669,6 +671,13 @@ async function startOwnedRuntime(options = {}) {
   }
   bridgeRuntimeConnected = true;
   proxyMode = false;
+  try {
+    const agentCfg = loadAgentConfig();
+    await initProviders(agentCfg.providers || {});
+  } catch (e) {
+    process.stderr.write(`trib-plugin: initProviders failed (non-fatal): ${e instanceof Error ? e.message : String(e)}
+`);
+  }
   scheduler.start();
   if (webhookServer) webhookServer.start();
   eventPipeline.start();
