@@ -136,10 +136,10 @@ const AGENT_MCP_BASE = (() => {
     if (!root) return '';
     // mcp-orchestration.md was removed (v0.6.94) — sub-agents do not dispatch
     // other agents, so this content was redundant. Tool list is auto-exposed
-    // by Claude Code; policy lives in rules/pool-a/03-team.md.
+    // by Claude Code; policy lives in rules/lead/03-team.md.
     return '';
   } catch (e) {
-    process.stderr.write(`[agent] rules/pool-b load failed: ${e.message}\n`);
+    process.stderr.write(`[agent] bridge rules load failed: ${e.message}\n`);
     return '';
   }
 })();

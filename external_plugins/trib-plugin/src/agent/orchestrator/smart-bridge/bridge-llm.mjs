@@ -52,64 +52,19 @@ function pluginRoot() {
         || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
 }
 
-// Per-role tool whitelist for Pool C hidden roles. Only the tools a role
+// Per-role tool whitelist for hidden roles. Only the tools a role
 // actually needs survive the `allowedTools` filter in manager.mjs; the rest
 // are stripped so the BP_1 tool schema (and the shard it caches) shrinks to
 // the minimum. Roles not listed here fall through to tools=full minus the
 // read-permission deny list (legacy behaviour).
-// Unified-shard policy — Pool C roles keep the same tool schema as every
-// other Pool B session so BP_1 is bit-identical across roles and the
+// Unified-shard policy — hidden roles keep the same tool schema as every
+// other bridge session so BP_1 is bit-identical across roles and the
 // provider-side cache shard is shared. Per-role behaviour is steered via
-// rules/pool-c/*.md (injected into the tier3Reminder user message by
-// composeSystemPrompt) and runtime guards (loop.mjs write-block +
-// ai-wrapped-dispatch recursion break).
+// rules/bridge/*.md (concatenated into BP2 roleCatalog by
+// loadAllAgentBodies — every bridge session carries the full hidden-role
+// catalog so the shard stays bit-identical across roles) and runtime guards
+// (loop.mjs write-block + ai-wrapped-dispatch recursion break).
 const POOL_C_TOOL_KEEP = Object.freeze({});
-
-/**
- * Lazy-cached per-role snippet loader for Pool C hidden roles.
- *
- * Each hidden role has a small (~100–200 token) instruction file under
- * rules/pool-c/. The snippet rides in the user-message tail rather than the
- * system prompt, so Pool B/C/D all share the SAME shard (tools + system
- * bit-identical). Only the per-call suffix diverges.
- */
-const _roleSnippetCache = new Map();
-// Shared tool-efficiency fragment — loaded once, appended to every Pool C
-// role snippet so Haiku sub-agents get the same 5-rule guidance as Pool B.
-// Single source of truth: rules/_shared/tool-efficiency.md (also consumed by
-// lib/rules-builder.cjs::buildBridgeInjectionContent for Pool B).
-let _toolEfficiencyFragment = null;
-function getToolEfficiencyFragment() {
-    if (_toolEfficiencyFragment !== null) return _toolEfficiencyFragment;
-    try {
-        _toolEfficiencyFragment = readFileSync(
-            join(pluginRoot(), 'rules', '_shared', 'tool-efficiency.md'),
-            'utf8',
-        ).trim();
-    } catch {
-        _toolEfficiencyFragment = '';
-    }
-    return _toolEfficiencyFragment;
-}
-function getRoleSnippet(role) {
-    if (!role) return '';
-    if (_roleSnippetCache.has(role)) return _roleSnippetCache.get(role);
-    const hidden = getHiddenRole(role);
-    let content = '';
-    if (hidden && hidden.systemFile) {
-        try {
-            content = readFileSync(join(pluginRoot(), hidden.systemFile), 'utf8').trim();
-        } catch {
-            content = '';
-        }
-    }
-    const toolEff = getToolEfficiencyFragment();
-    if (toolEff) {
-        content = content ? `${content}\n\n${toolEff}` : toolEff;
-    }
-    _roleSnippetCache.set(role, content);
-    return content;
-}
 
 function buildUnifiedHeader({ permission, role }) {
     const lines = [];
@@ -125,7 +80,7 @@ function buildUnifiedHeader({ permission, role }) {
 /**
  * Resolve a preset name from (preset arg | opts.preset | hidden-role | user-workflow).
  *
- * Hidden roles (Pool C: explorer / recall-agent / search-agent) are
+ * Hidden roles (explorer / recall-agent / search-agent) are
  * plugin-managed and take precedence over user-workflow.json — users cannot
  * override them by redefining the same name.
  */
@@ -133,7 +88,7 @@ export function resolvePresetName({ preset, optsPreset, role }) {
     if (preset) return preset;
     if (optsPreset) return optsPreset;
     if (!role) return null;
-    // Hidden roles (Pool C) look up preset via the shared maintenance config
+    // Hidden roles look up preset via the shared maintenance config
     // slot so C and D move together when the user retunes a model tier.
     const hidden = getHiddenRole(role);
     if (hidden) {
@@ -241,15 +196,13 @@ export function makeBridgeLlm(opts = {}) {
         if (permission) sessionOpts.permission = permission;
         if (isPoolC) {
             sessionOpts.skipRoleReminder = true;
-            // Pool C role snippet is loaded from rules/pool-c/<role>.md and
-            // ends up in the tier3Reminder user message (composeSystemPrompt
-            // concatenates it into roleParts → tier3Parts). Keeps the tail
-            // user message a pure query and lets BP1+BP2 stay shared across
-            // every Pool B/C role.
-            sessionOpts.roleSnippet = getRoleSnippet(opts.role) || null;
+            // Hidden-role instructions live in BP2 roleCatalog (loaded by
+            // loadAllAgentBodies from rules/bridge/*.md). No per-call
+            // snippet plumbing needed — the shard is bit-identical across
+            // every bridge role.
         }
-        // User message = pure query. Permission / role / snippet ride in
-        // tier3Reminder (composeSystemPrompt) — only the query varies per
+        // User message = pure query. Permission / role ride in BP3
+        // sessionMarker (composeSystemPrompt) — only the query varies per
         // call, so provider cache reuses the shared prefix.
         const finalPrompt = prompt;
 

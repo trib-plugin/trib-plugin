@@ -25,8 +25,8 @@ const _rulesBuilder = (() => {
     try { return _require('../../../../lib/rules-builder.cjs'); } catch { return null; }
 })();
 
-// bridgeRules is the Pool B shared prefix (MCP instructions + agent rules +
-// CLAUDE.md common sections + user agent configs). It's rebuilt from disk
+// bridgeRules is the bridge shared prefix (shared rules + bridge common rules +
+// user agent configs). It's rebuilt from disk
 // by rules-builder.cjs on every call; since createSession fires on every
 // Pool B/C bridge turn, that's a lot of redundant readFileSync + concat.
 // 60s TTL is short enough that a user rule edit propagates quickly while
@@ -421,10 +421,9 @@ export function createSession(opts) {
     const agentTemplate = opts.agent ? loadAgentTemplate(opts.agent, opts.cwd) : null;
     const skills = collectSkillsCached(opts.cwd);
 
-    // Phase B Tier 2 content — Pool B common prefix (bit-identical across roles).
-    // Pool C callers (orchestrator hidden roles) skip this because their system
-    // prompt comes from rules/pool-c/, not from Pool B — Pool B rules target
-    // external Bridge agents and would confuse an internal orchestrator.
+    // Bridge shared prefix (bit-identical across roles). Hidden roles reuse the
+    // same shared bridge rules so the cache shard stays stable across bridge
+    // callers.
     const bridgeRules = opts.skipBridgeRules ? '' : _buildBridgeRules();
     // Project MD (cwd-based, Tier 3 slot).
     const projectContext = collectProjectMd(opts.cwd);
@@ -449,7 +448,6 @@ export function createSession(opts) {
         role: resolvedRole,
         skipRoleReminder: opts.skipRoleReminder || false,
         permission: opts.permission || null,
-        roleSnippet: opts.roleSnippet || null,
         taskBrief: opts.taskBrief || null,
         projectContext: projectContext || null,
         // Effective cwd rides in tier3Reminder so explore-like tools know
@@ -529,7 +527,7 @@ export function createSession(opts) {
         'memory',
         // LSP tools — TS/JS-only semantic symbol lookup. Stripped by
         // default because typical Pool B/C workloads cover symbol search
-        // fine via `grep` (+ `rules/lsp.md` is still in Pool A for Lead).
+        // fine via `grep` (+ `rules/shared/05-lsp.md` is still available to Lead).
         // Per-role opt-in (allowedTools override) isn't currently wired —
         // this is a hard strip. If a role needs LSP, revisit the filter
         // ordering in this file (deny runs before whitelist today).

@@ -77,9 +77,9 @@ const MAX_PORT = 3357
 
 const MEMORY_INSTRUCTIONS_TEXT = (() => {
   try {
-    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'memory.md'), 'utf8').trim()
+    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'shared', '02-memory.md'), 'utf8').trim()
   } catch (e) {
-    process.stderr.write(`[memory] rules/memory.md load failed: ${e.message}\n`)
+    process.stderr.write(`[memory] rules/shared/02-memory.md load failed: ${e.message}\n`)
     return ''
   }
 })()

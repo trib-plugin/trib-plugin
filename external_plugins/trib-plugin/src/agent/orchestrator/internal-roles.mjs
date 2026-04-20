@@ -1,5 +1,5 @@
 /**
- * Pool C internal hidden roles — plugin-managed, user-untouchable.
+ * Internal hidden roles — plugin-managed, user-untouchable.
  *
  * Unlike user-workflow.json roles (worker/reviewer/debugger/researcher/tester),
  * these roles are NEVER exposed to callers of the `bridge` MCP tool. They are
@@ -24,38 +24,38 @@
  */
 
 // The `slot` field is the maintenance-config key used to look up the preset
-// at runtime: loadConfig().maintenance[slot]. By sharing the slot with Pool D
-// tasks (explore / recall / search), the user changes one setting and both
-// the Pool C orchestrator and the Pool D synth that it may invoke move to
-// the new model in lockstep. Preset is NEVER hard-coded here.
+// at runtime: loadConfig().maintenance[slot]. By sharing the slot with the
+// maintenance tasks (explore / recall / search), the user changes one setting
+// and both the hidden-role path and the synth that it may invoke move to the
+// new model in lockstep. Preset is NEVER hard-coded here.
 export const BUILTIN_HIDDEN_ROLES = Object.freeze({
   'explorer': Object.freeze({
     slot: 'explore',
-    systemFile: 'rules/pool-c/10-explorer.md',
+    systemFile: 'rules/bridge/10-explorer.md',
     description: 'Filesystem navigation agent invoked by the `explore` MCP tool',
     invokedBy: 'explore',
   }),
   'recall-agent': Object.freeze({
     slot: 'recall',
-    systemFile: 'rules/pool-c/20-recall-agent.md',
+    systemFile: 'rules/bridge/20-recall-agent.md',
     description: 'Memory retrieval agent invoked by the `recall` MCP tool',
     invokedBy: 'recall',
   }),
   'search-agent': Object.freeze({
     slot: 'search',
-    systemFile: 'rules/pool-c/30-search-agent.md',
+    systemFile: 'rules/bridge/30-search-agent.md',
     description: 'External info agent invoked by the `search` MCP tool',
     invokedBy: 'search',
   }),
   'cycle1-agent': Object.freeze({
     slot: 'cycle1',
-    systemFile: 'rules/pool-c/40-cycle1-agent.md',
+    systemFile: 'rules/bridge/40-cycle1-agent.md',
     description: 'Chunker/classifier invoked by memory-cycle runCycle1',
     invokedBy: 'cycle1',
   }),
   'cycle2-agent': Object.freeze({
     slot: 'cycle2',
-    systemFile: 'rules/pool-c/41-cycle2-agent.md',
+    systemFile: 'rules/bridge/41-cycle2-agent.md',
     description: 'Root re-scorer invoked by memory-cycle runCycle2',
     invokedBy: 'cycle2',
   }),

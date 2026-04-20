@@ -232,13 +232,37 @@ export function loadRoleTemplate(role, dataDir) {
 }
 
 // --- All-agent catalog loader ---
-// Concatenates every agents/<role>.md body into one BP2 block. Because the
-// block is identical across every bridge call regardless of which role is
-// invoked, all cross-role sessions share this cache entry (BP2 hit ratio
-// approaches 100%). Individual role identity is carried separately in
-// the sessionMarker user message (see composeSystemPrompt).
+// Concatenates every agents/<role>.md body + every hidden-role snippet under
+// rules/bridge/ (except 00-common.md, which is already in BP1 via
+// buildBridgeInjectionContent) into one BP2 block. Because the block is
+// identical across every bridge call regardless of which role is invoked,
+// all cross-role sessions share this cache entry (BP2 hit ratio approaches
+// 100%). Individual role identity is carried separately in the
+// sessionMarker user message (see composeSystemPrompt).
 const _allAgentBodiesCache = { ts: 0, value: '' };
 const ALL_AGENT_BODIES_TTL = 60_000;
+
+function loadHiddenRoleSnippets(pluginRoot) {
+    try {
+        const bridgeDir = join(pluginRoot, 'rules', 'bridge');
+        if (!existsSync(bridgeDir)) return [];
+        const files = readdirSync(bridgeDir)
+            .filter(f => f.endsWith('.md') && f !== '00-common.md')
+            .sort();
+        const sections = [];
+        for (const f of files) {
+            const raw = readSafe(join(bridgeDir, f));
+            if (!raw) continue;
+            const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
+            if (!body) continue;
+            const name = f.replace(/^\d+-/, '').replace(/\.md$/, '');
+            sections.push(`## ${name}\n\n${body}`);
+        }
+        return sections;
+    } catch {
+        return [];
+    }
+}
 
 export function loadAllAgentBodies() {
     if (Date.now() - _allAgentBodiesCache.ts < ALL_AGENT_BODIES_TTL) {
@@ -248,23 +272,29 @@ export function loadAllAgentBodies() {
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
         if (!pluginRoot) return '';
         const agentsDir = join(pluginRoot, 'agents');
-        if (!existsSync(agentsDir)) return '';
-        const files = readdirSync(agentsDir)
-            .filter(f => f.endsWith('.md'))
-            .sort();
-        const sections = [];
-        for (const f of files) {
-            const raw = readSafe(join(agentsDir, f));
-            if (!raw) continue;
-            // Strip YAML frontmatter if present
-            const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
-            if (!body) continue;
-            const name = f.replace(/\.md$/, '');
-            sections.push(`## ${name}\n\n${body}`);
+        const agentSections = [];
+        if (existsSync(agentsDir)) {
+            const files = readdirSync(agentsDir)
+                .filter(f => f.endsWith('.md'))
+                .sort();
+            for (const f of files) {
+                const raw = readSafe(join(agentsDir, f));
+                if (!raw) continue;
+                const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
+                if (!body) continue;
+                const name = f.replace(/\.md$/, '');
+                agentSections.push(`## ${name}\n\n${body}`);
+            }
         }
-        const value = sections.length
-            ? `# Agent Role Catalog\n\n${sections.join('\n\n---\n\n')}`
-            : '';
+        const hiddenSections = loadHiddenRoleSnippets(pluginRoot);
+        const blocks = [];
+        if (agentSections.length) {
+            blocks.push(`# Agent Role Catalog\n\n${agentSections.join('\n\n---\n\n')}`);
+        }
+        if (hiddenSections.length) {
+            blocks.push(`# Hidden Role Catalog\n\n${hiddenSections.join('\n\n---\n\n')}`);
+        }
+        const value = blocks.join('\n\n---\n\n');
         _allAgentBodiesCache.value = value;
         _allAgentBodiesCache.ts = Date.now();
         return value;

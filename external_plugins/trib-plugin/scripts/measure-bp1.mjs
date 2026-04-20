@@ -76,11 +76,12 @@ async function measureSystemBase() {
 
     // Per-rule-file sizes for drill-down
     const files = [
-        'rules/pool-b/01-agent.md',
-        'rules/memory.md',
-        'rules/search.md',
-        'rules/explore.md',
-        'rules/lsp.md',
+        'rules/shared/01-tool.md',
+        'rules/shared/02-memory.md',
+        'rules/shared/03-search.md',
+        'rules/shared/04-explore.md',
+        'rules/shared/05-lsp.md',
+        'rules/bridge/00-common.md',
     ];
     const perFile = files.map(f => {
         const p = join(PLUGIN_ROOT, f);

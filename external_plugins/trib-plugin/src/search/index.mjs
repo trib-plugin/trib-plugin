@@ -544,9 +544,9 @@ const toolDefinitions = [
 
 const SEARCH_INSTRUCTIONS = (() => {
   try {
-    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'search.md'), 'utf8').trim();
+    return fs.readFileSync(path.join(PLUGIN_ROOT, 'rules', 'shared', '03-search.md'), 'utf8').trim();
   } catch (e) {
-    process.stderr.write(`[search] rules/search.md load failed: ${e.message}\n`);
+    process.stderr.write(`[search] rules/shared/03-search.md load failed: ${e.message}\n`);
     return '';
   }
 })();
@@ -736,4 +736,3 @@ export { SEARCH_INSTRUCTIONS as instructions }
 export { handleToolCall }
 export async function start() { await writeStartupSnapshot() }
 export function stop() { flushUsageState(); flushCacheState() }
-

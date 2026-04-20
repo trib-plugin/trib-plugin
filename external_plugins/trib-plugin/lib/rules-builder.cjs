@@ -6,20 +6,21 @@
  * Builds the injection content string that either the SessionStart hook
  * (hook mode) or the MCP boot-time writer (claude_md mode) uses.
  *
- * Pool A injection order (lead):
- *   1.  general.md        (rules/pool-a/01-general.md)
- *   2.  memory.md         (rules/memory.md — when memory-config.json enabled)
- *   3.  search.md         (rules/memory.md — when search-config.json enabled)
- *   3b. explore.md        (rules/explore.md — always; internal file search)
- *   3c. lsp.md            (rules/lsp.md — always; TS/JS semantic symbol lookup)
- *   4.  channels.md       (rules/pool-a/02-channels.md)
- *   5.  team.md           (rules/pool-a/03-team.md)
- *   6.  workflow.md       (rules/pool-a/04-workflow.md)
- *   7.  # Roles           (auto-rendered from DATA_DIR/user-workflow.json)
- *   8.  # User Workflow   (DATA_DIR/user-workflow.md — user customizations)
- *   9.  # User Profile    (history/user.md, auto-wrapped)
- *  10.  # Bot Persona     (history/bot.md, auto-wrapped)
- *  11.  User: <name>      (from memory-config.json)
+ * Lead injection order:
+ *   1.  general.md        (rules/lead/01-general.md)
+ *   2.  tool.md           (rules/shared/01-tool.md)
+ *   3.  memory.md         (rules/shared/02-memory.md — when memory-config.json enabled)
+ *   4.  search.md         (rules/shared/03-search.md — when search-config.json enabled)
+ *   5.  explore.md        (rules/shared/04-explore.md — always; internal file search)
+ *   6.  lsp.md            (rules/shared/05-lsp.md — always; TS/JS semantic symbol lookup)
+ *   7.  channels.md       (rules/lead/02-channels.md)
+ *   8.  team.md           (rules/lead/03-team.md)
+ *   9.  workflow.md       (rules/lead/04-workflow.md)
+ *  10.  # Roles           (auto-rendered from DATA_DIR/user-workflow.json)
+ *  11.  # User Workflow   (DATA_DIR/user-workflow.md — user customizations)
+ *  12.  # User Profile    (history/user.md, auto-wrapped)
+ *  13.  # Bot Persona     (history/bot.md, auto-wrapped)
+ *  14.  User: <name>      (from memory-config.json)
  *
  * Core memory snapshot and session recap are injected separately by
  * hooks/session-start.cjs from memory.sqlite.
@@ -92,8 +93,8 @@ function extractCommonClaudeMdSections(content) {
  */
 function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
-  const POOL_A_DIR = path.join(RULES_DIR, 'pool-a');
-  const SHARED_DIR = RULES_DIR;
+  const SHARED_DIR = path.join(RULES_DIR, 'shared');
+  const LEAD_DIR = path.join(RULES_DIR, 'lead');
   const HISTORY_DIR = path.join(DATA_DIR, 'history');
 
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
@@ -101,46 +102,46 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const parts = [];
 
   // --- 1. General (always) ---
-  const general = readOptional(path.join(POOL_A_DIR, '01-general.md'));
+  const general = readOptional(path.join(LEAD_DIR, '01-general.md'));
   if (general) parts.push(general);
 
-  // --- 2. Memory (when memory-config.json has enabled) ---
+  // --- 2. Tool routing / batching (always) ---
+  const tool = readOptional(path.join(SHARED_DIR, '01-tool.md'));
+  if (tool) parts.push(tool);
+
+  // --- 3. Memory (when memory-config.json has enabled) ---
   if (memoryConfig.enabled) {
-    const memory = readOptional(path.join(SHARED_DIR, 'memory.md'));
+    const memory = readOptional(path.join(SHARED_DIR, '02-memory.md'));
     if (memory) parts.push(memory);
   }
 
-  // --- 3. Search (when search-config.json has enabled) ---
+  // --- 4. Search (when search-config.json has enabled) ---
   if (searchConfig.enabled) {
-    const search = readOptional(path.join(SHARED_DIR, 'search.md'));
+    const search = readOptional(path.join(SHARED_DIR, '03-search.md'));
     if (search) parts.push(search);
   }
 
-  // --- 3b. Explore (always — internal codebase search) ---
-  const explore = readOptional(path.join(SHARED_DIR, 'explore.md'));
+  // --- 5. Explore (always — internal codebase search) ---
+  const explore = readOptional(path.join(SHARED_DIR, '04-explore.md'));
   if (explore) parts.push(explore);
 
-  // --- 3c. LSP symbol tools (always — TS/JS semantic lookup) ---
-  const lsp = readOptional(path.join(SHARED_DIR, 'lsp.md'));
+  // --- 6. LSP symbol tools (always — TS/JS semantic lookup) ---
+  const lsp = readOptional(path.join(SHARED_DIR, '05-lsp.md'));
   if (lsp) parts.push(lsp);
 
-  // --- 4. Channels (always) ---
-  const channels = readOptional(path.join(POOL_A_DIR, '02-channels.md'));
+  // --- 7. Channels (always) ---
+  const channels = readOptional(path.join(LEAD_DIR, '02-channels.md'));
   if (channels) parts.push(channels);
 
-  // --- 5. Team (always) ---
-  const team = readOptional(path.join(POOL_A_DIR, '03-team.md'));
+  // --- 8. Team (always) ---
+  const team = readOptional(path.join(LEAD_DIR, '03-team.md'));
   if (team) parts.push(team);
 
-  // --- 6. Workflow (always) ---
-  const workflow = readOptional(path.join(POOL_A_DIR, '04-workflow.md'));
+  // --- 9. Workflow (always) ---
+  const workflow = readOptional(path.join(LEAD_DIR, '04-workflow.md'));
   if (workflow) parts.push(workflow);
 
-  // --- 6b. Tool efficiency (always — single source of truth shared with Pool B/C) ---
-  const toolEfficiency = readOptional(path.join(SHARED_DIR, '_shared', 'tool-efficiency.md'));
-  if (toolEfficiency) parts.push(toolEfficiency);
-
-  // --- 7. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
+  // --- 10. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
   const userWorkflowJsonPath = path.join(DATA_DIR, 'user-workflow.json');
   let userWorkflow = { roles: [] };
   try {
@@ -156,7 +157,7 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     parts.push(roleLines.join('\n'));
   }
 
-  // --- 8. User Workflow (DATA_DIR/user-workflow.md — user customizations) ---
+  // --- 11. User Workflow (DATA_DIR/user-workflow.md — user customizations) ---
   const userWorkflowMdPath = path.join(DATA_DIR, 'user-workflow.md');
   const userWorkflowMd = readOptional(userWorkflowMdPath);
   if (userWorkflowMd) {
@@ -164,15 +165,15 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
     parts.push(startsWithHeader ? userWorkflowMd : `# User Workflow\n\n${userWorkflowMd}`);
   }
 
-  // --- 9. User Profile (Pool A only — history/user.md wrapped with H1) ---
+  // --- 12. User Profile (Lead only — history/user.md wrapped with H1) ---
   const userProfile = readOptional(path.join(HISTORY_DIR, 'user.md'));
   if (userProfile) parts.push(`# User Profile\n\n${userProfile}`);
 
-  // --- 10. Bot Persona (Pool A only — history/bot.md wrapped with H1) ---
+  // --- 13. Bot Persona (Lead only — history/bot.md wrapped with H1) ---
   const botPersona = readOptional(path.join(HISTORY_DIR, 'bot.md'));
   if (botPersona) parts.push(`# Bot Persona\n\n${botPersona}`);
 
-  // --- 11. User name & title (from memory-config.json) ---
+  // --- 14. User name & title (from memory-config.json) ---
   const userName = (memoryConfig.user && memoryConfig.user.name || '').trim();
   const userTitle = (memoryConfig.user && memoryConfig.user.title || '').trim();
   if (userName) {
@@ -183,20 +184,19 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 }
 
 /**
- * Build the Pool B injection content (Bridge sessions — Worker / Sub / Maintenance).
+ * Build the bridge injection content (Worker / Sub / Maintenance sessions).
  *
  * Included:
- *   - Agent MD (rules/pool-b/01-agent.md, plugin-fixed Pool B rules)
- *   - rules/memory.md (when memory enabled)
- *   - rules/search.md (when search enabled)
- *   - rules/explore.md (always; internal file search)
- *   - rules/lsp.md (always; TS/JS semantic symbol lookup)
- *   - CLAUDE.md common sections (user-authored custom sections outside the
- *     managed block and outside the Lead-only H1/H2 blacklist)
+ *   - rules/shared/01-tool.md
+ *   - rules/shared/02-memory.md (when memory enabled)
+ *   - rules/shared/03-search.md (when search enabled)
+ *   - rules/shared/04-explore.md (always; internal file search)
+ *   - rules/shared/05-lsp.md (always; TS/JS semantic symbol lookup)
+ *   - rules/bridge/00-common.md
  *   - User: <name> (<title>)
  *
- * Explicitly excluded (Pool A only):
- *   - rules/general.md / rules/channels.md / rules/team.md / rules/workflow.md
+ * Explicitly excluded (Lead only):
+ *   - rules/lead/*
  *   - # Roles / # User Workflow
  *   - # User Profile / # Bot Persona
  *
@@ -207,32 +207,33 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  */
 function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
-  const POOL_B_DIR = path.join(RULES_DIR, 'pool-b');
-  const SHARED_DIR = RULES_DIR;
+  const SHARED_DIR = path.join(RULES_DIR, 'shared');
+  const BRIDGE_DIR = path.join(RULES_DIR, 'bridge');
   const memoryConfig = readJson(path.join(DATA_DIR, 'memory-config.json'));
   const searchConfig = readJson(path.join(DATA_DIR, 'search-config.json'));
   const parts = [];
 
-  const agentContent = readOptional(path.join(POOL_B_DIR, '01-agent.md'));
-  if (agentContent) parts.push(agentContent);
+  const tool = readOptional(path.join(SHARED_DIR, '01-tool.md'));
+  if (tool) parts.push(tool);
 
-  // Shared tool-efficiency fragment — single source of truth, injected into
-  // every Pool B agent (worker/debugger/reviewer/tester/researcher + any
-  // user-defined role). Pool C sub-agents load the same file from
-  // bridge-llm.getRoleSnippet so all bridge-issued sessions share these 5 rules.
-  const toolEfficiency = readOptional(path.join(SHARED_DIR, '_shared', 'tool-efficiency.md'));
-  if (toolEfficiency) parts.push(toolEfficiency);
+  if (memoryConfig.enabled) {
+    const memory = readOptional(path.join(SHARED_DIR, '02-memory.md'));
+    if (memory) parts.push(memory);
+  }
 
-  // rules/{memory,search,explore,lsp}.md intentionally NOT included here.
-  // Bridge sessions receive full tool schemas (non-deferred) so the
-  // Anthropic tool description already carries canonical usage info for
-  // each tool. Pool A still includes these files via buildInjectionContent
-  // as a deferred-tool safety net for Lead.
+  if (searchConfig.enabled) {
+    const search = readOptional(path.join(SHARED_DIR, '03-search.md'));
+    if (search) parts.push(search);
+  }
 
-  // CLAUDE.md common sections intentionally excluded from the bridge prefix.
-  // Lead-facing commit/writing/profile policies do not affect agent work
-  // output, and stripping them trims the BP2 cache prefix. Pool A still
-  // sees the full CLAUDE.md via buildInjectionContent.
+  const explore = readOptional(path.join(SHARED_DIR, '04-explore.md'));
+  if (explore) parts.push(explore);
+
+  const lsp = readOptional(path.join(SHARED_DIR, '05-lsp.md'));
+  if (lsp) parts.push(lsp);
+
+  const common = readOptional(path.join(BRIDGE_DIR, '00-common.md'));
+  if (common) parts.push(common);
 
   // User-defined agent customizations (monolithic — all roles/schedules/webhooks
   // baked into the cached prefix). The active per-call task data lives in the
