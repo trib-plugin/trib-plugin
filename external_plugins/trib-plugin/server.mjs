@@ -359,6 +359,20 @@ async function dispatchTool(name, args, callerCtx = {}) {
     return { content: [{ type: 'text', text: String(text) }] }
   }
 
+  if (def.module === 'bash_session') {
+    // Persistent-shell tool. A pool of long-lived bash children keyed by
+    // session_id preserves cwd / env / `source`d state across calls, so the
+    // model can run `cd proj → activate venv → pytest` as three ordinary
+    // calls instead of rebuilding shell context each turn. Same blocked-
+    // pattern guard and output framing as the stateless `bash` tool.
+    // See src/agent/orchestrator/tools/bash-session.mjs.
+    const { executeBashSessionTool } = await import(
+      pathToFileURL(join(PLUGIN_ROOT, 'src/agent/orchestrator/tools/bash-session.mjs')).href,
+    )
+    const text = await executeBashSessionTool(name, args ?? {}, process.cwd())
+    return { content: [{ type: 'text', text: String(text) }] }
+  }
+
   const moduleName = TOOL_MODULE[name]
   if (!moduleName) throw new Error(`Unknown tool: ${name}`)
 

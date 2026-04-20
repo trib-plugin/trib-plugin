@@ -709,7 +709,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read a file with cat -n line numbering, size cap, optional offset/limit.",
+    "description": "Read a file with cat -n line numbering, size cap, optional offset/limit. Big files (>30 KB or >600 lines) return a head+tail summary unless `full:true` or an explicit offset/limit is supplied.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -724,6 +724,10 @@
         "limit": {
           "type": "number",
           "description": "Max lines (default 2000)."
+        },
+        "full": {
+          "type": "boolean",
+          "description": "Opt out of the smart head/tail cap for big files. Default false."
         }
       },
       "required": [
@@ -1088,6 +1092,10 @@
               },
               "limit": {
                 "type": "number"
+              },
+              "full": {
+                "type": "boolean",
+                "description": "Opt out of the big-file head/tail cap. Default false."
               }
             },
             "required": [
@@ -1682,5 +1690,42 @@
       ]
     },
     "module": "patch"
+  },
+  {
+    "name": "bash_session",
+    "title": "Persistent Bash Session",
+    "annotations": {
+      "title": "Persistent Bash Session",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Execute a shell command inside a long-lived bash session that preserves state across calls — cwd (`cd`), environment variables (`export`), shell functions, aliases, and any `source`d virtualenv or init script persist until the session is closed or idle-reaped (5 min). Omit `session_id` on the first call to mint a new session; the response header prints `[session: <id>]` which you reuse on subsequent calls. Pass `close:true` to terminate the session after this command. Max 10 concurrent sessions; the oldest idle one is evicted when the pool fills. Same safety pattern as `bash` (destructive patterns like `rm -rf /` / `git push --force` blocked). Output is ANSI-stripped and middle-truncated like the `bash` tool. Use this INSTEAD of `bash` whenever you need two-plus commands that share state (e.g. `cd project && source .venv/bin/activate && pytest`) — one call per command, reusing the session_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to execute in the session."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Existing session to reuse. Omit to create a new one; the id is returned in the response header as `[session: <id>]`. Unknown ids are minted (stable resume)."
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Command timeout. Values ≤ 600 are treated as seconds; larger values as ms. Default 30 s, max 600 s. On timeout the session is killed (caller should mint a new one)."
+        },
+        "close": {
+          "type": "boolean",
+          "description": "Close the session after this command returns. Default false."
+        }
+      },
+      "required": [
+        "command"
+      ]
+    },
+    "module": "bash_session"
   }
 ]

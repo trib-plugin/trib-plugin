@@ -53,6 +53,7 @@ const MODULES = [
   { name: 'lsp',      path: 'src/agent/orchestrator/tools/lsp.mjs',      key: 'LSP_TOOL_DEFS' },
   { name: 'astgrep',  path: 'src/agent/orchestrator/tools/astgrep.mjs',  key: 'ASTGREP_TOOL_DEFS' },
   { name: 'patch',    path: 'src/agent/orchestrator/tools/patch.mjs',    key: 'PATCH_TOOL_DEFS' },
+  { name: 'bash_session', path: 'src/agent/orchestrator/tools/bash-session.mjs', key: 'BASH_SESSION_TOOL_DEFS' },
 ]
 
 const t0 = Date.now()

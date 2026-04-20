@@ -1,0 +1,426 @@
+// bash_session — persistent shell with state preserved across calls.
+//
+// Companion to the stateless `bash` tool. The default `bash` spawns a fresh
+// subshell every call: cwd, exports, `source`d virtualenvs, shell functions
+// all vanish between invocations. That's the safe default but it's clumsy
+// for the common "cd into a project → activate venv → run three commands"
+// workflow; each step has to reconstruct the prior shell context by hand.
+//
+// bash_session keeps a long-lived `bash` child process per session_id. The
+// caller writes commands to stdin; we frame each command with a sentinel
+// so we know when the command has finished and what its exit code was.
+// State carried automatically: $PWD, exports, shell vars, readline history
+// (not that we use it), aliases, function defs, `source`d files.
+//
+// Session lifecycle:
+//   - session_id omitted         → mint a fresh id, spawn child, run command
+//   - session_id matches pool    → reuse existing child
+//   - session_id misses pool     → mint THAT id (stable resume semantics)
+//   - close:true                 → terminate child after command returns
+//   - idle > IDLE_TIMEOUT_MS     → reaper removes & kills the child
+//   - pool > MAX_SESSIONS        → oldest-idle evicted at spawn time
+//
+// Output protocol:
+//   write:  <command>\necho "__TRIB_END__:$?"\n
+//   read:   everything on stdout up to (not including) the marker line
+//   exit:   the N in __TRIB_END__:N
+//   stderr: captured in parallel; sentinel not echoed there, so we flush
+//           whatever arrived up to the command's completion. Small
+//           quiescence window (STDERR_DRAIN_MS) after the stdout marker
+//           so trailing writes on stderr don't get cut off.
+//
+// Safety: same BLOCKED_PATTERNS as the `bash` tool. The session holds state
+// so a dangerous command can't hide in an earlier turn (we scan per call).
+// Same ANSI strip + smart middle-truncate applied to stdout/stderr.
+//
+// Not guarded by isSafePath: this tool takes a command, not a file path.
+
+import { spawn } from 'node:child_process';
+import * as nodeUtil from 'node:util';
+import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_TIMEOUT_MS = 600_000;
+const IDLE_TIMEOUT_MS = 5 * 60_000;
+const MAX_SESSIONS = 10;
+const STDERR_DRAIN_MS = 25;
+// Shared cap with the `bash` tool (SHELL_OUTPUT_MAX_CHARS). Duplicated here
+// so bash-session stays decoupled from builtin.mjs's private constants.
+const SHELL_OUTPUT_MAX_CHARS = 30_000;
+const SMART_BASH_MAX_LINES = 400;
+const SMART_BASH_MAX_BYTES = 30 * 1024;
+const SMART_BASH_HEAD_LINES = 80;
+const SMART_BASH_TAIL_LINES = 80;
+
+// Marker must be something no legitimate shell output would print on its
+// own line. `__TRIB_END__` + exit status, anchored at line start.
+const MARKER = '__TRIB_END__';
+const MARKER_RE = new RegExp(`^${MARKER}:(-?\\d+)\\s*$`, 'm');
+
+// --- ANSI strip (self-contained; mirrors builtin.mjs's implementation) ---
+const _ANSI_REGEX = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\|\u009C))/g;
+const _stripAnsi = typeof nodeUtil.stripVTControlCharacters === 'function'
+    ? (s) => nodeUtil.stripVTControlCharacters(s)
+    : (s) => s.replace(_ANSI_REGEX, () => '');
+function stripAnsi(s) {
+    if (typeof s !== 'string' || s.length === 0) return s;
+    return _stripAnsi(s);
+}
+
+// --- Smart middle-truncate (shared with bash tool) ---
+function smartMiddleTruncate(content) {
+    const s = typeof content === 'string' ? content : String(content ?? '');
+    if (s.length <= SMART_BASH_MAX_BYTES) {
+        const fastLines = s.split('\n');
+        if (fastLines.length <= SMART_BASH_MAX_LINES) return s;
+        const head = fastLines.slice(0, SMART_BASH_HEAD_LINES).join('\n');
+        const tail = fastLines.slice(-SMART_BASH_TAIL_LINES).join('\n');
+        const middle = fastLines.length - SMART_BASH_HEAD_LINES - SMART_BASH_TAIL_LINES;
+        return `${head}\n\n... [TRUNCATED — ${middle} lines middle elided; total ${fastLines.length} lines. Rerun with tighter filters for more] ...\n\n${tail}`;
+    }
+    const lines = s.split('\n');
+    if (lines.length <= SMART_BASH_MAX_LINES) {
+        const head = s.slice(0, SMART_BASH_MAX_BYTES);
+        return `${head}\n\n... [TRUNCATED — output exceeded ${Math.round(SMART_BASH_MAX_BYTES / 1024)} KB on a single line] ...`;
+    }
+    const head = lines.slice(0, SMART_BASH_HEAD_LINES).join('\n');
+    const tail = lines.slice(-SMART_BASH_TAIL_LINES).join('\n');
+    const middle = lines.length - SMART_BASH_HEAD_LINES - SMART_BASH_TAIL_LINES;
+    const totalKb = Math.round(s.length / 1024);
+    return `${head}\n\n... [TRUNCATED — ${middle} lines middle elided; total ${lines.length} lines / ${totalKb} KB. Rerun with tighter filters for more] ...\n\n${tail}`;
+}
+
+// --- Blocked patterns (same set as bash tool; duplicated to keep module
+// standalone). Any drift should be fixed in BOTH files.
+const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
+const BLOCKED_PATTERNS = [
+    /\brm\s+-rf\s+[/~]/i,
+    /\bgit\s+push\s+--force/i,
+    /\bgit\s+reset\s+--hard/i,
+    /\bformat\s+[a-z]:/i,
+    /\b(shutdown|reboot|halt)\b/i,
+    /\bdel\s+\/[sfq]/i,
+    new RegExp(_CMD_START + 'mkfs(?:\\.|\\b)', 'i'),
+    new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bif=/dev/', 'i'),
+    new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
+    /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature
+];
+function isBlocked(command) {
+    for (const pat of BLOCKED_PATTERNS) {
+        if (pat.test(command)) return true;
+    }
+    return false;
+}
+
+// Locate a usable bash binary. On Windows, Git Bash / MSYS ships one; on
+// POSIX, /bin/bash is ubiquitous. We deliberately pin bash (not sh) since
+// the feature set depended on by the sentinel echo and `$?` is bash-shaped.
+function resolveBash() {
+    if (process.platform !== 'win32') {
+        if (existsSync('/bin/bash')) return '/bin/bash';
+        if (existsSync('/usr/bin/bash')) return '/usr/bin/bash';
+        return '/bin/sh'; // fallback; `$?` + echo still work
+    }
+    const fallbacks = [
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe',
+        'C:\\msys64\\usr\\bin\\bash.exe',
+        'C:\\cygwin64\\bin\\bash.exe',
+    ];
+    for (const c of fallbacks) if (existsSync(c)) return c;
+    // Last resort — let spawn error surface clearly.
+    return 'bash';
+}
+
+// --- Session pool ---
+// Map<id, { proc, lastUsed, stdoutBuf, stderrBuf, busy }>
+const _sessions = new Map();
+let _reaperTimer = null;
+
+function _startReaper() {
+    if (_reaperTimer) return;
+    _reaperTimer = setInterval(() => {
+        const now = Date.now();
+        for (const [id, s] of _sessions) {
+            if (!s.busy && now - s.lastUsed > IDLE_TIMEOUT_MS) {
+                _killSession(id, 'idle-timeout');
+            }
+        }
+        if (_sessions.size === 0) {
+            clearInterval(_reaperTimer);
+            _reaperTimer = null;
+        }
+    }, 30_000);
+    // Don't keep the event loop alive just for the reaper.
+    if (typeof _reaperTimer.unref === 'function') _reaperTimer.unref();
+}
+
+function _killSession(id, _reason) {
+    const s = _sessions.get(id);
+    if (!s) return;
+    _sessions.delete(id);
+    try {
+        s.proc.stdin?.end();
+    } catch { /* ignore */ }
+    try {
+        // SIGTERM first; if the child ignores it the OS reaps on process exit.
+        s.proc.kill('SIGTERM');
+    } catch { /* ignore */ }
+}
+
+function _evictOldestIfFull() {
+    if (_sessions.size < MAX_SESSIONS) return;
+    // Prefer an idle session. If all are busy we can't evict safely; throw.
+    let oldestId = null;
+    let oldestTs = Infinity;
+    for (const [id, s] of _sessions) {
+        if (s.busy) continue;
+        if (s.lastUsed < oldestTs) {
+            oldestTs = s.lastUsed;
+            oldestId = id;
+        }
+    }
+    if (oldestId) {
+        _killSession(oldestId, 'pool-full');
+        return;
+    }
+    throw new Error(`bash_session pool full (${MAX_SESSIONS} concurrent sessions, all busy)`);
+}
+
+function _spawnSession(id) {
+    _evictOldestIfFull();
+    const shell = resolveBash();
+    const proc = spawn(shell, [], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' },
+        windowsHide: true,
+    });
+    proc.stdout.setEncoding('utf-8');
+    proc.stderr.setEncoding('utf-8');
+    const entry = {
+        proc,
+        lastUsed: Date.now(),
+        stdoutBuf: '',
+        stderrBuf: '',
+        busy: false,
+        dead: false,
+        exitInfo: null,
+    };
+    proc.stdout.on('data', (chunk) => { entry.stdoutBuf += chunk; });
+    proc.stderr.on('data', (chunk) => { entry.stderrBuf += chunk; });
+    proc.on('error', (err) => {
+        entry.dead = true;
+        entry.exitInfo = { error: err?.message || String(err) };
+    });
+    proc.on('exit', (code, signal) => {
+        entry.dead = true;
+        entry.exitInfo = { code, signal };
+        _sessions.delete(id);
+    });
+    _sessions.set(id, entry);
+    _startReaper();
+    return entry;
+}
+
+function _getOrCreate(sessionId) {
+    const id = sessionId || `sess_${randomUUID()}`;
+    let entry = _sessions.get(id);
+    if (entry && entry.dead) {
+        _sessions.delete(id);
+        entry = null;
+    }
+    if (!entry) entry = _spawnSession(id);
+    return { id, entry };
+}
+
+// Core command-run: frame with sentinel, wait for marker on stdout, flush
+// stderr with a small drain window, return { stdout, stderr, exit_code }.
+function _runCommand(entry, command, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        entry.busy = true;
+        // Reset buffers for this command. Anything left from a prior run is
+        // unexpected (we only return after the marker), but be defensive.
+        entry.stdoutBuf = '';
+        entry.stderrBuf = '';
+
+        let finished = false;
+        let timeoutHandle = null;
+
+        const cleanup = () => {
+            finished = true;
+            entry.busy = false;
+            entry.lastUsed = Date.now();
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            entry.proc.stdout.removeListener('data', onStdout);
+        };
+
+        const settle = (result) => {
+            if (finished) return;
+            cleanup();
+            resolve(result);
+        };
+
+        const fail = (err) => {
+            if (finished) return;
+            cleanup();
+            reject(err);
+        };
+
+        const onStdout = () => {
+            const m = MARKER_RE.exec(entry.stdoutBuf);
+            if (!m) return;
+            const exitCode = Number(m[1]);
+            // Everything before the marker line is the real stdout.
+            const before = entry.stdoutBuf.slice(0, m.index);
+            // Drain any pending stderr writes before returning. 25 ms is
+            // plenty in practice — bash flushes stderr synchronously on
+            // command completion, but a forked child's dying writes may
+            // land a tick later.
+            setTimeout(() => {
+                const stderr = entry.stderrBuf;
+                entry.stdoutBuf = '';
+                entry.stderrBuf = '';
+                settle({ stdout: before, stderr, exit_code: exitCode });
+            }, STDERR_DRAIN_MS);
+        };
+
+        entry.proc.stdout.on('data', onStdout);
+        // Check the buffer in case the marker already arrived (tiny commands).
+        onStdout();
+
+        entry.proc.on('exit', () => {
+            if (finished) return;
+            fail(new Error('bash_session: shell exited before command completed'));
+        });
+
+        timeoutHandle = setTimeout(() => {
+            // Timeout: surface what we have but don't leave the shell in a
+            // half-run state. Killing the process is the only reliable way
+            // to interrupt a stuck command; the caller can mint a new session.
+            const partialOut = entry.stdoutBuf;
+            const partialErr = entry.stderrBuf;
+            entry.stdoutBuf = '';
+            entry.stderrBuf = '';
+            try { entry.proc.kill('SIGTERM'); } catch { /* ignore */ }
+            cleanup();
+            // Return a structured result (not a reject) so the caller
+            // renders a proper exit/stderr block instead of a bare Error.
+            resolve({
+                stdout: partialOut,
+                stderr: partialErr,
+                exit_code: null,
+                signal: 'SIGTERM',
+                timed_out: true,
+                timeout_ms: timeoutMs,
+            });
+        }, timeoutMs);
+
+        // Write the command + sentinel. Newline before `echo` in case the
+        // command didn't end with one. `$?` captures the final pipeline's
+        // exit status as of bash semantics.
+        const payload = `${command}\necho "${MARKER}:$?"\n`;
+        try {
+            entry.proc.stdin.write(payload, 'utf-8');
+        } catch (err) {
+            fail(err);
+        }
+    });
+}
+
+async function bash_session(args) {
+    const command = typeof args?.command === 'string' ? args.command : '';
+    if (!command) return 'Error: command is required';
+    if (isBlocked(command)) {
+        return `Error: blocked command pattern — "${command}" matches safety rule`;
+    }
+    const rawTimeout = typeof args?.timeout === 'number' ? args.timeout : DEFAULT_TIMEOUT_MS;
+    // Accept seconds OR milliseconds for ergonomics: values ≤ 600 are
+    // treated as seconds (matches the spec's "max 600s"); larger values
+    // are taken as ms. Cap either way.
+    const timeoutMs = rawTimeout <= 600 ? rawTimeout * 1000 : rawTimeout;
+    const effectiveTimeout = Math.min(Math.max(timeoutMs, 1000), MAX_TIMEOUT_MS);
+    const close = args?.close === true;
+
+    const { id, entry } = _getOrCreate(args?.session_id);
+
+    if (entry.busy) {
+        return `Error: session "${id}" is busy executing a prior command`;
+    }
+
+    let result;
+    try {
+        result = await _runCommand(entry, command, effectiveTimeout);
+    } catch (err) {
+        return `Error: ${err?.message || String(err)}`;
+    }
+
+    if (close) {
+        _killSession(id, 'close-requested');
+    }
+
+    const stdoutClean = stripAnsi(result.stdout || '');
+    const stderrClean = stripAnsi(result.stderr || '');
+    const stdoutT = smartMiddleTruncate(stdoutClean);
+    const stderrT = stderrClean ? smartMiddleTruncate(stderrClean) : '';
+
+    // Structured header so the agent can parse session_id + exit_code out
+    // of the text response without bespoke JSON. Keeps parity with the
+    // `bash` tool's free-form `[exit code: N]` marker but additive.
+    const headerLines = [`[session: ${id}]`];
+    if (result.timed_out) {
+        headerLines.push(`[timeout: ${result.timeout_ms} ms — session killed]`);
+    } else if (result.exit_code !== 0 && result.exit_code !== null) {
+        headerLines.push(`[exit code: ${result.exit_code}]`);
+    }
+    if (close) headerLines.push(`[closed]`);
+    const header = headerLines.join('\n');
+
+    const body = stdoutT || (stderrT ? '' : '(no output)');
+    const stderrBlock = stderrT ? `\n\n[stderr]\n${stderrT}` : '';
+    return `${header}\n\n${body}${stderrBlock}`;
+}
+
+export const BASH_SESSION_TOOL_DEFS = [
+    {
+        name: 'bash_session',
+        title: 'Persistent Bash Session',
+        annotations: {
+            title: 'Persistent Bash Session',
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false,
+            openWorldHint: true,
+        },
+        description: 'Execute a shell command inside a long-lived bash session that preserves state across calls — cwd (`cd`), environment variables (`export`), shell functions, aliases, and any `source`d virtualenv or init script persist until the session is closed or idle-reaped (5 min). Omit `session_id` on the first call to mint a new session; the response header prints `[session: <id>]` which you reuse on subsequent calls. Pass `close:true` to terminate the session after this command. Max 10 concurrent sessions; the oldest idle one is evicted when the pool fills. Same safety pattern as `bash` (destructive patterns like `rm -rf /` / `git push --force` blocked). Output is ANSI-stripped and middle-truncated like the `bash` tool. Use this INSTEAD of `bash` whenever you need two-plus commands that share state (e.g. `cd project && source .venv/bin/activate && pytest`) — one call per command, reusing the session_id.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: 'Shell command to execute in the session.' },
+                session_id: { type: 'string', description: 'Existing session to reuse. Omit to create a new one; the id is returned in the response header as `[session: <id>]`. Unknown ids are minted (stable resume).' },
+                timeout: { type: 'number', description: 'Command timeout. Values ≤ 600 are treated as seconds; larger values as ms. Default 30 s, max 600 s. On timeout the session is killed (caller should mint a new one).' },
+                close: { type: 'boolean', description: 'Close the session after this command returns. Default false.' },
+            },
+            required: ['command'],
+        },
+    },
+];
+
+export async function executeBashSessionTool(name, args, _cwd) {
+    switch (name) {
+        case 'bash_session':
+            return bash_session(args || {});
+        default:
+            throw new Error(`Unknown bash-session tool: ${name}`);
+    }
+}
+
+// Best-effort cleanup on process exit so orphan bash children don't linger
+// when the plugin host shuts down. Not registered if the process has no
+// `exit` event (shouldn't happen on Node).
+if (typeof process?.on === 'function') {
+    process.on('exit', () => {
+        for (const id of [..._sessions.keys()]) _killSession(id, 'process-exit');
+    });
+}
