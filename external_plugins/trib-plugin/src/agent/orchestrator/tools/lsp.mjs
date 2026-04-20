@@ -28,9 +28,10 @@
 // compact display; absolute paths flow internally.
 
 import { spawn } from 'node:child_process';
-import { resolve as pathResolve, extname, isAbsolute, join, dirname, sep as pathSep } from 'node:path';
+import { resolve as pathResolve, relative as pathRelative, extname, isAbsolute, join, dirname, sep as pathSep } from 'node:path';
 import { readFile, access } from 'node:fs/promises';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { normalizeInputPath, normalizeOutputPath } from './builtin.mjs';
 
 const LANG_BY_EXT = {
   '.ts': 'typescript',
@@ -313,12 +314,17 @@ function relativePath(cwd, abs) {
   const a = String(abs || '');
   const c = String(cwd || '');
   if (!a || !c) return a;
-  const aNorm = a.replace(/\\/g, '/');
-  const cNorm = c.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (aNorm.toLowerCase().startsWith(cNorm.toLowerCase() + '/')) {
-    return aNorm.slice(cNorm.length + 1);
+  // Use Node's path.relative for segment-aware computation; on Windows
+  // the result already uses backslashes, so we run it through
+  // normalizeOutputPath at the call site (formatLocations). On Unix
+  // case-sensitivity is preserved — no toLowerCase fold.
+  try {
+    const rel = pathRelative(c, a);
+    if (!rel || rel === '..' || rel.startsWith('..' + pathSep) || isAbsolute(rel)) return a;
+    return rel;
+  } catch {
+    return a;
   }
-  return a;
 }
 
 // LSP SymbolKind enum (1..26) → short label.
@@ -340,7 +346,8 @@ function formatLocations(result, cwd) {
     const uri = loc.uri || loc.targetUri;
     const range = loc.range || loc.targetRange || loc.targetSelectionRange;
     if (!uri || !range) continue;
-    const p = relativePath(cwd, uriToPath(uri));
+    let p = relativePath(cwd, uriToPath(uri));
+    p = normalizeOutputPath(p);
     lines.push(`${p}:${range.start.line + 1}:${range.start.character + 1}`);
   }
   return lines.length ? lines.join('\n') : '(no locations)';
@@ -375,14 +382,15 @@ function formatDocumentSymbols(result) {
 
 async function definitionOrReferences(kind, args, cwd) {
   const { symbol, file } = args || {};
+  const normFile = normalizeInputPath(file);
   if (!symbol) throw new Error(`${kind}: "symbol" is required`);
-  const abs = resolveAbs(cwd, file);
+  const abs = resolveAbs(cwd, normFile);
   if (!abs) throw new Error(`${kind}: "file" is required (path to a file that contains or imports the symbol)`);
-  await access(abs).catch(() => { throw new Error(`${kind}: file does not exist: ${abs}`); });
+  await access(abs).catch(() => { throw new Error(`${kind}: file does not exist: ${normalizeOutputPath(abs)}`); });
   await startServer(cwd);
   const doc = await ensureDocOpen(abs);
   const pos = findSymbolPosition(doc.text, symbol);
-  if (!pos) return `symbol "${symbol}" not found in ${relativePath(cwd, abs)}`;
+  if (!pos) return `symbol "${symbol}" not found in ${normalizeOutputPath(relativePath(cwd, abs))}`;
   const method = kind === 'lsp_definition' ? 'textDocument/definition' : 'textDocument/references';
   const params = {
     textDocument: { uri: doc.uri },
@@ -396,9 +404,10 @@ async function definitionOrReferences(kind, args, cwd) {
 
 async function documentSymbols(args, cwd) {
   const { file } = args || {};
-  const abs = resolveAbs(cwd, file);
+  const normFile = normalizeInputPath(file);
+  const abs = resolveAbs(cwd, normFile);
   if (!abs) throw new Error('lsp_symbols: "file" is required');
-  await access(abs).catch(() => { throw new Error(`lsp_symbols: file does not exist: ${abs}`); });
+  await access(abs).catch(() => { throw new Error(`lsp_symbols: file does not exist: ${normalizeOutputPath(abs)}`); });
   await startServer(cwd);
   const doc = await ensureDocOpen(abs);
   const result = await sendRequest('textDocument/documentSymbol', {

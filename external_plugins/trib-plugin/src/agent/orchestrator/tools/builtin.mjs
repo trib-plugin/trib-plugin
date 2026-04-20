@@ -5,7 +5,7 @@ import { createInterface } from 'readline';
 import { promisify } from 'util';
 import { homedir } from 'os';
 const execAsync = promisify(exec);
-import { resolve, normalize, isAbsolute, relative, dirname, basename, extname, join } from 'path';
+import { resolve, normalize, isAbsolute, relative, dirname, basename, extname, join, sep } from 'path';
 
 function resolveShell() {
     if (process.platform !== 'win32') return { shell: '/bin/sh', shellArg: '-c' };
@@ -40,6 +40,7 @@ export function windowsPathToPosixPath(winPath) {
 }
 
 export function posixPathToWindowsPath(posixPath) {
+    if (process.platform !== 'win32') return posixPath;  // safety guard — Linux paths like /c/Users are valid absolute paths
     if (typeof posixPath !== 'string') return posixPath;
     // Cygwin:  /cygdrive/c/...  ->  c:\...  (case preserved)
     const cyg = posixPath.match(/^\/cygdrive\/([a-zA-Z])\//);
@@ -59,12 +60,18 @@ export function normalizeInputPath(p) {
     // `~` expansion — callers can pass `~/.claude/...` without hardcoding
     // the user's home. Matches Claude Code's expandPath semantics so MCP
     // tool args stay portable across machines. Bare `~` and `~\` also
-    // handled for Windows-quoted strings.
+    // handled for Windows-quoted strings. `~user/...` (named-home) is NOT
+    // expanded — POSIX-only and rarely used in MCP call sites.
     if (out === '~' || out.startsWith('~/') || out.startsWith('~\\')) {
         out = homedir() + out.slice(1);
     }
-    if (process.platform === 'win32' && /^\/[a-zA-Z]\//.test(out)) {
-        out = posixPathToWindowsPath(out);
+    if (process.platform === 'win32') {
+        const looksPosixDrive = /^\/[a-zA-Z]\//.test(out);
+        const looksCygdrive = /^\/cygdrive\/[a-zA-Z]\//.test(out);
+        const looksUnc = out.startsWith('//');
+        if (looksPosixDrive || looksCygdrive || looksUnc) {
+            out = posixPathToWindowsPath(out);
+        }
     }
     try { out = out.normalize('NFC'); } catch { /* ignore */ }
     return out;
@@ -479,6 +486,8 @@ function _recordReadSnapshot(fullPath, st) {
 }
 
 // --- Blocked commands for safety ---
+// Anchor for "command start": line start, after ; && || | (with optional whitespace)
+const _CMD_START = '(?:^|[;&|\\n(){}]\\s*|\\$[\\({]\\s*|[<>]\\(\\s*|`\\s*)';
 const BLOCKED_PATTERNS = [
     /\brm\s+-rf\s+[/~]/i,
     /\bgit\s+push\s+--force/i,
@@ -486,21 +495,28 @@ const BLOCKED_PATTERNS = [
     /\bformat\s+[a-z]:/i,
     /\b(shutdown|reboot|halt)\b/i,
     /\bdel\s+\/[sfq]/i,
+    new RegExp(_CMD_START + 'mkfs(?:\\.|\\b)', 'i'),
+    new RegExp(_CMD_START + 'dd\\s+[^\\n]*\\bif=/dev/', 'i'),
+    new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
+    /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature (idempotent string)
 ];
 function isSafePath(filePath, cwd) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
-    // Windows file paths are case-insensitive (NTFS default), but JS string
-    // comparison is case-sensitive. Without the case fold, `C:\Users\foo`
-    // and `c:\Users\foo` would resolve to the same file yet be rejected
-    // by the scope check.
-    const caseMatch = process.platform === 'win32'
-        ? (a, b) => a.toLowerCase().startsWith(b.toLowerCase())
-        : (a, b) => a.startsWith(b);
-    if (!caseMatch(normalized, baseCwd)) {
+    // Boundary-aware containment check: a path is "inside" baseCwd iff
+    // it equals baseCwd or starts with baseCwd + separator. Without the
+    // trailing-separator guard, `/home/u` would falsely contain
+    // `/home/u2`. Windows uses case-insensitive compare (NTFS default).
+    const isInside = (child, parent) => {
+        if (!parent) return false;
+        const c = process.platform === 'win32' ? child.toLowerCase() : child;
+        const p = process.platform === 'win32' ? parent.toLowerCase() : parent;
+        if (c === p) return true;
+        return c.startsWith(p.endsWith(sep) ? p : p + sep);
+    };
+    if (!isInside(normalized, baseCwd)) {
         const home = process.env.HOME || process.env.USERPROFILE || '';
-        if (home && caseMatch(normalized, normalize(home)))
-            return true;
+        if (home && isInside(normalized, normalize(home))) return true;
         return false;
     }
     return true;
@@ -698,7 +714,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 writeFileSync(fullPath, content, 'utf-8');
                 _cacheInvalidateAll();
                 _recordReadSnapshot(fullPath);
-                return `Edited: ${filePath} (${edits.length} replacements applied)`;
+                return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
             } catch (err) {
                 return `Error: ${err instanceof Error ? err.message : String(err)}`;
             }
@@ -722,9 +738,9 @@ export async function executeBuiltinTool(name, args, cwd) {
                 if (/^Error(\s|\[)/.test(first)) {
                     const colonIdx = first.indexOf(': ');
                     const msg = colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
-                    lines.push(`FAIL ${entry.path}: ${msg}`);
+                    lines.push(`FAIL ${normalizeOutputPath(entry.path)}: ${msg}`);
                 } else {
-                    lines.push(`OK ${entry.path}`);
+                    lines.push(`OK ${normalizeOutputPath(entry.path)}`);
                 }
             }
             return lines.join('\n');
@@ -747,7 +763,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // authored, so a subsequent Edit does not need a fresh
                 // Read round-trip.
                 _recordReadSnapshot(fullPath);
-                return `Written: ${filePath}`;
+                return `Written: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
                 return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -804,7 +820,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // of edits against the same file doesn't trip the stale
                 // check on the second hop.
                 _recordReadSnapshot(fullPath);
-                return `Edited: ${filePath}`;
+                return `Edited: ${normalizeOutputPath(filePath)}`;
             }
             catch (err) {
                 return `Error: ${err instanceof Error ? err.message : String(err)}`;
