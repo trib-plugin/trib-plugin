@@ -83,7 +83,11 @@ export function normalizeInputPath(p) {
 // is a purely cosmetic (and downstream copy-paste friendly) normalisation.
 export function normalizeOutputPath(p) {
     if (typeof p !== 'string') return p;
-    return process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
+    if (process.platform !== 'win32') return p;
+    // Forward-slash unify + drive letter uppercase. LSP / fileURLToPath
+    // returns `c:/...` lowercase, but every other tool emits `C:/...`
+    // uppercase — this single point keeps the convention consistent.
+    return p.replace(/\\/g, '/').replace(/^([a-z]):/, (_, d) => d.toUpperCase() + ':');
 }
 
 // Grep output lines shaped as "<path>:<lineno>:<content>" (content mode),
@@ -586,7 +590,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!filePath)
                 return 'Error: path is required';
             if (!isSafePath(filePath, workDir))
-                return `Error: path outside allowed scope — ${filePath}`;
+                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             const cacheKey = `read|${fullPath}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}`;
             const cached = _cacheGet(cacheKey);
@@ -670,7 +674,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             const edits = Array.isArray(args.edits) ? args.edits : [];
             if (!filePath) return 'Error: path is required';
             if (edits.length === 0) return 'Error: edits array is required';
-            if (!isSafePath(filePath, workDir)) return `Error: path outside allowed scope — ${filePath}`;
+            if (!isSafePath(filePath, workDir)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             if (!existsSync(fullPath)) {
                 const similar = findSimilarFile(fullPath);
@@ -754,7 +758,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (content === undefined)
                 return 'Error: content is required';
             if (!isSafePath(filePath, workDir))
-                return `Error: path outside allowed scope — ${filePath}`;
+                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             try {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
                 writeFileSync(fullPath, content, 'utf-8');
@@ -778,7 +782,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!filePath || !oldStr)
                 return 'Error: path and old_string are required';
             if (!isSafePath(filePath, workDir))
-                return `Error: path outside allowed scope — ${filePath}`;
+                return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // Error [code 4]: file does not exist on disk.
             if (!existsSync(fullPath)) {
