@@ -737,7 +737,7 @@ const BLOCKED_PATTERNS = [
     new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
     /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature (idempotent string)
 ];
-function isSafePath(filePath, cwd) {
+export function isSafePath(filePath, cwd) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
     // Boundary-aware containment check: a path is "inside" baseCwd iff

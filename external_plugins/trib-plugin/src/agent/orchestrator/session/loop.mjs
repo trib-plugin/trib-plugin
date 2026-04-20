@@ -300,6 +300,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     return {
         ...response,
         usage: lastUsage || response.usage,
+        lastTurnUsage: response.usage,
         iterations,
         toolCallsTotal,
         providerState,

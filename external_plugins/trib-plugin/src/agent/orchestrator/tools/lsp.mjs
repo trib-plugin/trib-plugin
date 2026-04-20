@@ -31,7 +31,7 @@ import { spawn } from 'node:child_process';
 import { resolve as pathResolve, extname, isAbsolute, dirname } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { normalizeInputPath, normalizeOutputPath, toDisplayPath } from './builtin.mjs';
+import { normalizeInputPath, normalizeOutputPath, toDisplayPath, isSafePath } from './builtin.mjs';
 
 const LANG_BY_EXT = {
   '.ts': 'typescript',
@@ -400,6 +400,16 @@ async function resolveSymbolDoc(label, args, cwd, { fileRequiredMsg } = {}) {
   if (!symbol) throw new Error(`${label}: "symbol" is required`);
   const abs = resolveAbs(cwd, normFile);
   if (!abs) throw new Error(`${label}: ${fileRequiredMsg || '"file" is required'}`);
+  // Mirror builtin openForRead: reject paths that escape both cwd AND
+  // $HOME with an EOUTSIDE-tagged error, so callers get a consistent
+  // scope-violation message across tail/wc/diff/read/edit AND the LSP
+  // tools (fix: `/tmp/x` on Windows used to path.resolve to C:/tmp/x
+  // and fall through as ENOENT).
+  if (!isSafePath(normFile, cwd)) {
+    throw Object.assign(
+      new Error(`${label}: path outside allowed scope — ${normalizeOutputPath(normFile)}`),
+      { code: 'EOUTSIDE', path: normalizeOutputPath(normFile) });
+  }
   await startServer(cwd);
   // F4: ensureDocOpen already catches ENOENT — prefix the tool label
   // for callers that still pattern-match on `<label>:`.
@@ -462,6 +472,12 @@ async function documentSymbols(args, cwd) {
   const normFile = normalizeInputPath(file);
   const abs = resolveAbs(cwd, normFile);
   if (!abs) throw new Error('lsp_symbols: "file" is required');
+  // Same EOUTSIDE guard as resolveSymbolDoc / builtin openForRead.
+  if (!isSafePath(normFile, cwd)) {
+    throw Object.assign(
+      new Error(`lsp_symbols: path outside allowed scope — ${normalizeOutputPath(normFile)}`),
+      { code: 'EOUTSIDE', path: normalizeOutputPath(normFile) });
+  }
   await startServer(cwd);
   let doc;
   try {

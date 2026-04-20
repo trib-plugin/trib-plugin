@@ -739,6 +739,18 @@ export async function handleToolCall(name, args, opts = {}) {
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;
         const emit = notifyFn || (() => {});
+        // Short model tag for bridge worker lifecycle notifications.
+        // Strip the redundant `claude-` vendor prefix; other providers
+        // (gpt-*, etc.) pass through unchanged. Falls back to empty on
+        // missing model so callers never throw.
+        const modelTag = (() => {
+          try {
+            const raw = preset.model;
+            if (!raw || typeof raw !== 'string') return '';
+            const stripped = raw.startsWith('claude-') ? raw.slice('claude-'.length) : raw;
+            return stripped ? `[${stripped}] ` : '';
+          } catch { return ''; }
+        })();
 
         (async () => {
           const t0 = Date.now();
@@ -747,17 +759,18 @@ export async function handleToolCall(name, args, opts = {}) {
           let result = null;
           const toolCallLog = [];
           updateSessionStatus(session.id, 'running');
-          emit(`${role} started`);
+          emit(`${modelTag}${role} started`);
           try {
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => { for (const c of calls) toolCallLog.push({ name: c.name, iteration }); }, effectiveCwd);
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-            // Usage display — `in` now means "total prompt tokens the model
-            // ingested" (cross-provider unified via usage.promptTokens). The
-            // parenthetical breaks down the cached subset so Anthropic's
-            // cache-heavy calls remain legible without giving the impression
-            // that raw input was huge. Fallback math handles providers that
-            // didn't ship promptTokens yet.
-            const u = result.usage || {};
+            // Usage display — `ctx` is the LAST turn's promptTokens (how big
+            // the context was at the end, actionable for compaction decisions).
+            // `cache %` is cumulative cache / cumulative prompt — the cost
+            // signal (100% ≈ almost free). `out` stays cumulative because
+            // total response length is the natural aggregate for output.
+            // Fallback math handles providers that didn't ship promptTokens.
+            const u = result.usage || {};               // cumulative
+            const lastU = result.lastTurnUsage || u;    // last turn (fallback to cumulative)
             const inputTokens = u.inputTokens || 0;
             const cacheRead = u.cachedTokens || 0;
             const cacheWrite = u.cacheWriteTokens || 0;
@@ -765,13 +778,22 @@ export async function handleToolCall(name, args, opts = {}) {
                 ? u.promptTokens
                 : (inputTokens + cacheRead + cacheWrite);
             const cacheTotal = cacheRead + cacheWrite;
-            const inTok = fmtTokens(promptTokens);
+            const cachePct = promptTokens > 0 ? Math.round(cacheTotal / promptTokens * 100) : 0;
+
+            const lastInput = lastU.inputTokens || 0;
+            const lastCacheRead = lastU.cachedTokens || 0;
+            const lastCacheWrite = lastU.cacheWriteTokens || 0;
+            const ctxTokens = typeof lastU.promptTokens === 'number'
+                ? lastU.promptTokens
+                : (lastInput + lastCacheRead + lastCacheWrite);
+
+            const ctxTok = fmtTokens(ctxTokens);
             const outTok = fmtTokens(u.outputTokens || 0);
-            const cacheSeg = cacheTotal > 0 ? ` (cache ${fmtTokens(cacheTotal)})` : '';
-            const loopNote = result.iterations > 1 ? ` · ${result.iterations} loops` : '';
+            const loops = result.iterations || 1;
+            const loopNote = `${loops} loop${loops === 1 ? '' : 's'}`;
             const content = result.content || '(empty response)';
-            const footer = `${modelLabel} · ${inTok} in${cacheSeg} · ${outTok} out · ${elapsed}s${loopNote}`;
-            emit(`[${role}] ${content}\n\n${footer}`);
+            const footer = `${modelLabel} · ${ctxTok} ctx · cache ${cachePct}% · ${outTok} out · ${loopNote} · ${elapsed}s`;
+            emit(`${modelTag}[${role}] ${content}\n\n${footer}`);
             updateSessionStatus(session.id, 'idle');
           } catch (err) {
             completed = false;
