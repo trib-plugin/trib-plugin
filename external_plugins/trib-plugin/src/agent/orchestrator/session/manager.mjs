@@ -439,7 +439,7 @@ export function createSession(opts) {
         ? loadRoleTemplate(resolvedRole, dataDir)
         : null;
 
-    const { systemBase, systemRole, tier3Reminder, roleMarker } = composeSystemPrompt({
+    const { baseRules, roleCatalog, sessionMarker, volatileTail } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
         agentTemplate: agentTemplate || undefined,
@@ -457,29 +457,27 @@ export function createSession(opts) {
         // the user message body (that used to fragment the shard prefix).
         cwd: opts.cwd || null,
     });
-    // Two system blocks — BP2 (shared invariant) and BP3 (role-specific
-    // invariant). Anthropic multi-block system pins each with its own
-    // cache_control; OpenAI/Gemini concatenate but the split structure
-    // keeps role-specific text bounded to the second block, which
-    // minimizes the byte range re-written when a role swaps.
-    if (systemBase) {
-        messages.push({ role: 'system', content: systemBase });
+    // 4-BP layout (see composeSystemPrompt docs):
+    //   system block #1 = baseRules    — BP1 (1h) shared across ALL roles
+    //   system block #2 = roleCatalog  — BP2 (1h) shared across ALL roles
+    //   first <system-reminder> user   = sessionMarker — BP3 (1h) per-role+project
+    //   second <system-reminder> user  = volatileTail  — rides near BP4 (5m)
+    // Anthropic multi-block system pins each block with its own cache_control;
+    // OpenAI/Gemini concatenate server-side but the prefix-bytes still match
+    // so prompt caching still saturates.
+    if (baseRules) {
+        messages.push({ role: 'system', content: baseRules });
     }
-    if (systemRole) {
-        messages.push({ role: 'system', content: systemRole });
+    if (roleCatalog) {
+        messages.push({ role: 'system', content: roleCatalog });
     }
-    if (tier3Reminder) {
-        messages.push({ role: 'user', content: `<system-reminder>\n${tier3Reminder}\n</system-reminder>` });
-        messages.push({ role: 'assistant', content: 'Understood. Context absorbed.' });
+    if (sessionMarker) {
+        messages.push({ role: 'user', content: `<system-reminder>\n${sessionMarker}\n</system-reminder>` });
+        messages.push({ role: 'assistant', content: 'Session context noted.' });
     }
-    // roleMarker rides AFTER tier3 as its own user message so BP3 (tier3)
-    // stays byte-identical across roles. The small per-role signature
-    // (permission + role id + agent template) lives in the messages tail
-    // instead, where BP4+ naturally handles it without fragmenting the
-    // long shared prefix.
-    if (roleMarker) {
-        messages.push({ role: 'user', content: roleMarker });
-        messages.push({ role: 'assistant', content: 'Role noted.' });
+    if (volatileTail) {
+        messages.push({ role: 'user', content: `<system-reminder>\n${volatileTail}\n</system-reminder>` });
+        messages.push({ role: 'assistant', content: 'Understood.' });
     }
     if (opts.files?.length) {
         const fileContext = opts.files

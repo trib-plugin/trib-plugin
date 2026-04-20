@@ -231,9 +231,57 @@ export function loadRoleTemplate(role, dataDir) {
     return template;
 }
 
-// --- Compose system prompt — Phase B Tier 2 / Tier 3 split ---
-// Returns { systemTier2, tier3Reminder } where the caller places each into
-// the right layer (system block vs messages <system-reminder>).
+// --- All-agent catalog loader ---
+// Concatenates every agents/<role>.md body into one BP2 block. Because the
+// block is identical across every bridge call regardless of which role is
+// invoked, all cross-role sessions share this cache entry (BP2 hit ratio
+// approaches 100%). Individual role identity is carried separately in
+// the sessionMarker user message (see composeSystemPrompt).
+const _allAgentBodiesCache = { ts: 0, value: '' };
+const ALL_AGENT_BODIES_TTL = 60_000;
+
+export function loadAllAgentBodies() {
+    if (Date.now() - _allAgentBodiesCache.ts < ALL_AGENT_BODIES_TTL) {
+        return _allAgentBodiesCache.value;
+    }
+    try {
+        const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+        if (!pluginRoot) return '';
+        const agentsDir = join(pluginRoot, 'agents');
+        if (!existsSync(agentsDir)) return '';
+        const files = readdirSync(agentsDir)
+            .filter(f => f.endsWith('.md'))
+            .sort();
+        const sections = [];
+        for (const f of files) {
+            const raw = readSafe(join(agentsDir, f));
+            if (!raw) continue;
+            // Strip YAML frontmatter if present
+            const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
+            if (!body) continue;
+            const name = f.replace(/\.md$/, '');
+            sections.push(`## ${name}\n\n${body}`);
+        }
+        const value = sections.length
+            ? `# Agent Role Catalog\n\n${sections.join('\n\n---\n\n')}`
+            : '';
+        _allAgentBodiesCache.value = value;
+        _allAgentBodiesCache.ts = Date.now();
+        return value;
+    } catch {
+        return '';
+    }
+}
+
+// --- Compose system prompt — 4-BP cache layout ---
+// Returns { baseRules, roleCatalog, sessionMarker, volatileTail } mapping
+// directly to the breakpoint plan:
+//   BP1 (1h, system block #1) = baseRules      — bridge common rules, filtered
+//   BP2 (1h, system block #2) = roleCatalog    — ALL role bodies concat (cross-role identical)
+//   BP3 (1h, first <system-reminder> user)     = sessionMarker (role + permission + project)
+//   BP4 (5m, messages tail)                    = volatileTail (task-brief + memory recap)
+// The `systemRole` field previously returned is removed — role content
+// now lives entirely in roleCatalog (shared) and sessionMarker (tiny).
 //
 // Tier 2 (BP_2 cache): plugin-lifetime invariant content only.
 //   - opts.bridgeRules    : rules-builder buildBridgeInjectionContent output
@@ -255,23 +303,29 @@ export function composeSystemPrompt(opts) {
     const profile = opts.profile || null;
     const skip = profile?.skip || {};
 
-    // ── BP2: systemBase ──────────────────────────────────────────────────
-    // Bit-identical across every role in the same provider. This is what
-    // BP_2 pins for prompt cache. Contains bridgeRules (MCP instructions,
-    // Pool B shared agent md, _shared/memory|search|explore, CLAUDE.md
-    // common sections, user agents) and any explicit systemPrompt override.
+    // ── BP1: baseRules (system block #1, 1h cache) ─────────────────────
+    // Bridge common rules + explicit systemPrompt override. Contains
+    // bridgeRules (MCP instructions, Pool B shared rules, _shared/tool
+    // efficiency). Identical across ALL roles — BP1 shared pool-wide.
     const baseParts = [];
     if (opts.bridgeRules) baseParts.push(opts.bridgeRules);
     if (opts.userPrompt) baseParts.push(opts.userPrompt);
-    const systemBase = baseParts.join('\n\n---\n\n');
+    const baseRules = baseParts.join('\n\n---\n\n');
 
-    // ── BP3: systemRole ──────────────────────────────────────────────────
-    // Role-specific invariant. Permission, role template, and Pool C role
-    // snippet ride here (previously they were prepended to the user message,
-    // which fragmented the shard prefix per role). Anthropic cache_control
-    // can pin BP3 so the role-specific chunk caches independently of the
-    // shared BP2.
-    const roleParts = [];
+    // ── BP2: roleCatalog (system block #2, 1h cache) ────────────────────
+    // Every agents/*.md body concatenated. Same for every role call, so
+    // BP2 also stays identical pool-wide. Individual role's identity is
+    // carried in sessionMarker (BP3), not here.
+    const roleCatalog = loadAllAgentBodies();
+
+    // ── BP3: sessionMarker (first <system-reminder> user msg, 1h cache) ─
+    // Role + permission + project context. Small (~50-150 tokens), stable
+    // within a session. Different across roles/sessions, but because it's
+    // short the per-role refresh cost is negligible.
+    const sessionMarkerParts = [];
+    if (opts.role && !opts.skipRoleReminder) {
+        sessionMarkerParts.push('# role\n' + opts.role);
+    }
     const permission = opts.permission || opts.roleTemplate?.permission || null;
     if (permission) {
         const allow =
@@ -279,55 +333,32 @@ export function composeSystemPrompt(opts) {
                 ? 'read-only; write/edit/bash rejected'
                 : permission === 'read-write'
                     ? 'read + write/edit/bash'
-                    : 'unknown — treat as read-only';
-        roleParts.push(`# permission\n${permission} — ${allow}.`);
+                    : permission === 'full'
+                        ? 'full — all tools'
+                        : 'unknown — treat as read-only';
+        sessionMarkerParts.push(`# permission\n${permission} — ${allow}.`);
     }
-    if (opts.role && !opts.skipRoleReminder) {
-        roleParts.push('# role\n' + opts.role);
+    if (opts.projectContext) {
+        sessionMarkerParts.push('# project-context\n' + opts.projectContext);
     }
-    if (opts.roleTemplate) {
-        const t = opts.roleTemplate;
-        const segs = [];
-        if (t.description) segs.push(t.description);
-        if (t.body) segs.push(t.body);
-        if (segs.length > 0) roleParts.push('# agent-role\n' + segs.join('\n\n'));
-    } else if (opts.agentTemplate) {
-        roleParts.push('# agent-role\n' + opts.agentTemplate);
-    }
-    if (opts.roleSnippet) {
-        roleParts.push(`# agent-snippet\n${opts.roleSnippet}`);
-    }
-    // systemRole force-disabled: role content migrates to tier3Parts so BP1
-    // (systemBase) stays bit-identical across every role in the same pool/model.
-    const systemRole = '';
+    const sessionMarker = sessionMarkerParts.length > 0
+        ? sessionMarkerParts.join('\n\n')
+        : '';
 
-    // ── BP3 (tier3Reminder, 1h cache): shared across ALL roles ─────────
-    // Only non-role-specific context lives here so BP3 stays byte-identical
-    // across worker / reviewer / tester / debugger etc. Role marker
-    // (permission + role id + agent template) moves to a separate short
-    // user message AFTER tier3 — it rides in the messages tail (BP4+) so
-    // each role's small signature does not fragment the shared prefix.
-    const tier3Parts = [];
-    // cwd omitted: tools resolve working dir internally.
-    if (opts.taskBrief) tier3Parts.push('# task-brief\n' + opts.taskBrief);
-    if (opts.projectContext) tier3Parts.push('# project-context\n' + opts.projectContext);
+    // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──
+    // Per-call variance: task brief (bridge callsite), memory recap
+    // (volatile). Lives at the messages-tail boundary so the BP4 5m
+    // breakpoint picks it up without fragmenting the 1h shared prefix.
+    const volatileParts = [];
+    if (opts.taskBrief) volatileParts.push('# task-brief\n' + opts.taskBrief);
     if (opts.memoryContext && !skip.memory) {
-        tier3Parts.push('# memory-context\n' + opts.memoryContext);
+        volatileParts.push('# memory-context\n' + opts.memoryContext);
     }
-    const tier3Reminder = tier3Parts.length > 0 ? tier3Parts.join('\n\n') : '';
+    const volatileTail = volatileParts.length > 0
+        ? volatileParts.join('\n\n')
+        : '';
 
-    // roleMarker — the small (≤150 token) role-specific block previously
-    // shoved into tier3. Emitted as a separate string so manager.mjs can
-    // insert it AFTER tier3 as its own user message, keeping BP3 identical
-    // cross-role while the role signature rides in the messages tail.
-    const roleMarker = roleParts.length > 0 ? roleParts.join('\n\n') : '';
-
-    // `systemTier2` kept as a back-compat alias for the older single-block
-    // consumer (= systemBase + systemRole concatenated). Prefer the split
-    // fields on new callers.
-    const systemTier2 = systemBase;
-
-    return { systemBase, systemRole, systemTier2, tier3Reminder, roleMarker };
+    return { baseRules, roleCatalog, sessionMarker, volatileTail };
 }
 // --- Helpers ---
 function readSafe(path) {

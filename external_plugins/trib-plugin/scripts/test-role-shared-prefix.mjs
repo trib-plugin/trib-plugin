@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * Byte-identity verification for the cross-role shared-prefix refactor.
+ * Byte-identity verification for the 4-BP cache layout refactor.
  *
- * Calls composeSystemPrompt with two different role names and asserts that
- * systemBase and tier3Reminder are bit-identical. roleMarker MUST differ
- * (that's the whole point of the split).
+ * Calls composeSystemPrompt with different role names and asserts:
+ *   - baseRules     : identical across roles (BP1)
+ *   - roleCatalog   : identical across roles (BP2)  ← all role bodies concat
+ *   - sessionMarker : MUST differ per role (BP3)
+ *   - volatileTail  : may differ per call (BP4 adjacent)
  */
 import { composeSystemPrompt } from '../src/agent/orchestrator/context/collect.mjs';
 
@@ -27,56 +29,56 @@ const worker = composeSystemPrompt({
     ...baseOpts,
     role: 'worker',
     permission: 'full',
-    roleTemplate: { description: 'Code implementation agent.', body: 'Execute tasks with full access. Worker-specific body text.' },
 });
 
 const reviewer = composeSystemPrompt({
     ...baseOpts,
     role: 'reviewer',
     permission: 'read',
-    roleTemplate: { description: 'Read-only PR review.', body: 'Analyze against standards. Reviewer-specific body text.' },
 });
 
 const tester = composeSystemPrompt({
     ...baseOpts,
     role: 'tester',
     permission: 'read-write',
-    roleTemplate: { description: 'Runtime testing.', body: 'Execute and observe. Tester-specific body text.' },
 });
 
-// The core invariant: BP1 (systemBase) + BP3 (tier3Reminder) must be
-// byte-identical across roles. Only roleMarker is allowed to vary.
-assert(worker.systemBase === reviewer.systemBase, 'systemBase identical: worker vs reviewer');
-assert(worker.systemBase === tester.systemBase,  'systemBase identical: worker vs tester');
-assert(worker.tier3Reminder === reviewer.tier3Reminder, 'tier3Reminder identical: worker vs reviewer');
-assert(worker.tier3Reminder === tester.tier3Reminder,  'tier3Reminder identical: worker vs tester');
+// BP1 — baseRules identical cross-role.
+assert(worker.baseRules === reviewer.baseRules, 'baseRules identical: worker vs reviewer');
+assert(worker.baseRules === tester.baseRules,  'baseRules identical: worker vs tester');
 
-// roleMarker MUST differ (role signature lives here now).
-assert(worker.roleMarker !== reviewer.roleMarker, 'roleMarker differs: worker vs reviewer');
-assert(worker.roleMarker !== tester.roleMarker,  'roleMarker differs: worker vs tester');
-assert(worker.roleMarker.includes('worker'),   'worker roleMarker contains "worker"');
-assert(reviewer.roleMarker.includes('reviewer'), 'reviewer roleMarker contains "reviewer"');
-assert(tester.roleMarker.includes('tester'),   'tester roleMarker contains "tester"');
+// BP2 — roleCatalog identical cross-role (may be '' if no CLAUDE_PLUGIN_ROOT).
+assert(worker.roleCatalog === reviewer.roleCatalog, 'roleCatalog identical: worker vs reviewer');
+assert(worker.roleCatalog === tester.roleCatalog,  'roleCatalog identical: worker vs tester');
 
-// Sanity: tier3 should contain task-brief / project-context, NOT role body.
-assert(worker.tier3Reminder.includes('task-brief'), 'tier3 contains task-brief');
-assert(!worker.tier3Reminder.includes('Worker-specific body text'), 'tier3 does NOT contain role body (worker)');
-assert(!reviewer.tier3Reminder.includes('Reviewer-specific body text'), 'tier3 does NOT contain role body (reviewer)');
+// BP3 — sessionMarker MUST differ across roles.
+assert(worker.sessionMarker !== reviewer.sessionMarker, 'sessionMarker differs: worker vs reviewer');
+assert(worker.sessionMarker !== tester.sessionMarker,  'sessionMarker differs: worker vs tester');
+assert(worker.sessionMarker.includes('worker'),       'worker sessionMarker mentions "worker"');
+assert(reviewer.sessionMarker.includes('reviewer'),   'reviewer sessionMarker mentions "reviewer"');
+assert(tester.sessionMarker.includes('tester'),       'tester sessionMarker mentions "tester"');
+assert(worker.sessionMarker.includes('full'),           'worker sessionMarker mentions permission "full"');
+assert(reviewer.sessionMarker.includes('read-only'),    'reviewer sessionMarker mentions read-only');
 
-// Sanity: roleMarker should contain the role body and permission.
-assert(worker.roleMarker.includes('Worker-specific body text'), 'worker roleMarker contains body');
-assert(worker.roleMarker.includes('full'), 'worker roleMarker contains permission "full"');
-assert(reviewer.roleMarker.includes('read-only'), 'reviewer roleMarker mentions read-only');
+// sessionMarker should include project-context.
+assert(worker.sessionMarker.includes('project-context'), 'sessionMarker includes project-context');
+
+// BP4 adjacent — volatileTail identical across roles (same per-call opts).
+assert(worker.volatileTail === reviewer.volatileTail, 'volatileTail identical: worker vs reviewer');
+assert(worker.volatileTail.includes('task-brief'),    'volatileTail contains task-brief');
+assert(worker.volatileTail.includes('memory-context'), 'volatileTail contains memory-context');
+
+// Sanity — baseRules must NOT contain role-specific text.
+assert(!worker.baseRules.includes('worker'), 'baseRules does NOT contain role id');
+assert(!worker.baseRules.includes('permission'), 'baseRules does NOT contain permission line');
 
 console.log();
 console.log(`PASS ${passed}/${passed + failed}`);
 console.log();
-console.log(`# Sizes (bytes)`);
-console.log(`  systemBase    : ${worker.systemBase.length} (shared)`);
-console.log(`  tier3Reminder : ${worker.tier3Reminder.length} (shared)`);
-console.log(`  roleMarker:`);
-console.log(`    worker   ${worker.roleMarker.length}`);
-console.log(`    reviewer ${reviewer.roleMarker.length}`);
-console.log(`    tester   ${tester.roleMarker.length}`);
+console.log('# Sizes (bytes)');
+console.log(`  baseRules       : ${worker.baseRules.length} (shared)`);
+console.log(`  roleCatalog     : ${worker.roleCatalog.length} (shared)  ${worker.roleCatalog.length === 0 ? '[no CLAUDE_PLUGIN_ROOT → empty]' : ''}`);
+console.log(`  sessionMarker   : w=${worker.sessionMarker.length}  r=${reviewer.sessionMarker.length}  t=${tester.sessionMarker.length}  (per-role)`);
+console.log(`  volatileTail    : ${worker.volatileTail.length} (shared per-call)`);
 
 process.exit(failed > 0 ? 1 : 0);
