@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, re
 import { readFile } from 'fs/promises';
 import { createInterface } from 'readline';
 import { promisify } from 'util';
+import { homedir } from 'os';
 const execAsync = promisify(exec);
 import { resolve, normalize, isAbsolute, relative, dirname, basename, extname, join } from 'path';
 
@@ -55,6 +56,13 @@ export function posixPathToWindowsPath(posixPath) {
 export function normalizeInputPath(p) {
     if (typeof p !== 'string') return p;
     let out = p;
+    // `~` expansion — callers can pass `~/.claude/...` without hardcoding
+    // the user's home. Matches Claude Code's expandPath semantics so MCP
+    // tool args stay portable across machines. Bare `~` and `~\` also
+    // handled for Windows-quoted strings.
+    if (out === '~' || out.startsWith('~/') || out.startsWith('~\\')) {
+        out = homedir() + out.slice(1);
+    }
     if (process.platform === 'win32' && /^\/[a-zA-Z]\//.test(out)) {
         out = posixPathToWindowsPath(out);
     }
