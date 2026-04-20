@@ -592,6 +592,23 @@ export const BUILTIN_TOOLS = [
             required: ['edits'],
         },
     },
+    {
+        name: 'diff',
+        title: 'Unified Diff',
+        annotations: { title: 'Unified Diff', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Unified diff between two files (or two raw strings). Useful for explaining a change before applying it via `edit` / `multi_edit`. Output is standard `--- from\n+++ to\n@@ ... @@` format. Pass `from_text:true` and/or `to_text:true` to treat the value as inline text instead of a path.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                from: { type: 'string', description: 'Path of the "before" file, or raw text when `from_text:true`.' },
+                to: { type: 'string', description: 'Path of the "after" file, or raw text when `to_text:true`.' },
+                from_text: { type: 'boolean', description: 'Treat `from` as inline text. Default false.' },
+                to_text: { type: 'boolean', description: 'Treat `to` as inline text. Default false.' },
+                context: { type: 'number', description: 'Context lines around hunks. Default 3, clamp [0, 10].' },
+            },
+            required: ['from', 'to'],
+        },
+    },
 ];
 // --- Short-TTL result cache for idempotent read-only tools ---
 //
@@ -715,6 +732,128 @@ async function runRg(argsList, execOptions = {}) {
         throw err;
     }
 }
+// --- Unified diff computation (LCS-based) ---
+//
+// Self-contained unified diff so the plugin does not need to take on an
+// external `diff` npm dep. LCS dynamic-programming table is O(n*m) memory
+// and time — fine for the file sizes the builtin tools already gate
+// through (read cap keeps inputs well under 10k lines in practice). For
+// truly large inputs we fall back to a "files differ" summary rather
+// than spending multi-GB on the DP table.
+function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
+    const n = a.length, m = b.length;
+    // Guard: n * m > 4M cells (~16 MB Int32Array rows total) — bail out.
+    if (n > 10000 || m > 10000 || n * m > 4_000_000) {
+        if (n === m) {
+            let same = true;
+            for (let k = 0; k < n; k++) { if (a[k] !== b[k]) { same = false; break; } }
+            if (same) return '';
+        }
+        return `--- ${fromLabel}\n+++ ${toLabel}\n(files too large for inline diff — ${n} vs ${m} lines)`;
+    }
+
+    // dp[i][j] = LCS length of a[i..] and b[j..].
+    const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+        const aI = a[i];
+        const rowI = dp[i];
+        const rowI1 = dp[i + 1];
+        for (let j = m - 1; j >= 0; j--) {
+            if (aI === b[j]) rowI[j] = rowI1[j + 1] + 1;
+            else rowI[j] = rowI1[j] >= rowI[j + 1] ? rowI1[j] : rowI[j + 1];
+        }
+    }
+
+    // Backtrack into an ops list. Each op: ['=', line] | ['-', line] | ['+', line].
+    // aLine / bLine track 1-based line numbers for hunk headers.
+    const ops = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+        if (a[i] === b[j]) { ops.push(['=', a[i]]); i++; j++; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push(['-', a[i]]); i++; }
+        else { ops.push(['+', b[j]]); j++; }
+    }
+    while (i < n) { ops.push(['-', a[i++]]); }
+    while (j < m) { ops.push(['+', b[j++]]); }
+
+    if (!ops.some(o => o[0] !== '=')) return '';
+
+    // Split ops into hunks. A run of '=' longer than 2*ctx breaks a hunk;
+    // we keep ctx leading + ctx trailing context lines around each change
+    // cluster. Tracks original/target line numbers as we walk.
+    const hunks = [];
+    let aLine = 1, bLine = 1;
+    let current = null;
+    let eqRun = 0;
+
+    const openHunk = (aStart, bStart) => ({ aStart, bStart, aCount: 0, bCount: 0, lines: [] });
+
+    for (let k = 0; k < ops.length; k++) {
+        const [op, line] = ops[k];
+        if (op === '=') {
+            if (current) {
+                // Decide whether to absorb this context line or close the hunk.
+                // Look ahead: is there another change within ctx lines?
+                let nextChangeWithin = false;
+                for (let la = 1; la <= ctx && k + la < ops.length; la++) {
+                    if (ops[k + la][0] !== '=') { nextChangeWithin = true; break; }
+                }
+                if (nextChangeWithin || eqRun < ctx) {
+                    current.lines.push([' ', line]);
+                    current.aCount++;
+                    current.bCount++;
+                    eqRun++;
+                } else {
+                    // Close hunk; trailing ctx already appended during the
+                    // first `ctx` equal lines after the last change.
+                    hunks.push(current);
+                    current = null;
+                    eqRun = 0;
+                }
+            }
+            aLine++;
+            bLine++;
+        } else {
+            if (!current) {
+                // Open a new hunk with up to `ctx` leading context from prior '=' ops.
+                const leading = [];
+                let leadA = 0, leadB = 0;
+                for (let back = k - 1; back >= 0 && leading.length < ctx; back--) {
+                    if (ops[back][0] !== '=') break;
+                    leading.unshift([' ', ops[back][1]]);
+                    leadA++; leadB++;
+                }
+                const aStart = aLine - leadA;
+                const bStart = bLine - leadB;
+                current = openHunk(aStart, bStart);
+                current.lines.push(...leading);
+                current.aCount += leadA;
+                current.bCount += leadB;
+            }
+            if (op === '-') {
+                current.lines.push(['-', line]);
+                current.aCount++;
+                aLine++;
+            } else { // '+'
+                current.lines.push(['+', line]);
+                current.bCount++;
+                bLine++;
+            }
+            eqRun = 0;
+        }
+    }
+    if (current) hunks.push(current);
+
+    const out = [`--- ${fromLabel}`, `+++ ${toLabel}`];
+    for (const h of hunks) {
+        const aHdr = h.aCount === 0 ? `${h.aStart - 1},0` : (h.aCount === 1 ? `${h.aStart}` : `${h.aStart},${h.aCount}`);
+        const bHdr = h.bCount === 0 ? `${h.bStart - 1},0` : (h.bCount === 1 ? `${h.bStart}` : `${h.bStart},${h.bCount}`);
+        out.push(`@@ -${aHdr} +${bHdr} @@`);
+        for (const [sign, line] of h.lines) out.push(`${sign}${line}`);
+    }
+    return out.join('\n');
+}
+
 // --- Tool execution ---
 export async function executeBuiltinTool(name, args, cwd) {
     const workDir = cwd || process.cwd();
@@ -1420,6 +1559,45 @@ export async function executeBuiltinTool(name, args, cwd) {
             } catch (err) {
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
             }
+        }
+        case 'diff': {
+            let fromContent, toContent;
+            let fromLabel = args.from_text ? '(text)' : String(args.from ?? '');
+            let toLabel = args.to_text ? '(text)' : String(args.to ?? '');
+            try {
+                if (args.from_text) {
+                    fromContent = String(args.from ?? '');
+                } else {
+                    const fp = normalizeInputPath(args.from);
+                    if (!fp) return 'Error: from is required';
+                    if (!isSafePath(fp, workDir)) return `Error: from path outside allowed scope — ${normalizeOutputPath(fp)}`;
+                    fromContent = await readFile(resolveAgainstCwd(fp, workDir), 'utf-8');
+                    fromLabel = normalizeOutputPath(fp);
+                }
+                if (args.to_text) {
+                    toContent = String(args.to ?? '');
+                } else {
+                    const tp = normalizeInputPath(args.to);
+                    if (!tp) return 'Error: to is required';
+                    if (!isSafePath(tp, workDir)) return `Error: to path outside allowed scope — ${normalizeOutputPath(tp)}`;
+                    toContent = await readFile(resolveAgainstCwd(tp, workDir), 'utf-8');
+                    toLabel = normalizeOutputPath(tp);
+                }
+            } catch (err) {
+                return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`;
+            }
+            const rawCtx = parseInt(args.context ?? 3, 10);
+            const context = Math.max(0, Math.min(Number.isFinite(rawCtx) ? rawCtx : 3, 10));
+            // Drop the trailing empty entry split produces for newline-terminated files.
+            const splitLines = (s) => {
+                const parts = s.split('\n');
+                if (parts.length > 0 && parts[parts.length - 1] === '' && s.endsWith('\n')) parts.pop();
+                return parts;
+            };
+            const fromLines = splitLines(fromContent);
+            const toLines = splitLines(toContent);
+            const out = computeUnifiedDiff(fromLines, toLines, context, fromLabel, toLabel);
+            return out || '(no differences)';
         }
         default:
             return `Error: unknown builtin tool "${name}"`;
