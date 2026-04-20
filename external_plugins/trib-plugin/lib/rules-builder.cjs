@@ -218,9 +218,10 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   // each tool. Pool A still includes these files via buildInjectionContent
   // as a deferred-tool safety net for Lead.
 
-  const userClaudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-  const claudeMdCommon = extractCommonClaudeMdSections(readOptional(userClaudeMdPath));
-  if (claudeMdCommon) parts.push(claudeMdCommon);
+  // CLAUDE.md common sections intentionally excluded from the bridge prefix.
+  // Lead-facing commit/writing/profile policies do not affect agent work
+  // output, and stripping them trims the BP2 cache prefix. Pool A still
+  // sees the full CLAUDE.md via buildInjectionContent.
 
   // User-defined agent customizations (monolithic — all roles/schedules/webhooks
   // baked into the cached prefix). The active per-call task data lives in the
