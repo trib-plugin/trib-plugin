@@ -267,6 +267,23 @@ function _dedupByName(tools) {
     return [...seen.values()];
 }
 
+// Lead-only orchestration tools — bridge pool never invokes these. Removing
+// them from the 'full' preset trims ~7.3KB / ~2.7k tokens per bridge call
+// without losing any capability bridge agents actually use. Verified via
+// bridge-trace aggregation: 0 calls from any bridge role across 61k events.
+const BRIDGE_EXCLUDED_MCP_TOOLS = new Set([
+    // Channel / messaging — bridge output is auto-forwarded to the channel
+    'reply', 'react', 'edit_message', 'download_attachment', 'activate_channel_bridge',
+    // Session management — Lead-only external session orchestration
+    'create_session', 'list_sessions', 'close_session', 'list_models', 'bridge',
+    // Plugin / schedule operations — Lead-only
+    'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
+]);
+
+function _filterMcpForBridge(mcp) {
+    return mcp.filter(t => t?.name && !BRIDGE_EXCLUDED_MCP_TOOLS.has(t.name));
+}
+
 function _computeBaseTools(toolSpec, mcp, skillTools) {
     if (Array.isArray(toolSpec)) {
         if (toolSpec.length === 0) {
@@ -276,7 +293,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
             return _dedupByName([...skillTools]);
         }
         if (toolSpec.includes('full')) {
-            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
+            return _dedupByName([...BUILTIN_TOOLS, ..._filterMcpForBridge(mcp), ...skillTools]);
         }
         const byName = new Map();
         const add = (tool) => { if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool); };
@@ -317,7 +334,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
         }
         case 'full':
         default:
-            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
+            return _dedupByName([...BUILTIN_TOOLS, ..._filterMcpForBridge(mcp), ...skillTools]);
     }
 }
 
