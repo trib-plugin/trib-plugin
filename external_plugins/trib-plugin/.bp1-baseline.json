@@ -1,36 +1,40 @@
 {
-  "version": "0.6.196",
-  "measuredAt": "2026-04-19T20:47:09.033Z",
+  "version": "0.6.302",
+  "measuredAt": "2026-04-21T06:00:28.836Z",
   "tools": {
-    "count": 16,
-    "strippedCount": 16,
-    "totalBytes": 15624
+    "count": 14,
+    "strippedCount": 22,
+    "totalBytes": 13430
   },
   "systemBase": {
-    "totalBytes": 3255,
+    "totalBytes": 7592,
     "perFile": [
       {
-        "path": "rules/pool-b/01-agent.md",
-        "bytes": 2470
+        "path": "rules/shared/01-tool.md",
+        "bytes": 1982
       },
       {
-        "path": "rules/memory.md",
-        "bytes": 1248
+        "path": "rules/shared/02-memory.md",
+        "bytes": 399
       },
       {
-        "path": "rules/search.md",
-        "bytes": 986
+        "path": "rules/shared/03-search.md",
+        "bytes": 385
       },
       {
-        "path": "rules/explore.md",
-        "bytes": 1294
+        "path": "rules/shared/04-explore.md",
+        "bytes": 606
       },
       {
-        "path": "rules/lsp.md",
-        "bytes": 1780
+        "path": "rules/shared/05-lsp.md",
+        "bytes": 1418
+      },
+      {
+        "path": "rules/bridge/00-common.md",
+        "bytes": 201
       }
     ]
   },
-  "bp1Total": 18879,
-  "bp1Tokens": 4720
+  "bp1Total": 21022,
+  "bp1Tokens": 5256
 }

@@ -267,22 +267,46 @@ function _dedupByName(tools) {
     return [...seen.values()];
 }
 
-// Lead-only orchestration tools — bridge pool never invokes these. Removing
-// them from the 'full' preset trims ~7.3KB / ~2.7k tokens per bridge call
-// without losing any capability bridge agents actually use. Verified via
-// bridge-trace aggregation: 0 calls from any bridge role across 61k events.
-const BRIDGE_EXCLUDED_MCP_TOOLS = new Set([
-    // Channel / messaging — bridge output is auto-forwarded to the channel
-    'reply', 'react', 'edit_message', 'download_attachment', 'activate_channel_bridge',
-    // Session management — Lead-only external session orchestration
-    'create_session', 'list_sessions', 'close_session', 'list_models', 'bridge',
-    // Plugin / schedule operations — Lead-only
+// NOTE: a prior BRIDGE_EXCLUDED_MCP_TOOLS / _filterMcpForBridge pair lived here
+// (v0.6.301) as a secondary MCP filter applied inside _computeBaseTools. It was
+// removed in v0.6.302 after verifying every one of its 14 entries was already
+// present in `BRIDGE_DENY_TOOLS` below — the authoritative bridge deny list
+// applied later in createSession — making the function a 100% no-op. Single
+// source of truth for "what bridge cannot call" is BRIDGE_DENY_TOOLS.
+//
+// Canonical bridge deny list — the SINGLE source of truth for which tools a
+// bridge-owned session strips from its tool schema. Exported so benchmarks
+// (scripts/measure-bp1.mjs) and tests can import the same list instead of
+// maintaining a parallel copy that silently drifts.
+//
+// KEEP (bridge agents can call):
+//   - core file / shell: read, edit, write, bash, grep, glob
+//   - IO helpers: head, tail, wc, list, tree, find_files,
+//                 multi_read, multi_edit, batch_edit
+//   - LSP: lsp_definition / lsp_references / lsp_hover / lsp_symbols
+//   - memory read: recall (memory admin tool itself is Lead-only)
+//   - information retrieval: search, explore
+export const BRIDGE_DENY_TOOLS = Object.freeze([
+    // Discord / channel (Lead-only)
+    'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
+    'activate_channel_bridge',
+    // Session lifecycle (Lead-only)
+    'create_session', 'close_session', 'list_sessions', 'list_models',
+    // Schedule / config admin (Lead-only)
     'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
+    // Bridge dispatch — Pool B/C agents do the work; Lead does the dispatch.
+    // Recall/search/explore stay (info retrieval, not role delegation).
+    'bridge',
+    // Memory admin — cycle1/cycle2/flush/rebuild/prune/remember are
+    // maintenance ops Lead drives. Bridge agents read memory via `recall`.
+    'memory',
+    // Patch / AST / specialised editors — edit/write cover code changes;
+    // these large-schema specialists bloat BP_1.
+    'apply_patch', 'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
+    // Persistent bash — `bash` handles one-off shell work; session
+    // persistence is a Lead-scoped convenience.
+    'bash_session',
 ]);
-
-function _filterMcpForBridge(mcp) {
-    return mcp.filter(t => t?.name && !BRIDGE_EXCLUDED_MCP_TOOLS.has(t.name));
-}
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
     if (Array.isArray(toolSpec)) {
@@ -293,7 +317,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
             return _dedupByName([...skillTools]);
         }
         if (toolSpec.includes('full')) {
-            return _dedupByName([...BUILTIN_TOOLS, ..._filterMcpForBridge(mcp), ...skillTools]);
+            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
         }
         const byName = new Map();
         const add = (tool) => { if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool); };
@@ -334,7 +358,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
         }
         case 'full':
         default:
-            return _dedupByName([...BUILTIN_TOOLS, ..._filterMcpForBridge(mcp), ...skillTools]);
+            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
     }
 }
 
@@ -522,50 +546,10 @@ export function createSession(opts) {
     // to pass the explicit list.
     const permDeny = denyListFor(permission);
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
-    // Bridge sessions (Pool B/C) have no business with Discord channel ops,
-    // session lifecycle, or schedule/config admin — those are Lead-only
-    // surfaces. Stripping them shrinks the tool-schema prefix (~9 KB from
-    // BP1) without losing any capability agents actually use during work.
-    // Bridge session tool policy — keep only the essentials bridge agents
-    // actually need. Pool A (Lead) still sees the full tools.json; this
-    // deny list only applies when `owner === 'bridge'`.
-    //
-    // KEEP (bridge agents can call):
-    //   - core file / shell: read, edit, write, bash, grep, glob
-    //   - IO helpers: head, tail, wc, list, tree, find_files,
-    //     multi_read, multi_edit, batch_edit
-    //   - LSP: lsp_definition / lsp_references / lsp_hover / lsp_symbols
-    //   - memory read: recall  (memory admin tool itself is Lead-only)
-    //   - information retrieval: search, explore
-    //
-    // The rest of the surface — patch / AST / duplicate file variants /
-    // session+channel+schedule admin — does not belong in the Pool B
-    // shard. Stripping them here shrinks BP_1 (tool-schema prefix) from
-    // ~12k tokens back down to ~5k and removes a lot of noise the agent
-    // never meaningfully uses.
-    const bridgeDeny = opts.owner === 'bridge' ? [
-        // Discord / channel (Lead-only)
-        'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
-        'activate_channel_bridge',
-        // Session lifecycle (Lead-only)
-        'create_session', 'close_session', 'list_sessions', 'list_models',
-        // Schedule / config admin (Lead-only)
-        'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
-        // Bridge dispatch — Pool B/C agents do the work; Lead does the
-        // dispatch. Recall/search/explore stay (they're info retrieval,
-        // not role delegation).
-        'bridge',
-        // Memory admin — cycle1/cycle2/flush/rebuild/prune/remember are
-        // maintenance ops Lead drives. Bridge agents read memory via
-        // `recall` (kept), so the work path loses nothing.
-        'memory',
-        // Patch / AST / specialised editors — the agent uses edit / write
-        // for code changes; these large-schema specialists bloat BP_1.
-        'apply_patch', 'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
-        // Persistent bash — `bash` is enough for shell work inside a
-        // single call; session persistence is a Lead-scoped convenience.
-        'bash_session',
-    ] : [];
+    // Bridge sessions (Pool B/C) strip the Lead-only admin surface. Deny list
+    // is BRIDGE_DENY_TOOLS (module-scope, exported) — see its declaration for
+    // the full keep/strip rationale. Pool A (Lead) still sees full tools.json.
+    const bridgeDeny = opts.owner === 'bridge' ? BRIDGE_DENY_TOOLS : [];
     const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {
         const denySet = new Set(mergedDeny);

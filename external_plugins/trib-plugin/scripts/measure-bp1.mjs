@@ -24,29 +24,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(__dirname, '..');
 const require_ = createRequire(import.meta.url);
 
-// Keep this in sync with src/agent/orchestrator/session/manager.mjs
-// createSession `bridgeDeny` list. Adding / removing tools here without
-// updating manager.mjs (or vice versa) will make the bench lie.
-const BRIDGE_UNSAFE_TOOLS = new Set([
-    // Discord / channel (Lead-only)
-    'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
-    'activate_channel_bridge',
-    // Session lifecycle (Lead-only)
-    'create_session', 'close_session', 'list_sessions', 'list_models',
-    // Schedule / config admin (Lead-only)
-    'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
-    // Role delegation
-    'bridge',
-    // Memory admin (recall stays for reads)
-    'memory',
-    // Patch / AST / specialised editors — edit/write cover code changes;
-    // these large-schema specialists bloat the cached prefix.
-    'apply_patch', 'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
-    // Persistent bash session — `bash` alone is enough for one-off calls
-    'bash_session',
-    // LSP on-demand (roles opt in via allowedTools — excluded from default prefix)
-    'lsp_definition', 'lsp_references', 'lsp_symbols',
-]);
+// Single source of truth — import BRIDGE_DENY_TOOLS from the runtime module
+// (src/agent/orchestrator/session/manager.mjs) so this bench cannot drift
+// from what createSession actually strips. Resolved lazily inside main().
+let BRIDGE_UNSAFE_TOOLS = null;
+
+async function loadBridgeUnsafe() {
+    if (BRIDGE_UNSAFE_TOOLS) return BRIDGE_UNSAFE_TOOLS;
+    const modPath = join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'session', 'manager.mjs');
+    const mod = await import(pathToFileURL(modPath).href);
+    if (!Array.isArray(mod.BRIDGE_DENY_TOOLS)) {
+        throw new Error('manager.mjs does not export BRIDGE_DENY_TOOLS');
+    }
+    BRIDGE_UNSAFE_TOOLS = new Set(mod.BRIDGE_DENY_TOOLS);
+    return BRIDGE_UNSAFE_TOOLS;
+}
 
 const TOKENS_PER_BYTE = 0.25; // ≈ 4 chars/token for English-ish prose
 
@@ -54,10 +46,11 @@ function bytesToTokens(n) {
     return Math.round(n * TOKENS_PER_BYTE);
 }
 
-function measureTools() {
+async function measureTools() {
+    const deny = await loadBridgeUnsafe();
     const tools = require_(join(PLUGIN_ROOT, 'tools.json'));
-    const kept = tools.filter(t => !BRIDGE_UNSAFE_TOOLS.has(t.name));
-    const stripped = tools.filter(t => BRIDGE_UNSAFE_TOOLS.has(t.name));
+    const kept = tools.filter(t => !deny.has(t.name));
+    const stripped = tools.filter(t => deny.has(t.name));
     const per = kept.map(t => ({
         name: t.name,
         bytes: JSON.stringify(t).length,
@@ -114,7 +107,7 @@ async function main() {
     const writeBaseline = args.has('--baseline');
     const compare = args.has('--compare');
 
-    const tools = measureTools();
+    const tools = await measureTools();
     const sb = await measureSystemBase();
     const pluginVersion = version();
 
