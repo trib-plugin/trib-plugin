@@ -50,6 +50,12 @@ const _codeGraphCacheStats = {
   diskMisses: 0,
   reusedNodes: 0,
   rebuiltNodes: 0,
+  referenceQueryHits: 0,
+  referenceQueryMisses: 0,
+  maskedLineCacheHits: 0,
+  maskedLineCacheMisses: 0,
+  sourceTextCacheHits: 0,
+  sourceTextCacheMisses: 0,
 };
 
 function _isCommentOnlyLine(line) {
@@ -155,13 +161,21 @@ function _deserializeGraph(cwd, payload) {
       reverse.get(depRel).add(node.rel);
     }
   }
-  return {
+  return _attachGraphRuntimeCaches({
     cwd,
     nodes,
     reverse,
     builtAt: Number(payload.builtAt || Date.now()),
     signature: String(payload.signature || ''),
-  };
+  });
+}
+
+function _attachGraphRuntimeCaches(graph) {
+  if (!graph || typeof graph !== 'object') return graph;
+  if (!graph._referenceSearchCache) graph._referenceSearchCache = new Map();
+  if (!graph._maskedLinesCache) graph._maskedLinesCache = new Map();
+  if (!graph._sourceTextCache) graph._sourceTextCache = new Map();
+  return graph;
 }
 
 function _pruneDiskCodeGraphEntries(now = Date.now()) {
@@ -238,6 +252,12 @@ function resetCodeGraphCachesForTesting() {
   _codeGraphCacheStats.diskMisses = 0;
   _codeGraphCacheStats.reusedNodes = 0;
   _codeGraphCacheStats.rebuiltNodes = 0;
+  _codeGraphCacheStats.referenceQueryHits = 0;
+  _codeGraphCacheStats.referenceQueryMisses = 0;
+  _codeGraphCacheStats.maskedLineCacheHits = 0;
+  _codeGraphCacheStats.maskedLineCacheMisses = 0;
+  _codeGraphCacheStats.sourceTextCacheHits = 0;
+  _codeGraphCacheStats.sourceTextCacheMisses = 0;
   if (_diskCodeGraphCacheFlushTimer) {
     clearTimeout(_diskCodeGraphCacheFlushTimer);
     _diskCodeGraphCacheFlushTimer = null;
@@ -391,7 +411,7 @@ function _extractRawImports(text, lang) {
     while ((m = re.exec(text))) push(m[1]);
   } else if (lang === 'java' || lang === 'kotlin') {
     let m;
-    const re = /^\s*import\s+([^;]+);?$/gm;
+    const re = /^\s*import\s+([^\n;]+);?$/gm;
     while ((m = re.exec(text))) push(m[1]);
   } else if (lang === 'csharp') {
     let m;
@@ -682,6 +702,76 @@ function _rewriteRubyModuleText(text, fileAbs, rootDir, rewriter) {
   });
 }
 
+function _rewriteGoImportText(text, rewriter) {
+  const lines = String(text || '').split(/\r?\n/);
+  const out = [];
+  let inImportBlock = false;
+  for (const line of lines) {
+    if (!inImportBlock) {
+      const single = /^(\s*import\s+)(?:([A-Za-z_][A-Za-z0-9_\.]*)\s+)?("([^"\n]+)")(\s*)$/.exec(line);
+      if (single) {
+        const alias = single[2] ? `${single[2]} ` : '';
+        const spec = single[4];
+        const next = rewriter(spec, { alias: single[2] || '' });
+        out.push(!next || next === spec ? line : `${single[1]}${alias}"${next}"${single[5]}`);
+        continue;
+      }
+      out.push(line);
+      if (/^\s*import\s*\(\s*$/.test(line)) inImportBlock = true;
+      continue;
+    }
+    if (/^\s*\)\s*$/.test(line)) {
+      inImportBlock = false;
+      out.push(line);
+      continue;
+    }
+    const block = /^(\s*)(?:([A-Za-z_][A-Za-z0-9_\.]*)\s+)?("([^"\n]+)")(\s*)$/.exec(line);
+    if (!block) {
+      out.push(line);
+      continue;
+    }
+    const alias = block[2] ? `${block[2]} ` : '';
+    const spec = block[4];
+    const next = rewriter(spec, { alias: block[2] || '' });
+    out.push(!next || next === spec ? line : `${block[1]}${alias}"${next}"${block[5]}`);
+  }
+  return out.join('\n');
+}
+
+function _rewriteJavaLikePackageLine(text, nextPackageName) {
+  if (!nextPackageName) return text;
+  return String(text || '').replace(/^(\s*package\s+)([A-Za-z_][A-Za-z0-9_.]*)(\s*;?\s*)$/m, (match, head, pkg, tail) => {
+    return pkg === nextPackageName ? match : `${head}${nextPackageName}${tail}`;
+  });
+}
+
+function _rewriteJavaLikeImportText(text, rewriter) {
+  return String(text || '').replace(/^(\s*import\s+(?:static\s+)?)([A-Za-z_][A-Za-z0-9_.*]*)(\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?(\s*;?\s*)$/gm, (match, head, spec, alias = '', tail) => {
+    const next = rewriter(spec, { alias, staticImport: /\bstatic\s+$/.test(head), wildcard: spec.endsWith('.*') });
+    return !next || next === spec ? match : `${head}${next}${alias}${tail}`;
+  });
+}
+
+function _rewriteCsharpNamespaceLine(text, nextNamespaceName) {
+  if (!nextNamespaceName) return text;
+  return String(text || '').replace(/^(\s*namespace\s+)([A-Za-z_][A-Za-z0-9_.]*)(\s*[;{]\s*)$/m, (match, head, ns, tail) => {
+    return ns === nextNamespaceName ? match : `${head}${nextNamespaceName}${tail}`;
+  });
+}
+
+function _rewriteCsharpUsingText(text, rewriter) {
+  return String(text || '').replace(/^(\s*using\s+)(static\s+)?([^;=\n]+?)(\s*=\s*([^;\n]+))?(\s*;\s*)$/gm, (match, head, staticKw = '', directSpec, aliasPart = '', aliasTarget = '', tail) => {
+    const spec = aliasTarget ? String(aliasTarget).trim() : String(directSpec).trim();
+    const next = rewriter(spec, {
+      staticImport: Boolean(staticKw),
+      alias: aliasPart ? aliasPart : '',
+    });
+    if (!next || next === spec) return match;
+    if (aliasTarget) return `${head}${directSpec}${aliasPart.replace(aliasTarget, next)}${tail}`;
+    return `${head}${staticKw || ''}${next}${tail}`;
+  });
+}
+
 function _rewriteModuleText(text, fileAbs, rootDir, lang, rewriter) {
   if (lang === 'typescript' || lang === 'javascript') {
     return _rewriteJsModuleText(text, fileAbs, rootDir, rewriter);
@@ -695,7 +785,70 @@ function _rewriteModuleText(text, fileAbs, rootDir, lang, rewriter) {
   if (lang === 'ruby') {
     return _rewriteRubyModuleText(text, fileAbs, rootDir, rewriter);
   }
+  if (lang === 'go') {
+    return _rewriteGoImportText(text, rewriter);
+  }
   return text;
+}
+
+function _splitRelativeParts(rootDir, absPath) {
+  const rel = normalizeInputPath(pathRelative(rootDir, absPath)).replace(/\\/g, '/');
+  return rel.split('/').filter(Boolean);
+}
+
+function _inferJavaLikePackageMove(oldAbs, newAbs, oldPackageName, rootDir) {
+  if (!oldPackageName) return null;
+  const oldDirParts = _splitRelativeParts(rootDir, dirname(oldAbs));
+  const newDirParts = _splitRelativeParts(rootDir, dirname(newAbs));
+  const packageParts = oldPackageName.split('.').filter(Boolean);
+  if (packageParts.length === 0 || oldDirParts.length < packageParts.length) return null;
+  const oldTail = oldDirParts.slice(-packageParts.length);
+  if (oldTail.join('.') !== packageParts.join('.')) return null;
+  const prefixParts = oldDirParts.slice(0, oldDirParts.length - packageParts.length);
+  const newPrefix = newDirParts.slice(0, prefixParts.length);
+  if (newPrefix.join('/') !== prefixParts.join('/')) return null;
+  const inferred = newDirParts.slice(prefixParts.length).join('.');
+  return inferred || oldPackageName;
+}
+
+function _inferCsharpNamespaceMove(oldAbs, newAbs, oldNamespaceName, rootDir) {
+  if (!oldNamespaceName) return null;
+  const oldDirParts = _splitRelativeParts(rootDir, dirname(oldAbs));
+  const newDirParts = _splitRelativeParts(rootDir, dirname(newAbs));
+  const nsParts = oldNamespaceName.split('.').filter(Boolean);
+  const oldLeaf = oldDirParts[oldDirParts.length - 1] || '';
+  const newLeaf = newDirParts[newDirParts.length - 1] || '';
+  const leafFallback = () => {
+    if (nsParts.length > 0 && oldLeaf && newLeaf && nsParts[nsParts.length - 1].toLowerCase() === oldLeaf.toLowerCase()) {
+      const next = [...nsParts];
+      next[next.length - 1] = newLeaf;
+      return next.join('.');
+    }
+    return null;
+  };
+  if (nsParts.length === 0 || oldDirParts.length < nsParts.length) return null;
+  const oldTail = oldDirParts.slice(-nsParts.length);
+  if (oldTail.join('.') !== nsParts.join('.')) return leafFallback() || null;
+  const prefixParts = oldDirParts.slice(0, oldDirParts.length - nsParts.length);
+  const newPrefix = newDirParts.slice(0, prefixParts.length);
+  if (newPrefix.join('/') !== prefixParts.join('/')) return leafFallback() || null;
+  const inferred = newDirParts.slice(prefixParts.length).join('.');
+  if (inferred) return inferred;
+  const fallback = leafFallback();
+  if (fallback) return fallback;
+  return oldNamespaceName;
+}
+
+function _inferGoImportPathMove(oldAbs, newAbs, oldImportPath, rootDir) {
+  if (!oldImportPath) return null;
+  const cache = new Map();
+  const oldModule = _findNearestGoModule(oldAbs, rootDir, cache);
+  const newModule = _findNearestGoModule(newAbs, rootDir, cache);
+  if (!oldModule || !newModule) return null;
+  if (oldModule.modulePath !== newModule.modulePath || oldModule.moduleRoot !== newModule.moduleRoot) return null;
+  const relDir = normalizeInputPath(pathRelative(newModule.moduleRoot, dirname(newAbs))).replace(/\\/g, '/');
+  const inferred = [newModule.modulePath, relDir].filter(Boolean).join('/').replace(/\/$/, '');
+  return inferred || oldImportPath;
 }
 
 function _supportsHashComments(lang) {
@@ -827,25 +980,74 @@ function _symbolMatchIndices(text, symbol, lang) {
   return indices;
 }
 
+function _getSourceTextForNode(graph, node, fallbackText = null) {
+  const cached = graph?._sourceTextCache?.get(node.rel);
+  if (cached && cached.fingerprint === (node.fingerprint || '')) {
+    _codeGraphCacheStats.sourceTextCacheHits++;
+    return cached.text;
+  }
+  if (typeof fallbackText === 'string') {
+    _codeGraphCacheStats.sourceTextCacheHits++;
+    graph?._sourceTextCache?.set(node.rel, {
+      fingerprint: node.fingerprint || '',
+      text: fallbackText,
+    });
+    return fallbackText;
+  }
+  _codeGraphCacheStats.sourceTextCacheMisses++;
+  let text = '';
+  try { text = readFileSync(node.abs, 'utf8'); } catch { text = ''; }
+  graph?._sourceTextCache?.set(node.rel, {
+    fingerprint: node.fingerprint || '',
+    text,
+  });
+  return text;
+}
+
+function _getMaskedLinesForNode(graph, node) {
+  const cached = graph?._maskedLinesCache?.get(node.rel);
+  if (cached && cached.fingerprint === (node.fingerprint || '')) {
+    _codeGraphCacheStats.maskedLineCacheHits++;
+    return cached.lines;
+  }
+  _codeGraphCacheStats.maskedLineCacheMisses++;
+  const text = _getSourceTextForNode(graph, node);
+  const lines = _maskNonCodeText(text, node.lang).split(/\r?\n/);
+  graph?._maskedLinesCache?.set(node.rel, {
+    fingerprint: node.fingerprint || '',
+    lines,
+  });
+  return lines;
+}
+
 function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
   const escaped = String(symbol || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (!escaped) return '(no references)';
-  const re = new RegExp(`\\b${escaped}\\b`);
+  const cacheKey = `${language || '*'}|${symbol}`;
+  const cached = graph?._referenceSearchCache?.get(cacheKey);
+  if (typeof cached === 'string') {
+    _codeGraphCacheStats.referenceQueryHits++;
+    return cached;
+  }
+  _codeGraphCacheStats.referenceQueryMisses++;
+  const re = new RegExp(`\\b${escaped}\\b`, 'g');
   const lines = [];
   for (const node of graph.nodes.values()) {
     if (language && node.lang !== language) continue;
-    let text = '';
-    try { text = readFileSync(node.abs, 'utf8'); } catch { continue; }
-    const fileLines = text.split(/\r?\n/);
+    const fileLines = _getMaskedLinesForNode(graph, node);
     for (let i = 0; i < fileLines.length; i++) {
       const line = fileLines[i];
-      if (_isCommentOnlyLine(line)) continue;
-      const m = line.match(re);
-      if (!m) continue;
-      lines.push(`${node.rel}:${i + 1}:${m.index + 1}`);
+      if (!line.trim()) continue;
+      re.lastIndex = 0;
+      let match = null;
+      while ((match = re.exec(line))) {
+        lines.push(`${node.rel}:${i + 1}:${match.index + 1}`);
+      }
     }
   }
-  return lines.length ? lines.join('\n') : '(no references)';
+  const result = lines.length ? lines.join('\n') : '(no references)';
+  graph?._referenceSearchCache?.set(cacheKey, result);
+  return result;
 }
 
 function _collapseReferenceLinesToCallers(referenceText) {
@@ -901,15 +1103,11 @@ function _formatSymbolImpactLine(item) {
   return `${item.symbol}\trefs=${item.references}\tcallers=${item.callers.length}${callerSuffix}`;
 }
 
-function _collectImpactSymbols(node) {
+function _collectImpactSymbols(node, graph) {
   const names = new Set();
   for (const typeName of Array.isArray(node?.topLevelTypes) ? node.topLevelTypes : []) names.add(typeName);
-  try {
-    const text = readFileSync(node.abs, 'utf8');
-    for (const item of _collectCheapSymbols(text, node.lang)) names.add(item.name);
-  } catch {
-    // Best-effort.
-  }
+  const text = _getSourceTextForNode(graph, node);
+  for (const item of _collectCheapSymbols(text, node.lang)) names.add(item.name);
   return [...names];
 }
 
@@ -917,7 +1115,7 @@ function _buildImpactSummary(node, graph, cwd, targetSymbol = '') {
   const imports = node.resolvedImports.map((p) => _graphRel(p, cwd));
   const dependents = [...(graph.reverse.get(node.rel) || [])].sort();
   const related = [...new Set([...imports, ...dependents])].sort();
-  const symbols = targetSymbol ? [targetSymbol] : _collectImpactSymbols(node).slice(0, 8);
+  const symbols = targetSymbol ? [targetSymbol] : _collectImpactSymbols(node, graph).slice(0, 8);
   const symbolImpact = [];
   const externalCallers = new Set();
   let externalReferences = 0;
@@ -1037,6 +1235,9 @@ function _buildCodeGraph(cwd) {
         rel: meta.rel,
         lang: meta.lang,
         fingerprint: meta.fp,
+        sourceText: previousGraph?._sourceTextCache?.get(meta.rel)?.fingerprint === meta.fp
+          ? previousGraph._sourceTextCache.get(meta.rel).text
+          : null,
         rawImports: Array.isArray(previousNode.rawImports) ? previousNode.rawImports : [],
         packageName: previousNode.packageName || '',
         namespaceName: previousNode.namespaceName || '',
@@ -1049,15 +1250,16 @@ function _buildCodeGraph(cwd) {
     }
     let text = '';
     try { text = readFileSync(meta.abs, 'utf8'); } catch { continue; }
-    fileInfos.push({
-      abs: meta.abs,
-      rel: meta.rel,
-      lang: meta.lang,
-      fingerprint: meta.fp,
-      rawImports: _extractRawImports(text, meta.lang),
-      packageName: _extractPackageName(text, meta.lang),
-      namespaceName: _extractNamespaceName(text, meta.lang),
-      goPackageName: meta.lang === 'go' ? _extractGoPackageName(text) : '',
+      fileInfos.push({
+        abs: meta.abs,
+        rel: meta.rel,
+        lang: meta.lang,
+        fingerprint: meta.fp,
+        sourceText: text,
+        rawImports: _extractRawImports(text, meta.lang),
+        packageName: _extractPackageName(text, meta.lang),
+        namespaceName: _extractNamespaceName(text, meta.lang),
+        goPackageName: meta.lang === 'go' ? _extractGoPackageName(text) : '',
       goImportPath,
       topLevelTypes: _extractTopLevelTypeNames(text, meta.lang),
     });
@@ -1093,7 +1295,15 @@ function _buildCodeGraph(cwd) {
       reverse.get(depRel).add(info.rel);
     }
   }
-  const graph = { cwd, nodes, reverse, builtAt: now, signature };
+  const graph = _attachGraphRuntimeCaches({ cwd, nodes, reverse, builtAt: now, signature });
+  for (const info of fileInfos) {
+    if (typeof info.sourceText === 'string') {
+      graph._sourceTextCache.set(info.rel, {
+        fingerprint: info.fingerprint || '',
+        text: info.sourceText,
+      });
+    }
+  }
   _codeGraphCache.set(cwd, { ts: now, signature, graph });
   _setDiskCodeGraphEntry(cwd, graph);
   return graph;
@@ -1196,17 +1406,67 @@ async function renameFileRefs(args, cwd) {
 
   const graph = _buildCodeGraph(cwd);
   const oldRel = _graphRel(oldAbs, cwd);
+  const oldNode = graph.nodes.get(oldRel) || null;
   const dependents = [...(graph.reverse.get(oldRel) || [])].sort();
   const patches = [];
   const planLines = [`move ${oldRel} -> ${_graphRel(newAbs, cwd)}`];
+  const rootDir = pathResolve(cwd);
+  const oldPackageName = oldNode?.packageName || '';
+  const oldNamespaceName = oldNode?.namespaceName || '';
+  const oldGoImportPath = oldNode?.goImportPath || '';
+  const newPackageName = (lang === 'java' || lang === 'kotlin')
+    ? _inferJavaLikePackageMove(oldAbs, newAbs, oldPackageName, rootDir)
+    : null;
+  const newNamespaceName = lang === 'csharp'
+    ? _inferCsharpNamespaceMove(oldAbs, newAbs, oldNamespaceName, rootDir)
+    : null;
+  const newGoImportPath = lang === 'go'
+    ? _inferGoImportPathMove(oldAbs, newAbs, oldGoImportPath, rootDir)
+    : null;
+  const typeNames = Array.isArray(oldNode?.topLevelTypes) ? oldNode.topLevelTypes.filter(Boolean) : [];
+  const oldStem = oldRel.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+  const newStem = _graphRel(newAbs, cwd).split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+  if (lang === 'java' && oldStem !== newStem && typeNames.includes(oldStem)) {
+    return `Error: rename_file_refs refuses Java file rename when the primary type likely matches the filename (${oldStem} -> ${newStem}). Rename the symbol/class separately before moving the file.`;
+  }
+  const explicitTypeImportMap = new Map();
+  if ((lang === 'java' || lang === 'kotlin') && oldPackageName && newPackageName && newPackageName !== oldPackageName) {
+    for (const typeName of typeNames) {
+      explicitTypeImportMap.set(`${oldPackageName}.${typeName}`, `${newPackageName}.${typeName}`);
+    }
+  }
+  const explicitCsharpImportMap = new Map();
+  if (lang === 'csharp' && oldNamespaceName && newNamespaceName && newNamespaceName !== oldNamespaceName) {
+    explicitCsharpImportMap.set(oldNamespaceName, newNamespaceName);
+    for (const typeName of typeNames) {
+      explicitCsharpImportMap.set(`${oldNamespaceName}.${typeName}`, `${newNamespaceName}.${typeName}`);
+    }
+  }
+  const explicitGoImportMap = new Map();
+  if (lang === 'go' && oldGoImportPath && newGoImportPath && newGoImportPath !== oldGoImportPath) {
+    explicitGoImportMap.set(oldGoImportPath, newGoImportPath);
+  }
 
-  const movedText = _rewriteModuleText(oldText, oldAbs, pathResolve(cwd), lang, (spec, resolved) => {
-    if (!resolved || resolved === oldAbs) return spec;
-    if (lang === 'python') return _makeRelativePyModuleSpec(newAbs, resolved, spec, pathResolve(cwd));
-    if (lang === 'c' || lang === 'cpp') return _makeRelativeIncludeSpec(newAbs, resolved);
-    if (lang === 'ruby') return _makeRelativeRubySpec(newAbs, resolved);
-    return _makeRelativeImportSpec(newAbs, resolved, spec);
-  });
+  let movedText;
+  if (lang === 'java' || lang === 'kotlin') {
+    movedText = oldText;
+    if (newPackageName && newPackageName !== oldPackageName) {
+      movedText = _rewriteJavaLikePackageLine(movedText, newPackageName);
+    }
+  } else if (lang === 'csharp') {
+    movedText = oldText;
+    if (newNamespaceName && newNamespaceName !== oldNamespaceName) {
+      movedText = _rewriteCsharpNamespaceLine(movedText, newNamespaceName);
+    }
+  } else {
+    movedText = _rewriteModuleText(oldText, oldAbs, rootDir, lang, (spec, resolved) => {
+      if (!resolved || resolved === oldAbs) return spec;
+      if (lang === 'python') return _makeRelativePyModuleSpec(newAbs, resolved, spec, rootDir);
+      if (lang === 'c' || lang === 'cpp') return _makeRelativeIncludeSpec(newAbs, resolved);
+      if (lang === 'ruby') return _makeRelativeRubySpec(newAbs, resolved);
+      return _makeRelativeImportSpec(newAbs, resolved, spec);
+    });
+  }
   patches.push(_makeDeletePatch(oldRel, oldText));
   patches.push(_makeCreatePatch(_graphRel(newAbs, cwd), movedText));
 
@@ -1215,13 +1475,25 @@ async function renameFileRefs(args, cwd) {
     let depText = '';
     try { depText = readFileSync(depAbs, 'utf8'); } catch { continue; }
     const depLang = _graphLanguage(depAbs);
-    const updated = _rewriteModuleText(depText, depAbs, pathResolve(cwd), depLang, (spec, resolved) => {
-      if (resolved !== oldAbs) return spec;
-      if (depLang === 'python') return _makeRelativePyModuleSpec(depAbs, newAbs, spec, pathResolve(cwd));
-      if (depLang === 'c' || depLang === 'cpp') return _makeRelativeIncludeSpec(depAbs, newAbs);
-      if (depLang === 'ruby') return _makeRelativeRubySpec(depAbs, newAbs);
-      return _makeRelativeImportSpec(depAbs, newAbs, spec);
-    });
+    let updated;
+    if ((depLang === 'java' || depLang === 'kotlin') && explicitTypeImportMap.size > 0) {
+      updated = _rewriteJavaLikeImportText(depText, (spec, meta) => {
+        if (meta?.wildcard) return spec;
+        return explicitTypeImportMap.get(spec) || spec;
+      });
+    } else if (depLang === 'csharp' && explicitCsharpImportMap.size > 0) {
+      updated = _rewriteCsharpUsingText(depText, (spec) => explicitCsharpImportMap.get(spec) || spec);
+    } else if (depLang === 'go' && explicitGoImportMap.size > 0) {
+      updated = _rewriteGoImportText(depText, (spec) => explicitGoImportMap.get(spec) || spec);
+    } else {
+      updated = _rewriteModuleText(depText, depAbs, rootDir, depLang, (spec, resolved) => {
+        if (resolved !== oldAbs) return spec;
+        if (depLang === 'python') return _makeRelativePyModuleSpec(depAbs, newAbs, spec, rootDir);
+        if (depLang === 'c' || depLang === 'cpp') return _makeRelativeIncludeSpec(depAbs, newAbs);
+        if (depLang === 'ruby') return _makeRelativeRubySpec(depAbs, newAbs);
+        return _makeRelativeImportSpec(depAbs, newAbs, spec);
+      });
+    }
     if (updated === depText) continue;
     patches.push(_makeModifyPatch(depRel, depText, updated));
     planLines.push(`update importer ${depRel}`);

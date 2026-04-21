@@ -634,7 +634,7 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. If you need shell state across turns (cwd, env, sourced venv), use `bash_session` instead of replaying setup in repeated `bash` calls. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. If you need shell state across turns (cwd, env, sourced venv), use `bash_session` instead of replaying setup in repeated `bash` calls. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -662,6 +662,21 @@ export const BUILTIN_TOOLS = [
             type: 'object',
             properties: {
                 job_id: { type: 'string', description: 'Background job id returned by bash with run_in_background:true.' },
+            },
+            required: ['job_id'],
+        },
+    },
+    {
+        name: 'job_wait',
+        title: 'Wait For Background Job',
+        annotations: { title: 'Wait For Background Job', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+        description: 'Wait for a background shell job to finish and return its latest status/summary in one call. Prefer this over repeated job_status polling.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                job_id: { type: 'string', description: 'Background job id returned by bash with run_in_background:true.' },
+                timeout_ms: { type: 'number', description: 'Maximum time to wait before returning the current running state. Default 30000.' },
+                poll_ms: { type: 'number', description: 'Polling interval while waiting. Default 250 ms.' },
             },
             required: ['job_id'],
         },
@@ -979,6 +994,9 @@ function shellJobStdoutPath(jobId) { return join(getShellJobsDir(), `${jobId}.st
 function shellJobStderrPath(jobId) { return join(getShellJobsDir(), `${jobId}.stderr.log`); }
 function shellJobExitPath(jobId) { return join(getShellJobsDir(), `${jobId}.exit`); }
 function shellJobDonePath(jobId) { return join(getShellJobsDir(), `${jobId}.done`); }
+const JOB_STATUS_PREVIEW_MAX_BYTES = 4096;
+const JOB_STATUS_PREVIEW_MAX_LINES = 20;
+const JOB_STATUS_PREVIEW_MAX_CHARS = 1200;
 function writeShellJobDetail(detail) {
     writeFileSync(shellJobDetailPath(detail.jobId), JSON.stringify(detail, null, 2), 'utf-8');
 }
@@ -1016,6 +1034,122 @@ function isPidAlive(pid) {
 }
 function shellQuoteSingle(s) {
     return `'${String(s).replace(/'/g, `'\"'\"'`)}'`;
+}
+function readTailPreviewSync(filePath, { maxBytes = JOB_STATUS_PREVIEW_MAX_BYTES, maxLines = JOB_STATUS_PREVIEW_MAX_LINES, maxChars = JOB_STATUS_PREVIEW_MAX_CHARS } = {}) {
+    try {
+        if (!filePath || !existsSync(filePath)) return null;
+        const st = statSync(filePath);
+        if (!st.isFile()) return null;
+        const size = st.size;
+        if (size <= 0) return { bytes: 0, preview: '' };
+        const readBytes = Math.min(size, maxBytes);
+        const fd = openSync(filePath, 'r');
+        try {
+            const buf = Buffer.alloc(readBytes);
+            readSync(fd, buf, 0, readBytes, size - readBytes);
+            let text = buf.toString('utf8');
+            if (size > readBytes) {
+                const nl = text.indexOf('\n');
+                if (nl !== -1) text = text.slice(nl + 1);
+            }
+            let lines = text.split(/\r?\n/);
+            if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+            let truncated = size > readBytes;
+            if (lines.length > maxLines) {
+                lines = lines.slice(-maxLines);
+                truncated = true;
+            }
+            let preview = lines.join('\n');
+            if (preview.length > maxChars) {
+                preview = preview.slice(preview.length - maxChars);
+                const nl = preview.indexOf('\n');
+                if (nl !== -1) preview = preview.slice(nl + 1);
+                truncated = true;
+            }
+            return {
+                bytes: size,
+                preview,
+                truncated,
+            };
+        } finally {
+            try { closeSync(fd); } catch { /* ignore */ }
+        }
+    } catch {
+        return null;
+    }
+}
+function attachJobPreview(detail) {
+    if (!detail || typeof detail !== 'object') return detail;
+    const withPreview = { ...detail };
+    const stdoutInfo = readTailPreviewSync(detail.stdoutPath);
+    if (stdoutInfo) {
+        withPreview.stdoutBytes = stdoutInfo.bytes;
+        if (stdoutInfo.preview) withPreview.stdoutPreview = stdoutInfo.preview;
+        if (stdoutInfo.truncated) withPreview.stdoutPreviewTruncated = true;
+    }
+    if (detail.mergeStderr !== true) {
+        const stderrInfo = readTailPreviewSync(detail.stderrPath);
+        if (stderrInfo) {
+            withPreview.stderrBytes = stderrInfo.bytes;
+            if (stderrInfo.preview) withPreview.stderrPreview = stderrInfo.preview;
+            if (stderrInfo.truncated) withPreview.stderrPreviewTruncated = true;
+        }
+    }
+    return withPreview;
+}
+function summarizeJobPreviewText(text, maxChars = 160) {
+    if (typeof text !== 'string' || !text.trim()) return '';
+    const lines = text
+        .split(/\r?\n/)
+        .map((line) => stripAnsi(line).replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+    if (lines.length === 0) return '';
+    let summary = lines[lines.length - 1];
+    if (summary.length > maxChars) summary = `${summary.slice(0, maxChars - 1)}…`;
+    return summary;
+}
+function attachJobInsights(detail) {
+    const withPreview = attachJobPreview(detail);
+    if (!withPreview || typeof withPreview !== 'object') return withPreview;
+    let summary = '';
+    let summarySource = '';
+    if (withPreview.status === 'completed') {
+        summary = summarizeJobPreviewText(withPreview.stdoutPreview)
+            || summarizeJobPreviewText(withPreview.stderrPreview);
+        summarySource = summary ? (withPreview.stdoutPreview ? 'stdout' : 'stderr') : '';
+    } else if (withPreview.status === 'failed') {
+        summary = summarizeJobPreviewText(withPreview.stderrPreview)
+            || summarizeJobPreviewText(withPreview.stdoutPreview)
+            || String(withPreview.error || '').trim();
+        summarySource = summary ? (withPreview.stderrPreview ? 'stderr' : (withPreview.stdoutPreview ? 'stdout' : 'status')) : '';
+    } else if (withPreview.status === 'cancelled') {
+        summary = 'cancelled before completion';
+        summarySource = 'status';
+    } else if (withPreview.status === 'running') {
+        summary = summarizeJobPreviewText(withPreview.stdoutPreview)
+            || summarizeJobPreviewText(withPreview.stderrPreview);
+        summarySource = summary ? (withPreview.stdoutPreview ? 'stdout' : 'stderr') : '';
+    }
+    if (summary) {
+        withPreview.summary = summary;
+        withPreview.summarySource = summarySource;
+    }
+    return withPreview;
+}
+async function waitForShellJob(jobId, { timeoutMs = 30_000, pollMs = 250 } = {}) {
+    const started = Date.now();
+    const deadline = started + Math.max(0, timeoutMs);
+    let detail = refreshShellJob(jobId);
+    if (!detail) return null;
+    while (detail && detail.status === 'running' && Date.now() < deadline) {
+        await _sleep(Math.max(25, pollMs));
+        detail = refreshShellJob(jobId);
+    }
+    const withInsights = attachJobInsights(detail);
+    if (!withInsights) return null;
+    withInsights.waitedMs = Date.now() - started;
+    if (withInsights.status === 'running') withInsights.waitTimedOut = true;
+    return withInsights;
 }
 function refreshShellJob(jobId) {
     const detail = readShellJobDetail(jobId);
@@ -1102,6 +1236,9 @@ const BLOCKED_PATTERNS = [
     new RegExp(_CMD_START + 'diskpart\\b[^\\n]*\\bclean\\b', 'i'),
     /:\(\)\s*\{[^}]*:\|:&[^}]*\};\s*:/, // bash fork-bomb signature (idempotent string)
 ];
+const SHELL_MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
+const SHELL_READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
+const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'python', 'python3', 'git', 'cargo', 'go', 'make', 'cmake', 'dd']);
 export function isSafePath(filePath, cwd) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
@@ -1125,6 +1262,202 @@ export function isSafePath(filePath, cwd) {
 }
 function resolveAgainstCwd(filePath, cwd) {
     return resolve(cwd, filePath);
+}
+function _shellSplitSegments(command) {
+    const parts = [];
+    let current = '';
+    let quote = null;
+    let escape = false;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (escape) {
+            current += ch;
+            escape = false;
+            continue;
+        }
+        if (ch === '\\') {
+            current += ch;
+            escape = true;
+            continue;
+        }
+        if (quote) {
+            current += ch;
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '\'' || ch === '"') {
+            quote = ch;
+            current += ch;
+            continue;
+        }
+        if (ch === '\n' || ch === ';') {
+            if (current.trim()) parts.push(current.trim());
+            current = '';
+            continue;
+        }
+        if ((ch === '&' || ch === '|') && command[i + 1] === ch) {
+            if (current.trim()) parts.push(current.trim());
+            current = '';
+            i++;
+            continue;
+        }
+        current += ch;
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+}
+function _shellTokenize(segment) {
+    const tokens = [];
+    let current = '';
+    let quote = null;
+    let escape = false;
+    const push = () => {
+        if (current !== '') tokens.push(current);
+        current = '';
+    };
+    for (let i = 0; i < segment.length; i++) {
+        const ch = segment[i];
+        if (escape) {
+            current += ch;
+            escape = false;
+            continue;
+        }
+        if (ch === '\\') {
+            escape = true;
+            continue;
+        }
+        if (quote) {
+            if (ch === quote) quote = null;
+            else current += ch;
+            continue;
+        }
+        if (ch === '\'' || ch === '"') {
+            quote = ch;
+            continue;
+        }
+        if (/\s/.test(ch)) {
+            push();
+            continue;
+        }
+        if (ch === '>') {
+            push();
+            if (segment[i + 1] === '>') {
+                tokens.push('>>');
+                i++;
+            } else {
+                tokens.push('>');
+            }
+            continue;
+        }
+        current += ch;
+    }
+    if (quote) return null;
+    push();
+    return tokens;
+}
+function _stripShellAssignments(tokens) {
+    const out = [...tokens];
+    while (out.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(out[0])) out.shift();
+    return out;
+}
+function _resolveShellPathToken(token, cwd) {
+    const value = String(token || '').trim();
+    if (!value) return null;
+    if (value === '>' || value === '>>') return null;
+    if (value.startsWith('-')) return null;
+    if (/[`$*?[\]{}]/.test(value)) return null;
+    return resolveAgainstCwd(normalizeInputPath(value), cwd);
+}
+function _extractShellPathArgs(tokens, cwd, { minIndex = 1 } = {}) {
+    const out = [];
+    for (let i = minIndex; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (!tok || tok === '--') continue;
+        if (tok === '>' || tok === '>>') {
+            const redirected = _resolveShellPathToken(tokens[i + 1], cwd);
+            if (redirected) out.push(redirected);
+            i++;
+            continue;
+        }
+        const resolved = _resolveShellPathToken(tok, cwd);
+        if (resolved) out.push(resolved);
+    }
+    return out;
+}
+export function analyzeShellCommandEffects(command, cwd) {
+    const text = String(command || '').trim();
+    let localCwd = resolve(cwd || process.cwd());
+    if (!text) return { mutationMode: 'none', paths: [], finalCwd: localCwd };
+    if (!SHELL_MUTATION_PATTERN.test(text) && !/(^|[^0-9])>>?/.test(text) && !/\btee\b/.test(text)) {
+        const readOnly = _shellSplitSegments(text).every((segment) => {
+            const tokens = _stripShellAssignments(_shellTokenize(segment) || []);
+            if (tokens.length === 0) return true;
+            const joined = tokens.join(' ');
+            if (/^cd\b/i.test(joined)) {
+                const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
+                const resolved = _resolveShellPathToken(target, localCwd);
+                if (resolved) localCwd = resolved;
+                return true;
+            }
+            return SHELL_READ_ONLY_SEGMENT_RE.test(joined);
+        });
+        return { mutationMode: readOnly ? 'none' : 'global', paths: [], finalCwd: localCwd };
+    }
+    const paths = new Set();
+    let global = false;
+    for (const segment of _shellSplitSegments(text)) {
+        const parsed = _shellTokenize(segment);
+        if (!parsed) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
+        const tokens = _stripShellAssignments(parsed);
+        if (tokens.length === 0) continue;
+        const cmd = tokens[0].toLowerCase();
+        const joined = tokens.join(' ');
+        if (cmd === 'cd') {
+            const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
+            const resolved = _resolveShellPathToken(target, localCwd);
+            if (resolved) localCwd = resolved;
+            else global = true;
+            continue;
+        }
+        if (SHELL_READ_ONLY_SEGMENT_RE.test(joined)) continue;
+        if (SHELL_GLOBAL_MUTATORS.has(cmd)) {
+            if (cmd === 'git') {
+                const sub = String(tokens[1] || '').toLowerCase();
+                if (['status', 'diff', 'show', 'log', 'rev-parse', 'branch', 'remote', 'ls-files'].includes(sub)) continue;
+            }
+            if (cmd === 'python' || cmd === 'python3') {
+                if (!(tokens[1] === '-m' && tokens[2] === 'pip' && /^install$/i.test(tokens[3] || ''))) continue;
+            }
+            global = true;
+            continue;
+        }
+        let segmentPaths = [];
+        if (['touch', 'mkdir', 'mktemp', 'rm', 'rmdir', 'chmod', 'chown', 'truncate'].includes(cmd)) {
+            segmentPaths = _extractShellPathArgs(tokens, localCwd, { minIndex: 1 });
+        } else if (['mv', 'cp', 'install', 'ln'].includes(cmd)) {
+            segmentPaths = _extractShellPathArgs(tokens, localCwd, { minIndex: 1 });
+        } else if (cmd === 'sed' && tokens.includes('-i')) {
+            segmentPaths = _extractShellPathArgs(tokens, localCwd, { minIndex: tokens.lastIndexOf('-i') + 1 });
+        } else if (cmd === 'perl' && tokens.some((t) => /^-p/i.test(t) || /^-i/i.test(t))) {
+            segmentPaths = _extractShellPathArgs(tokens, localCwd, { minIndex: 1 });
+        } else if (cmd === 'tee') {
+            segmentPaths = _extractShellPathArgs(tokens, localCwd, { minIndex: 1 });
+        }
+        for (let i = 0; i < tokens.length; i++) {
+            if (tokens[i] === '>' || tokens[i] === '>>') {
+                const redirected = _resolveShellPathToken(tokens[i + 1], localCwd);
+                if (redirected) segmentPaths.push(redirected);
+            }
+        }
+        if (segmentPaths.length === 0) {
+            global = true;
+            continue;
+        }
+        for (const p of segmentPaths) paths.add(p);
+    }
+    if (global) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
+    if (paths.size > 0) return { mutationMode: 'paths', paths: [...paths], finalCwd: localCwd };
+    return { mutationMode: 'none', paths: [], finalCwd: localCwd };
 }
 
 // Ripgrep wrapper. Ripgrep occasionally fails with EAGAIN on Windows when
@@ -1427,6 +1760,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             const command = args.command;
             if (!command)
                 return 'Error: command is required';
+            const shellEffects = analyzeShellCommandEffects(command, workDir);
             for (const pattern of BLOCKED_PATTERNS) {
                 if (pattern.test(command)) {
                     return `Error: blocked command pattern — "${command}" matches safety rule`;
@@ -1533,20 +1867,31 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return payload;
             }
             finally {
-                _cacheInvalidateAll();
+                if (shellEffects.mutationMode === 'paths') invalidateBuiltinResultCache(shellEffects.paths);
+                else if (shellEffects.mutationMode === 'global') invalidateBuiltinResultCache();
             }
         }
         case 'jobs_list': {
-            const jobs = listShellJobDetails().map((detail) => refreshShellJob(detail.jobId) || detail);
+            const jobs = listShellJobDetails().map((detail) => attachJobInsights(refreshShellJob(detail.jobId) || detail));
             if (jobs.length === 0) return '(no background jobs)';
             return jobs.map((job) =>
-                `${job.jobId}\t${job.status}\tpid=${job.pid ?? '-'}\t${job.startedAt || '-'}\t${job.command || ''}`
+                `${job.jobId}\t${job.status}\tpid=${job.pid ?? '-'}\t${job.startedAt || '-'}\t${job.command || ''}${job.summary ? `\t${job.summary}` : ''}`
             ).join('\n');
         }
         case 'job_status': {
             const jobId = typeof args.job_id === 'string' ? args.job_id : '';
             if (!jobId) return 'Error: job_id is required';
             const job = refreshShellJob(jobId);
+            if (!job) return `Error: job not found: ${jobId}`;
+            return JSON.stringify(attachJobInsights(job), null, 2);
+        }
+        case 'job_wait': {
+            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
+            if (!jobId) return 'Error: job_id is required';
+            const job = await waitForShellJob(jobId, {
+                timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : 30_000,
+                pollMs: typeof args.poll_ms === 'number' ? args.poll_ms : 250,
+            });
             if (!job) return `Error: job not found: ${jobId}`;
             return JSON.stringify(job, null, 2);
         }

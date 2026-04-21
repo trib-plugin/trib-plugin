@@ -14,3 +14,5 @@ external_plugins/*/.embeddings.cache.json
 
 # Local dev / bench scripts and their outputs (not for distribution)
 external_plugins/*/dev/
+external_plugins/*/.bench-*.json
+external_plugins/*/scripts/.run-all-tests-cache.json

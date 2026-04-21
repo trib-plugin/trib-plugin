@@ -26,10 +26,9 @@ import { join } from 'path';
 import { loadConfig } from '../config.mjs';
 import { resolveRuntimeSpec } from '../config.mjs';
 import { getHiddenRole } from '../internal-roles.mjs';
-import { traceBridgePreset } from '../bridge-trace.mjs';
+import { prepareBridgeSession } from './session-builder.mjs';
 import {
     askSession,
-    createSession,
     updateSessionStatus,
 } from '../session/manager.mjs';
 
@@ -110,32 +109,32 @@ export function resolvePresetName({ preset, optsPreset, role }) {
  * Build a bridge-backed LLM callback.
  *
  * @param {object} opts
- * @param {string} [opts.taskType]
- * @param {string} [opts.role]
- * @param {string} [opts.preset]
- * @param {string} [opts.sessionId] — reserved for future session reuse
- * @param {string} [opts.mode]
- * @param {boolean} [opts.maintenanceLog] — reserved; no longer applied (session manager logs all calls)
- * @returns {(args: { prompt, mode?, preset?, timeout?, tools? }) => Promise<string>}
+ * @param {string} opts.role        — REQUIRED; canonical role name (worker, cycle1-agent, scheduler-task, ...)
+ * @param {string} [opts.taskType]  — optional internal classification stamped on the session
+ * @param {string} [opts.preset]    — explicit preset override (bypasses role → preset lookup)
+ * @returns {(args: { prompt, preset?, sourceName? }) => Promise<string>}
  */
 export function makeBridgeLlm(opts = {}) {
-    const defaultLabel = opts.mode || opts.taskType || 'bridge';
+    if (!opts.role || typeof opts.role !== 'string') {
+        throw new Error('[bridge-llm] opts.role is required');
+    }
+    const role = opts.role;
 
-    return async function bridgeLlm({ prompt, mode, preset: presetArg, timeout, sourceName: sourceNameArg }) {
+    return async function bridgeLlm({ prompt, preset: presetArg, sourceName: sourceNameArg }) {
         if (typeof prompt !== 'string' || !prompt) {
-            throw new Error(`[bridge-llm] prompt required for "${defaultLabel}"`);
+            throw new Error(`[bridge-llm] prompt required for role "${role}"`);
         }
 
         const config = loadConfig();
         const presetName = resolvePresetName({
             preset: presetArg,
             optsPreset: opts.preset,
-            role: opts.role,
+            role,
         });
         if (!presetName) {
             throw new Error(
-                `[bridge-llm] preset unresolved for "${defaultLabel}" `
-                + `(role="${opts.role || ''}", preset="${presetArg || opts.preset || ''}")`,
+                `[bridge-llm] preset unresolved for role "${role}" `
+                + `(preset="${presetArg || opts.preset || ''}")`,
             );
         }
 
@@ -144,10 +143,9 @@ export function makeBridgeLlm(opts = {}) {
             throw new Error(`[bridge-llm] preset "${presetName}" not found in agent-config.json`);
         }
 
-        const roleLabel = opts.role || opts.taskType || mode || defaultLabel;
         const runtimeSpec = resolveRuntimeSpec(preset, {
             lane: 'bridge',
-            agentId: roleLabel,
+            agentId: role,
         });
 
         // Callers (e.g. aiWrapped explore dispatch) may pass an explicit
@@ -162,56 +160,38 @@ export function makeBridgeLlm(opts = {}) {
         // line) plus an optional short Pool C snippet. Tools stay on preset
         // default ('full'); the read-only contract is enforced at call time
         // via loop.mjs's READ_BLOCKED_TOOLS guard, not at schema build time.
-        const hidden = getHiddenRole(opts.role);
+        const hidden = getHiddenRole(role);
         const isPoolC = Boolean(hidden);
         // Permission resolution: explicit opts.permission > hidden-role default
         // ('read' for Pool C) > unset (preset/full default). Callers may still
         // pass `permission: 'read-write'` explicitly to opt a Pool B role into
         // the same header format without the read-only call-time guard.
         const permission = opts.permission || (isPoolC ? 'read' : null);
-        const sessionOpts = {
-            preset,
-            owner: 'bridge',
-            scopeKey: runtimeSpec.scopeKey,
-            lane: runtimeSpec.lane,
-            cwd,
-            role: opts.role || undefined,
-            taskType: opts.taskType || undefined,
-            sourceType: opts.sourceType || undefined,
-            sourceName: sourceNameArg || opts.sourceName || undefined,
-        };
-        if (permission) sessionOpts.permission = permission;
-        if (isPoolC) {
-            sessionOpts.skipRoleReminder = true;
-            // Hidden-role instructions live in BP2 roleCatalog (loaded by
-            // loadAllAgentBodies from rules/bridge/*.md). No per-call
-            // snippet plumbing needed — the shard is bit-identical across
-            // every bridge role.
-        }
+        // Pool C hidden-role instructions live in BP2 roleCatalog (loaded
+        // by loadAllAgentBodies from rules/bridge/*.md) — the Tier 3
+        // reminder is suppressed so the shard stays bit-identical across
+        // every bridge role.
+        //
         // User message = pure query. Permission / role ride in BP3
         // sessionMarker (composeSystemPrompt) — only the query varies per
         // call, so provider cache reuses the shared prefix.
+        //
+        // Stateless ephemeral session — created fresh per call, never
+        // pooled or resumed. Cache prefix matching happens at the provider
+        // layer (account-level), not the session level.
         const finalPrompt = prompt;
-
-        // Stateless ephemeral session — created fresh per call, never pooled
-        // or resumed. Cache prefix matching happens at the provider layer
-        // (account-level), not the session level, so we lose nothing from
-        // skipping pool reuse. Mixing risk = 0.
-        const session = createSession(sessionOpts);
-
-        // Emit role/preset trace AFTER session.id is known so post-hoc
-        // analysis (e.g. matching stalled sess_xxx → role) can join cleanly.
-        // Pre-session emission stamped sessionId="no-session" and broke that
-        // join; failed createSession paths intentionally skip the trace.
-        try {
-            traceBridgePreset({
-                sessionId: session.id,
-                role: roleLabel,
-                presetName,
-                model: runtimeSpec?.model || null,
-                provider: runtimeSpec?.provider || null,
-            });
-        } catch { /* telemetry best-effort */ }
+        const { session } = prepareBridgeSession({
+            role,
+            presetName,
+            preset,
+            runtimeSpec,
+            permission,
+            cwd,
+            sourceType: opts.sourceType,
+            sourceName: sourceNameArg || opts.sourceName,
+            taskType: opts.taskType,
+            skipRoleReminder: isPoolC,
+        });
 
         updateSessionStatus(session.id, 'running');
         let terminalStatus = 'idle';

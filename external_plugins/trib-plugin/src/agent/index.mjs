@@ -10,6 +10,7 @@ import { connectMcpServers, disconnectAll } from './orchestrator/mcp/client.mjs'
 import { setInternalToolsProvider } from './orchestrator/internal-tools.mjs';
 import { listWorkflows, getWorkflow, seedDefaults } from './orchestrator/workflow-store.mjs';
 import { initTrajectoryStore, recordTrajectory } from './orchestrator/trajectory.mjs';
+import { prepareBridgeSession } from './orchestrator/smart-bridge/session-builder.mjs';
 import { ensureDataSeeds } from '../shared/seed.mjs';
 import { startAgentMaintenance, stopAgentMaintenance } from './orchestrator/agent-maintenance.mjs';
 import { writeFileSync, readFileSync, existsSync, watch } from 'fs';
@@ -725,17 +726,17 @@ export async function handleToolCall(name, args, opts = {}) {
           agentId: role,
         });
 
-        const effectiveCwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : process.cwd();
         // Stateless ephemeral session — created fresh per call (v0.6.97+).
         // No pool, no resume, no reset. Provider-level prefix cache still
-        // hits because cache is content-keyed, not session-keyed.
-        const session = createSession({
-          preset,
-          owner: 'bridge',
-          scopeKey: runtimeSpec.scopeKey,
-          lane: runtimeSpec.lane,
-          cwd: effectiveCwd,
+        // hits because cache is content-keyed, not session-keyed. Shared
+        // with the Smart Bridge path via session-builder so role/preset
+        // telemetry stays bit-identical in bridge-trace.jsonl.
+        const { session, effectiveCwd } = prepareBridgeSession({
           role,
+          presetName,
+          preset,
+          runtimeSpec,
+          cwd: args.cwd,
           sourceType: 'lead',
           sourceName: role,
         });

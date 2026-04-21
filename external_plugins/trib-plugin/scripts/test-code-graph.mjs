@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { executeCodeGraphTool } from '../src/agent/orchestrator/tools/code-graph.mjs';
+import { executeCodeGraphTool, _internals } from '../src/agent/orchestrator/tools/code-graph.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -22,9 +22,10 @@ try {
   mkdirSync(join(root, 'csapp', 'Core'), { recursive: true });
   mkdirSync(join(root, 'csapp', 'App'), { recursive: true });
   mkdirSync(join(root, 'goapp', 'pkg'), { recursive: true });
+  _internals.resetCodeGraphCachesForTesting();
   writeFileSync(join(root, 'pkg', '__init__.py'), '', 'utf8');
   writeFileSync(join(root, 'pkg', 'mod.py'), 'class Worker:\n    pass\n\ndef run():\n    return 1\n', 'utf8');
-  writeFileSync(join(root, 'main.py'), 'from pkg.mod import Worker\n', 'utf8');
+  writeFileSync(join(root, 'main.py'), 'from pkg.mod import Worker\nnote = "Worker"\nprint(Worker)\n# Worker comment\n', 'utf8');
   writeFileSync(join(root, 'a.js'), "import x from './b.js'\nexport function alpha() {}\n", 'utf8');
   writeFileSync(join(root, 'b.js'), 'export const x = 1\n', 'utf8');
   writeFileSync(join(root, 'javaapp', 'pkg', 'Worker.java'), 'package javaapp.pkg;\npublic class Worker {}\n', 'utf8');
@@ -69,7 +70,18 @@ try {
 
   {
     const out = await executeCodeGraphTool('code_graph', { mode: 'references', file: join(root, 'pkg', 'mod.py'), symbol: 'Worker' }, root);
-    assert(out.includes('main.py:1'), `non-TS references use cheap search fallback (got ${JSON.stringify(out)})`);
+    const stats = _internals.getCodeGraphCacheStatsForTesting();
+    assert(out.includes('main.py:1') && out.includes('main.py:3'), `non-TS references use masked cheap search on code hits (got ${JSON.stringify(out)})`);
+    assert(!out.includes('main.py:2') && !out.includes('main.py:4'), `references ignore strings/comments (got ${JSON.stringify(out)})`);
+    assert(stats.referenceQueryMisses >= 1, `first reference query records a cache miss (got ${JSON.stringify(stats)})`);
+    assert(stats.sourceTextCacheHits >= 1, `first reference query reuses source text gathered during graph build (got ${JSON.stringify(stats)})`);
+  }
+
+  {
+    const out = await executeCodeGraphTool('code_graph', { mode: 'references', file: join(root, 'pkg', 'mod.py'), symbol: 'Worker' }, root);
+    const stats = _internals.getCodeGraphCacheStatsForTesting();
+    assert(out.includes('main.py:1') && out.includes('main.py:3'), `cached references still return expected hits (got ${JSON.stringify(out)})`);
+    assert(stats.referenceQueryHits >= 1, `repeated reference query reuses in-graph cache (got ${JSON.stringify(stats)})`);
   }
 
   {

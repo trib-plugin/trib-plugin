@@ -200,21 +200,32 @@ try {
     const root = mkdtempSync(join(tmpdir(), 'trib-bash-cache-rw-'));
     try {
       mkdirSync(join(root, 'one'), { recursive: true });
+      mkdirSync(join(root, 'two'), { recursive: true });
       writeFileSync(join(root, 'one', 'a.txt'), 'hello\n', 'utf8');
+      writeFileSync(join(root, 'two', 'b.txt'), 'keep\n', 'utf8');
       invalidateBuiltinResultCache();
       await executeBuiltinTool('list', { path: join(root, 'one') }, root);
       await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      await executeBuiltinTool('list', { path: join(root, 'two') }, root);
+      await executeBuiltinTool('list', { path: join(root, 'two') }, root);
       resetBuiltinCacheStatsForTesting();
 
-      const res = await run({ command: `touch ${JSON.stringify(join(root, 'one', 'b.txt'))}` });
+      const prime = await run({ command: `cd ${JSON.stringify(join(root, 'one'))}` });
+      const sessionId = extractId(prime);
+      track(sessionId);
+      const res = await run({ session_id: sessionId, command: 'touch rel-created.txt' });
       track(extractId(res));
       const afterShell = getBuiltinCacheStatsForTesting();
-      const listAgain = await executeBuiltinTool('list', { path: join(root, 'one') }, root);
-      const afterList = getBuiltinCacheStatsForTesting();
+      const listOne = await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      const afterOne = getBuiltinCacheStatsForTesting();
+      const listTwo = await executeBuiltinTool('list', { path: join(root, 'two') }, root);
+      const afterTwo = getBuiltinCacheStatsForTesting();
 
-      assert(afterShell.globalInvalidations >= 1, `mutating bash_session still invalidates caches (got: ${JSON.stringify(afterShell)})`);
-      assert(afterList.misses >= 1, `list cache rebuilds after mutating bash_session (got: ${JSON.stringify(afterList)})`);
-      assert(listAgain.includes('b.txt'), `rebuilt list sees shell-created file (got: ${JSON.stringify(listAgain)})`);
+      assert(afterShell.pathInvalidations >= 1 && afterShell.globalInvalidations === 0, `mutating bash_session now prefers path invalidation when paths are known (got: ${JSON.stringify(afterShell)})`);
+      assert(afterOne.misses >= 1, `changed directory cache rebuilds after mutating bash_session (got: ${JSON.stringify(afterOne)})`);
+      assert(afterTwo.hits >= 1, `unrelated directory cache survives mutating bash_session (got: ${JSON.stringify(afterTwo)})`);
+      assert(listOne.includes('rel-created.txt'), `rebuilt list sees shell-created relative file (got: ${JSON.stringify(listOne)})`);
+      assert(listTwo.includes('b.txt'), `unrelated cached list remains usable (got: ${JSON.stringify(listTwo)})`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

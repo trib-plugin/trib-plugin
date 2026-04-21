@@ -267,6 +267,14 @@ export function loadConfig() {
 export function saveConfig(config) {
     const path = getConfigPath();
     mkdirSync(dirname(path), { recursive: true });
+    let existingRaw = {};
+    try {
+        if (existsSync(path)) {
+            existingRaw = JSON.parse(readFileSync(path, 'utf-8'));
+        }
+    } catch {
+        existingRaw = {};
+    }
     // Strip ephemeral defaults from providers but preserve any unknown
     // per-provider subkey so future schema additions round-trip through
     // the setup UI without changes here.
@@ -289,7 +297,8 @@ export function saveConfig(config) {
         }
     }
     const payload = {
-        guide: config.guide || undefined,
+        ...existingRaw,
+        guide: config.guide || existingRaw.guide || undefined,
         providers: persistedProviders,
         mcpServers: config.mcpServers || {},
         presets: Array.isArray(config.presets) ? config.presets : [],

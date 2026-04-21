@@ -158,6 +158,20 @@ function traceToolLoopAborted({ sessionId, iteration, info }) {
     });
 }
 
+function traceToolLoopWarn({ sessionId, iteration, warnType, info = {} }) {
+    appendBridgeTrace({
+        sessionId,
+        iteration,
+        kind: 'tool_loop_warn',
+        warn_type: warnType,
+        tool_name: info.toolName || null,
+        family_key: info.familyKey || null,
+        threshold: info.threshold ?? null,
+        count: info.count ?? null,
+        tools: Array.isArray(info.tools) ? info.tools : null,
+    });
+}
+
 function traceStreamStalled({ sessionId, info }) {
     appendBridgeTrace({
         sessionId,
@@ -274,5 +288,6 @@ export {
     traceStreamStalled,
     traceToolLoopAborted,
     traceToolLoopDetected,
+    traceToolLoopWarn,
     warnBridgeOnce,
 };

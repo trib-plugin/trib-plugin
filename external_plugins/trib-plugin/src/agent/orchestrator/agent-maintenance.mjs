@@ -1,6 +1,7 @@
-import { loadConfig } from './config.mjs';
+import { loadConfig, saveConfig } from './config.mjs';
 import { getTrajectoryDb, getTrajectoryStats, findRepeatingPatterns } from './trajectory.mjs';
 import { getSkillSuggestionReport } from './skill-suggest.mjs';
+import { recommendToolLoopGuardFromTrace, saveToolLoopGuardRecommendation } from './tool-loop-guard-recommend.mjs';
 
 let _timer = null;
 
@@ -34,6 +35,35 @@ export function stopAgentMaintenance() {
 
 export async function runAgentMaintenance() {
   const config = loadConfig();
+  const autoTune = config.bridge?.toolLoopGuardAutoTune || {};
+  if (autoTune.enabled === true) {
+    const rec = recommendToolLoopGuardFromTrace({
+      tracePath: autoTune.tracePath || null,
+      window: Number.isFinite(Number(autoTune.window)) ? Number(autoTune.window) : 20000,
+    });
+    const minToolRows = Number.isFinite(Number(autoTune.minToolRows)) ? Number(autoTune.minToolRows) : 1000;
+    if (rec.sampledToolRows >= minToolRows) {
+      const current = JSON.stringify(config.bridge?.toolLoopGuard || {});
+      const next = JSON.stringify(rec.overrides || {});
+      const mode = String(autoTune.mode || 'recommend').toLowerCase();
+      if (current !== next) {
+        const report = {
+          ...rec,
+          mode,
+          current: config.bridge?.toolLoopGuard || {},
+        };
+        const recPath = saveToolLoopGuardRecommendation(report);
+        if (mode === 'apply') {
+          config.bridge = config.bridge || {};
+          config.bridge.toolLoopGuard = rec.overrides;
+          saveConfig(config);
+          process.stderr.write(`[agent-maintenance] toolLoopGuard auto-tuned from ${rec.sampledToolRows} tool rows across ${rec.sampledSessions} sessions\n`);
+        } else {
+          process.stderr.write(`[agent-maintenance] toolLoopGuard recommendation updated at ${recPath} (${rec.sampledToolRows} tool rows / ${rec.sampledSessions} sessions)\n`);
+        }
+      }
+    }
+  }
   const db = getTrajectoryDb();
   if (!db) return;
 

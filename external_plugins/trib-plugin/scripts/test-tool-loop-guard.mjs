@@ -29,8 +29,16 @@ import {
     ToolLoopAbortError,
     buildSoftWarn,
     buildSameToolWarn,
+    buildToolFamilyWarn,
+    buildToolBudgetWarn,
+    setGuardConfigForTesting,
+    resetGuardConfigForTesting,
     _internals,
 } from '../src/agent/orchestrator/tool-loop-guard.mjs';
+
+// Pin defaults so tests don't pick up whatever override the running
+// workspace has in agent-config.json → bridge.toolLoopGuard.
+setGuardConfigForTesting();
 
 let passed = 0;
 let failed = 0;
@@ -289,6 +297,116 @@ const EDIT_ERR = 'Error: old_string did not match';
     assert(bashText.includes('bash_session'), '20. bash warn points to bash_session');
     const readText = buildSameToolWarn({ toolName: 'read', count: 8 });
     assert(readText.includes('offset') && readText.includes('limit'), '20. read warn points to offset/limit reads');
+}
+
+// 21. Mixed structure probes fire a family advisory toward code_graph
+{
+    const g = createGuard();
+    let last;
+    const seq = [
+        ['read', { path: '/a' }],
+        ['grep', { pattern: 'X' }],
+        ['glob', { pattern: '*.js' }],
+        ['list', { path: '/src' }],
+        ['read', { path: '/b' }],
+        ['grep', { pattern: 'Y' }],
+        ['glob', { pattern: '*.ts' }],
+        ['list', { path: '/pkg' }],
+        ['read', { path: '/c' }],
+        ['grep', { pattern: 'Z' }],
+    ];
+    for (let i = 0; i < seq.length; i++) last = feed(g, seq[i][0], seq[i][1], 'ok', i + 1);
+    assert(last.action === 'family_warn', '21. mixed structure tools trigger family_warn');
+    assert(last.warnText.includes('`code_graph`'), '21. structure family warn points to code_graph');
+}
+
+// 22. Repeated edit roundtrips fire a family advisory toward apply_patch
+{
+    const g = createGuard();
+    let last;
+    const seq = [
+        ['edit', { path: '/a', old_string: 'x', new_string: 'y' }],
+        ['multi_edit', { path: '/a', edits: [] }],
+        ['edit_lines', { path: '/a', start_line: 1, end_line: 1, new_content: 'x' }],
+        ['edit', { path: '/b', old_string: 'x', new_string: 'y' }],
+        ['batch_edit', { edits: [] }],
+    ];
+    for (let i = 0; i < seq.length; i++) last = feed(g, seq[i][0], seq[i][1], 'ok', i + 1);
+    assert(last.action === 'family_warn', '22. edit roundtrip tools trigger family_warn');
+    assert(last.warnText.includes('`apply_patch`'), '22. edit family warn points to apply_patch');
+}
+
+// 23. Family warn text phrasing
+{
+    const text = buildToolFamilyWarn({ familyKey: 'structure_probe', count: 10, tools: ['read', 'grep'] });
+    assert(text.includes('10 consecutive'), '23. family warn mentions streak count');
+    assert(text.includes('`code_graph`'), '23. structure family warn names code_graph');
+    const editText = buildToolFamilyWarn({ familyKey: 'edit_roundtrip', count: 5, tools: ['edit', 'multi_edit'] });
+    assert(editText.includes('`apply_patch`'), '23. edit family warn names apply_patch');
+    assert(editText.includes('Advisory only'), '23. family warn marks itself advisory');
+}
+
+// 24. Total tool budget warns at 24 and 48 calls
+{
+    const g = createGuard();
+    let r24 = null;
+    for (let i = 1; i <= 24; i++) r24 = feed(g, 'write', { path: `/tmp/${i}` }, 'ok', i);
+    assert(r24.action === 'budget_warn', '24. 24th overall tool call fires budget_warn');
+    assert(r24.warnText.includes('24 tool calls'), '24. budget warn mentions the current call count');
+    let r25 = feed(g, 'write', { path: '/tmp/25' }, 'ok', 25);
+    assert(r25.action === 'continue', '24. 25th call continues (24-threshold warned once)');
+    let r48 = null;
+    for (let i = 26; i <= 48; i++) r48 = feed(g, 'write', { path: `/tmp/${i}` }, 'ok', i);
+    assert(r48.action === 'budget_warn', '24. 48th overall tool call fires second budget_warn');
+}
+
+// 25. Budget warn text phrasing
+{
+    const text = buildToolBudgetWarn({ count: 24, threshold: 24 });
+    assert(text.includes('24 tool calls'), '25. budget warn mentions tool-call count');
+    assert(text.includes('`code_graph`') && text.includes('`apply_patch`') && text.includes('`bash_session`'), '25. budget warn points to up-level tools');
+    assert(text.includes('Advisory only'), '25. budget warn marks itself advisory');
+}
+
+// 26. job_status becomes same-tool warn quickly to steer polling toward job_wait
+{
+    const g = createGuard();
+    let last;
+    for (let i = 1; i <= 3; i++) last = feed(g, 'job_status', { job_id: 'job_1' }, 'ok', i);
+    assert(last.action === 'same_tool_warn', '26. 3rd job_status call fires same_tool_warn');
+    assert(last.warnText.includes('`job_wait`'), '26. job_status warn points to job_wait');
+}
+
+// 27. Config overrides retune thresholds for testing / future auto-tuning
+{
+    setGuardConfigForTesting({
+        detectThreshold: 3,
+        abortThreshold: 4,
+        sameToolThresholds: { read: 2 },
+        totalToolWarnThresholds: [5],
+    });
+    try {
+        const g1 = createGuard();
+        const d3 = feed(g1, 'edit', { old_string: 'x' }, EDIT_ERR, 1);
+        const d4 = feed(g1, 'edit', { old_string: 'x' }, EDIT_ERR, 2);
+        const d5 = feed(g1, 'edit', { old_string: 'x' }, EDIT_ERR, 3);
+        const d6 = feed(g1, 'edit', { old_string: 'x' }, EDIT_ERR, 4);
+        assert(d3.action === 'continue' && d4.action === 'continue', '27. custom detect threshold still allows early calls');
+        assert(d5.action === 'detected', '27. custom detect threshold applies');
+        assert(d6.action === 'abort', '27. custom abort threshold applies');
+
+        const g2 = createGuard();
+        const r1 = feed(g2, 'read', { path: '/a' }, 'ok', 1);
+        const r2 = feed(g2, 'read', { path: '/b' }, 'ok', 2);
+        assert(r1.action === 'continue' && r2.action === 'same_tool_warn', '27. custom same-tool threshold applies');
+
+        const g3 = createGuard();
+        let budget = null;
+        for (let i = 1; i <= 5; i++) budget = feed(g3, 'write', { path: `/tmp/${i}` }, 'ok', i);
+        assert(budget.action === 'budget_warn', '27. custom total-tool threshold applies');
+    } finally {
+        resetGuardConfigForTesting();
+    }
 }
 
 console.log(`test-tool-loop-guard: ${passed} pass / ${failed} fail`);

@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Byte-identity verification for the 4-BP cache layout refactor.
+ * Byte-identity verification for the 4-BP cache layout.
  *
  * Calls composeSystemPrompt with different role names and asserts:
  *   - baseRules     : identical across roles (BP1)
- *   - roleCatalog   : identical across roles (BP2)  ← all role bodies concat
- *   - sessionMarker : MUST differ per role (BP3)
- *   - volatileTail  : may differ per call (BP4 adjacent)
+ *   - roleCatalog   : identical across roles (BP2)  ← all role bodies + static tool-routing
+ *   - sessionMarker : identical across roles when the project is the same (BP3)
+ *                     — role/permission moved to volatileTail
+ *   - volatileTail  : DIFFERS per role (BP4 carries role + permission + task/memory)
  */
 import { composeSystemPrompt } from '../src/agent/orchestrator/context/collect.mjs';
 
@@ -51,20 +52,22 @@ assert(worker.baseRules === tester.baseRules,  'baseRules identical: worker vs t
 assert(worker.roleCatalog === reviewer.roleCatalog, 'roleCatalog identical: worker vs reviewer');
 assert(worker.roleCatalog === tester.roleCatalog,  'roleCatalog identical: worker vs tester');
 
-// BP3 — sessionMarker MUST differ across roles.
-assert(worker.sessionMarker !== reviewer.sessionMarker, 'sessionMarker differs: worker vs reviewer');
-assert(worker.sessionMarker !== tester.sessionMarker,  'sessionMarker differs: worker vs tester');
-assert(worker.sessionMarker.includes('worker'),       'worker sessionMarker mentions "worker"');
-assert(reviewer.sessionMarker.includes('reviewer'),   'reviewer sessionMarker mentions "reviewer"');
-assert(tester.sessionMarker.includes('tester'),       'tester sessionMarker mentions "tester"');
-assert(worker.sessionMarker.includes('full'),           'worker sessionMarker mentions permission "full"');
-assert(reviewer.sessionMarker.includes('read-only'),    'reviewer sessionMarker mentions read-only');
-
-// sessionMarker should include project-context.
+// BP3 — sessionMarker identical cross-role (project-context only, no role/permission/tool-routing).
+assert(worker.sessionMarker === reviewer.sessionMarker, 'sessionMarker identical: worker vs reviewer');
+assert(worker.sessionMarker === tester.sessionMarker,  'sessionMarker identical: worker vs tester');
 assert(worker.sessionMarker.includes('project-context'), 'sessionMarker includes project-context');
+assert(!worker.sessionMarker.includes('# role'),        'sessionMarker does NOT carry # role');
+assert(!worker.sessionMarker.includes('# permission'),  'sessionMarker does NOT carry # permission');
+assert(!worker.sessionMarker.includes('# tool-routing'),'sessionMarker does NOT carry # tool-routing');
 
-// BP4 adjacent — volatileTail identical across roles (same per-call opts).
-assert(worker.volatileTail === reviewer.volatileTail, 'volatileTail identical: worker vs reviewer');
+// BP4 — volatileTail DIFFERS per role (carries role + permission).
+assert(worker.volatileTail !== reviewer.volatileTail, 'volatileTail differs: worker vs reviewer');
+assert(worker.volatileTail !== tester.volatileTail,  'volatileTail differs: worker vs tester');
+assert(worker.volatileTail.includes('worker'),       'volatileTail names "worker"');
+assert(reviewer.volatileTail.includes('reviewer'),   'volatileTail names "reviewer"');
+assert(tester.volatileTail.includes('tester'),       'volatileTail names "tester"');
+assert(worker.volatileTail.includes('full'),           'worker volatileTail mentions permission "full"');
+assert(reviewer.volatileTail.includes('read-only'),    'reviewer volatileTail mentions read-only');
 assert(worker.volatileTail.includes('task-brief'),    'volatileTail contains task-brief');
 assert(worker.volatileTail.includes('memory-context'), 'volatileTail contains memory-context');
 
@@ -78,7 +81,7 @@ console.log();
 console.log('# Sizes (bytes)');
 console.log(`  baseRules       : ${worker.baseRules.length} (shared)`);
 console.log(`  roleCatalog     : ${worker.roleCatalog.length} (shared)  ${worker.roleCatalog.length === 0 ? '[no CLAUDE_PLUGIN_ROOT → empty]' : ''}`);
-console.log(`  sessionMarker   : w=${worker.sessionMarker.length}  r=${reviewer.sessionMarker.length}  t=${tester.sessionMarker.length}  (per-role)`);
-console.log(`  volatileTail    : ${worker.volatileTail.length} (shared per-call)`);
+console.log(`  sessionMarker   : ${worker.sessionMarker.length} (shared — project-context only)`);
+console.log(`  volatileTail    : w=${worker.volatileTail.length}  r=${reviewer.volatileTail.length}  t=${tester.volatileTail.length}  (per-call, carries role+permission+task+memory)`);
 
 process.exit(failed > 0 ? 1 : 0);

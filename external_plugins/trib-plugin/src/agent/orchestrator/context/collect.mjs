@@ -303,48 +303,22 @@ export function loadAllAgentBodies() {
     }
 }
 
-function buildToolRoutingHint(opts) {
-    const toolNames = new Set((Array.isArray(opts.tools) ? opts.tools : [])
-        .map(t => String(t?.name || '').toLowerCase())
-        .filter(Boolean));
-    if (toolNames.size === 0) return '';
-
-    const permission = String(opts.permission || opts.roleTemplate?.permission || '').toLowerCase();
-    const canWrite = permission !== 'read';
-    const lines = [];
-
-    if (canWrite && toolNames.has('apply_patch')) {
-        lines.push('- multi-file or already-clear edits: prefer `apply_patch` before repeated `read` → `edit`');
-    }
-    if (toolNames.has('read')) {
-        if (toolNames.has('grep') || toolNames.has('glob')) {
-            lines.push('- known file -> `read`; unknown location -> `grep` / `glob` first, then targeted `read`');
-        } else {
-            lines.push('- use `read` for exact file inspection; avoid re-reading the same file without a new reason');
-        }
-    }
-    if (toolNames.has('code_graph')) {
-        lines.push('- code structure questions: prefer `code_graph` for imports, dependents, symbols, and references before raw `grep`');
-    }
-    if (canWrite && opts.bashIsPersistent && toolNames.has('bash')) {
-        lines.push('- bridge `bash` reuses the same shell state across turns; do not replay setup unless the environment changed');
-    } else if (canWrite && toolNames.has('bash_session')) {
-        lines.push('- shell work across turns: use `bash_session` instead of replaying setup commands');
-    }
-    if (toolNames.has('read')) {
-        lines.push('- large tool outputs may be saved to a path with a preview; only `read` that saved path if the preview is insufficient');
-    }
-
-    return lines.length > 0 ? `# tool-routing\n${lines.join('\n')}` : '';
-}
-
 // --- Compose system prompt — 4-BP cache layout ---
 // Returns { baseRules, roleCatalog, sessionMarker, volatileTail } mapping
 // directly to the breakpoint plan:
 //   BP1 (1h, system block #1) = baseRules      — bridge common rules, filtered
-//   BP2 (1h, system block #2) = roleCatalog    — ALL role bodies concat (cross-role identical)
-//   BP3 (1h, first <system-reminder> user)     = sessionMarker (role + permission + project)
-//   BP4 (5m, messages tail)                    = volatileTail (task-brief + memory recap)
+//   BP2 (1h, system block #2) = roleCatalog    — ALL role bodies + static tool-routing (cross-role identical)
+//   BP3 (1h, first <system-reminder> user)     = sessionMarker (project-context only)
+//   BP4 (5m, messages tail)                    = volatileTail (role + permission + task-brief + memory recap)
+//
+// Design note — why role/permission sit in BP4, not BP3:
+//   BP3 is meant to be stable within a session and consistent across roles
+//   reused on the same project. Keeping it as pure project context means a
+//   cross-role burst within the same project shares BP1+BP2+BP3 entirely,
+//   and only BP4 (per-call) picks up the role / permission / task variance.
+//   Tool-routing hints are static cross-role, so they live in the shared
+//   catalog (rules/bridge/02-tool-routing.md) rather than being regenerated
+//   per call.
 //
 // Tier 2 (BP_2 cache): plugin-lifetime invariant content only.
 //   - opts.bridgeRules    : rules-builder buildBridgeInjectionContent output
@@ -375,18 +349,27 @@ export function composeSystemPrompt(opts) {
     const baseRules = baseParts.join('\n\n---\n\n');
 
     // ── BP2: roleCatalog (system block #2, 1h cache) ────────────────────
-    // Every agents/*.md body concatenated. Same for every role call, so
-    // BP2 also stays identical pool-wide. Individual role's identity is
-    // carried in sessionMarker (BP3), not here.
+    // Every agents/*.md body + rules/bridge/*.md snippet (including static
+    // tool-routing guidance) concatenated. Bit-identical cross-role so the
+    // provider-side cache shard is one shared entry workspace-wide.
     const roleCatalog = loadAllAgentBodies();
 
     // ── BP3: sessionMarker (first <system-reminder> user msg, 1h cache) ─
-    // Role + permission + project context. Small (~50-150 tokens), stable
-    // within a session. Different across roles/sessions, but because it's
-    // short the per-role refresh cost is negligible.
-    const sessionMarkerParts = [];
+    // Project context only. role/permission moved to volatileTail because
+    // they vary per-call even within a session (different dispatch shapes),
+    // so keeping them in BP3 would churn the 1h shard. Project context is
+    // the only truly session-stable Tier 3 content.
+    const sessionMarker = opts.projectContext
+        ? '# project-context\n' + opts.projectContext
+        : '';
+
+    // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──
+    // Per-call variance: role identity, permission envelope, task brief,
+    // memory recap. Lives at the messages-tail boundary so the BP4 5m
+    // breakpoint picks it up without fragmenting the 1h shared prefix.
+    const volatileParts = [];
     if (opts.role && !opts.skipRoleReminder) {
-        sessionMarkerParts.push('# role\n' + opts.role);
+        volatileParts.push('# role\n' + opts.role);
     }
     const permission = opts.permission || opts.roleTemplate?.permission || null;
     if (permission) {
@@ -398,24 +381,8 @@ export function composeSystemPrompt(opts) {
                     : permission === 'full'
                         ? 'full — all tools'
                         : 'unknown — treat as read-only';
-        sessionMarkerParts.push(`# permission\n${permission} — ${allow}.`);
+        volatileParts.push(`# permission\n${permission} — ${allow}.`);
     }
-    const toolRoutingHint = buildToolRoutingHint(opts);
-    if (toolRoutingHint) {
-        sessionMarkerParts.push(toolRoutingHint);
-    }
-    if (opts.projectContext) {
-        sessionMarkerParts.push('# project-context\n' + opts.projectContext);
-    }
-    const sessionMarker = sessionMarkerParts.length > 0
-        ? sessionMarkerParts.join('\n\n')
-        : '';
-
-    // ── BP4-adjacent: volatileTail (second user <system-reminder>, 5m) ──
-    // Per-call variance: task brief (bridge callsite), memory recap
-    // (volatile). Lives at the messages-tail boundary so the BP4 5m
-    // breakpoint picks it up without fragmenting the 1h shared prefix.
-    const volatileParts = [];
     if (opts.taskBrief) volatileParts.push('# task-brief\n' + opts.taskBrief);
     if (opts.memoryContext && !skip.memory) {
         volatileParts.push('# memory-context\n' + opts.memoryContext);

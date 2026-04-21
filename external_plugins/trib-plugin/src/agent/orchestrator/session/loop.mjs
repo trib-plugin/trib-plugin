@@ -5,7 +5,7 @@ import { executePatchTool } from '../tools/patch.mjs';
 import { executeCodeGraphTool, isCodeGraphTool } from '../tools/code-graph.mjs';
 import { executeInternalTool, isInternalTool } from '../internal-tools.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
-import { traceBridgeLoop, traceBridgeTool, traceToolLoopAborted, traceToolLoopDetected, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
+import { traceBridgeLoop, traceBridgeTool, traceToolLoopAborted, traceToolLoopDetected, traceToolLoopWarn, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
 import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
@@ -331,6 +331,27 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 // Same-tool repetition advisory. Never aborts — just
                 // prepends a sidecar asking the model to stop and
                 // synthesize. Fires once per whitelisted tool per session.
+                traceToolLoopWarn({ sessionId, iteration: iterations, warnType: 'same_tool', info: guardResult.info });
+                if (guardResult.warnText) {
+                    const toolMsg = messages[messages.length - 1];
+                    if (toolMsg && toolMsg.role === 'tool') {
+                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
+                    }
+                }
+            } else if (guardResult.action === 'family_warn') {
+                // Cross-tool advisory for mixed low-level loops like
+                // read+grep+glob+list or repeated edit-roundtrips.
+                traceToolLoopWarn({ sessionId, iteration: iterations, warnType: 'family', info: guardResult.info });
+                if (guardResult.warnText) {
+                    const toolMsg = messages[messages.length - 1];
+                    if (toolMsg && toolMsg.role === 'tool') {
+                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
+                    }
+                }
+            } else if (guardResult.action === 'budget_warn') {
+                // Overall tool-budget advisory. Fires sparingly to nudge
+                // synthesis once the session has already spent many tool turns.
+                traceToolLoopWarn({ sessionId, iteration: iterations, warnType: 'budget', info: guardResult.info });
                 if (guardResult.warnText) {
                     const toolMsg = messages[messages.length - 1];
                     if (toolMsg && toolMsg.role === 'tool') {
