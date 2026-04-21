@@ -424,7 +424,7 @@ export const PATCH_TOOL_DEFS = [
     name: 'apply_patch',
     title: 'Apply Unified Diff',
     annotations: { title: 'Apply Unified Diff', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Apply a unified-diff patch to the working tree in ONE turn — the inverse of the `diff` tool. Accepts single-file or multi-file diffs (git-style `--- a/foo` / `+++ b/foo` headers supported; leading `a/` `b/` prefixes stripped automatically). Skip the normal `read` → `edit` round-trip for non-trivial edits, especially multi-file refactors: the patch\'s context lines themselves verify the source matches, so no Read-before-Edit is required. Create (`/dev/null` → new file) and delete (file → `/dev/null`) sections supported. Default behaviour is atomic: if any hunk fails to apply, NO file is written (`reject_partial:true`). Use `dry_run:true` to preview which files would change and see the first failed hunk without touching disk. Paths in the diff resolve against `base_path` (or cwd) and are scope-checked like every other write tool.',
+    description: 'Apply a unified-diff patch in ONE turn — inverse of `diff`. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Skips `read` → `edit` round-trip for non-trivial edits; patch context lines self-verify. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.',
     inputSchema: {
       type: 'object',
       properties: {

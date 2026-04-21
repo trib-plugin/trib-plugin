@@ -1302,7 +1302,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / argument count. Prefer this over `grep` when you want to find a *code construct* (all class declarations, all try-catch blocks, all `foo(...).then(...)` chains) rather than a literal string. Pass `pattern` (ast-grep pattern), `path` (file or directory), and optionally `lang` (typescript|javascript|python|rust|go|...). Language defaults to auto-detect from the file extension; .mjs / .cjs are mapped to JavaScript via the bundled sgconfig.yml.",
+    "description": "Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / arg count. Prefer over `grep` for code constructs (class declarations, try-catch blocks, `foo(...).then(...)` chains) rather than literal strings. Args: `pattern`, `path`, optional `lang` (auto-detect from extension; .mjs/.cjs mapped to JavaScript via bundled sgconfig.yml).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1358,7 +1358,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Structural rewrite via ast-grep. Match a syntax pattern and substitute a rewrite template — far safer than text-based search-and-replace because matches respect the language AST (won't touch string literals, comments, or rebind identifiers in unrelated scopes). **Dry-run by default**: without `apply: true` this returns a unified-diff preview showing exactly which files would change and how. Pass `apply: true` to actually write the edits. Example: `pattern: \"$OBJ.foo($$$)\"` + `rewrite: \"$OBJ?.foo($$$)\"` converts every `x.foo(...)` call site to optional chaining.",
+    "description": "Structural rewrite via ast-grep. Match a syntax pattern + substitute rewrite template — safer than text search-and-replace because matches respect the language AST (no string literals / comments / unrelated-scope rebinding). **Dry-run by default**; pass `apply:true` to write. Example: `pattern: \"$OBJ.foo($$$)\"` + `rewrite: \"$OBJ?.foo($$$)\"` converts every `x.foo(...)` call site to optional chaining.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1415,7 +1415,7 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Apply a unified-diff patch to the working tree in ONE turn — the inverse of the `diff` tool. Accepts single-file or multi-file diffs (git-style `--- a/foo` / `+++ b/foo` headers supported; leading `a/` `b/` prefixes stripped automatically). Skip the normal `read` → `edit` round-trip for non-trivial edits, especially multi-file refactors: the patch's context lines themselves verify the source matches, so no Read-before-Edit is required. Create (`/dev/null` → new file) and delete (file → `/dev/null`) sections supported. Default behaviour is atomic: if any hunk fails to apply, NO file is written (`reject_partial:true`). Use `dry_run:true` to preview which files would change and see the first failed hunk without touching disk. Paths in the diff resolve against `base_path` (or cwd) and are scope-checked like every other write tool.",
+    "description": "Apply a unified-diff patch in ONE turn — inverse of `diff`. Single/multi-file diffs (git-style `--- a/` / `+++ b/` headers, `a/` `b/` prefixes stripped). Skips `read` → `edit` round-trip for non-trivial edits; patch context lines self-verify. `/dev/null` → new file creates; file → `/dev/null` deletes. Default atomic (`reject_partial:true`) — any failed hunk rejects whole patch. Use `dry_run:true` to preview changes + first failed hunk without writing. Paths resolve against `base_path` (or cwd), scope-checked like other write tools.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1452,7 +1452,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command inside a long-lived bash session that preserves state across calls — cwd (`cd`), environment variables (`export`), shell functions, aliases, and any `source`d virtualenv or init script persist until the session is closed or idle-reaped (5 min). Omit `session_id` on the first call to mint a new session; the response header prints `[session: <id>]` which you reuse on subsequent calls. Pass `close:true` to terminate the session after this command. Max 10 concurrent sessions; the oldest idle one is evicted when the pool fills. Same safety pattern as `bash` (destructive patterns like `rm -rf /` / `git push --force` blocked). Output is ANSI-stripped and middle-truncated like the `bash` tool. Use this INSTEAD of `bash` whenever you need two-plus commands that share state (e.g. `cd project && source .venv/bin/activate && pytest`) — one call per command, reusing the session_id.",
+    "description": "Execute a shell command in a long-lived bash session that preserves state (cwd, env, functions, aliases, sourced virtualenvs) across calls until closed or idle-reaped (5 min). Omit `session_id` on first call — response header `[session: <id>]` gives the id to reuse. Pass `close:true` to terminate. Max 10 concurrent sessions; oldest idle evicted when pool fills. Same safety as `bash` (`rm -rf /` / `git push --force` blocked). Use INSTEAD of `bash` for multi-command state-sharing (e.g. `cd project` then `source .venv/bin/activate` then `pytest`) — one call per command, reusing `session_id`.",
     "inputSchema": {
       "type": "object",
       "properties": {

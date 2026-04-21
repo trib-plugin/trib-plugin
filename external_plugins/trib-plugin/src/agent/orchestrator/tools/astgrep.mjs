@@ -425,7 +425,7 @@ export const ASTGREP_TOOL_DEFS = [
     name: 'sg_search',
     title: 'AST-Grep Search',
     annotations: { title: 'AST-Grep Search', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / argument count. Prefer this over `grep` when you want to find a *code construct* (all class declarations, all try-catch blocks, all `foo(...).then(...)` chains) rather than a literal string. Pass `pattern` (ast-grep pattern), `path` (file or directory), and optionally `lang` (typescript|javascript|python|rust|go|...). Language defaults to auto-detect from the file extension; .mjs / .cjs are mapped to JavaScript via the bundled sgconfig.yml.',
+    description: 'Structural (AST-level) code search via ast-grep. Matches syntax shapes, not text — e.g. `function $NAME($$$)` finds every function declaration regardless of whitespace / comments / arg count. Prefer over `grep` for code constructs (class declarations, try-catch blocks, `foo(...).then(...)` chains) rather than literal strings. Args: `pattern`, `path`, optional `lang` (auto-detect from extension; .mjs/.cjs mapped to JavaScript via bundled sgconfig.yml).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -443,7 +443,7 @@ export const ASTGREP_TOOL_DEFS = [
     name: 'sg_rewrite',
     title: 'AST-Grep Rewrite',
     annotations: { title: 'AST-Grep Rewrite', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Structural rewrite via ast-grep. Match a syntax pattern and substitute a rewrite template — far safer than text-based search-and-replace because matches respect the language AST (won\'t touch string literals, comments, or rebind identifiers in unrelated scopes). **Dry-run by default**: without `apply: true` this returns a unified-diff preview showing exactly which files would change and how. Pass `apply: true` to actually write the edits. Example: `pattern: "$OBJ.foo($$$)"` + `rewrite: "$OBJ?.foo($$$)"` converts every `x.foo(...)` call site to optional chaining.',
+    description: 'Structural rewrite via ast-grep. Match a syntax pattern + substitute rewrite template — safer than text search-and-replace because matches respect the language AST (no string literals / comments / unrelated-scope rebinding). **Dry-run by default**; pass `apply:true` to write. Example: `pattern: "$OBJ.foo($$$)"` + `rewrite: "$OBJ?.foo($$$)"` converts every `x.foo(...)` call site to optional chaining.',
     inputSchema: {
       type: 'object',
       properties: {

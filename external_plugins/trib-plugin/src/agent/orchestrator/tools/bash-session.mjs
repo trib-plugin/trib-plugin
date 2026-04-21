@@ -415,7 +415,7 @@ export const BASH_SESSION_TOOL_DEFS = [
             idempotentHint: false,
             openWorldHint: true,
         },
-        description: 'Execute a shell command inside a long-lived bash session that preserves state across calls — cwd (`cd`), environment variables (`export`), shell functions, aliases, and any `source`d virtualenv or init script persist until the session is closed or idle-reaped (5 min). Omit `session_id` on the first call to mint a new session; the response header prints `[session: <id>]` which you reuse on subsequent calls. Pass `close:true` to terminate the session after this command. Max 10 concurrent sessions; the oldest idle one is evicted when the pool fills. Same safety pattern as `bash` (destructive patterns like `rm -rf /` / `git push --force` blocked). Output is ANSI-stripped and middle-truncated like the `bash` tool. Use this INSTEAD of `bash` whenever you need two-plus commands that share state (e.g. `cd project && source .venv/bin/activate && pytest`) — one call per command, reusing the session_id.',
+        description: 'Execute a shell command in a long-lived bash session that preserves state (cwd, env, functions, aliases, sourced virtualenvs) across calls until closed or idle-reaped (5 min). Omit `session_id` on first call — response header `[session: <id>]` gives the id to reuse. Pass `close:true` to terminate. Max 10 concurrent sessions; oldest idle evicted when pool fills. Same safety as `bash` (`rm -rf /` / `git push --force` blocked). Use INSTEAD of `bash` for multi-command state-sharing (e.g. `cd project` then `source .venv/bin/activate` then `pytest`) — one call per command, reusing `session_id`.',
         inputSchema: {
             type: 'object',
             properties: {
