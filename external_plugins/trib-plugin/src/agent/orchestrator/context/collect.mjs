@@ -317,7 +317,7 @@ export function loadAllAgentBodies() {
 //   cross-role burst within the same project shares BP1+BP2+BP3 entirely,
 //   and only BP4 (per-call) picks up the role / permission / task variance.
 //   Tool-routing hints are static cross-role, so they live in the shared
-//   catalog (rules/bridge/02-tool-routing.md) rather than being regenerated
+//   BP1 tool guidance (rules/shared/01-tool.md) rather than being regenerated
 //   per call.
 //
 // Tier 2 (BP_2 cache): plugin-lifetime invariant content only.

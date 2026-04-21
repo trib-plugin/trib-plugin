@@ -91,6 +91,7 @@ class Scheduler {
   running = /* @__PURE__ */ new Set();
   injectFn = null;
   sendFn = null;
+  pendingCheck = null;
   // Activity tracking
   lastActivity = 0;
   // timestamp of last inbound message
@@ -140,6 +141,9 @@ class Scheduler {
   setSendHandler(fn) {
     this.sendFn = fn;
   }
+  setPendingCheck(fn) {
+    this.pendingCheck = typeof fn === 'function' ? fn : null;
+  }
   noteActivity() {
     this.lastActivity = Date.now();
   }
@@ -161,10 +165,17 @@ class Scheduler {
   }
   /** Get current session state based on activity */
   getSessionState() {
+    // External busy signal wins — a pending bridge dispatch or any other
+    // probe that reports "work in flight" keeps the state active even if
+    // the user hasn't typed in a while. Probe failures must never crash
+    // fireTimed / schedule logic, so wrap defensively.
+    try {
+      if (this.pendingCheck && this.pendingCheck()) return "active";
+    } catch { /* probe failure is not fatal; fall through */ }
     if (this.lastActivity === 0) return "idle";
     const elapsed = Date.now() - this.lastActivity;
     if (elapsed < 2 * 6e4) return "active";
-    if (elapsed < 5 * 6e4) return "recent";
+    if (elapsed < 15 * 6e4) return "recent";
     return "idle";
   }
   /** Get time context for prompt enrichment */

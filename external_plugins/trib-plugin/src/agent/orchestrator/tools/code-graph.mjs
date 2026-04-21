@@ -41,6 +41,7 @@ const CODE_GRAPH_EXT_LANG = Object.freeze({
 });
 const _codeGraphCache = new Map();
 const _diskCodeGraphCache = new Map();
+const _codeGraphDirtyPaths = new Map();
 let _diskCodeGraphCacheLoaded = false;
 let _diskCodeGraphCacheFlushTimer = null;
 const _codeGraphCacheStats = {
@@ -56,6 +57,12 @@ const _codeGraphCacheStats = {
   maskedLineCacheMisses: 0,
   sourceTextCacheHits: 0,
   sourceTextCacheMisses: 0,
+  symbolIndexHits: 0,
+  symbolIndexMisses: 0,
+  symbolIndexFullBuilds: 0,
+  symbolIndexIncrementalBuilds: 0,
+  dirtyPathRebuilds: 0,
+  fullWalkBuilds: 0,
 };
 
 function _isCommentOnlyLine(line) {
@@ -105,8 +112,33 @@ function _codeGraphDiskPath() {
   return join(getPluginData(), CODE_GRAPH_DISK_FILE);
 }
 
+function _canonicalGraphCwd(cwd) {
+  return pathResolve(cwd || process.cwd());
+}
+
+function _canonicalGraphPath(p) {
+  const full = pathResolve(String(p || ''));
+  return process.platform === 'win32' ? full.toLowerCase() : full;
+}
+
 function _fileFingerprint(rel, stat) {
   return `${rel}|${Number(stat?.mtimeMs || 0)}|${Number(stat?.size || 0)}`;
+}
+
+function _collectGraphFileMetas(absRoot, cwd) {
+  const files = [];
+  _walkGraphFiles(absRoot, files);
+  const fileMetas = [];
+  for (const abs of files) {
+    const lang = _graphLanguage(abs);
+    if (!lang) continue;
+    let stat = null;
+    try { stat = statSync(abs); } catch { continue; }
+    const rel = _graphRel(abs, cwd);
+    fileMetas.push({ abs, rel, lang, stat, fp: _fileFingerprint(rel, stat) });
+  }
+  fileMetas.sort((a, b) => a.rel.localeCompare(b.rel));
+  return fileMetas;
 }
 
 function _computeGraphSignature(fileMetas) {
@@ -130,6 +162,7 @@ function _serializeGraph(graph) {
       goPackageName: node.goPackageName || '',
       goImportPath: node.goImportPath || '',
       topLevelTypes: Array.isArray(node.topLevelTypes) ? node.topLevelTypes : [],
+      tokenSymbols: Array.isArray(node.tokenSymbols) ? node.tokenSymbols : null,
     })),
   };
 }
@@ -154,6 +187,7 @@ function _deserializeGraph(cwd, payload) {
       goPackageName: item.goPackageName || '',
       goImportPath: item.goImportPath || '',
       topLevelTypes: Array.isArray(item.topLevelTypes) ? item.topLevelTypes : [],
+      tokenSymbols: Array.isArray(item.tokenSymbols) ? item.tokenSymbols : null,
     };
     nodes.set(node.rel, node);
     for (const depRel of resolvedImportsRel) {
@@ -175,6 +209,8 @@ function _attachGraphRuntimeCaches(graph) {
   if (!graph._referenceSearchCache) graph._referenceSearchCache = new Map();
   if (!graph._maskedLinesCache) graph._maskedLinesCache = new Map();
   if (!graph._sourceTextCache) graph._sourceTextCache = new Map();
+  if (!graph._symbolTokenIndex) graph._symbolTokenIndex = new Map();
+  if (typeof graph._symbolTokenIndexDirty !== 'boolean') graph._symbolTokenIndexDirty = true;
   return graph;
 }
 
@@ -203,7 +239,7 @@ function _loadDiskCodeGraphCache(now = Date.now()) {
     if (!parsed || typeof parsed !== 'object') return;
     for (const [cwd, entry] of Object.entries(parsed)) {
       if (!entry || typeof entry !== 'object') continue;
-      _diskCodeGraphCache.set(cwd, entry);
+      _diskCodeGraphCache.set(_canonicalGraphCwd(cwd), entry);
     }
     _pruneDiskCodeGraphEntries(now);
   } catch {
@@ -237,7 +273,7 @@ function _scheduleDiskCodeGraphCacheFlush() {
 
 function _setDiskCodeGraphEntry(cwd, graph) {
   _loadDiskCodeGraphCache();
-  _diskCodeGraphCache.set(cwd, _serializeGraph(graph));
+  _diskCodeGraphCache.set(_canonicalGraphCwd(cwd), _serializeGraph(graph));
   _pruneDiskCodeGraphEntries();
   _scheduleDiskCodeGraphCacheFlush();
 }
@@ -245,6 +281,7 @@ function _setDiskCodeGraphEntry(cwd, graph) {
 function resetCodeGraphCachesForTesting() {
   _codeGraphCache.clear();
   _diskCodeGraphCache.clear();
+  _codeGraphDirtyPaths.clear();
   _diskCodeGraphCacheLoaded = false;
   _codeGraphCacheStats.memoryHits = 0;
   _codeGraphCacheStats.memoryMisses = 0;
@@ -258,10 +295,36 @@ function resetCodeGraphCachesForTesting() {
   _codeGraphCacheStats.maskedLineCacheMisses = 0;
   _codeGraphCacheStats.sourceTextCacheHits = 0;
   _codeGraphCacheStats.sourceTextCacheMisses = 0;
+  _codeGraphCacheStats.symbolIndexHits = 0;
+  _codeGraphCacheStats.symbolIndexMisses = 0;
+  _codeGraphCacheStats.symbolIndexFullBuilds = 0;
+  _codeGraphCacheStats.symbolIndexIncrementalBuilds = 0;
+  _codeGraphCacheStats.dirtyPathRebuilds = 0;
+  _codeGraphCacheStats.fullWalkBuilds = 0;
   if (_diskCodeGraphCacheFlushTimer) {
     clearTimeout(_diskCodeGraphCacheFlushTimer);
     _diskCodeGraphCacheFlushTimer = null;
   }
+}
+
+export function markCodeGraphDirtyPaths(cwd, paths) {
+  const key = _canonicalGraphCwd(cwd);
+  const values = Array.isArray(paths) ? paths : [paths];
+  const cleaned = values
+    .filter(Boolean)
+    .map((p) => _canonicalGraphPath(p));
+  if (cleaned.length === 0) return;
+  if (!_codeGraphDirtyPaths.has(key)) _codeGraphDirtyPaths.set(key, new Set());
+  const set = _codeGraphDirtyPaths.get(key);
+  for (const p of cleaned) set.add(p);
+}
+
+function _consumeCodeGraphDirtyPaths(cwd) {
+  const key = _canonicalGraphCwd(cwd);
+  const set = _codeGraphDirtyPaths.get(key);
+  if (!set || set.size === 0) return [];
+  _codeGraphDirtyPaths.delete(key);
+  return [...set];
 }
 
 function _pushIndexSet(map, key, value) {
@@ -353,6 +416,120 @@ function _extractTopLevelTypeNames(text, lang) {
     if (match?.[1]) out.add(match[1]);
   }
   return [...out];
+}
+
+function _extractIdentifierTokens(text) {
+  const out = new Set();
+  const re = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
+  let match = null;
+  const src = String(text || '');
+  while ((match = re.exec(src))) {
+    out.add(match[0]);
+  }
+  return [...out];
+}
+
+function _getTokenSymbolsForNode(graph, node) {
+  if (Array.isArray(node?.tokenSymbols)) return node.tokenSymbols;
+  const text = _getSourceTextForNode(graph, node);
+  const tokens = _extractIdentifierTokens(text);
+  node.tokenSymbols = tokens;
+  return tokens;
+}
+
+function _cloneSymbolTokenIndex(index) {
+  const out = new Map();
+  for (const [key, rels] of index || []) {
+    out.set(key, Array.isArray(rels) ? [...rels] : []);
+  }
+  return out;
+}
+
+function _ensureSymbolTokenIndex(graph) {
+  if (!graph?._symbolTokenIndex) return;
+  if (!graph._symbolTokenIndexDirty && graph._symbolTokenIndex.size > 0) return;
+  graph._symbolTokenIndex.clear();
+  _codeGraphCacheStats.symbolIndexFullBuilds++;
+  for (const node of graph.nodes.values()) {
+    for (const symbol of _getTokenSymbolsForNode(graph, node)) {
+      const key = `${node.lang}|${symbol}`;
+      if (!graph._symbolTokenIndex.has(key)) graph._symbolTokenIndex.set(key, []);
+      graph._symbolTokenIndex.get(key).push(node.rel);
+    }
+  }
+  graph._symbolTokenIndexDirty = false;
+}
+
+function _buildFileInfosFromPreviousGraph(previousGraph, absRoot) {
+  const out = new Map();
+  for (const node of previousGraph?.nodes?.values?.() || []) {
+    out.set(node.rel, {
+      abs: node.abs,
+      rel: node.rel,
+      lang: node.lang,
+      fingerprint: node.fingerprint || '',
+      sourceText: previousGraph?._sourceTextCache?.get(node.rel)?.fingerprint === (node.fingerprint || '')
+        ? previousGraph._sourceTextCache.get(node.rel).text
+        : null,
+      rawImports: Array.isArray(node.rawImports) ? node.rawImports : [],
+      packageName: node.packageName || '',
+      namespaceName: node.namespaceName || '',
+      goPackageName: node.goPackageName || '',
+      goImportPath: node.goImportPath || '',
+      topLevelTypes: Array.isArray(node.topLevelTypes) ? node.topLevelTypes : [],
+      tokenSymbols: Array.isArray(node.tokenSymbols) ? node.tokenSymbols : null,
+    });
+  }
+  return out;
+}
+
+function _recomputeFileInfo(absPath, rel, lang, fingerprint, absRoot, goModuleCache) {
+  let text = '';
+  try { text = readFileSync(absPath, 'utf8'); } catch { return null; }
+  const goModule = lang === 'go' ? _findNearestGoModule(absPath, absRoot, goModuleCache) : null;
+  const goImportPath = goModule
+    ? [goModule.modulePath, normalizeInputPath(pathRelative(goModule.moduleRoot, dirname(absPath))).replace(/\\/g, '/')].filter(Boolean).join('/').replace(/\/$/, '')
+    : '';
+  return {
+    abs: absPath,
+    rel,
+    lang,
+    fingerprint,
+    sourceText: text,
+    rawImports: _extractRawImports(text, lang),
+    packageName: _extractPackageName(text, lang),
+    namespaceName: _extractNamespaceName(text, lang),
+    goPackageName: lang === 'go' ? _extractGoPackageName(text) : '',
+    goImportPath,
+    topLevelTypes: _extractTopLevelTypeNames(text, lang),
+    tokenSymbols: null,
+  };
+}
+
+function _tryFastDirtyPathFileInfos(previousGraph, cwd, dirtyPaths, absRoot) {
+  if (!previousGraph || dirtyPaths.length === 0) return null;
+  const fileInfoMap = _buildFileInfosFromPreviousGraph(previousGraph, absRoot);
+  const goModuleCache = new Map();
+  for (const dirtyPath of dirtyPaths) {
+    let stat = null;
+    try { stat = statSync(dirtyPath); } catch {}
+    if (stat?.isDirectory?.()) return null;
+    const rel = normalizeInputPath(pathRelative(absRoot, dirtyPath)).replace(/\\/g, '/');
+    if (rel.startsWith('..')) return null;
+    const lang = _graphLanguage(dirtyPath);
+    if (!stat) {
+      fileInfoMap.delete(rel);
+      continue;
+    }
+    if (!lang) {
+      fileInfoMap.delete(rel);
+      continue;
+    }
+    const fingerprint = _fileFingerprint(rel, stat);
+    const next = _recomputeFileInfo(dirtyPath, rel, lang, fingerprint, absRoot, goModuleCache);
+    if (next) fileInfoMap.set(rel, next);
+  }
+  return [...fileInfoMap.values()].sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
 function _parseGoModulePath(text) {
@@ -1032,8 +1209,17 @@ function _cheapReferenceSearch(graph, symbol, cwd, { language = null } = {}) {
   _codeGraphCacheStats.referenceQueryMisses++;
   const re = new RegExp(`\\b${escaped}\\b`, 'g');
   const lines = [];
-  for (const node of graph.nodes.values()) {
-    if (language && node.lang !== language) continue;
+  _ensureSymbolTokenIndex(graph);
+  const indexKey = `${language || '*'}|${symbol}`;
+  const indexedFiles = graph?._symbolTokenIndex?.get(indexKey);
+  const candidateNodes = indexedFiles
+    ? indexedFiles.map((rel) => graph.nodes.get(rel)).filter(Boolean)
+    : [...graph.nodes.values()].filter((node) => !language || node.lang === language);
+  if (indexedFiles) _codeGraphCacheStats.symbolIndexHits++;
+  else _codeGraphCacheStats.symbolIndexMisses++;
+  for (const node of candidateNodes) {
+    const sourceText = _getSourceTextForNode(graph, node);
+    if (!sourceText.includes(symbol)) continue;
     const fileLines = _getMaskedLinesForNode(graph, node);
     for (let i = 0; i < fileLines.length; i++) {
       const line = fileLines[i];
@@ -1186,84 +1372,83 @@ function _formatImpact(node, graph, cwd, targetSymbol = '') {
 
 function _buildCodeGraph(cwd) {
   const now = Date.now();
-  const absRoot = pathResolve(cwd);
-  const files = [];
-  _walkGraphFiles(absRoot, files);
-  const fileMetas = [];
-  for (const abs of files) {
-    const lang = _graphLanguage(abs);
-    if (!lang) continue;
-    let stat = null;
-    try { stat = statSync(abs); } catch { continue; }
-    const rel = _graphRel(abs, cwd);
-    fileMetas.push({ abs, rel, lang, stat, fp: _fileFingerprint(rel, stat) });
-  }
-  fileMetas.sort((a, b) => a.rel.localeCompare(b.rel));
-  const signature = _computeGraphSignature(fileMetas);
-  const cached = _codeGraphCache.get(cwd);
-  if (cached && cached.signature === signature && now - cached.ts < CODE_GRAPH_TTL_MS) {
-    _codeGraphCacheStats.memoryHits++;
-    return cached.graph;
-  }
-  _codeGraphCacheStats.memoryMisses++;
-  _loadDiskCodeGraphCache(now);
-  const diskEntry = _diskCodeGraphCache.get(cwd);
+  const graphCwd = _canonicalGraphCwd(cwd);
+  const absRoot = graphCwd;
+  const cached = _codeGraphCache.get(graphCwd);
   let previousGraph = cached?.graph || null;
-  if (diskEntry?.signature === signature) {
-    const graph = _deserializeGraph(cwd, diskEntry);
-    if (graph) {
-      _codeGraphCacheStats.diskHits++;
-      _codeGraphCache.set(cwd, { ts: now, signature, graph });
-      return graph;
+  const dirtyPaths = _consumeCodeGraphDirtyPaths(graphCwd);
+  let fileInfos = null;
+  let fileMetas = null;
+  let signature = null;
+  if (dirtyPaths.length > 0 && previousGraph) {
+    const fast = _tryFastDirtyPathFileInfos(previousGraph, graphCwd, dirtyPaths, absRoot);
+    if (fast) {
+      fileMetas = _collectGraphFileMetas(absRoot, graphCwd);
+      signature = _computeGraphSignature(fileMetas);
+      const fastSignature = _computeGraphSignature(fast.map((info) => ({ fp: info.fingerprint })));
+      if (signature === fastSignature) {
+        fileInfos = fast;
+        _codeGraphCacheStats.dirtyPathRebuilds++;
+        _codeGraphCacheStats.memoryMisses++;
+      }
     }
   }
-  _codeGraphCacheStats.diskMisses++;
-  if (!previousGraph && diskEntry) previousGraph = _deserializeGraph(cwd, diskEntry);
-  const goModuleCache = new Map();
-  const fileInfos = [];
-  for (const meta of fileMetas) {
-    const goModule = meta.lang === 'go' ? _findNearestGoModule(meta.abs, absRoot, goModuleCache) : null;
-    const goImportPath = goModule
-      ? [goModule.modulePath, normalizeInputPath(pathRelative(goModule.moduleRoot, dirname(meta.abs))).replace(/\\/g, '/')].filter(Boolean).join('/').replace(/\/$/, '')
-      : '';
-    const previousNode = previousGraph?.nodes?.get(meta.rel) || null;
-    if (previousNode
-      && previousNode.fingerprint === meta.fp
-      && (meta.lang !== 'go' || previousNode.goImportPath === goImportPath)) {
-      fileInfos.push({
-        abs: meta.abs,
-        rel: meta.rel,
-        lang: meta.lang,
-        fingerprint: meta.fp,
-        sourceText: previousGraph?._sourceTextCache?.get(meta.rel)?.fingerprint === meta.fp
-          ? previousGraph._sourceTextCache.get(meta.rel).text
-          : null,
-        rawImports: Array.isArray(previousNode.rawImports) ? previousNode.rawImports : [],
-        packageName: previousNode.packageName || '',
-        namespaceName: previousNode.namespaceName || '',
-        goPackageName: previousNode.goPackageName || '',
-        goImportPath: previousNode.goImportPath || goImportPath,
-        topLevelTypes: Array.isArray(previousNode.topLevelTypes) ? previousNode.topLevelTypes : [],
-      });
-      _codeGraphCacheStats.reusedNodes++;
-      continue;
+  if (!fileInfos) {
+    if (!fileMetas) fileMetas = _collectGraphFileMetas(absRoot, graphCwd);
+    signature = _computeGraphSignature(fileMetas);
+    if (cached && cached.signature === signature && now - cached.ts < CODE_GRAPH_TTL_MS) {
+      _codeGraphCacheStats.memoryHits++;
+      return cached.graph;
     }
-    let text = '';
-    try { text = readFileSync(meta.abs, 'utf8'); } catch { continue; }
-      fileInfos.push({
-        abs: meta.abs,
-        rel: meta.rel,
-        lang: meta.lang,
-        fingerprint: meta.fp,
-        sourceText: text,
-        rawImports: _extractRawImports(text, meta.lang),
-        packageName: _extractPackageName(text, meta.lang),
-        namespaceName: _extractNamespaceName(text, meta.lang),
-        goPackageName: meta.lang === 'go' ? _extractGoPackageName(text) : '',
-      goImportPath,
-      topLevelTypes: _extractTopLevelTypeNames(text, meta.lang),
-    });
-    _codeGraphCacheStats.rebuiltNodes++;
+    _codeGraphCacheStats.memoryMisses++;
+    _loadDiskCodeGraphCache(now);
+    const diskEntry = _diskCodeGraphCache.get(graphCwd);
+    if (diskEntry?.signature === signature) {
+      const graph = _deserializeGraph(graphCwd, diskEntry);
+      if (graph) {
+        _codeGraphCacheStats.diskHits++;
+        _codeGraphCache.set(graphCwd, { ts: now, signature, graph });
+        return graph;
+      }
+    }
+    _codeGraphCacheStats.diskMisses++;
+    if (!previousGraph && diskEntry) previousGraph = _deserializeGraph(graphCwd, diskEntry);
+    _codeGraphCacheStats.fullWalkBuilds++;
+    const goModuleCache = new Map();
+    fileInfos = [];
+    for (const meta of fileMetas) {
+      const goModule = meta.lang === 'go' ? _findNearestGoModule(meta.abs, absRoot, goModuleCache) : null;
+      const goImportPath = goModule
+        ? [goModule.modulePath, normalizeInputPath(pathRelative(goModule.moduleRoot, dirname(meta.abs))).replace(/\\/g, '/')].filter(Boolean).join('/').replace(/\/$/, '')
+        : '';
+      const previousNode = previousGraph?.nodes?.get(meta.rel) || null;
+      if (previousNode
+        && previousNode.fingerprint === meta.fp
+        && (meta.lang !== 'go' || previousNode.goImportPath === goImportPath)) {
+        fileInfos.push({
+          abs: meta.abs,
+          rel: meta.rel,
+          lang: meta.lang,
+          fingerprint: meta.fp,
+          sourceText: previousGraph?._sourceTextCache?.get(meta.rel)?.fingerprint === meta.fp
+            ? previousGraph._sourceTextCache.get(meta.rel).text
+            : null,
+          rawImports: Array.isArray(previousNode.rawImports) ? previousNode.rawImports : [],
+          packageName: previousNode.packageName || '',
+          namespaceName: previousNode.namespaceName || '',
+          goPackageName: previousNode.goPackageName || '',
+          goImportPath: previousNode.goImportPath || goImportPath,
+          topLevelTypes: Array.isArray(previousNode.topLevelTypes) ? previousNode.topLevelTypes : [],
+          tokenSymbols: Array.isArray(previousNode.tokenSymbols) ? previousNode.tokenSymbols : null,
+        });
+        _codeGraphCacheStats.reusedNodes++;
+        continue;
+      }
+      const next = _recomputeFileInfo(meta.abs, meta.rel, meta.lang, meta.fp, absRoot, goModuleCache);
+      if (!next) continue;
+      fileInfos.push(next);
+      _codeGraphCacheStats.rebuiltNodes++;
+    }
   }
   const index = _buildGraphIndex(fileInfos);
   const nodes = new Map();
@@ -1280,22 +1465,23 @@ function _buildCodeGraph(cwd) {
       lang: info.lang,
       fingerprint: info.fingerprint,
       rawImports: info.rawImports,
-      resolvedImportsRel: resolvedImports.map((depAbs) => _graphRel(depAbs, cwd)),
+      resolvedImportsRel: resolvedImports.map((depAbs) => _graphRel(depAbs, graphCwd)),
       resolvedImports,
       packageName: info.packageName,
       namespaceName: info.namespaceName,
       goPackageName: info.goPackageName,
       goImportPath: info.goImportPath,
       topLevelTypes: info.topLevelTypes,
+      tokenSymbols: info.tokenSymbols,
     };
     nodes.set(info.rel, node);
     for (const depAbs of resolvedImports) {
-      const depRel = _graphRel(depAbs, cwd);
+      const depRel = _graphRel(depAbs, graphCwd);
       if (!reverse.has(depRel)) reverse.set(depRel, new Set());
       reverse.get(depRel).add(info.rel);
     }
   }
-  const graph = _attachGraphRuntimeCaches({ cwd, nodes, reverse, builtAt: now, signature });
+  const graph = _attachGraphRuntimeCaches({ cwd: graphCwd, nodes, reverse, builtAt: now, signature });
   for (const info of fileInfos) {
     if (typeof info.sourceText === 'string') {
       graph._sourceTextCache.set(info.rel, {
@@ -1304,8 +1490,9 @@ function _buildCodeGraph(cwd) {
       });
     }
   }
-  _codeGraphCache.set(cwd, { ts: now, signature, graph });
-  _setDiskCodeGraphEntry(cwd, graph);
+  graph._symbolTokenIndexDirty = true;
+  _codeGraphCache.set(graphCwd, { ts: now, signature, graph });
+  _setDiskCodeGraphEntry(graphCwd, graph);
   return graph;
 }
 

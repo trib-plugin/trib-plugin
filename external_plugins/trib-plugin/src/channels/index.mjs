@@ -16,6 +16,8 @@ import { loadConfig, createBackend, loadBotConfig, loadProfileConfig, DATA_DIR }
 import { loadConfig as loadAgentConfig } from "../agent/orchestrator/config.mjs";
 import { initProviders } from "../agent/orchestrator/providers/registry.mjs";
 import { Scheduler } from "./lib/scheduler.mjs";
+import { hasPending as dispatchHasPending } from "../agent/orchestrator/dispatch-persist.mjs";
+import { setListener as setActivityBusListener } from "../agent/orchestrator/activity-bus.mjs";
 import { WebhookServer } from "./lib/webhook.mjs";
 import { EventPipeline } from "./lib/event-pipeline.mjs";
 import { startCliWorker, stopCliWorker } from "./lib/cli-worker-host.mjs";
@@ -280,6 +282,19 @@ const scheduler = new Scheduler(
   config.channelsConfig,
   botConfig
 );
+// Register the pending-dispatch probe so the scheduler treats an in-flight
+// bridge dispatch as "active" regardless of user-inbound silence.
+scheduler.setPendingCheck(() => {
+  try {
+    return dispatchHasPending(process.env.CLAUDE_PLUGIN_DATA);
+  } catch {
+    return false;
+  }
+});
+// Bridge the orchestrator-side activity notifier into the scheduler so
+// events like `addPending` can bump lastActivity without importing the
+// scheduler instance directly (avoids module cycles).
+setActivityBusListener(() => scheduler.noteActivity());
 let webhookServer = null;
 if (!_isWorkerMode && config.webhook?.enabled) {
   webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
@@ -389,6 +404,9 @@ async function startOwnerHttpServer() {
             body.text,
             body.opts
           );
+          // Lead-originated send — bump activity so proactive chat stays
+          // suppressed while the assistant is actively replying.
+          scheduler.noteActivity();
           res.writeHead(200);
           res.end(JSON.stringify({ sentIds: sendResult.sentIds }));
           return;
@@ -807,7 +825,7 @@ function reloadRuntimeConfig() {
   }
   eventPipeline.reloadConfig(config.events, config.channelsConfig);
 }
-function injectAndRecord(channelId, name, content, options, kind, prefix) {
+function injectAndRecord(channelId, name, content, options) {
   const ts = new Date().toISOString();
   const now = new Date();
   const timeLabel = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} `;
@@ -828,13 +846,6 @@ function injectAndRecord(channelId, name, content, options, kind, prefix) {
   } else {
     forwardLifecycleToDiscord(channelId, content);
   }
-  void memoryAppendEntry({
-    ts,
-    role: "user",
-    content: options?.instruction || content,
-    sourceRef: `${prefix}:${name}:${ts}`,
-    sessionId: `${prefix}:${name}`,
-  });
 }
 
 // Best-effort direct Discord emission for silent-to-agent lifecycle pings.
@@ -850,18 +861,10 @@ function forwardLifecycleToDiscord(channelId, content) {
   } catch { /* best-effort */ }
 }
 scheduler.setInjectHandler((channelId, name, content, options) => {
-  injectAndRecord(channelId, name, content, options, "schedule-inject", "schedule");
+  injectAndRecord(channelId, name, content, options);
 });
 scheduler.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
-  const nowMs = Date.now();
-  void memoryAppendEntry({
-    ts: nowMs,
-    role: "assistant",
-    content: text,
-    sourceRef: `schedule-send:${channelId}:${nowMs}`,
-    sessionId: `schedule:${channelId}`,
-  });
 });
 function wireWebhookHandlers() {
   if (!webhookServer) return;
@@ -870,18 +873,10 @@ function wireWebhookHandlers() {
 wireWebhookHandlers();
 const eventQueue = eventPipeline.getQueue();
 eventQueue.setInjectHandler((channelId, name, content, options) => {
-  injectAndRecord(channelId, name, content, options, "event-inject", "event");
+  injectAndRecord(channelId, name, content, options);
 });
 eventQueue.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
-  const nowMs = Date.now();
-  void memoryAppendEntry({
-    ts: nowMs,
-    role: "assistant",
-    content: text,
-    sourceRef: `event-send:${channelId}:${nowMs}`,
-    sessionId: `event:${channelId}`,
-  });
 });
 eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
 function editDiscordMessage(channelId, messageId, label) {
@@ -1479,6 +1474,8 @@ function createHttpMcpServer() {
             args.text,
             { replyTo: args.reply_to, files: args.files ?? [], embeds: args.embeds ?? [], components: args.components ?? [] }
           );
+          // Lead-originated reply via MCP — bump activity.
+          scheduler.noteActivity();
           return { content: [{ type: "text", text: JSON.stringify({ sentIds: sendResult.sentIds }) }] };
         }
         case "react": {
@@ -1654,6 +1651,8 @@ ${lines.join("\n")}` }] };
               components: args.components ?? []
             }
           );
+          // Lead-originated reply via proxy-mode MCP — bump activity.
+          scheduler.noteActivity();
           const text = sendResult.sentIds.length === 1 ? `sent (id: ${sendResult.sentIds[0]})` : `sent ${sendResult.sentIds.length} parts (ids: ${sendResult.sentIds.join(", ")})`;
           result = { content: [{ type: "text", text }] };
           break;
@@ -1994,8 +1993,8 @@ ${messageBody}`;
     ts: msg.ts,
     role: "user",
     content: messageBody,
-    sourceRef: `${backend.name}:${msg.messageId}:user`,
-    sessionId: `${backend.name}:${route.targetChatId}`,
+    sourceRef: `discord:${route.targetChatId}#${msg.messageId}`,
+    sessionId: `discord:${route.targetChatId}`,
   });
 }
 async function init(_sharedMcp) {
@@ -2003,10 +2002,10 @@ async function init(_sharedMcp) {
   // (sendNotifyToParent above). The parameter is retained for backward
   // compatibility with any caller that still passes a Server reference.
   scheduler.setInjectHandler((channelId, name, content, options) => {
-    injectAndRecord(channelId, name, content, options, "schedule-inject", "schedule");
+    injectAndRecord(channelId, name, content, options);
   });
   eventQueue.setInjectHandler((channelId, name, content, options) => {
-    injectAndRecord(channelId, name, content, options, "event-inject", "event");
+    injectAndRecord(channelId, name, content, options);
   });
 }
 async function start() {

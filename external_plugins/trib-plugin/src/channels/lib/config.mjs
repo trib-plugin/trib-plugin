@@ -72,7 +72,7 @@ const HEADLESS_BACKEND = {
   async disconnect() {
   },
   async sendMessage() {
-    return { ids: [] };
+    return { sentIds: [] };
   },
   async fetchMessages() {
     return [];

@@ -53,3 +53,4 @@ if (failed > 0) {
 }
 
 console.log(`test-bridge-bash-cleanup: ${passed} passed`);
+process.exit(0);

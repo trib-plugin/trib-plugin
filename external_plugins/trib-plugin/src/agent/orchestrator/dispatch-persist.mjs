@@ -68,6 +68,22 @@ export function addPending(dataDir, handle, tool, queries) {
   } catch { /* best-effort */ }
 }
 
+/**
+ * Best-effort check: is there at least one non-expired in-flight dispatch
+ * recorded for this dataDir? Used by the scheduler's idle-state probe so
+ * proactive chat stays suppressed while a bridge dispatch is still
+ * running. Never throws.
+ */
+export function hasPending(dataDir) {
+  if (!dataDir) return false;
+  try {
+    const map = gc(readAll(dataDir));
+    return Object.keys(map).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function removePending(dataDir, handle) {
   if (!dataDir || !handle) return;
   try {
@@ -89,7 +105,7 @@ export function recoverPending(dataDir, notifyFn) {
   if (!dataDir || typeof notifyFn !== 'function') return 0;
   let count = 0;
   try {
-    const map = readAll(dataDir);
+    const map = gc(readAll(dataDir));
     const handles = Object.keys(map);
     if (handles.length === 0) return 0;
     for (const handle of handles) {

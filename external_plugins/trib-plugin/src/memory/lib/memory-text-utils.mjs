@@ -30,6 +30,8 @@ const MEMORY_TOKEN_ALIASES = new Map([
   ['파이프라인', 'pipeline'],
   ['트리거', 'trigger'],
   ['플러그인', 'plugin'],
+  ['익스플로러', 'explorer'],
+  ['탐색', 'explore'],
   ['임베딩', 'embedding'],
   ['벡터', 'vector'],
   ['모델', 'model'],
@@ -51,6 +53,8 @@ const MEMORY_TOKEN_ALIASES = new Map([
   ['워크스페이스', 'workspace'],
   ['알림', 'notification'],
   ['동기화', 'sync'],
+  ['자동화', 'automation'],
+  ['기능', 'feature'],
   ['인바운드', 'inbound'],
   ['아웃바운드', 'outbound'],
   ['포워딩', 'forwarding'],
@@ -281,6 +285,11 @@ export function generateQueryVariants(query) {
     '시작': 'start begin', '재시작': 'restart', '배포': 'deploy',
     '호출': 'call invoke', '반환': 'return', '파싱': 'parse parsing',
     '캐시': 'cache', '타임아웃': 'timeout', '재시도': 'retry',
+    '자동화': 'automation webhook schedule trigger workflow',
+    '기능': 'feature capability tool',
+    '익스플로러': 'explorer explore codebase',
+    '탐색': 'explore explorer search',
+    '리콜': 'recall memory',
   }
   const translated = tokens.map(t => koToEn[t] ?? t).join(' ')
   const translatedVariants = translated !== tokens.join(' ') ? [translated] : []
@@ -308,6 +317,15 @@ export function generateQueryVariants(query) {
   if ((/임베드|embed|embedding/i.test(clean)) && (/즉시|timing|immediate/i.test(clean))) {
     phraseExpansions.push(`${clean} inline embedding immediate timing`)
   }
+  if (/자동화|automation/i.test(clean)) {
+    phraseExpansions.push(`${clean} automation webhook schedule trigger workflow receiver`)
+  }
+  if (/익스플로러|explorer|탐색/i.test(clean)) {
+    phraseExpansions.push(`${clean} explorer explore codebase grep read`)
+  }
+  if (/리콜|recall/i.test(clean)) {
+    phraseExpansions.push(`${clean} recall memory retrieval past context`)
+  }
   // 4. English→Korean reverse mapping (for en queries matching ko content)
   const enToKo = {
     'permission': '권한 접근', 'schedule': '스케줄 예약', 'channel': '채널',
@@ -320,6 +338,9 @@ export function generateQueryVariants(query) {
     'inbound': '인바운드 수신', 'project': '프로젝트', 'sync': '동기화',
     'migration': '마이그레이션 이관', 'refactor': '리팩터 정리',
     'error': '에러 오류', 'bug': '버그', 'mode': '모드',
+    'automation': '자동화 웹훅 스케줄 트리거', 'feature': '기능 capability',
+    'explorer': '익스플로러 탐색', 'explore': '탐색 익스플로러',
+    'recall': '리콜 기억 메모리',
   }
   const reverseTokens = tokens.map(t => enToKo[t] ?? t).join(' ')
   const reverseVariants = reverseTokens !== tokens.join(' ') ? [reverseTokens] : []

@@ -10,6 +10,7 @@
  *   node scripts/measure-bp1.mjs --json       # JSON output for scripting
  *   node scripts/measure-bp1.mjs --baseline  # write snapshot to .bp1-baseline.json
  *   node scripts/measure-bp1.mjs --compare   # diff against .bp1-baseline.json
+ *   node scripts/measure-bp1.mjs --compare-trace   # print measured vs estimate from bridge-trace.jsonl
  *
  * Token estimates use the 4-chars-per-token heuristic. Actual tokenizer
  * counts differ by ±10%; use this for relative comparison, not billing.
@@ -144,11 +145,70 @@ function formatRow(label, bytes, extra = '') {
     return `  ${String(bytes).padStart(6)} bytes  ≈ ${String(tokens).padStart(5)} tok  ${label}${extra ? '  ' + extra : ''}`;
 }
 
+function resolveDataDir() {
+    return process.env.CLAUDE_PLUGIN_DATA
+        || join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plugins', 'data', 'trib-plugin-trib-plugin');
+}
+
+function loadRecentTraceStats(limit = 50) {
+    const DATA_DIR = resolveDataDir();
+    const tracePath = join(DATA_DIR, 'history', 'bridge-trace.jsonl');
+    if (!existsSync(tracePath)) {
+        return { available: false, tracePath, sampled: 0, stats: [] };
+    }
+    const raw = readFileSync(tracePath, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    // Defensive: usage rows are interleaved with transport/loop rows,
+    // so grab the last limit*3 lines before filtering by kind.
+    const tailLines = lines.slice(-limit * 3);
+    const usageRows = [];
+    for (const line of tailLines) {
+        let row;
+        try {
+            row = JSON.parse(line);
+        } catch {
+            continue;
+        }
+        if (row && row.kind === 'usage') usageRows.push(row);
+    }
+    const kept = usageRows.slice(-limit);
+    const groups = new Map();
+    for (const r of kept) {
+        const key = `${r.provider || 'unknown'}::${r.model || 'unknown'}`;
+        let g = groups.get(key);
+        if (!g) {
+            g = {
+                provider: r.provider || 'unknown',
+                model: r.model || 'unknown',
+                count: 0,
+                promptSum: 0,
+                cacheReadSum: 0,
+                cacheWriteSum: 0,
+            };
+            groups.set(key, g);
+        }
+        g.count += 1;
+        g.promptSum += Number(r.promptTokens) || 0;
+        g.cacheReadSum += Number(r.cacheReadTokens) || 0;
+        g.cacheWriteSum += Number(r.cacheWriteTokens) || 0;
+    }
+    const stats = [...groups.values()].map(g => ({
+        provider: g.provider,
+        model: g.model,
+        count: g.count,
+        promptAvg: Math.round(g.promptSum / g.count),
+        cacheReadAvg: Math.round(g.cacheReadSum / g.count),
+        cacheWriteAvg: Math.round(g.cacheWriteSum / g.count),
+    })).sort((a, b) => b.count - a.count);
+    return { available: true, tracePath, sampled: kept.length, stats };
+}
+
 async function main() {
     const args = new Set(process.argv.slice(2));
     const jsonMode = args.has('--json');
     const writeBaseline = args.has('--baseline');
     const compare = args.has('--compare');
+    const compareTrace = args.has('--compare-trace');
 
     const tools = await measureTools();
     const sb = await measureSystemBase();
@@ -174,6 +234,15 @@ async function main() {
     };
 
     if (jsonMode) {
+        if (compareTrace) {
+            const traceInfo = loadRecentTraceStats();
+            snapshot.measuredStats = {
+                available: traceInfo.available,
+                tracePath: traceInfo.tracePath,
+                sampled: traceInfo.sampled,
+                rows: traceInfo.stats,
+            };
+        }
         process.stdout.write(JSON.stringify(snapshot, null, 2) + '\n');
         return;
     }
@@ -203,6 +272,54 @@ async function main() {
     console.log(`BP1 cache prefix (tools + systemBase — excluding CLAUDE.md common + tier3 + messages prefix, all shared)`);
     console.log(formatRow('total', bp1Total));
     console.log(`  estimated tokens: ~${bp1Tokens.toLocaleString()}`);
+
+    if (compareTrace) {
+        const traceInfo = loadRecentTraceStats();
+        console.log();
+        if (!traceInfo.available) {
+            console.log(`Measured vs Estimate  — bridge-trace.jsonl not found at ${traceInfo.tracePath}`);
+        } else if (traceInfo.stats.length === 0) {
+            console.log(`Measured vs Estimate  — no recent usage rows`);
+        } else {
+            const rows = traceInfo.stats;
+            const headerKey = 'provider::model';
+            const headerSamples = 'samples';
+            const headerPrompt = 'prompt(avg)';
+            const headerCache = 'cacheRead(avg)';
+            const headerDelta = 'Δ vs BP1 estimate';
+            const fmtNum = (n) => Number(n).toLocaleString();
+            const fmtDelta = (n) => (n >= 0 ? '+' : '-') + Math.abs(n).toLocaleString();
+            const keys = rows.map(r => `${r.provider}::${r.model}`);
+            const samplesStr = rows.map(r => fmtNum(r.count));
+            const promptStr = rows.map(r => fmtNum(r.promptAvg));
+            const cacheStr = rows.map(r => fmtNum(r.cacheReadAvg));
+            const deltaStr = rows.map(r => fmtDelta(r.promptAvg - bp1Tokens));
+            const wKey = Math.max(headerKey.length, ...keys.map(s => s.length));
+            const wSamples = Math.max(headerSamples.length, ...samplesStr.map(s => s.length));
+            const wPrompt = Math.max(headerPrompt.length, ...promptStr.map(s => s.length));
+            const wCache = Math.max(headerCache.length, ...cacheStr.map(s => s.length));
+            const wDelta = Math.max(headerDelta.length, ...deltaStr.map(s => s.length));
+            console.log(`Measured vs Estimate  (last N usage rows from bridge-trace.jsonl, N=${traceInfo.sampled})`);
+            console.log(
+                '  '
+                + headerKey.padEnd(wKey) + '   '
+                + headerSamples.padStart(wSamples) + '   '
+                + headerPrompt.padStart(wPrompt) + '   '
+                + headerCache.padStart(wCache) + '   '
+                + headerDelta.padStart(wDelta),
+            );
+            for (let i = 0; i < rows.length; i++) {
+                console.log(
+                    '  '
+                    + keys[i].padEnd(wKey) + '   '
+                    + samplesStr[i].padStart(wSamples) + '   '
+                    + promptStr[i].padStart(wPrompt) + '   '
+                    + cacheStr[i].padStart(wCache) + '   '
+                    + deltaStr[i].padStart(wDelta),
+                );
+            }
+        }
+    }
 
     if (compare && existsSync(baselinePath)) {
         const base = JSON.parse(readFileSync(baselinePath, 'utf8'));

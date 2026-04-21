@@ -29,7 +29,7 @@
 //   working regardless of the cwd the tool is called from — the caller's
 //   project tree never needs its own sgconfig.yml.
 
-import { exec } from 'node:child_process';
+import { exec, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve as pathResolve, isAbsolute, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -64,6 +64,10 @@ const SG_CANDIDATE_NAMES = process.platform === 'win32'
 const SG_BIN_SHIM_NAMES = process.platform === 'win32'
   ? ['sg.cmd', 'sg.exe', 'sg']
   : ['sg'];
+
+const SG_PATH_FALLBACK_NAMES = process.platform === 'win32'
+  ? ['ast-grep.cmd', 'ast-grep.exe', 'ast-grep', 'sg.cmd', 'sg.exe', 'sg']
+  : ['ast-grep', 'sg'];
 
 // Cached resolution result. `undefined` = unresolved, `null` = resolved to
 // the PATH fallback ('sg'), string = absolute binary path. A second cache
@@ -125,6 +129,22 @@ function findNodeModulesBinShim() {
   return null;
 }
 
+function looksLikeAstGrepBinary(candidate) {
+  if (!candidate) return false;
+  try {
+    const res = spawnSync(candidate, ['--help'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5_000,
+      env: process.env,
+    });
+    const text = `${res.stdout || ''}\n${res.stderr || ''}`;
+    return /ast-grep/i.test(text);
+  } catch {
+    return false;
+  }
+}
+
 // Returns either an absolute path (bundled binary) or the bare string
 // 'sg' meaning "trust PATH". Throws a clean error when neither is usable.
 function resolveSgBinary() {
@@ -133,21 +153,25 @@ function resolveSgBinary() {
     return _sgResolverCache.resolved;
   }
   const bundled = findBundledSgPath();
-  if (bundled) {
+  if (bundled && looksLikeAstGrepBinary(bundled)) {
     _sgResolverCache.resolved = bundled;
     return bundled;
   }
   const shim = findNodeModulesBinShim();
-  if (shim) {
+  if (shim && looksLikeAstGrepBinary(shim)) {
     _sgResolverCache.resolved = shim;
     return shim;
   }
-  // PATH fallback: we can't verify without invoking, so commit to 'sg'
-  // and let exec surface a spawn failure on first use. The error-path
-  // test below exercises the "nothing on PATH either" case by forcing
-  // a clearly-non-existent PATH and catching the resulting failure.
-  _sgResolverCache.resolved = 'sg';
-  return 'sg';
+  for (const candidate of SG_PATH_FALLBACK_NAMES) {
+    if (!looksLikeAstGrepBinary(candidate)) continue;
+    _sgResolverCache.resolved = candidate;
+    return candidate;
+  }
+  const err = Object.assign(
+    new Error('ast-grep binary not found. Run `npm install` in the plugin dir or install `@ast-grep/cli` globally.'),
+    { code: 'ESGNOTFOUND' });
+  _sgResolverCache.error = err;
+  throw err;
 }
 
 // Escape hatch for tests: lets them drop the cached resolution so

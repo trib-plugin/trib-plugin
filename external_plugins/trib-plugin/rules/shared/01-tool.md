@@ -18,23 +18,18 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 ## General Iter Budget
 
-- Work in **2 rounds max per sub-problem**: round 1 = locate, round 2 = confirm. After that, synthesize or change approach.
-- If `read` / `multi_read` / `grep` / `glob` / `list` is starting to repeat, stop and ask what NEW information the next call would add.
-- If shell work spans multiple turns, prefer `bash_session` over replaying setup in repeated `bash` calls.
-- If the change already exists as a unified diff in your head, use `apply_patch` instead of reconstructing it via repeated `read`/`edit`.
-- If you already have enough evidence to act, stop probing and move to the edit / answer / summary.
+- Work in **2 rounds max per sub-problem** (locate → confirm). Repeated retrieval → ask what NEW information the next call adds; enough evidence → stop probing and move to the edit / answer.
 
 ## Routing
 
-- Code change already clear in your head:
-  Prefer `apply_patch` for multi-file or non-trivial edits before reaching for repeated `read` → `edit`.
-- Shell work that likely needs more than one turn:
-  Use `bash` normally in bridge sessions — it reuses the same underlying persistent shell state automatically. Do not waste turns re-running setup unless the environment actually changed.
+- Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
+- Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
+- Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
+- Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
+- Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
 
-- Past context → `recall`. Near-zero cost; missing it is expensive.
-- External web / URL / GitHub → `search`. Never `WebSearch` / `WebFetch`.
-- Local filesystem → `explore`. Known path → `Read` directly.
-- Cross-file code structure → `code_graph`. Use it for imports, dependents, symbols, references, callers, and impact before falling back to raw `grep`.
+- Past context → `recall`. External web / URL / GitHub → `search`.
+- Local filesystem → `explore` — one natural-language query fans glob + grep out in parallel; ideal for multi-angle questions ("how does X work, and where is it configured?") where several patterns need to land in one shot. Known path → `read` directly.
 - Order when unsure: recall → search → explore → grep+read.
 
 ## Scope boundaries
@@ -46,4 +41,4 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 ## Stop-and-reroute
 
-Tool returns empty / wrong after 2 tries → don't loop. Change approach or ask. Tool-loop guard soft-warns on repeated identical failures; same-tool repetition advisory also watches long runs of high-iter tools like `read`, `grep`, `glob`, `bash`, and retrieval tools. Both are nudges to rethink, not deadlines.
+Tool returns empty / wrong after 2 tries → don't loop. Change approach or ask.

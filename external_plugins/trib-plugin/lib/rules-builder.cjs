@@ -12,15 +12,14 @@
  *   3.  memory.md         (rules/shared/02-memory.md — when memory-config.json enabled)
  *   4.  search.md         (rules/shared/03-search.md — when search-config.json enabled)
  *   5.  explore.md        (rules/shared/04-explore.md — always; internal file search)
- *   6.  lsp.md            (rules/shared/05-lsp.md — always; TS/JS semantic symbol lookup)
- *   7.  channels.md       (rules/lead/02-channels.md)
- *   8.  team.md           (rules/lead/03-team.md)
- *   9.  workflow.md       (rules/lead/04-workflow.md)
- *  10.  # Roles           (auto-rendered from DATA_DIR/user-workflow.json)
- *  11.  # User Workflow   (DATA_DIR/user-workflow.md — user customizations)
- *  12.  # User Profile    (history/user.md, auto-wrapped)
- *  13.  # Bot Persona     (history/bot.md, auto-wrapped)
- *  14.  User: <name>      (from memory-config.json)
+ *   6.  channels.md       (rules/lead/02-channels.md)
+ *   7.  team.md           (rules/lead/03-team.md)
+ *   8.  workflow.md       (rules/lead/04-workflow.md)
+ *   9.  # Roles           (auto-rendered from DATA_DIR/user-workflow.json)
+ *  10.  # User Workflow   (DATA_DIR/user-workflow.md — user customizations)
+ *  11.  # User Profile    (history/user.md, auto-wrapped)
+ *  12.  # Bot Persona     (history/bot.md, auto-wrapped)
+ *  13.  User: <name>      (from memory-config.json)
  *
  * Core memory snapshot and session recap are injected separately by
  * hooks/session-start.cjs from memory.sqlite.
@@ -125,23 +124,19 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
   const explore = readOptional(path.join(SHARED_DIR, '04-explore.md'));
   if (explore) parts.push(explore);
 
-  // --- 6. LSP symbol tools (always — TS/JS semantic lookup) ---
-  const lsp = readOptional(path.join(SHARED_DIR, '05-lsp.md'));
-  if (lsp) parts.push(lsp);
-
-  // --- 7. Channels (always) ---
+  // --- 6. Channels (always) ---
   const channels = readOptional(path.join(LEAD_DIR, '02-channels.md'));
   if (channels) parts.push(channels);
 
-  // --- 8. Team (always) ---
+  // --- 7. Team (always) ---
   const team = readOptional(path.join(LEAD_DIR, '03-team.md'));
   if (team) parts.push(team);
 
-  // --- 9. Workflow (always) ---
+  // --- 8. Workflow (always) ---
   const workflow = readOptional(path.join(LEAD_DIR, '04-workflow.md'));
   if (workflow) parts.push(workflow);
 
-  // --- 10. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
+  // --- 9. Roles (auto-rendered from DATA_DIR/user-workflow.json) ---
   const userWorkflowJsonPath = path.join(DATA_DIR, 'user-workflow.json');
   let userWorkflow = { roles: [] };
   try {
@@ -191,7 +186,6 @@ function buildInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
  *   - rules/shared/02-memory.md (when memory enabled)
  *   - rules/shared/03-search.md (when search enabled)
  *   - rules/shared/04-explore.md (always; internal file search)
- *   - rules/shared/05-lsp.md (always; TS/JS semantic symbol lookup)
  *   - rules/bridge/00-common.md
  *   - User: <name> (<title>)
  *
@@ -228,9 +222,6 @@ function buildBridgeInjectionContent({ PLUGIN_ROOT, DATA_DIR }) {
 
   const explore = readOptional(path.join(SHARED_DIR, '04-explore.md'));
   if (explore) parts.push(explore);
-
-  const lsp = readOptional(path.join(SHARED_DIR, '05-lsp.md'));
-  if (lsp) parts.push(lsp);
 
   const common = readOptional(path.join(BRIDGE_DIR, '00-common.md'));
   if (common) parts.push(common);

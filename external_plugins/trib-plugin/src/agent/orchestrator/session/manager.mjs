@@ -1,4 +1,5 @@
 import { createRequire } from 'module';
+import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 import { getProvider } from '../providers/registry.mjs';
@@ -374,7 +375,7 @@ export function createSession(opts) {
     const provider = getProvider(providerName);
     if (!provider)
         throw new Error(`Provider "${providerName}" not found or not enabled`);
-    const id = `sess_${nextId++}_${Date.now()}`;
+    const id = `sess_${process.pid}_${nextId++}_${Date.now()}_${randomBytes(3).toString('hex')}`;
     const messages = [];
     const agentTemplate = opts.agent ? loadAgentTemplate(opts.agent, opts.cwd) : null;
     const skills = collectSkillsCached(opts.cwd);

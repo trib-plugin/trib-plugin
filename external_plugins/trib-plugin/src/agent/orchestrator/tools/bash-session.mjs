@@ -40,6 +40,7 @@ import * as nodeUtil from 'node:util';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { invalidateBuiltinResultCache, analyzeShellCommandEffects } from './builtin.mjs';
+import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -385,6 +386,7 @@ async function bash_session(args) {
     }
     if (shellEffects.mutationMode === 'paths') {
         invalidateBuiltinResultCache(shellEffects.paths);
+        markCodeGraphDirtyPaths(entry.cwd || process.cwd(), shellEffects.paths);
     } else if (shellEffects.mutationMode === 'global') {
         invalidateBuiltinResultCache();
     }

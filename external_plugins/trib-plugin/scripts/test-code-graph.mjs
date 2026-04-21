@@ -17,6 +17,7 @@ function assert(cond, msg) {
 const root = mkdtempSync(join(tmpdir(), 'trib-code-graph-'));
 try {
   mkdirSync(join(root, 'pkg'), { recursive: true });
+  mkdirSync(join(root, 'noise'), { recursive: true });
   mkdirSync(join(root, 'javaapp', 'pkg'), { recursive: true });
   mkdirSync(join(root, 'javaapp', 'app'), { recursive: true });
   mkdirSync(join(root, 'csapp', 'Core'), { recursive: true });
@@ -26,6 +27,9 @@ try {
   writeFileSync(join(root, 'pkg', '__init__.py'), '', 'utf8');
   writeFileSync(join(root, 'pkg', 'mod.py'), 'class Worker:\n    pass\n\ndef run():\n    return 1\n', 'utf8');
   writeFileSync(join(root, 'main.py'), 'from pkg.mod import Worker\nnote = "Worker"\nprint(Worker)\n# Worker comment\n', 'utf8');
+  writeFileSync(join(root, 'noise', 'n1.py'), 'class Other:\n    pass\n', 'utf8');
+  writeFileSync(join(root, 'noise', 'n2.py'), 'VALUE = 42\n', 'utf8');
+  writeFileSync(join(root, 'noise', 'n3.py'), 'def noop():\n    return "nothing"\n', 'utf8');
   writeFileSync(join(root, 'a.js'), "import x from './b.js'\nexport function alpha() {}\n", 'utf8');
   writeFileSync(join(root, 'b.js'), 'export const x = 1\n', 'utf8');
   writeFileSync(join(root, 'javaapp', 'pkg', 'Worker.java'), 'package javaapp.pkg;\npublic class Worker {}\n', 'utf8');
@@ -39,7 +43,7 @@ try {
   {
     const out = await executeCodeGraphTool('code_graph', { mode: 'overview' }, root);
     assert(/files\t\d+/.test(out), 'overview returns file count');
-    assert(/python\t2/.test(out) || /python\t3/.test(out), `overview counts python files (got ${JSON.stringify(out)})`);
+    assert(/python\t[2-9]/.test(out), `overview counts python files (got ${JSON.stringify(out)})`);
     assert(/javascript\t2/.test(out), `overview counts js files (got ${JSON.stringify(out)})`);
   }
 
@@ -75,6 +79,8 @@ try {
     assert(!out.includes('main.py:2') && !out.includes('main.py:4'), `references ignore strings/comments (got ${JSON.stringify(out)})`);
     assert(stats.referenceQueryMisses >= 1, `first reference query records a cache miss (got ${JSON.stringify(stats)})`);
     assert(stats.sourceTextCacheHits >= 1, `first reference query reuses source text gathered during graph build (got ${JSON.stringify(stats)})`);
+    assert(stats.symbolIndexHits >= 1, `first reference query uses symbol token index to narrow candidate files (got ${JSON.stringify(stats)})`);
+    assert(stats.maskedLineCacheMisses <= 2, `first reference query only masks candidate files that actually contain the symbol (got ${JSON.stringify(stats)})`);
   }
 
   {

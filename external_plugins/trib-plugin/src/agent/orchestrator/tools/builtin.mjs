@@ -8,6 +8,7 @@ import * as nodeUtil from 'node:util';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { getPluginData } from '../config.mjs';
+import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
@@ -1867,8 +1868,10 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return payload;
             }
             finally {
-                if (shellEffects.mutationMode === 'paths') invalidateBuiltinResultCache(shellEffects.paths);
-                else if (shellEffects.mutationMode === 'global') invalidateBuiltinResultCache();
+                if (shellEffects.mutationMode === 'paths') {
+                    invalidateBuiltinResultCache(shellEffects.paths);
+                    markCodeGraphDirtyPaths(workDir, shellEffects.paths);
+                } else if (shellEffects.mutationMode === 'global') invalidateBuiltinResultCache();
             }
         }
         case 'jobs_list': {
@@ -2116,6 +2119,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // publishes the final state.
                 await atomicWrite(fullPath, content);
                 invalidateBuiltinResultCache([fullPath]);
+                markCodeGraphDirtyPaths(workDir, [fullPath]);
                 _recordReadSnapshot(fullPath);
                 return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
             } catch (err) {
@@ -2188,6 +2192,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // on overwrite so we don't inadvertently widen 0o600 → 0o644.
                 await atomicWrite(fullPath, content);
                 invalidateBuiltinResultCache([fullPath]);
+                markCodeGraphDirtyPaths(workDir, [fullPath]);
                 // Write establishes the on-disk state the model just
                 // authored, so a subsequent Edit does not need a fresh
                 // Read round-trip.
@@ -2222,7 +2227,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 }
                 return executeBuiltinTool('batch_edit', {
                     edits: items.map((x) => ({
-                        path: x.path, old_string: x.old_string, new_string: x.new_string,
+                        path: x.path, old_string: x.old_string, new_string: x.new_string, replace_all: x.replace_all,
                     })),
                 }, workDir);
             }
@@ -2276,6 +2281,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // v0.6.248: atomic write — see `write` handler for rationale.
                 await atomicWrite(fullPath, updated);
                 invalidateBuiltinResultCache([fullPath]);
+                markCodeGraphDirtyPaths(workDir, [fullPath]);
                 // Refresh the snapshot to the post-write mtime so a chain
                 // of edits against the same file doesn't trip the stale
                 // check on the second hop.
@@ -2338,6 +2344,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // v0.6.248: atomic write — tempfile + fsync + rename.
                 await atomicWrite(fullPath, newFileContent);
                 invalidateBuiltinResultCache([fullPath]);
+                markCodeGraphDirtyPaths(workDir, [fullPath]);
                 _recordReadSnapshot(fullPath);
                 const replacedCount = endLine - startLine + 1;
                 const insertedCount = newLines.length;

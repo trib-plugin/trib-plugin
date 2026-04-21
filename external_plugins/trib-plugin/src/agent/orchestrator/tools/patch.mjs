@@ -40,6 +40,7 @@ import {
   recordReadSnapshotForPath,
   clearReadSnapshotForPath,
 } from './builtin.mjs';
+import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 
 const DEV_NULL = /^\/dev\/null$/;
 
@@ -408,6 +409,7 @@ async function apply_patch(args, cwd) {
   lines.push(`applied: ${written.length} file(s)` + (failures.length ? `, ${failures.length} failed` : '') + (skipped.length ? `, ${skipped.length} skipped` : ''));
   if (written.length > 0) {
     invalidateBuiltinResultCache(written.map((p) => p.fullPath));
+    markCodeGraphDirtyPaths(cwd, written.map((p) => p.fullPath));
     for (const p of written) {
       if (p.kind === 'delete') clearReadSnapshotForPath(p.fullPath);
       else recordReadSnapshotForPath(p.fullPath);

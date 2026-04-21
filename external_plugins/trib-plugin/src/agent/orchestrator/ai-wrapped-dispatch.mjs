@@ -22,6 +22,7 @@ import { loadConfig, getPluginData } from './config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
 import { addPending, removePending } from './dispatch-persist.mjs'
+import { notifyActivity } from './activity-bus.mjs'
 
 const ROLE_BY_TOOL = Object.freeze({
   recall:  { role: 'recall-agent',  build: buildRecallPrompt,   label: 'recall-agent' },
@@ -265,6 +266,9 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // Persist so a plugin restart mid-dispatch can emit a single Aborted
   // notification on next bootstrap instead of silently orphaning the handle.
   addPending(process.env.CLAUDE_PLUGIN_DATA, id, name, queries)
+  // Starting a bridge dispatch counts as session activity — keeps
+  // proactive chat suppressed while long-running work is in flight.
+  notifyActivity()
   // Emit a channel notification mirroring the bridge worker UX — a short
   // "<tool> started" banner that lets both Lead and user terminal see the
   // lifecycle begin. Non-silent so the MCP notification reaches the terminal

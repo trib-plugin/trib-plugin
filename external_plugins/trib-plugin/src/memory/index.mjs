@@ -590,7 +590,11 @@ async function handleSearch(args) {
     if (sort === 'date') {
       filtered.sort((a, b) => Number(b.ts) - Number(a.ts))
     } else {
-      filtered.sort((a, b) => (Number(b.score ?? 0) - Number(a.score ?? 0)) || ((b.rrf ?? 0) - (a.rrf ?? 0)))
+      filtered.sort((a, b) =>
+        (Number(b.retrievalScore ?? b.rrf ?? 0) - Number(a.retrievalScore ?? a.rrf ?? 0))
+        || (Number(b.score ?? 0) - Number(a.score ?? 0))
+        || (Number(b.ts ?? 0) - Number(a.ts ?? 0))
+      )
     }
     const sliced = filtered.slice(offset, offset + limit)
     return { text: renderEntryLines(sliced) }
