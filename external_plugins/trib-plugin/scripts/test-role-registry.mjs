@@ -158,9 +158,9 @@ assert(x.desc_path === null, `bare default desc_path === null`);
 assert(x.behavior === 'stateful', `bare default behavior === "stateful" (got "${x?.behavior}")`);
 
 // Verify extra legacy fields are NOT present in the resolved output.
-assert(!('tail_cache' in x), 'No tail_cache field in 4-field schema');
-assert(!('override_ttl' in x), 'No override_ttl field in 4-field schema');
-assert(!('expected_interval_ms' in x), 'No expected_interval_ms field in 4-field schema');
+assert(!('tail_cache' in x), 'No tail_cache field in 5-field schema');
+assert(!('override_ttl' in x), 'No override_ttl field in 5-field schema');
+assert(!('expected_interval_ms' in x), 'No expected_interval_ms field in 5-field schema');
 
 // =========================================================================
 // TEST 3: Invalid enum throws / defaults

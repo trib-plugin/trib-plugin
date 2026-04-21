@@ -39,7 +39,9 @@ import {
   normalizeInputPath,
   normalizeOutputPath,
   isSafePath,
+  invalidateBuiltinResultCache,
 } from './builtin.mjs';
+import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 
 const execAsync = promisify(exec);
 
@@ -431,6 +433,14 @@ async function sgRewrite(args, cwd) {
     // sees the count; if both are empty it genuinely matched nothing.
     const err = (stderr || '').trim();
     if (!body && !err) return '(no changes applied)';
+    // Cache invalidation — mirrors patch.mjs / bash-session.mjs /
+    // builtin.mjs write paths. sg's apply output does not enumerate which
+    // files were touched, so fall back to a conservative global
+    // invalidate: better noise than stale `read`/`grep` results or stale
+    // code-graph edges. Best-effort — never let cache bookkeeping break
+    // the tool return.
+    try { invalidateBuiltinResultCache(); } catch { /* ignore */ }
+    try { markCodeGraphDirtyPaths(cwd, [absPath]); } catch { /* ignore */ }
     const WARNING = '⚠ sg_rewrite apply is NOT atomic per-file — a crash during the `sg -U` run can leave individual files partially written. For crash-sensitive paths prefer dry-run preview + explicit `edit` / `multi_edit` (which use atomic rename).\n\n';
     return WARNING + capOutput([body, err].filter(Boolean).join('\n'));
   }

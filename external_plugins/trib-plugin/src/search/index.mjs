@@ -157,7 +157,21 @@ const GITHUB_CODE_KEYWORDS = /\b(function|class|import|require|package|module|np
 const GITHUB_REPO_KEYWORDS = /\b(repo|repository|github|project|framework|boilerplate|starter|template|toolkit|open\s*source|oss)\b/
 const GITHUB_ISSUE_KEYWORDS = /\b(bug|issue|error|fix|patch|regression|crash|pr\b|pull\s*request|changelog|breaking\s*change|deprecat)/
 
+// slug: word-chars, dots, hyphens / same again. Guard: no file extension.
+// File paths like "src/foo.mjs" should NOT be treated as slugs.
+const SLUG_RE = /^[\w.-]+\/[\w.-]+$/
+const FILE_EXT_RE = /\.[a-z0-9]{1,6}$/i
+
+function looksLikeGithubSlug(query) {
+  const trimmed = (query || '').trim()
+  if (!SLUG_RE.test(trimmed)) return false
+  if (FILE_EXT_RE.test(trimmed.split('/').pop())) return false
+  const [owner, repo] = trimmed.split('/')
+  return owner.length > 0 && repo.length > 0
+}
+
 function inferGithubType(query) {
+  if (looksLikeGithubSlug(query)) return 'repositories'
   if (GITHUB_ISSUE_KEYWORDS.test(query)) return 'issues'
   if (GITHUB_CODE_KEYWORDS.test(query)) return 'code'
   if (GITHUB_REPO_KEYWORDS.test(query)) return 'repositories'

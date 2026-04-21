@@ -102,52 +102,54 @@ function buildEntriesText(entries) {
   }).join('\n')
 }
 
+// D10: cycle1 must never group entries across session/channel boundaries.
+// A Discord channel and a Claude Code transcript are distinct sessions;
+// mixing them in one LLM prompt causes the chunker to fuse unrelated content.
+// Partition pending entries by `session_id` and dispatch one LLM call per
+// session. The two caps below bound single-cycle work so the per-session
+// fan-out does not blow up latency/cost on a heavy backlog.
+//
+// MIN_BATCH: threshold below which chunking is premature — a session with
+//   <3 pending entries is usually an acknowledgement or a single message;
+//   leave it for the next cycle when more context has accumulated.
+// SESSION_CAP: how many sessions to process in a single runCycle1() pass.
+//   Protects scheduler latency; remaining sessions roll to the next tick.
+const CYCLE1_MIN_BATCH = 3
+const CYCLE1_SESSION_CAP = 5
+
 export async function runCycle1(db, config = {}, options = {}) {
   const batchSize = Math.max(1, Number(config.batch_size ?? 50))
+  const minBatch = Math.max(1, Number(config?.cycle1?.min_batch ?? CYCLE1_MIN_BATCH))
+  const sessionCap = Math.max(1, Number(config?.cycle1?.session_cap ?? CYCLE1_SESSION_CAP))
   const preset = options.preset || resolveMaintenancePreset('cycle1')
   const timeout = Number(config?.cycle1?.timeout ?? 600000)
 
-  const rows = db.prepare(`
+  // Pick sessions with enough pending content to be worth a chunk run.
+  // Rows whose session_id is NULL are skipped here; they are schema-legacy
+  // outliers (pre-v2 ingest) — inline audit at the time of this change
+  // showed zero NULL rows in the live DB. If legacy NULLs ever reappear,
+  // they will accumulate harmlessly until someone backfills session_id.
+  const sessions = db.prepare(`
+    SELECT session_id, count(*) AS n
+    FROM entries
+    WHERE chunk_root IS NULL AND session_id IS NOT NULL
+    GROUP BY session_id
+    HAVING n >= ?
+    ORDER BY n DESC
+    LIMIT ?
+  `).all(minBatch, sessionCap)
+
+  if (sessions.length === 0) {
+    return { processed: 0, chunks: 0, skipped: 0, sessions: 0 }
+  }
+
+  const fetchSessionRows = db.prepare(`
     SELECT id, ts, role, content
     FROM entries
-    WHERE chunk_root IS NULL
-    ORDER BY ts DESC, id DESC
+    WHERE chunk_root IS NULL AND session_id = ?
+    ORDER BY ts ASC, id ASC
     LIMIT ?
-  `).all(batchSize)
-
-  if (rows.length === 0) {
-    return { processed: 0, chunks: 0, skipped: 0 }
-  }
-
-  // Pool C `cycle1-agent` snippet + bridgeRules already carry the chunking
-  // spec; only the volatile data — the entries to chunk — rides in `prompt`.
-  const userMessage = `Run cycle1: chunk these entries and emit JSON per the cycle1 spec.\n\n${buildEntriesText(rows)}`
-
-  let raw
-  try {
-    raw = await callBridgeLlm({
-      role: 'cycle1-agent',
-      taskType: 'maintenance',
-      mode: 'cycle1',
-      preset,
-      timeout,
-    }, userMessage)
-  } catch (err) {
-    process.stderr.write(`[cycle1] LLM error: ${err.message}\n`)
-    return { processed: 0, chunks: 0, skipped: rows.length }
-  }
-
-  const parsed = extractJsonObject(raw)
-  const chunkList = Array.isArray(parsed?.chunks) ? parsed.chunks : null
-  if (!chunkList) {
-    process.stderr.write(`[cycle1] unparseable response (${String(raw).slice(0, 200)})\n`)
-    return { processed: 0, chunks: 0, skipped: rows.length }
-  }
-
-  const entryById = new Map(rows.map(r => [Number(r.id), r]))
-  let committedChunks = 0
-  let committedMembers = 0
-  let skippedChunks = 0
+  `)
 
   const updateRoot = db.prepare(`
     UPDATE entries
@@ -159,49 +161,108 @@ export async function runCycle1(db, config = {}, options = {}) {
     UPDATE entries SET chunk_root = ? WHERE id = ? AND id != ?
   `)
 
-  for (const chunk of chunkList) {
-    const memberIds = Array.isArray(chunk?.member_ids)
-      ? chunk.member_ids.map(n => Number(n)).filter(n => Number.isFinite(n) && entryById.has(n))
-      : []
-    const element = String(chunk?.element ?? '').trim()
-    const category = String(chunk?.category ?? '').trim().toLowerCase()
-    const summary = String(chunk?.summary ?? '').trim()
+  let totalChunks = 0
+  let totalMembers = 0
+  let totalSkipped = 0
+  let totalRowsConsidered = 0
 
-    if (memberIds.length === 0 || !element || !summary || !VALID_CATEGORIES.has(category)) {
-      skippedChunks += 1
-      continue
-    }
+  for (const session of sessions) {
+    const sessionId = session.session_id
+    const rows = fetchSessionRows.all(sessionId, batchSize)
+    totalRowsConsidered += rows.length
+    if (rows.length === 0) continue
 
-    const members = memberIds.map(id => entryById.get(id))
-    const rootId = selectRootId(members)
-    if (rootId === null) {
-      skippedChunks += 1
-      continue
-    }
+    // Pool C `cycle1-agent` snippet + bridgeRules already carry the chunking
+    // spec; only the volatile data — the entries to chunk — rides in `prompt`.
+    // The explicit same-session note lets the chunker assume coherence without
+    // re-deriving it from message content.
+    const userMessage = [
+      `Run cycle1: chunk these entries and emit JSON per the cycle1 spec.`,
+      `All entries in this batch are from the same session (session_id=${String(sessionId).slice(0, 64)}); group freely within it.`,
+      '',
+      buildEntriesText(rows),
+    ].join('\n')
 
+    let raw
     try {
-      db.exec('BEGIN')
-      updateRoot.run(rootId, element, category, summary, rootId)
-      for (const mid of memberIds) {
-        if (mid === rootId) continue
-        updateMember.run(rootId, mid, rootId)
-      }
-      db.exec('COMMIT')
-      committedChunks += 1
-      committedMembers += memberIds.length
-      await syncRootEmbedding(db, rootId)
+      raw = await callBridgeLlm({
+        role: 'cycle1-agent',
+        taskType: 'maintenance',
+        mode: 'cycle1',
+        preset,
+        timeout,
+      }, userMessage)
     } catch (err) {
-      try { db.exec('ROLLBACK') } catch {}
-      process.stderr.write(`[cycle1] chunk commit failed (root=${rootId}): ${err.message}\n`)
-      skippedChunks += 1
+      process.stderr.write(`[cycle1] LLM error (session=${String(sessionId).slice(0, 16)}): ${err.message}\n`)
+      totalSkipped += rows.length
+      continue
     }
+
+    const parsed = extractJsonObject(raw)
+    const chunkList = Array.isArray(parsed?.chunks) ? parsed.chunks : null
+    if (!chunkList) {
+      process.stderr.write(`[cycle1] unparseable response (session=${String(sessionId).slice(0, 16)}) (${String(raw).slice(0, 200)})\n`)
+      totalSkipped += rows.length
+      continue
+    }
+
+    const entryById = new Map(rows.map(r => [Number(r.id), r]))
+    let committedChunks = 0
+    let committedMembers = 0
+    let skippedChunks = 0
+
+    for (const chunk of chunkList) {
+      const memberIds = Array.isArray(chunk?.member_ids)
+        ? chunk.member_ids.map(n => Number(n)).filter(n => Number.isFinite(n) && entryById.has(n))
+        : []
+      const element = String(chunk?.element ?? '').trim()
+      const category = String(chunk?.category ?? '').trim().toLowerCase()
+      const summary = String(chunk?.summary ?? '').trim()
+
+      if (memberIds.length === 0 || !element || !summary || !VALID_CATEGORIES.has(category)) {
+        skippedChunks += 1
+        continue
+      }
+
+      const members = memberIds.map(id => entryById.get(id))
+      const rootId = selectRootId(members)
+      if (rootId === null) {
+        skippedChunks += 1
+        continue
+      }
+
+      try {
+        db.exec('BEGIN')
+        updateRoot.run(rootId, element, category, summary, rootId)
+        for (const mid of memberIds) {
+          if (mid === rootId) continue
+          updateMember.run(rootId, mid, rootId)
+        }
+        db.exec('COMMIT')
+        committedChunks += 1
+        committedMembers += memberIds.length
+        await syncRootEmbedding(db, rootId)
+      } catch (err) {
+        try { db.exec('ROLLBACK') } catch {}
+        process.stderr.write(`[cycle1] chunk commit failed (root=${rootId}): ${err.message}\n`)
+        skippedChunks += 1
+      }
+    }
+
+    totalChunks += committedChunks
+    totalMembers += committedMembers
+    totalSkipped += skippedChunks
+
+    process.stderr.write(
+      `[cycle1] session=${String(sessionId).slice(0, 16)} entries=${rows.length} chunks=${committedChunks} members=${committedMembers} skipped=${skippedChunks}\n`,
+    )
   }
 
   process.stderr.write(
-    `[cycle1] processed ${committedChunks} chunks, ${committedMembers} entries (skipped ${skippedChunks})\n`,
+    `[cycle1] sessions=${sessions.length} rows=${totalRowsConsidered} chunks=${totalChunks} members=${totalMembers} skipped=${totalSkipped}\n`,
   )
 
-  return { processed: committedMembers, chunks: committedChunks, skipped: skippedChunks }
+  return { processed: totalMembers, chunks: totalChunks, skipped: totalSkipped, sessions: sessions.length }
 }
 
 function formatEntriesForPromotePrompt(rows) {

@@ -1070,11 +1070,20 @@ const httpServer = http.createServer(async (req, res) => {
       const sessionId = body.sessionId ?? null
       const tsMs = parseTsToMs(body.ts ?? Date.now())
       if (!content) { sendJson(res, { error: 'content required' }, 400); return }
+      // Run the same scrubber used by ingestTranscriptFile so noise markers
+      // like "[Request interrupted by user]" and whitespace-only payloads
+      // are rejected before they reach the entries table. Match the
+      // existing 400 / { error } convention for invalid payloads.
+      const cleaned = cleanMemoryText(content)
+      if (!cleaned || !cleaned.trim()) {
+        sendJson(res, { error: 'empty after clean' }, 400)
+        return
+      }
       try {
         const result = db.prepare(`
           INSERT OR IGNORE INTO entries(ts, role, content, source_ref, session_id)
           VALUES (?, ?, ?, ?, ?)
-        `).run(tsMs, role, content, sourceRef, sessionId)
+        `).run(tsMs, role, cleaned, sourceRef, sessionId)
         sendJson(res, { ok: true, id: Number(result.lastInsertRowid), changes: Number(result.changes) })
       } catch (e) {
         sendJson(res, { error: e.message }, 500)

@@ -1950,7 +1950,19 @@ export async function executeBuiltinTool(name, args, cwd) {
             // Single turn can touch many files or swap modes without
             // the agent iterating across multiple tool names.
             if (Array.isArray(args.path)) {
-                const reads = args.path.map((p) => (typeof p === 'string' ? { path: p } : p));
+                // Propagate per-call options (mode / n / offset / limit / full)
+                // to each per-file entry so schema-advertised options don't get
+                // silently dropped when path is an array.
+                const reads = args.path.map((p) => {
+                    if (p && typeof p === 'object') return p;
+                    const entry = { path: p };
+                    if (args.mode !== undefined) entry.mode = args.mode;
+                    if (args.n !== undefined) entry.n = args.n;
+                    if (args.offset !== undefined) entry.offset = args.offset;
+                    if (args.limit !== undefined) entry.limit = args.limit;
+                    if (args.full !== undefined) entry.full = args.full;
+                    return entry;
+                });
                 return executeBuiltinTool('multi_read', { reads }, workDir);
             }
             if (args.mode === 'head') return executeBuiltinTool('head', { path: args.path, n: args.n }, workDir);

@@ -38,51 +38,6 @@ function readJson(filePath) {
 }
 
 /**
- * Extract Pool B — safe CLAUDE.md sections (blacklist filter).
- *
- * Stripped:
- *   1. The plugin-managed block (marker-delimited).
- *   2. Lead-only H1/H2 headings that must never reach a Bridge agent:
- *        H1: # Memory, # Channels, # Search, # Team, # Roles, # User Workflow
- *        H2: ## Workflow, ## User Rules  (legacy; kept for back-compat)
- *      Their entire section (heading + body down to the next same-or-higher
- *      heading) is removed.
- */
-const CLAUDE_MD_EXCLUDE_H1 = new Set([
-  '# General', '# Memory', '# Channels', '# Search', '# Explore',
-  '# Code Symbols (LSP)',
-  '# Team', '# Workflow', '# Roles', '# User Workflow',
-]);
-const CLAUDE_MD_EXCLUDE_H2 = new Set([
-  '## Workflow', '## User Rules',
-]);
-
-function extractCommonClaudeMdSections(content) {
-  if (!content) return '';
-  const stripped = content
-    .replace(/<!-- BEGIN trib-plugin managed -->[\s\S]*?<!-- END trib-plugin managed -->/g, '')
-    .trim();
-  if (!stripped) return '';
-  const lines = stripped.split('\n');
-  const out = [];
-  let skipH1 = false;
-  let skipH2 = false;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const isH1 = /^# [^#]/.test(trimmed);
-    const isH2 = /^## [^#]/.test(trimmed);
-    if (isH1) {
-      skipH2 = false;
-      skipH1 = CLAUDE_MD_EXCLUDE_H1.has(trimmed);
-    } else if (isH2 && !skipH1) {
-      skipH2 = CLAUDE_MD_EXCLUDE_H2.has(trimmed);
-    }
-    if (!skipH1 && !skipH2) out.push(line);
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-}
-
-/**
  * Build the Pool A injection content (Lead).
  *
  * @param {object} opts

@@ -189,13 +189,12 @@ const CHANNELS_SRC = readFileSync(join(PLUGIN_ROOT, 'src/channels/index.mjs'), '
 }
 
 // aiWrapped pushDispatchResult fires notify with type:'dispatch_result' and
-// does NOT carry silent_to_agent. Source line is long (nested template
-// literals with curly braces) so grab the whole line instead of matching
-// balanced braces.
+// does NOT carry silent_to_agent. Promise.resolve(...) may now wrap the
+// notify call, so match the presence of the dispatch_result payload more
+// loosely instead of depending on a single-line notify(...) shape.
 {
-  const dispatchLine = AIWRAP_SRC.split(/\r?\n/).find(l => /notify\(content, \{ type: 'dispatch_result'/.test(l));
-  assert(!!dispatchLine, 'ai-wrapped-dispatch.mjs: pushDispatchResult notify call present');
-  assert(dispatchLine && !/silent_to_agent/.test(dispatchLine), 'ai-wrapped-dispatch.mjs: dispatch_result push NOT silent');
+  assert(/type:\s*'dispatch_result'/.test(AIWRAP_SRC), 'ai-wrapped-dispatch.mjs: dispatch_result payload present');
+  assert(!/type:\s*'dispatch_result'[\s\S]{0,240}silent_to_agent/.test(AIWRAP_SRC), 'ai-wrapped-dispatch.mjs: dispatch_result push NOT silent');
 }
 
 // server.mjs pushChannelNotification honours silent_to_agent.

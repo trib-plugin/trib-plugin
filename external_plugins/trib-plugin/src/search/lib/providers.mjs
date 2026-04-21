@@ -313,19 +313,50 @@ function getGithubHeaders() {
   return headers
 }
 
-function handleGithubError(response, context) {
+function formatGithubReset(reset) {
+  if (!reset) return 'unknown'
+  const n = Number(reset)
+  if (!Number.isFinite(n) || n <= 0) return 'unknown'
+  try {
+    return new Date(n * 1000).toISOString()
+  } catch {
+    return 'unknown'
+  }
+}
+
+async function handleGithubError(response, context) {
+  if (response.ok) return
   if (response.status === 401) {
     throw new Error(`GitHub ${context} requires authentication. Set GITHUB_TOKEN in config or environment.`)
-  }
-  if (response.status === 403) {
-    throw new Error('GitHub API rate limit exceeded. Set GITHUB_TOKEN for higher limits.')
   }
   if (response.status === 404) {
     throw new Error(`GitHub ${context}: not found (404).`)
   }
-  if (!response.ok) {
-    throw new Error(`GitHub ${context} failed: ${response.status}`)
+  if (response.status === 403 || response.status === 429) {
+    const body = await response.text().catch(() => '')
+    const headers = response.headers
+    const remaining = Number(headers.get('x-ratelimit-remaining') ?? -1)
+    const reset = headers.get('x-ratelimit-reset')
+    const retryAfter = headers.get('retry-after')
+    const bodySnippet = body.slice(0, 200)
+
+    if (/abuse|secondary/i.test(body)) {
+      const retryHint = retryAfter ? ` Retry-After: ${retryAfter}s.` : ' Back off and retry in a few minutes.'
+      throw new Error(`GitHub ${context}: secondary rate limit (abuse detection).${retryHint}`)
+    }
+    if (remaining === 0) {
+      throw new Error(`GitHub ${context}: rate limit exhausted (resets at ${formatGithubReset(reset)}). Set GITHUB_TOKEN for higher limits.`)
+    }
+    if (response.status === 429) {
+      const retryHint = retryAfter ? ` Retry-After: ${retryAfter}s.` : ''
+      throw new Error(`GitHub ${context}: 429 too many requests.${retryHint} ${bodySnippet}`)
+    }
+    if (/resource not accessible/i.test(body) || /must authenticate/i.test(body)) {
+      throw new Error(`GitHub ${context}: 403 ${bodySnippet} — token may lack scope or repo is private.`)
+    }
+    throw new Error(`GitHub ${context}: 403 (unclassified) ${bodySnippet}`)
   }
+  throw new Error(`GitHub ${context} failed: ${response.status}`)
 }
 
 async function runGithubRead({ owner, repo, path, ref }) {
@@ -336,7 +367,7 @@ async function runGithubRead({ owner, repo, path, ref }) {
   if (ref) url.searchParams.set('ref', ref)
 
   const response = await fetch(url, { headers: getGithubHeaders() })
-  handleGithubError(response, 'file read')
+  await handleGithubError(response, 'file read')
 
   const payload = await response.json()
   if (Array.isArray(payload)) {
@@ -378,7 +409,7 @@ async function runGithubRepoInfo({ owner, repo }) {
   const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
     headers: getGithubHeaders(),
   })
-  handleGithubError(response, 'repo info')
+  await handleGithubError(response, 'repo info')
 
   const r = await response.json()
   return {
@@ -412,7 +443,7 @@ async function runGithubIssueDetail({ owner, repo, number }) {
   const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`, {
     headers: getGithubHeaders(),
   })
-  handleGithubError(response, 'issue detail')
+  await handleGithubError(response, 'issue detail')
 
   const issue = await response.json()
   return {
@@ -445,7 +476,7 @@ async function runGithubPulls({ owner, repo, state = 'open' }) {
   url.searchParams.set('per_page', '10')
 
   const response = await fetch(url, { headers: getGithubHeaders() })
-  handleGithubError(response, 'pulls list')
+  await handleGithubError(response, 'pulls list')
 
   const pulls = await response.json()
   return {
@@ -477,7 +508,7 @@ async function runGithubSearch({ query, maxResults, github_type = 'repositories'
   if (response.status === 422) {
     throw new Error(`GitHub API validation error for query: ${query}`)
   }
-  handleGithubError(response, `${github_type} search`)
+  await handleGithubError(response, `${github_type} search`)
 
   const payload = await response.json()
   const items = payload?.items || []
@@ -616,6 +647,7 @@ export async function runRawSearch({
   number,
   ref,
   state,
+  minResults = 1,
 }) {
   // GitHub read types don't need a search query
   const isGithubReadType = ['file', 'repo', 'issue', 'pulls'].includes(github_type)
@@ -629,9 +661,30 @@ export async function runRawSearch({
   }
 
   const failures = []
+  // Track the last empty-but-successful result so we can return it if every
+  // provider comes up dry (user's query legitimately has no matches).
+  let lastEmpty = null
+  // GitHub read types return a single object, not a list — skip empty check.
+  const enforceMin = !isGithubReadType && minResults > 0
   for (const provider of providers) {
     try {
       const searchResult = await searchWithProvider(provider, { query, type, maxResults, github_type, owner, repo, path, number, ref, state })
+      const resultCount = Array.isArray(searchResult.results) ? searchResult.results.length : (searchResult.results ? 1 : 0)
+      if (enforceMin && resultCount < minResults) {
+        failures.push({
+          provider,
+          error: `empty result (got ${resultCount}, minResults=${minResults})`,
+        })
+        lastEmpty = {
+          mode: 'fallback',
+          usedProvider: provider,
+          query,
+          results: searchResult.results,
+          usage: searchResult.usage || null,
+          failures: [...failures],
+        }
+        continue
+      }
       return {
         mode: 'fallback',
         usedProvider: provider,
@@ -646,6 +699,11 @@ export async function runRawSearch({
         error: error instanceof Error ? error.message : String(error),
       })
     }
+  }
+  // If at least one provider succeeded but returned empty, don't throw —
+  // hand back the last empty result. Only throw when every provider errored.
+  if (lastEmpty) {
+    return { ...lastEmpty, failures }
   }
   throw new Error(`All raw providers failed: ${failures.map(item => `${item.provider}: ${item.error}`).join(' | ')}`)
 }

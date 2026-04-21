@@ -51,18 +51,31 @@ function writeAll(dataDir, map) {
   } catch { /* best-effort */ }
 }
 
+/**
+ * Prune expired entries. Returns `{ map, changed }` so callers can decide
+ * whether to write the pruned state back to disk. `changed === true` iff
+ * at least one entry was deleted (or was present but falsy). addPending
+ * always writes regardless, so it does not need the flag; hasPending /
+ * recoverPending / removePending use it to persist the pruned map instead
+ * of letting expired entries accumulate in pending-dispatches.json across
+ * restarts.
+ */
 function gc(map) {
   const now = Date.now();
+  let changed = false;
   for (const [k, v] of Object.entries(map)) {
-    if (!v || (now - (v.createdAt || 0)) > TTL_MS) delete map[k];
+    if (!v || (now - (v.createdAt || 0)) > TTL_MS) {
+      delete map[k];
+      changed = true;
+    }
   }
-  return map;
+  return { map, changed };
 }
 
 export function addPending(dataDir, handle, tool, queries) {
   if (!dataDir || !handle) return;
   try {
-    const map = gc(readAll(dataDir));
+    const { map } = gc(readAll(dataDir));
     map[handle] = { tool, queries: Array.isArray(queries) ? queries : [String(queries)], createdAt: Date.now() };
     writeAll(dataDir, map);
   } catch { /* best-effort */ }
@@ -77,7 +90,8 @@ export function addPending(dataDir, handle, tool, queries) {
 export function hasPending(dataDir) {
   if (!dataDir) return false;
   try {
-    const map = gc(readAll(dataDir));
+    const { map, changed } = gc(readAll(dataDir));
+    if (changed) writeAll(dataDir, map);
     return Object.keys(map).length > 0;
   } catch {
     return false;
@@ -87,11 +101,13 @@ export function hasPending(dataDir) {
 export function removePending(dataDir, handle) {
   if (!dataDir || !handle) return;
   try {
-    const map = readAll(dataDir);
+    const { map, changed } = gc(readAll(dataDir));
+    let mutated = changed;
     if (handle in map) {
       delete map[handle];
-      writeAll(dataDir, map);
+      mutated = true;
     }
+    if (mutated) writeAll(dataDir, map);
   } catch { /* best-effort */ }
 }
 
@@ -105,9 +121,15 @@ export function recoverPending(dataDir, notifyFn) {
   if (!dataDir || typeof notifyFn !== 'function') return 0;
   let count = 0;
   try {
-    const map = gc(readAll(dataDir));
+    const { map, changed } = gc(readAll(dataDir));
     const handles = Object.keys(map);
-    if (handles.length === 0) return 0;
+    if (handles.length === 0) {
+      // Even with zero survivors, a gc() pass may have removed expired
+      // entries — persist the empty state so the file does not retain
+      // stale records across the next restart.
+      if (changed) writeAll(dataDir, {});
+      return 0;
+    }
     for (const handle of handles) {
       const entry = map[handle] || {};
       const tool = entry.tool || 'dispatch';

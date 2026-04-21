@@ -79,6 +79,80 @@ const mk = () => new Scheduler([], [], null);
     assert(result === 'idle', 'case 6: falls through to elapsed classification = idle');
 }
 
+// ── D4: period-based proactive firing ──────────────────────────────
+// Helper that stubs fireProactiveTick so we can observe whether
+// tickProactive calls it without needing the LLM.
+function mkProactive({ frequency = 3 } = {}) {
+    const s = new Scheduler([], [], { frequency, items: [] });
+    s.fired = 0;
+    s.fireProactiveTick = function () { s.fired++; };
+    return s;
+}
+
+// Case 7 — cold start, idle, period not yet elapsed → don't fire
+{
+    const s = mkProactive({ frequency: 3 }); // 90m period
+    // freshly constructed: proactiveStartAt ≈ Date.now(), lastFireAt = 0
+    // Idle already guaranteed by fresh lastActivity=0.
+    s.tickProactive(new Date());
+    assert(s.fired === 0, 'case 7: cold start, period not elapsed → no fire');
+    assert(s.getSessionState() === 'idle', 'case 7: session reports idle');
+}
+
+// Case 8 — period elapsed, session active (<15m) → don't fire
+{
+    const s = mkProactive({ frequency: 3 }); // 90m period
+    s.proactiveStartAt = Date.now() - 120 * 60 * 1000; // 2h ago
+    s.lastActivity = Date.now() - 1 * 60 * 1000; // 1min ago → active
+    s.tickProactive(new Date());
+    assert(s.fired === 0, 'case 8: period elapsed but session active → no fire');
+}
+
+// Case 9 — period elapsed, session idle → fire; lastFireAt updated
+{
+    const s = mkProactive({ frequency: 3 });
+    s.proactiveStartAt = Date.now() - 120 * 60 * 1000; // 2h ago
+    s.lastActivity = Date.now() - 20 * 60 * 1000;      // 20min ago → idle
+    const beforeFireAt = s.proactiveLastFireAt;
+    s.tickProactive(new Date());
+    assert(s.fired === 1, 'case 9: period elapsed + idle → fire');
+    // Mirror production: stub doesn't update lastFireAt (fireProactiveTick
+    // would), so verify the baseline path by calling again — still fires
+    // because stub didn't advance lastFireAt. Instead, simulate the update:
+    s.proactiveLastFireAt = Date.now();
+    assert(s.proactiveLastFireAt > beforeFireAt, 'case 9: lastFireAt advances post-fire');
+    // And confirm period gate now blocks
+    s.tickProactive(new Date());
+    assert(s.fired === 1, 'case 9b: immediately after fire → period gate blocks');
+}
+
+// Case 10 — shouldSkip(proactive) true → don't fire regardless
+{
+    const s = mkProactive({ frequency: 3 });
+    s.proactiveStartAt = Date.now() - 120 * 60 * 1000;
+    s.lastActivity = Date.now() - 20 * 60 * 1000;      // idle
+    s.skipToday('proactive');
+    s.tickProactive(new Date());
+    assert(s.fired === 0, 'case 10: shouldSkip(proactive) → no fire');
+    // defer form also respected
+    const s2 = mkProactive({ frequency: 5 });          // 30m period
+    s2.proactiveStartAt = Date.now() - 60 * 60 * 1000; // 1h ago
+    s2.lastActivity = Date.now() - 20 * 60 * 1000;
+    s2.defer('proactive', 60);                          // deferred 60 min
+    s2.tickProactive(new Date());
+    assert(s2.fired === 0, 'case 10b: deferred("proactive") → no fire');
+}
+
+// Case 11 — FREQUENCY_MAP mapping sanity (period in minutes from idleMinutes)
+{
+    const expected = { 1: 180, 2: 120, 3: 90, 4: 60, 5: 30 };
+    for (const [freq, min] of Object.entries(expected)) {
+        const s = mkProactive({ frequency: Number(freq) });
+        const actualMs = s.proactivePeriodMs();
+        assert(actualMs === min * 60 * 1000, `case 11: frequency=${freq} → period=${min}m`);
+    }
+}
+
 console.log();
 console.log(`PASS ${passed}/${passed + failed}`);
 

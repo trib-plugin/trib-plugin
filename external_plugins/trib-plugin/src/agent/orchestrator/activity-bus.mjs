@@ -8,16 +8,31 @@
  * orchestrator-side producers) call notifyActivity() near the point
  * where work is kicked off.
  *
+ * Boot race: if notifyActivity() fires before channels boot registers
+ * the listener, we buffer the most-recent ping and replay it on
+ * setListener. Only one timestamp is buffered — "most recent activity
+ * was at T" is all scheduler.mjs needs.
+ *
  * All failures are swallowed — an activity ping is never load-bearing.
  */
 
 let _listener = null;
+let _pendingPingAt = null;
 
 export function setListener(fn) {
   _listener = typeof fn === 'function' ? fn : null;
+  if (_listener && _pendingPingAt != null) {
+    const ts = _pendingPingAt;
+    _pendingPingAt = null;
+    try { _listener(ts); } catch { /* best-effort */ }
+  }
 }
 
 export function notifyActivity() {
-  if (!_listener) return;
-  try { _listener(); } catch { /* best-effort */ }
+  const ts = Date.now();
+  if (_listener) {
+    try { _listener(ts); } catch { /* best-effort */ }
+    return;
+  }
+  _pendingPingAt = ts;  // buffer one, most recent wins
 }

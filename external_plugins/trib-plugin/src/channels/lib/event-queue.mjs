@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, writeFileSync, renameSync } from "fs";
+import { readdirSync, readFileSync, writeFileSync, renameSync, existsSync as fsExistsSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "./config.mjs";
 import { ensureDir } from "./state-file.mjs";
@@ -8,6 +8,7 @@ import {
   runScript
 } from "./executor.mjs";
 const QUEUE_DIR = join(DATA_DIR, "events", "queue");
+const IN_PROGRESS_DIR = join(DATA_DIR, "events", "in-progress");
 const PROCESSED_DIR = join(DATA_DIR, "events", "processed");
 class EventQueue {
   config;
@@ -18,6 +19,8 @@ class EventQueue {
   injectFn = null;
   sendFn = null;
   sessionStateGetter = null;
+  ownerGetter = null;
+  ownerSkipLogged = false;
   notifiedFiles = /* @__PURE__ */ new Set();
   // track files already notified during active state
   constructor(config, channelsConfig) {
@@ -33,10 +36,14 @@ class EventQueue {
   setSessionStateGetter(fn) {
     this.sessionStateGetter = fn;
   }
+  setOwnerGetter(fn) {
+    this.ownerGetter = fn;
+  }
   // ── Lifecycle ─────────────────────────────────────────────────────
   start() {
     if (this.tickTimer) return;
     ensureDir(QUEUE_DIR);
+    ensureDir(IN_PROGRESS_DIR);
     ensureDir(PROCESSED_DIR);
     const tickMs = (this.config.tickInterval ?? 10) * 1e3;
     this.tickTimer = setInterval(() => this.processQueue(), tickMs);
@@ -74,6 +81,22 @@ class EventQueue {
   }
   // ── Process queue ─────────────────────────────────────────────────
   processQueue() {
+    // Belt-and-suspenders ownership guard: if this process is not the
+    // active owner, do nothing. The runtime should only have started this
+    // queue on the owner path, but an ownership hand-off can briefly leave
+    // two processes both ticking — this short-circuits that window.
+    if (this.ownerGetter) {
+      let isOwner = true;
+      try { isOwner = !!this.ownerGetter(); } catch { isOwner = true; }
+      if (!isOwner) {
+        if (!this.ownerSkipLogged) {
+          logEvent("queue: skipping tick — not owner");
+          this.ownerSkipLogged = true;
+        }
+        return;
+      }
+      this.ownerSkipLogged = false;
+    }
     const maxConcurrent = this.config.maxConcurrent ?? 2;
     const files = this.readQueueFiles();
     if (files.length === 0) return;
@@ -88,13 +111,20 @@ class EventQueue {
         continue;
       }
       if (this.runningCount >= maxConcurrent) return;
-      this.executeItem(item, file);
+      // Atomic claim: rename into in-progress/ before executing. If the
+      // rename fails (another tick / cleanup raced, or file vanished),
+      // skip this handle.
+      const claimed = this.claimFile(file);
+      if (!claimed) continue;
+      this.executeItem(item, claimed);
     }
     if (interactiveFiles.length === 0) return;
     if (sessionState === "idle") {
       this.notifiedFiles.clear();
       for (const { file, item } of interactiveFiles) {
-        this.executeItem(item, file);
+        const claimed = this.claimFile(file);
+        if (!claimed) continue;
+        this.executeItem(item, claimed);
       }
     } else {
       const unnotified = interactiveFiles.filter((f) => !this.notifiedFiles.has(f.file));
@@ -133,10 +163,19 @@ ${it.prompt}`).join("\n\n")}`;
         ...group.items[0],
         prompt: combined
       };
+      // Claim all batch files atomically before executing so overlapping
+      // batch ticks don't double-process. Files that fail to claim are
+      // dropped from this batch.
+      const claimedFiles = [];
+      for (const file of group.files) {
+        const claimed = this.claimFile(file);
+        if (claimed) claimedFiles.push(claimed);
+      }
+      if (claimedFiles.length === 0) continue;
       logEvent(`${name}: processing batch of ${group.items.length}`);
       this.executeItem(batchItem, null);
-      for (const file of group.files) {
-        this.moveToProcessed(file, "batched");
+      for (const file of claimedFiles) {
+        this.moveInProgressToProcessed(file, "batched");
       }
     }
   }
@@ -206,11 +245,50 @@ ${it.prompt}`).join("\n\n")}`;
       return null;
     }
   }
+  // Atomically rename from queue/ to in-progress/. Returns the new
+  // filename on success, or null if another worker already claimed it /
+  // the file vanished. Uses renameSync which is atomic on same volume.
+  claimFile(file) {
+    try {
+      ensureDir(IN_PROGRESS_DIR);
+      const claimed = `in-progress-${Date.now()}-${file}`;
+      renameSync(join(QUEUE_DIR, file), join(IN_PROGRESS_DIR, claimed));
+      return claimed;
+    } catch (err) {
+      // ENOENT: another tick grabbed it; EEXIST: target collision (very rare).
+      if (err && err.code && err.code !== "ENOENT" && err.code !== "EEXIST") {
+        logEvent(`queue: claim failed for ${file}: ${err.message ?? err}`);
+      }
+      return null;
+    }
+  }
   moveToProcessed(file, status) {
+    // `file` may already live under in-progress/ (claimed) or still in
+    // queue/ (batch paths / legacy callers). Try both.
     try {
       ensureDir(PROCESSED_DIR);
-      renameSync(join(QUEUE_DIR, file), join(PROCESSED_DIR, `${status}-${file}`));
+      const fromInProgress = join(IN_PROGRESS_DIR, file);
+      const fromQueue = join(QUEUE_DIR, file);
+      const src = this.existsSync(fromInProgress) ? fromInProgress : fromQueue;
+      renameSync(src, join(PROCESSED_DIR, `${status}-${file}`));
     } catch {
+    }
+  }
+  moveInProgressToProcessed(file, status) {
+    try {
+      ensureDir(PROCESSED_DIR);
+      renameSync(join(IN_PROGRESS_DIR, file), join(PROCESSED_DIR, `${status}-${file}`));
+    } catch {
+    }
+  }
+  existsSync(p) {
+    try {
+      // readdirSync-free existence check via renameSync would be destructive —
+      // fall back to a cheap stat via readFileSync on non-content probe.
+      // Use fs.existsSync semantics without importing it twice.
+      return fsExistsSync(p);
+    } catch {
+      return false;
     }
   }
   resolveChannel(label) {

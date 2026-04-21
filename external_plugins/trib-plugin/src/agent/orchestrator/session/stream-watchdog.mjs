@@ -16,8 +16,8 @@
  */
 import { traceStreamAborted, traceStreamStalled } from '../bridge-trace.mjs';
 
-const SOFT_STALL_MS = 300_000;
-const HARD_STALL_MS = 600_000;
+const SOFT_STALL_MS = 1_800_000;
+const HARD_STALL_MS = 3_600_000;
 const TICK_MS = 15_000;
 
 let _tickHandle = null;

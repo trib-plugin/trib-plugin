@@ -131,13 +131,25 @@ export function init(db, dims) {
         INSERT INTO entries_fts(rowid, content, element, summary)
         VALUES (NEW.id, NEW.content, NEW.element, NEW.summary);
       END;
+
+      -- vec_entries has no FK to entries (sqlite-vec vtable does not
+      -- participate in FK). Keep it in sync via an explicit AFTER DELETE
+      -- trigger so deleting an entries row purges its embedding too.
+      -- Only root rows ever get a vec_entries row (rowid = entries.id), so
+      -- the guard avoids a pointless DELETE for non-root entries.
+      CREATE TRIGGER trg_entries_vec_delete
+      AFTER DELETE ON entries
+      WHEN OLD.is_root = 1
+      BEGIN
+        DELETE FROM vec_entries WHERE rowid = OLD.id;
+      END;
     `)
 
     db.exec(`CREATE VIRTUAL TABLE vec_entries USING vec0(embedding float[${dimCount}])`)
 
     const metaInsert = db.prepare(`INSERT INTO meta(key, value) VALUES (?, ?)`)
     metaInsert.run('embedding.current_dims', String(dimCount))
-    metaInsert.run('boot.schema_version', '2')
+    metaInsert.run('boot.schema_version', '3')
     metaInsert.run('boot.schema_bootstrap_complete', '1')
 
     db.exec('COMMIT')
@@ -194,6 +206,28 @@ function migrateIfNeeded(db) {
     }
     setMetaValue(db, 'boot.schema_version', '2')
     process.stderr.write(`[memory] schema migrated to v2 (source_turn)\n`)
+  }
+  if (current < 3) {
+    // v3: install trg_entries_vec_delete on pre-existing databases. Older
+    // files (schema v1/v2) were bootstrapped without this trigger, so
+    // vec_entries may drift out of sync when entries rows are deleted.
+    // CREATE TRIGGER IF NOT EXISTS is idempotent; the migration just flips
+    // the version tag once the trigger is guaranteed to exist.
+    try {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_entries_vec_delete
+        AFTER DELETE ON entries
+        WHEN OLD.is_root = 1
+        BEGIN
+          DELETE FROM vec_entries WHERE rowid = OLD.id;
+        END;
+      `)
+    } catch (e) {
+      process.stderr.write(`[memory] schema v3 migration failed: ${e.message}\n`)
+      return
+    }
+    setMetaValue(db, 'boot.schema_version', '3')
+    process.stderr.write(`[memory] schema migrated to v3 (vec_entries delete trigger)\n`)
   }
 }
 

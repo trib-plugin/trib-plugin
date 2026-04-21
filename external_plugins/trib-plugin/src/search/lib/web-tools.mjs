@@ -209,28 +209,32 @@ function buildContentPayload(url, title, content, extractor, extra = {}) {
 
 function extractReadableArticle(url, html) {
   const dom = new JSDOM(html, { url })
-  const reader = new Readability(dom.window.document)
-  const article = reader.parse()
-  if (article?.textContent?.trim()) {
+  try {
+    const reader = new Readability(dom.window.document)
+    const article = reader.parse()
+    if (article?.textContent?.trim()) {
+      return buildContentPayload(
+        url,
+        article.title || dom.window.document.title || '',
+        article.textContent,
+        'readability',
+      )
+    }
+
+    const bodyText = dom.window.document.body?.textContent?.trim() || ''
+    if (!bodyText) {
+      throw new Error('readability returned no readable body')
+    }
+
     return buildContentPayload(
       url,
-      article.title || dom.window.document.title || '',
-      article.textContent,
-      'readability',
+      dom.window.document.title || '',
+      bodyText,
+      'dom-text',
     )
+  } finally {
+    dom.window.close()
   }
-
-  const bodyText = dom.window.document.body?.textContent?.trim() || ''
-  if (!bodyText) {
-    throw new Error('readability returned no readable body')
-  }
-
-  return buildContentPayload(
-    url,
-    dom.window.document.title || '',
-    bodyText,
-    'dom-text',
-  )
 }
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
@@ -416,11 +420,15 @@ function filterLinks(rawLinks, baseUrl, { limit = 50, sameDomainOnly = true, sea
 
 function extractLinksFromHtml(baseUrl, html, options) {
   const dom = new JSDOM(html, { url: baseUrl })
-  const links = Array.from(dom.window.document.querySelectorAll('a[href]')).map(link => ({
-    href: link.getAttribute('href'),
-    text: link.textContent || '',
-  }))
-  return filterLinks(links, baseUrl, options)
+  try {
+    const links = Array.from(dom.window.document.querySelectorAll('a[href]')).map(link => ({
+      href: link.getAttribute('href'),
+      text: link.textContent || '',
+    }))
+    return filterLinks(links, baseUrl, options)
+  } finally {
+    dom.window.close()
+  }
 }
 
 async function mapWithHttp(url, options, timeoutMs) {

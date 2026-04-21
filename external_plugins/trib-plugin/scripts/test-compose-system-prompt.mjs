@@ -2,8 +2,9 @@
  * Slot assignment check for composeSystemPrompt.
  *
  * role / permission must now live in volatileTail (BP4), not sessionMarker (BP3).
- * Tool-routing must NOT be generated per-call — it's a static snippet loaded
- * into roleCatalog (BP2) via rules/bridge/02-tool-routing.md.
+ * Tool-routing must NOT be generated per-call — it's a static snippet merged
+ * into the shared tool section (rules/shared/01-tool.md), loaded once into
+ * the shared prefix rather than regenerated per call.
  */
 import { composeSystemPrompt } from '../src/agent/orchestrator/context/collect.mjs';
 

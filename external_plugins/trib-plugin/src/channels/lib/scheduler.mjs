@@ -67,17 +67,26 @@ function tzSnapshot(now, tz) {
     dow: dowMap[parts.weekday] ?? now.getDay(),
   };
 }
+// Proactive frequency → period (idleMinutes) + daily cap.
+//
+// NEW SEMANTICS (D4): `idleMinutes` is the period between proactive
+// *opportunities* — the scheduler wakes every `idleMinutes` and, if the
+// 15-min idle guard also passes, fires. `daily` remains a soft cap used
+// for telemetry/reporting only; firing is period-gated, not slot-gated.
+//
+// Mapping: 1→180m (~3h), 2→120m (2h), 3→90m (1.5h), 4→60m (1h),
+// 5→30m (half-hour). Higher frequency = shorter period.
 const FREQUENCY_MAP = {
   1: { daily: 3, idleMinutes: 180 },
-  // 3/day, 3h guard
+  // period ~3h
   2: { daily: 5, idleMinutes: 120 },
-  // 5/day, 2h guard
+  // period 2h
   3: { daily: 7, idleMinutes: 90 },
-  // 7/day, 1.5h guard
+  // period 1.5h
   4: { daily: 10, idleMinutes: 60 },
-  // 10/day, 1h guard
+  // period 1h
   5: { daily: 15, idleMinutes: 30 }
-  // 15/day, 30m guard
+  // period 30m
 };
 class Scheduler {
   nonInteractive;
@@ -95,15 +104,14 @@ class Scheduler {
   // Activity tracking
   lastActivity = 0;
   // timestamp of last inbound message
-  // Proactive state
-  proactiveSlots = [];
-  // minute-of-day slots for today
-  proactiveSlotsDate = "";
-  // "YYYY-MM-DD" when slots were generated
-  proactiveLastFire = 0;
-  // timestamp of last proactive fire
+  // Proactive state (period-based — see FREQUENCY_MAP notes)
+  proactiveLastFireAt = 0;
+  // timestamp of last proactive fire (0 = never in this session)
+  proactiveStartAt = Date.now();
+  // plugin-start wall clock; used as conservative "last fire" baseline
+  // on cold start so we don't fire immediately after restart.
   proactiveFiredToday = 0;
-  // count of proactive fires today
+  // count of proactive fires today (telemetry only)
   deferred = /* @__PURE__ */ new Map();
   // name -> deferred-until timestamp
   skippedToday = /* @__PURE__ */ new Set();
@@ -357,9 +365,10 @@ ${Scheduler.INSTANCE_UUID}`;
     this.quietSchedule = botConfig?.quiet?.schedule ?? null;
     this.holidayChecked = "";
     this.todayIsHoliday = false;
-    this.proactiveSlots = [];
-    this.proactiveSlotsDate = "";
+    // Period-based proactive state reset (D4): clear fire counter +
+    // bump the baseline so reload doesn't insta-fire after config swap.
     this.proactiveFiredToday = 0;
+    this.proactiveStartAt = Date.now();
     if (this.deferred.size > 0 || this.skippedToday.size > 0) {
       process.stderr.write(`trib-plugin scheduler: reload clearing ${this.deferred.size} deferred, ${this.skippedToday.size} skipped
 `);
@@ -396,15 +405,22 @@ ${Scheduler.INSTANCE_UUID}`;
       });
     }
     if (this.proactive) {
-      const nextTick = this.proactiveNextTick > 0 ? new Date(this.proactiveNextTick).toLocaleTimeString() : 'pending';
+      const periodMs = this.proactivePeriodMs();
+      const baseline = this.proactiveLastFireAt || this.proactiveStartAt;
+      const nextEligibleAt = baseline + periodMs;
+      const nextLabel = Date.now() >= nextEligibleAt
+        ? 'eligible-now (awaiting idle)'
+        : new Date(nextEligibleAt).toLocaleTimeString();
       const sessionState = this.getSessionState();
+      const freq = Math.max(1, Math.min(5, this.proactive.frequency ?? 3));
+      const periodMin = FREQUENCY_MAP[freq].idleMinutes;
       result.push({
         name: 'proactive',
-        time: `interval=${this.proactive.interval ?? 60}m, next=${nextTick}`,
+        time: `period=${periodMin}m (freq=${freq}), next=${nextLabel}`,
         days: "daily",
         type: "proactive",
         running: false,
-        lastFired: this.proactiveLastFire > 0 ? new Date(this.proactiveLastFire).toISOString() : null,
+        lastFired: this.proactiveLastFireAt > 0 ? new Date(this.proactiveLastFireAt).toISOString() : null,
         meta: { session: sessionState, firedToday: this.proactiveFiredToday }
       });
     }
@@ -523,27 +539,28 @@ ${Scheduler.INSTANCE_UUID}`;
     }
     this.tickProactive(now, dateStr);
   }
-  // ── Proactive tick ──────────────────────────────────────────────────
-  proactiveNextTick = 0;
-  // timestamp of next proactive tick
+  // ── Proactive tick (period-based, D4) ───────────────────────────────
+  //
+  // Period = FREQUENCY_MAP[freq].idleMinutes. On every scheduler tick we
+  // check two conditions:
+  //   (a) now - proactiveLastFireAt >= period  (period elapsed)
+  //   (b) getSessionState() === "idle"          (15-min idle guard)
+  // If both hold (plus dnd/quiet/shouldSkip), we fire and update
+  // proactiveLastFireAt. Cold start uses proactiveStartAt as the
+  // baseline so restarts don't trigger an immediate fire.
+  proactivePeriodMs() {
+    const freq = Math.max(1, Math.min(5, this.proactive?.frequency ?? 3));
+    return FREQUENCY_MAP[freq].idleMinutes * 6e4;
+  }
   tickProactive(now, _dateStr) {
     if (!this.proactive) return;
     if (this.isQuietHours(now)) return;
-    if (this.proactiveNextTick === 0) {
-      this.scheduleNextProactiveTick();
-    }
-    if (Date.now() < this.proactiveNextTick) return;
+    if (this.shouldSkip('proactive')) return;
+    const periodMs = this.proactivePeriodMs();
+    const baseline = this.proactiveLastFireAt || this.proactiveStartAt;
+    if (Date.now() - baseline < periodMs) return;
     if (this.getSessionState() !== "idle") return;
-    this.scheduleNextProactiveTick();
     this.fireProactiveTick();
-  }
-  scheduleNextProactiveTick() {
-    const intervalMs = (this.proactive?.interval ?? 60) * 6e4;
-    const jitter = intervalMs * 0.2;
-    this.proactiveNextTick = Date.now() + intervalMs + (Math.random() * jitter * 2 - jitter);
-    const next = new Date(this.proactiveNextTick);
-    logSchedule(`proactive next tick: ${next.toLocaleTimeString()}
-`);
   }
   /** Day abbreviation → JS day number (0=Sun...6=Sat) */
   static DAY_ABBRS = {
@@ -576,27 +593,8 @@ ${Scheduler.INSTANCE_UUID}`;
     if (start > end) return hhmm >= start || hhmm < end;
     return hhmm >= start && hhmm < end;
   }
-  generateDailySlots(dateStr) {
-    this.proactiveSlotsDate = dateStr;
-    this.proactiveFiredToday = 0;
-    this.skippedToday.clear();
-    this.deferred.clear();
-    if (!this.proactive) {
-      this.proactiveSlots = [];
-      return;
-    }
-    const freq = Math.max(1, Math.min(5, this.proactive.frequency));
-    const { daily } = FREQUENCY_MAP[freq];
-    const start = 420;
-    const end = 1320;
-    const slots = /* @__PURE__ */ new Set();
-    for (let i = 0; i < daily; i++) {
-      slots.add(start + Math.floor(Math.random() * (end - start)));
-    }
-    this.proactiveSlots = [...slots].sort((a, b) => a - b);
-    process.stderr.write(`trib-plugin scheduler: proactive slots for ${dateStr}: ${this.proactiveSlots.map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`).join(", ")}
-`);
-  }
+  // Legacy random-slot generator removed (D4). Proactive is now strictly
+  // period-based \u2014 see tickProactive() + FREQUENCY_MAP.idleMinutes.
   // ── Fire timed schedule ─────────────────────────────────────────────
   async fireTimed(schedule, type) {
     const execMode = schedule.exec ?? "prompt";
@@ -714,7 +712,11 @@ ${scriptResult}
       logSchedule('proactive: skip (session active, pre-check)\n');
       return;
     }
-    const data = await this.proactiveDataFetcher?.() ?? { memory: "", sources: [] };
+    // D5: dataFetcher is expected to return { memory, sources }, where
+    // `memory` includes recent ~20 role=user chunks (chronological, newest
+    // first) plus preference/fact/user-profile core-memory entries. The
+    // 50-proactive-decision template reads from `memoryContext` directly.
+    const data = await this.proactiveDataFetcher?.({ userChunkLimit: 20 }) ?? { memory: "", sources: [] };
     const now = /* @__PURE__ */ new Date();
     const timeInfo = `${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")} (${["\uC77C", "\uC6D4", "\uD654", "\uC218", "\uBAA9", "\uAE08", "\uD1A0"][now.getDay()]}\uC694\uC77C)`;
     const sourcesText = data.sources.length > 0 ? data.sources.map((s) => `- [${s.category}] ${s.topic} (score: ${s.score}, used: ${s.hit_count}/${s.hit_count + s.skip_count})`).join("\n") : "(no sources registered)";
@@ -765,7 +767,7 @@ ${preferredTopicText}`;
         return;
       }
       logSchedule(`proactive: "${result.sourcePicked}" \u2192 inject\n`);
-      this.proactiveLastFire = Date.now();
+      this.proactiveLastFireAt = Date.now();
       this.proactiveFiredToday++;
       if (this.injectFn) {
         this.injectFn("", `proactive:${result.sourcePicked || "chat"}`, " ", {

@@ -465,7 +465,7 @@ export function createSession(opts) {
     //   - opts.disallowedTools : per-call caller override (Anthropic
     //     BuiltInAgentDefinition pattern)
     //   - BRIDGE_DENY_TOOLS    : Lead-only admin surface (channel, session
-    //     lifecycle, schedule/config, bridge dispatch, bash_session, AST
+    //     lifecycle, schedule/config, bridge dispatch, memory admin, AST
     //     editors). See BRIDGE_DENY_TOOLS declaration for the full keep/strip
     //     rationale. Pool A (Lead) still sees the full tools.json.
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];

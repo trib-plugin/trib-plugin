@@ -11,6 +11,12 @@
  */
 import { AnthropicOAuthProvider } from '../src/agent/orchestrator/providers/anthropic-oauth.mjs';
 
+if (process.env.CI) {
+    console.log('SKIP (CI=1 set, live provider endpoint not available)');
+    console.log('PASS 0/0');
+    process.exit(0);
+}
+
 const MODEL = 'claude-haiku-4-5-20251001';
 const ITERS = 10;
 

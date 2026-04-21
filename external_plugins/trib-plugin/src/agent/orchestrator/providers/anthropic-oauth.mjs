@@ -390,8 +390,12 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
             idleTimedOut = true;
-            try { abortStream?.(); } catch {}
-            try { reader.cancel('SSE idle timeout'); } catch {}
+            try { abortStream?.(); } catch (err) {
+                try { process.stderr.write(`[anthropic-oauth] sse idle abortStream failed: ${err?.message ?? String(err)}\n`); } catch {}
+            }
+            try { reader.cancel('SSE idle timeout'); } catch (err) {
+                try { process.stderr.write(`[anthropic-oauth] sse idle cancel failed: ${err?.message ?? String(err)}\n`); } catch {}
+            }
         }, 300_000);
     };
 
@@ -539,7 +543,9 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
     } finally {
         if (idleTimer) clearTimeout(idleTimer);
         if (signal) signal.removeEventListener('abort', onAbort);
-        try { reader.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch (err) {
+            try { process.stderr.write(`[anthropic-oauth] reader releaseLock failed: ${err?.message ?? String(err)}\n`); } catch {}
+        }
     }
 }
 
@@ -972,7 +978,10 @@ export class AnthropicOAuthProvider {
                 if (classifier && attemptIndex < MAX_MIDSTREAM_RETRIES) {
                     firstAttemptError = err;
                     firstAttemptClassifier = classifier;
-                    try { controller?.abort?.(err); } catch { /* best-effort stream teardown */ }
+                    try { controller?.abort?.(err); } catch (abortErr) {
+                        /* best-effort stream teardown */
+                        try { process.stderr.write(`[anthropic-oauth] abort on stream error failed: ${abortErr?.message ?? String(abortErr)}\n`); } catch {}
+                    }
                     try {
                         process.stderr.write(`[anthropic-oauth] mid-stream recovered: retry ${attemptIndex + 1}/${MAX_MIDSTREAM_RETRIES} (cause: ${classifier})\n`);
                     } catch {}

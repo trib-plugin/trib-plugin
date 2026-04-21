@@ -11,6 +11,12 @@
 import { OpenAIOAuthProvider } from '../src/agent/orchestrator/providers/openai-oauth.mjs';
 import { composeSystemPrompt } from '../src/agent/orchestrator/context/collect.mjs';
 
+if (process.env.CI) {
+    console.log('SKIP (CI=1 set, live provider endpoint not available)');
+    console.log('PASS 0/0');
+    process.exit(0);
+}
+
 const MODEL = 'gpt-5.4';
 const CACHE_KEY = 'trib-smoke-' + Date.now();
 

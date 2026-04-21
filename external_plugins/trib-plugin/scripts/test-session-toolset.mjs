@@ -1,3 +1,9 @@
+if (process.env.CI) {
+  console.log('SKIP (CI=1 set, live provider endpoint not available)');
+  console.log('PASS 0/0');
+  process.exit(0);
+}
+
 import { initProviders } from '../src/agent/orchestrator/providers/registry.mjs';
 import { createSession, closeSession } from '../src/agent/orchestrator/session/manager.mjs';
 

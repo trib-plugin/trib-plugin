@@ -445,9 +445,20 @@ export function pushDispatchResult(ctx, id, tool, queries, body, flags = {}) {
     : buildDispatchResultHeader(tool, modelTag)
   const content = `${doneHeader}\n\n${originalBody}`
   try {
-    notify(content, { type: 'dispatch_result', dispatch_id: id, tool, instruction: `The ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step.` })
-  } catch {
-    // Telemetry-style best-effort — never let the push crash the dispatch.
+    Promise.resolve(
+      notify(content, {
+        type: 'dispatch_result',
+        dispatch_id: id,
+        tool,
+        instruction: `The ${tool} dispatch you started earlier (${id}) has returned — use this answer in your next step.`,
+      }),
+    ).catch((err) => {
+      try {
+        process.stderr.write(`[ai-wrapped-dispatch] pushDispatchResult async failed: tool=${tool} id=${id} err=${err?.message ?? String(err)}\n`)
+      } catch {}
+    })
+  } catch (err) {
+    try { process.stderr.write(`[ai-wrapped-dispatch] pushDispatchResult failed: tool=${tool} id=${id} err=${err?.message ?? String(err)}\n`); } catch {}
   }
 }
 

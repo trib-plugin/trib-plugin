@@ -24,7 +24,7 @@
  */
 
 const TICK_MS = 30_000;
-const DEFAULT_THRESHOLD_S = 600;
+const DEFAULT_THRESHOLD_S = 3600;
 
 // Role-aware thresholds. All roles default to 600s (10 min) to align with
 // stream-watchdog HARD_STALL_MS — the bridge-stall path then notifies lead

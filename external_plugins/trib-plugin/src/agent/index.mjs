@@ -131,23 +131,8 @@ function watchUserWorkflow(onChange) {
   }
 }
 
-const AGENT_MCP_BASE = (() => {
-  try {
-    const root = process.env.CLAUDE_PLUGIN_ROOT;
-    if (!root) return '';
-    // mcp-orchestration.md was removed (v0.6.94) — sub-agents do not dispatch
-    // other agents, so this content was redundant. Tool list is auto-exposed
-    // by Claude Code; policy lives in rules/lead/03-team.md.
-    return '';
-  } catch (e) {
-    process.stderr.write(`[agent] bridge rules load failed: ${e.message}\n`);
-    return '';
-  }
-})();
-
 function buildInstructions() {
   const lines = [];
-  if (AGENT_MCP_BASE) lines.push(AGENT_MCP_BASE);
 
   try {
     const workflows = listWorkflows();
@@ -832,31 +817,32 @@ export async function handleToolCall(name, args, opts = {}) {
           let result = null;
           const toolCallLog = [];
           let lastIteration = 0;
-          updateSessionStatus(session.id, 'running');
-          // Bridge Start — non-silent MCP Noti so both Lead and user terminal
-          // see the lifecycle banner. Done / Error emissions (further below)
-          // also stay non-silent for consistent 3-event shape.
-          emit(`${modelTag}${role} started`);
-          // Per-session stall watchdog — complements the orchestrator's
-          // stream-watchdog (which fires at 300s/600s on raw stream silence).
-          // This one catches the bridge-specific case where the lead is
-          // waiting on a `worker finished` notification that never arrives:
-          // if the SSE stream is quiet beyond STALL_TIMEOUT_S (default 600s)
-          // and the session isn't in `tool_running`, emit via notifyFn and
-          // abort so the outer catch renders a normal error footer.
-          const stallWatch = startBridgeStallWatchdog({
-            sessionId: session.id,
-            getRuntime: () => getSessionRuntime(session.id),
-            getIteration: () => lastIteration,
-            abort: (reason) => {
-              const rt = getSessionRuntime(session.id);
-              rt?.controller?.abort?.(reason);
-            },
-            notify: emit,
-            modelTag,
-            role,
-          });
+          let stallWatch = { stop() {}, fired() { return false; } };
           try {
+            updateSessionStatus(session.id, 'running');
+            // Bridge Start — non-silent MCP Noti so both Lead and user terminal
+            // see the lifecycle banner. Done / Error emissions (further below)
+            // also stay non-silent for consistent 3-event shape.
+            emit(`${modelTag}${role} started`);
+            // Per-session stall watchdog — complements the orchestrator's
+            // stream-watchdog (which fires at 300s/600s on raw stream silence).
+            // This one catches the bridge-specific case where the lead is
+            // waiting on a `worker finished` notification that never arrives:
+            // if the SSE stream is quiet beyond STALL_TIMEOUT_S (default 600s)
+            // and the session isn't in `tool_running`, emit via notifyFn and
+            // abort so the outer catch renders a normal error footer.
+            stallWatch = startBridgeStallWatchdog({
+              sessionId: session.id,
+              getRuntime: () => getSessionRuntime(session.id),
+              getIteration: () => lastIteration,
+              abort: (reason) => {
+                const rt = getSessionRuntime(session.id);
+                rt?.controller?.abort?.(reason);
+              },
+              notify: emit,
+              modelTag,
+              role,
+            });
             result = await askSession(session.id, prompt, args.context || null, (iteration, calls) => {
               if (typeof iteration === 'number' && iteration > lastIteration) lastIteration = iteration;
               for (const c of calls) toolCallLog.push({ name: c.name, iteration });
@@ -890,7 +876,23 @@ export async function handleToolCall(name, args, opts = {}) {
             const outTok = fmtTokens(u.outputTokens || 0);
             const loops = result.iterations || 1;
             const loopNote = `${loops} loop${loops === 1 ? '' : 's'}`;
-            const content = result.content || '(empty response)';
+            let content;
+            if (result && typeof result.content === 'string' && result.content.length > 0) {
+              content = result.content;
+            } else {
+              // Telemetry: why did the bridge result lack content?
+              const shape = {
+                resultType: typeof result,
+                contentType: typeof result?.content,
+                contentLen: typeof result?.content === 'string' ? result.content.length : null,
+                hasToolCalls: Array.isArray(result?.toolCalls) ? result.toolCalls.length : null,
+                stopReason: result?.stopReason ?? result?.stop_reason ?? null,
+                midstreamRetries: result?.__midstreamRetries ?? null,
+                keys: result && typeof result === 'object' ? Object.keys(result) : null,
+              };
+              try { process.stderr.write(`[bridge] empty-content fallback for sessionId=${session?.id ?? 'unknown'} shape=${JSON.stringify(shape)}\n`); } catch {}
+              content = '(empty response)';
+            }
             const footer = `${modelLabel} · ${ctxTok} ctx · cache ${cachePct}% · ${outTok} out · ${loopNote} · ${elapsed}s`;
             emit(`${modelTag}[${role}] ${content}\n\n${footer}`);
             updateSessionStatus(session.id, 'idle');
@@ -961,7 +963,21 @@ export async function handleToolCall(name, args, opts = {}) {
               }
             } catch {}
           }
-        })();
+        })().catch((err) => {
+          const msg = err instanceof Error ? (err.stack || err.message) : String(err);
+          try {
+            process.stderr.write(`[bridge] detached runner unhandled: session=${session.id} role=${role} job=${jobId} ${msg}\n`);
+          } catch {}
+          try { updateSessionStatus(session.id, 'error'); } catch {}
+          if (!abortHandle.fired() && !workerWorktree.fallback) {
+            try {
+              cleanupWorkerWorktree(session.id, pluginRoot, { reason: `runner-crash: ${err?.message || err}` });
+            } catch (cleanupErr) {
+              try { process.stderr.write(`[bridge] worktree cleanup on detached crash failed: ${cleanupErr?.message || cleanupErr}\n`); } catch {}
+            }
+          }
+          try { closeSession(session.id); } catch {}
+        });
 
         return ok(`${jobId} · ${role} · ${modelLabel}`);
       }

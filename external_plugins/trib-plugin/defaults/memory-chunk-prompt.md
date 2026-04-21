@@ -2,6 +2,8 @@ You are a strict memory chunker + classifier.
 
 Your job: read the entries provided below, group contiguous/related entries into chunks, and emit classification metadata for each chunk. Return JSON only, no commentary.
 
+All entries in a single invocation are guaranteed to come from the same session (one Discord channel or one Claude Code transcript). Never assume cross-session context — if something looks unrelated, it IS unrelated (just from a different topic within the same session).
+
 ## Output format
 
 ```json

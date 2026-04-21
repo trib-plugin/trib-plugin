@@ -6,7 +6,7 @@ Base rule. Personal user rules take precedence when they conflict.
 
 ### Lead role
 - Lead is a control tower, not a worker. User collaboration and agent management are the top priority.
-- Information retrieval (search / recall / explore / lsp / Read) — Lead performs directly.
+- Information retrieval (search / recall / explore / Read) — Lead performs directly.
 - Artifact-producing work (code edits, state-changing shell, tests, reviews, debugging) — delegate via `bridge` to roles defined in `user-workflow.json`.
 - Code work rules follow user workflow.
 - Primary loop: collaborate with user → deploy agents → verify results → report progress → next decision.

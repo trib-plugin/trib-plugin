@@ -64,6 +64,28 @@ function saveCache(cache) {
 
 function listChangedFiles() {
   try {
+    // `git status` returns paths relative to the outer git toplevel, which
+    // may be an ancestor of REPO_ROOT (e.g. the marketplace repo wrapping
+    // this plugin). Compute the plugin-relative prefix once so we can strip
+    // it from each status line and get paths the graph (rooted at REPO_ROOT)
+    // understands.
+    let stripPrefix = ''
+    try {
+      const top = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+      if (top.status === 0) {
+        const toplevel = String(top.stdout || '').trim()
+        if (toplevel) {
+          const rel = normalizeRepoRel(relative(toplevel, REPO_ROOT))
+          if (rel && rel !== '.') stripPrefix = rel.endsWith('/') ? rel : `${rel}/`
+        }
+      }
+    } catch {
+      // best-effort only
+    }
+
     const res = spawnSync('git', ['-C', REPO_ROOT, 'status', '--porcelain', '--untracked-files=all'], {
       encoding: 'utf8',
       windowsHide: true,
@@ -80,6 +102,8 @@ function listChangedFiles() {
       })
       .filter(Boolean)
       .map((p) => normalizeRepoRel(p))
+      .map((p) => (stripPrefix && p.startsWith(stripPrefix) ? p.slice(stripPrefix.length) : p))
+      .filter(Boolean)
   } catch {
     return []
   }
@@ -272,8 +296,10 @@ export async function main(argv = process.argv.slice(2)) {
     files = files.filter((f) => failedSet.has(f))
   }
 
+  let changedFilesForReport = null
   if (changedOnly) {
     const changedFiles = listChangedFiles()
+    changedFilesForReport = changedFiles
     const related = selectChangedTestsFromGraph(REPO_ROOT, changedFiles)
     files = files.filter((f) => related.includes(f))
   }
@@ -283,6 +309,15 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (files.length === 0) {
+    if (changedOnly) {
+      const changedFiles = changedFilesForReport || []
+      if (changedFiles.length > 0) {
+        process.stderr.write(`[run-all-tests] --changed: ${changedFiles.length} files changed but no test covers them. Check graph coverage.\n`)
+        process.stderr.write(`    changed: ${changedFiles.slice(0, 10).join(', ')}${changedFiles.length > 10 ? ` (+${changedFiles.length - 10} more)` : ''}\n`)
+        return 1
+      }
+      return 0
+    }
     console.error('No matching test scripts.')
     return 0
   }
@@ -368,9 +403,23 @@ export async function main(argv = process.argv.slice(2)) {
     }
   }
 
+  // Merge with existing cache instead of overwriting. Partial runs
+  // (--only / --failed-only / --changed) must preserve durations / failed
+  // entries for tests that weren't executed this turn, otherwise
+  // --slow-first / --failed-only become useless after any partial run.
+  const ranFiles = new Set(statuses.map((r) => r.file))
+  const mergedDurations = { ...(cache.durations || {}) }
+  for (const r of statuses) {
+    mergedDurations[r.file] = Number(r.elapsed) || 0
+  }
+  // failed list: keep prior failures we didn't re-run; drop tests that ran
+  // and passed; include tests that ran and failed this turn.
+  const priorFailed = (cache.failed || []).filter((f) => !ranFiles.has(f))
+  const newFailed = statuses.filter((r) => r.status !== 'pass').map((r) => r.file)
+  const mergedFailed = Array.from(new Set([...priorFailed, ...newFailed]))
   saveCache({
-    durations: Object.fromEntries(statuses.map((r) => [r.file, Number(r.elapsed) || 0])),
-    failed: statuses.filter((r) => r.status !== 'pass').map((r) => r.file),
+    durations: mergedDurations,
+    failed: mergedFailed,
   })
 
   return failedScripts === 0 ? 0 : 1

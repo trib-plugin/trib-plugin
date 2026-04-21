@@ -1758,6 +1758,69 @@ function _renameConfidence({ totalOccurrences, fileCount, declarationHits, targe
   return 'low';
 }
 
+// Languages allowed for apply:true (D15 option A). Dry-run previews still
+// work across every language the graph supports — this gate only blocks
+// writes, because the LSP verify step below is TS/JS-only.
+const RENAME_APPLY_ALLOWED_LANGS = new Set(['typescript', 'javascript']);
+
+/**
+ * Transitive dependent cone of a file via graph.reverse (direct importers).
+ * Returns a Set of relative paths that import `rootRel` directly or
+ * indirectly. Includes `rootRel` itself so callers can do a single
+ * membership check (the declaring file is always "in its own cone").
+ */
+function _collectDependentCone(graph, rootRel) {
+  const cone = new Set();
+  if (!rootRel || !graph?.reverse) return cone;
+  const stack = [rootRel];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cone.has(cur)) continue;
+    cone.add(cur);
+    const parents = graph.reverse.get(cur);
+    if (!parents) continue;
+    for (const p of parents) {
+      if (!cone.has(p)) stack.push(p);
+    }
+  }
+  return cone;
+}
+
+/**
+ * Best-effort LSP reference lookup for apply:true precondition.
+ *
+ * Returns `{ available: true, files: Set<rel> }` when the LSP module
+ * resolves to a reference listing; `{ available: false, reason }` when
+ * the module is missing or errors out. We never throw — the caller
+ * treats unavailable LSP as "skip the comparison", not "refuse".
+ */
+async function _lspReferenceFilesForRename(symbol, declAbs, cwd) {
+  try {
+    const { pathToFileURL, fileURLToPath } = await import('node:url');
+    // lsp.mjs sits next to this file in src/agent/orchestrator/tools/.
+    const selfPath = fileURLToPath(import.meta.url);
+    const lspPath = pathResolve(dirname(selfPath), 'lsp.mjs');
+    if (!existsSync(lspPath)) return { available: false, reason: 'lsp module not installed' };
+    const mod = await import(pathToFileURL(lspPath).href);
+    const exec = mod?.executeLspTool;
+    if (typeof exec !== 'function') return { available: false, reason: 'lsp module missing executeLspTool export' };
+    const text = await exec('lsp_references', { symbol, file: declAbs }, cwd);
+    const files = new Set();
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const m = /^(.*?):\d+:\d+$/.exec(line.trim());
+      if (!m) continue;
+      // LSP may return absolute or workspace-relative paths — normalise to
+      // the same `rel` form the graph uses so comparisons line up.
+      const raw = m[1];
+      const abs = isAbsolute(raw) ? raw : pathResolve(cwd, raw);
+      files.add(_graphRel(abs, cwd));
+    }
+    return { available: true, files };
+  } catch (err) {
+    return { available: false, reason: `lsp lookup failed: ${err?.message || err}` };
+  }
+}
+
 async function renameSymbolRefs(args, cwd) {
   const symbol = String(args?.symbol || '').trim();
   const next = String(args?.new_name || '').trim();
@@ -1778,6 +1841,7 @@ async function renameSymbolRefs(args, cwd) {
   let totalOccurrences = 0;
   let declarationHits = 0;
   let targetHasDeclaration = false;
+  const declarationRels = [];
   for (const rel of candidateFiles) {
     const node = graph.nodes.get(rel);
     if (!node || node.lang !== lang) continue;
@@ -1789,6 +1853,7 @@ async function renameSymbolRefs(args, cwd) {
     const hasDeclaration = _hasDeclarationLikeOccurrence(text, symbol, lang);
     if (hasDeclaration) {
       declarationHits++;
+      declarationRels.push(node.rel);
       if (node.abs === abs) targetHasDeclaration = true;
     }
     const updated = _renameTextOccurrences(text, symbol, next, lang);
@@ -1804,16 +1869,95 @@ async function renameSymbolRefs(args, cwd) {
     declarationHits,
     targetHasDeclaration,
   });
+  const previewHeader = `rename_symbol_refs preview: ${plan.length} file(s), ${totalOccurrences} matches, declarations=${declarationHits}, confidence=${confidence}\n${lines.join('\n')}`;
+  const buildPreview = async (patchBody) =>
+    executePatchTool('apply_patch', { patch: patchBody, base_path: cwd, dry_run: true }, cwd);
   const patch = plan.map((item) => _makeModifyPatch(item.rel, item.before, item.after)).join('\n');
   if (!apply) {
-    const preview = await executePatchTool('apply_patch', { patch, base_path: cwd, dry_run: true }, cwd);
-    return `rename_symbol_refs preview: ${plan.length} file(s), ${totalOccurrences} matches, declarations=${declarationHits}, confidence=${confidence}\n${lines.join('\n')}\n\n${preview}`;
+    const preview = await buildPreview(patch);
+    return `${previewHeader}\n\n${preview}`;
   }
-  if (confidence === 'low') {
-    return `Error: rename_symbol_refs apply refused — confidence=low (${totalOccurrences} matches across ${plan.length} files, declarations=${declarationHits}). Re-run in preview mode and narrow the target file or symbol name.`;
+
+  // --- apply:true strict preconditions (D15 option A) -----------------
+  // Dry-run output is kept unchanged above; apply must satisfy all four
+  // gates. On refusal we return the dry-run preview + explanation so the
+  // caller still sees the heuristic scope.
+  const refuse = async (reason, extraHint) => {
+    const preview = await buildPreview(patch);
+    const hint = extraHint || 'hint: use sg_rewrite with explicit pattern or rename via IDE/editor LSP.';
+    return `rename_symbol_refs apply: refused\nreason: ${reason}\n${hint}\n\n${previewHeader}\n\n${preview}`;
+  };
+
+  // Gate 1 — language. LSP verify is TS/JS-only, so apply is too.
+  if (!RENAME_APPLY_ALLOWED_LANGS.has(lang)) {
+    return refuse(`language "${lang}" not supported for apply (TS/JS only)`);
   }
-  const applied = await executePatchTool('apply_patch', { patch, base_path: cwd, reject_partial: true }, cwd);
-  return `rename_symbol_refs applied: ${plan.length} file(s), ${totalOccurrences} matches, declarations=${declarationHits}, confidence=${confidence}\n${lines.join('\n')}\n\n${applied}`;
+
+  // Gate 2 — exactly 1 declaration (0 = nothing to anchor on;
+  // ≥2 = overload / shadow / same-name collision).
+  if (declarationHits !== 1) {
+    const where = declarationRels.length ? ` in ${declarationRels.join(', ')}` : '';
+    return refuse(`${declarationHits} declarations found (expected 1); likely overloaded or shadowed symbol${where}`);
+  }
+  const declRel = declarationRels[0];
+  const declNode = graph.nodes.get(declRel);
+  const declAbs = declNode?.abs || abs;
+
+  // Gate 3 — every rename-target file must be in the declaring file's
+  // transitive dependent cone. The declaring file itself is always in
+  // the cone (see _collectDependentCone).
+  const cone = _collectDependentCone(graph, declRel);
+  const outsideCone = plan
+    .map((item) => item.rel)
+    .filter((rel) => !cone.has(rel));
+  if (outsideCone.length) {
+    return refuse(
+      `reference file(s) outside declaration's dependent cone: ${outsideCone.join(', ')}`,
+      'hint: these files do not transitively import the declaration — likely a same-name collision. Use sg_rewrite with an explicit pattern.',
+    );
+  }
+
+  // Gate 4 — LSP verify. If LSP is unavailable we skip (not refuse),
+  // because the other three gates already constrain the blast radius.
+  const heuristicFiles = new Set(plan.map((item) => item.rel));
+  const lspResult = await _lspReferenceFilesForRename(symbol, declAbs, cwd);
+  let lspNote = '';
+  if (lspResult.available) {
+    const lspFiles = lspResult.files;
+    const heuristicOnly = [...heuristicFiles].filter((f) => !lspFiles.has(f));
+    if (heuristicOnly.length) {
+      return refuse(
+        `heuristic-only references LSP does not confirm: ${heuristicOnly.join(', ')}`,
+        'hint: LSP is authoritative — the heuristic may be matching a same-name but unrelated symbol. Re-run preview and narrow the scope.',
+      );
+    }
+    const lspOnly = [...lspFiles].filter((f) => !heuristicFiles.has(f));
+    if (lspOnly.length) {
+      // LSP-authoritative union: rewrite the missed files too.
+      for (const rel of lspOnly) {
+        const node = graph.nodes.get(rel);
+        if (!node) continue;
+        if (node.lang !== lang) continue;
+        if (_isLikelyGeneratedPath(node.rel)) continue;
+        let text = '';
+        try { text = readFileSync(node.abs, 'utf8'); } catch { continue; }
+        const occurrences = _countSymbolOccurrences(text, symbol, lang);
+        if (occurrences === 0) continue;
+        const updated = _renameTextOccurrences(text, symbol, next, lang);
+        if (updated === text) continue;
+        totalOccurrences += occurrences;
+        plan.push({ rel: node.rel, before: text, after: updated, occurrences, hasDeclaration: false });
+        lines.push(`OK   ${node.rel} (${occurrences} matches, lsp-only)`);
+      }
+      lspNote = ` (lsp-union added ${lspOnly.length} file(s))`;
+    }
+  } else {
+    lspNote = ` (lsp verify skipped: ${lspResult.reason})`;
+  }
+
+  const finalPatch = plan.map((item) => _makeModifyPatch(item.rel, item.before, item.after)).join('\n');
+  const applied = await executePatchTool('apply_patch', { patch: finalPatch, base_path: cwd, reject_partial: true }, cwd);
+  return `rename_symbol_refs applied: ${plan.length} file(s), ${totalOccurrences} matches, declarations=${declarationHits}, confidence=${confidence}${lspNote}\n${lines.join('\n')}\n\n${applied}`;
 }
 
 export const CODE_GRAPH_TOOL_DEFS = [

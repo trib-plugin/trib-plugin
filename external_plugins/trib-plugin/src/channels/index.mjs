@@ -297,11 +297,14 @@ scheduler.setPendingCheck(() => {
 setActivityBusListener(() => scheduler.noteActivity());
 let webhookServer = null;
 if (!_isWorkerMode && config.webhook?.enabled) {
+  // Construct only — start is deferred to startOwnedRuntime() so standby
+  // / proxy instances do not run a second webhook listener or consume
+  // the shared events queue.
   webhookServer = new WebhookServer(config.webhook, config.channelsConfig ?? null);
-  webhookServer.start();
 }
+// Construct only — start deferred to startOwnedRuntime() for ownership gating.
 const eventPipeline = new EventPipeline(config.events, config.channelsConfig);
-if (!_isWorkerMode && (config.webhook?.enabled || config.events?.rules?.length)) eventPipeline.start();
+const _eventPipelineShouldStart = !_isWorkerMode && (config.webhook?.enabled || !!config.events?.rules?.length);
 let bridgeRuntimeConnected = false;
 let bridgeOwnershipRefreshRunning = false;
 let bridgeOwnershipTimer = null;
@@ -399,6 +402,10 @@ async function startOwnerHttpServer() {
           return;
         }
         case "/send": {
+          // Pre-send bump: blocks proactive chat from firing during a slow
+          // network / attachment / rate-limited send. Post-send bump below
+          // covers completion (double bump is harmless).
+          scheduler.noteActivity();
           const sendResult = await backend.sendMessage(
             body.chatId,
             body.text,
@@ -499,10 +506,15 @@ async function startOwnerHttpServer() {
             if (bridgeRef) toolArgs.ref = bridgeRef;
             if (bridgeRole) toolArgs.role = bridgeRole;
             if (bridgeContext) toolArgs.context = bridgeContext;
-            const notifyFn = text => {
+            const notifyFn = (text, extraMeta) => {
               sendNotifyToParent("notifications/claude/channel", {
                 content: text,
-                meta: { user: "trib-agent", user_id: "system", ts: new Date().toISOString() }
+                meta: {
+                  user: "trib-agent",
+                  user_id: "system",
+                  ts: new Date().toISOString(),
+                  ...(extraMeta || {})
+                }
               });
             };
             const result = await agentMod.handleToolCall("bridge", toolArgs, { notifyFn });
@@ -698,7 +710,7 @@ async function startOwnedRuntime(options = {}) {
   }
   scheduler.start();
   if (webhookServer) webhookServer.start();
-  eventPipeline.start();
+  if (_eventPipelineShouldStart) eventPipeline.start();
   let httpPort;
   try {
     httpPort = await startOwnerHttpServer();
@@ -879,6 +891,11 @@ eventQueue.setSendHandler(async (channelId, text) => {
   await backend.sendMessage(channelId, text);
 });
 eventQueue.setSessionStateGetter(() => scheduler.getSessionState());
+// Defensive ownership probe: the queue tick should only run in the active
+// owner process. Standby / proxy instances see bridgeRuntimeConnected=false
+// or proxyMode=true and will skip the tick even if an errant start() slipped
+// through.
+eventQueue.setOwnerGetter(() => bridgeRuntimeConnected && !proxyMode);
 function editDiscordMessage(channelId, messageId, label) {
   const token = config.discord?.token;
   if (!token) return;
@@ -1469,6 +1486,8 @@ function createHttpMcpServer() {
     try {
       switch (toolName) {
         case "reply": {
+          // Pre-send bump blocks proactive chat during the await.
+          scheduler.noteActivity();
           const sendResult = await backend.sendMessage(
             args.chat_id,
             args.text,
@@ -1641,6 +1660,8 @@ ${lines.join("\n")}` }] };
     } else {
       switch (name) {
         case "reply": {
+          // Pre-send bump blocks proactive chat during the await.
+          scheduler.noteActivity();
           const sendResult = await backend.sendMessage(
             args.chat_id,
             args.text,
@@ -2093,7 +2114,8 @@ async function stop() {
   }, 3e4);
   // Boot-time session greeting removed — proactive covers the same role
   // (conversational session kickoff) with real topic selection + source
-  // scoring instead of a canned template. See proactive-chat.md.
+  // scoring instead of a canned template. See
+  // rules/bridge/50-proactive-decision.md.
   const configPath = path.join(DATA_DIR, "config.json");
   let reloadDebounce = null;
   try {
