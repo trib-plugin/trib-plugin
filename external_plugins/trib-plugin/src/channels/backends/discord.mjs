@@ -180,13 +180,24 @@ class DiscordBackend {
       process.stderr.write(`trib-plugin discord: gateway connected as ${c.user.tag}
 `);
       try {
+        // Wipe all global application commands. Legacy "claude2bot" slash
+        // commands were registered by a prior bot version and never removed —
+        // `commands.set([])` globally clears them. Current code registers no
+        // global commands (all guild-scoped), so this is safe.
+        await c.application?.commands.set([]);
+        process.stderr.write(`trib-plugin discord: global application commands cleared
+`);
+
+        // Replace each guild's command set with just /stop. Unlike create(),
+        // set() overwrites — any lingering guild-scoped legacy commands are
+        // dropped on the next bot boot.
+        const desiredCommands = [
+          { name: "stop", description: "Stop the current Claude Code response" },
+        ];
         for (const [guildId] of c.guilds.cache) {
-          await c.application?.commands.create({
-            name: "stop",
-            description: "Stop the current Claude Code response"
-          }, guildId);
+          await c.application?.commands.set(desiredCommands, guildId);
         }
-        process.stderr.write(`trib-plugin discord: /stop command registered
+        process.stderr.write(`trib-plugin discord: /stop command registered (${c.guilds.cache.size} guild(s))
 `);
       } catch (err) {
         process.stderr.write(`trib-plugin discord: slash command registration failed: ${err}
