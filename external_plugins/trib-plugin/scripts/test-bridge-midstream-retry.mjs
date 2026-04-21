@@ -394,5 +394,85 @@ function mkFakeEntry(id = 'e') {
     } finally { cap.restore(); }
 }
 
+// ── 9. 1011 before response.created retries once then succeeds ─────
+// Regression for the v0.7.3 class of errors: Codex server closes the WS
+// with code=1011 reason="keepalive ping timeout" AFTER the 101 upgrade
+// but BEFORE any response.created frame. The generic pre-stream gate in
+// _classifyMidstreamError rejected these because sawResponseCreated was
+// still false; we now carve out 1011/1012 as the one exception so a
+// single mid-stream retry with forceFresh recovers the turn.
+{
+    const cap = captureStderr();
+    try {
+        const acquireCalls = [];
+        const fakeAcquire = async (opts) => {
+            acquireCalls.push({ forceFresh: !!opts.forceFresh });
+            return { entry: mkFakeEntry(`att-${acquireCalls.length}`), reused: false };
+        };
+
+        let streamCall = 0;
+        const fakeStream = async ({ state }) => {
+            streamCall++;
+            if (streamCall === 1) {
+                // First attempt: 101 upgrade already happened, but the server
+                // closed with 1011 keepalive-ping-timeout BEFORE emitting
+                // response.created. Leave sawResponseCreated=false on purpose.
+                state.wsCloseCode = 1011;
+                const err = mkWsClose(1011);
+                err.wsCloseReason = 'keepalive ping timeout';
+                throw err;
+            }
+            // Second attempt: clean completion.
+            state.sawResponseCreated = true;
+            state.sawCompleted = true;
+            return {
+                content: 'recovered body',
+                model: 'gpt-5-codex',
+                responseId: 'resp_xyz',
+                usage: { inputTokens: 7, outputTokens: 4 },
+            };
+        };
+
+        const result = await sendViaWebSocket({
+            auth: {}, body: { input: [] }, poolKey: 'k', cacheKey: 'k',
+            _acquireWithRetryFn: fakeAcquire,
+            _streamFn: fakeStream,
+            _sendFrameFn: () => {},
+        });
+
+        assert(result.content === 'recovered body',
+            `[9a] 1011-before-response.created retried once then succeeded (got ${JSON.stringify(result.content)})`);
+        assert(result.__midstreamRetries === 1,
+            `[9b] retry count = 1 (got ${result.__midstreamRetries})`);
+        assert(streamCall === 2, `[9c] stream invoked exactly twice (got ${streamCall})`);
+        assert(acquireCalls.length === 2 && acquireCalls[1].forceFresh === true,
+            `[9d] second acquire uses forceFresh=true (got ${JSON.stringify(acquireCalls)})`);
+
+        const progressLines = cap.lines.filter(l => l.includes('mid-stream recovered'));
+        assert(progressLines.length === 1 && /cause: ws_1011/.test(progressLines[0]),
+            `[9e] classifier = ws_1011 surfaced in the progress line (got ${JSON.stringify(progressLines)})`);
+
+        // Also verify the classifier unit directly for the pre-created window.
+        const cDirect = _classifyMidstreamError(mkWsClose(1011), {
+            attemptIndex: 0, sawResponseCreated: false, sawCompleted: false,
+        });
+        assert(cDirect === 'ws_1011',
+            `[9f] classifier permits ws_1011 pre-response.created (got ${cDirect})`);
+
+        const cDirect12 = _classifyMidstreamError(mkWsClose(1012), {
+            attemptIndex: 0, sawResponseCreated: false, sawCompleted: false,
+        });
+        assert(cDirect12 === 'ws_1012',
+            `[9g] classifier permits ws_1012 pre-response.created (got ${cDirect12})`);
+
+        // Non-1011/1012 pre-created still rejected (the general rule holds).
+        const cDirect1006 = _classifyMidstreamError(mkWsClose(1006), {
+            attemptIndex: 0, sawResponseCreated: false, sawCompleted: false,
+        });
+        assert(cDirect1006 === null,
+            `[9h] 1006 pre-response.created still rejected (handshake layer territory, got ${cDirect1006})`);
+    } finally { cap.restore(); }
+}
+
 console.log(`\nPASS ${passed}/${passed + failed}`);
 process.exit(failed > 0 ? 1 : 0);

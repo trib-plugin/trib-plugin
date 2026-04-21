@@ -313,6 +313,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
     midState.wsCloseCode = null;
     midState.responseFailedPayload = null;
     let idleTimer = null;
+    let keepaliveTimer = null;
     let abortHandler = null;
     let messageHandler = null;
     let closeHandler = null;
@@ -342,6 +343,7 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
         };
         const cleanup = () => {
             if (idleTimer) clearTimeout(idleTimer);
+            if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
             if (messageHandler) socket.off('message', messageHandler);
             if (closeHandler) socket.off('close', closeHandler);
             if (errorHandler) socket.off('error', errorHandler);
@@ -518,6 +520,20 @@ async function _streamResponse({ entry, externalSignal, onStreamDelta, onToolCal
         socket.on('close', closeHandler);
         socket.on('error', errorHandler);
         armPreStreamWatchdog();
+        // Periodic client-side WS ping while the stream is active. Codex's
+        // server closes with 1011 "keepalive ping timeout" when it thinks the
+        // peer is silent during long reasoning windows where no data frames
+        // flow. Sending a ping every 18s from our side keeps the socket warm.
+        // The interval is unref'd so it never holds the event loop open, and
+        // cleanup() clears it on every terminal path (completed / close /
+        // error / abort / mid-stream retry teardown).
+        keepaliveTimer = setInterval(() => {
+            try {
+                if (socket.readyState !== WebSocket.OPEN) return;
+                socket.ping();
+            } catch {}
+        }, 18_000);
+        try { keepaliveTimer.unref?.(); } catch {}
     });
 }
 
@@ -588,7 +604,9 @@ export function _classifyHandshakeError(err) {
  *   - externalSignal aborted by user (state.userAbort)
  *   - state.sawCompleted === true (already done)
  *   - state.sawResponseCreated === false (still pre-stream; handshake retry
- *     owns that window)
+ *     owns that window) — EXCEPT for WS close 1011/1012, which can fire
+ *     after the 101 upgrade but before the first response.created event
+ *     and are permitted a single mid-stream retry here
  *   - HTTP 401 / 403 / 429 surfaced on the error
  *   - state.attemptIndex >= 1 (we've already retried once)
  */
@@ -598,8 +616,16 @@ export function _classifyMidstreamError(err, state) {
     if ((state.attemptIndex | 0) >= 1) return null;
     // Already completed (shouldn't throw, but defensive).
     if (state.sawCompleted) return null;
-    // Pre-stream failures belong to the handshake retry layer, not this one.
-    if (!state.sawResponseCreated) return null;
+    // Pre-stream failures normally belong to the handshake retry layer. BUT
+    // WS close 1011 / 1012 can fire after the 101 upgrade but BEFORE the
+    // first response.created event when the server's keepalive times out or
+    // the service restarts. Neither the handshake retry layer (it only sees
+    // pre-upgrade failures) nor the existing mid-stream gate covers this
+    // window, so permit a single retry here for those two codes only.
+    if (!state.sawResponseCreated) {
+        const closeCode = Number(err?.wsCloseCode || state.wsCloseCode || 0);
+        if (closeCode !== 1011 && closeCode !== 1012) return null;
+    }
     // User/caller abort — never retry.
     if (state.userAbort) return null;
 
