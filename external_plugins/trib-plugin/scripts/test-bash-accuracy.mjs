@@ -18,8 +18,8 @@
  * dispatch the registry uses. Plain node assertions, no framework.
  */
 
-import { executeBuiltinTool } from '../src/agent/orchestrator/tools/builtin.mjs';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { executeBuiltinTool, preflightShellLargeFileProbe } from '../src/agent/orchestrator/tools/builtin.mjs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -174,6 +174,85 @@ const cwd = process.cwd();
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+}
+
+// ── 10. head/tail/wc remain allowed on large files ─────────────────────
+{
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-large-allow-'));
+    const big = join(root, 'big.txt');
+    try {
+        writeFileSync(big, ['first-line', 'second-line', 'third-line'].join('\n') + '\n' + 'x'.repeat(60 * 1024), 'utf8');
+        const headOut = await executeBuiltinTool('bash', {
+            command: `head -n 1 ${JSON.stringify(big)}`,
+        }, cwd);
+        assert(!headOut.startsWith('Error:'), `large-file head should stay allowed (got: ${JSON.stringify(headOut)})`);
+        assert(headOut.includes('first-line'), 'large-file head returns the requested line');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+}
+
+// ── 11. wrapper + pipeline probes still detect large-file cat/grep ─────
+{
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-large-wrap-'));
+    const big = join(root, 'big.txt');
+    try {
+        writeFileSync(big, 'x'.repeat(60 * 1024), 'utf8');
+        const sudoOut = await executeBuiltinTool('bash', {
+            command: `sudo cat ${JSON.stringify(big)}`,
+        }, cwd);
+        assert(sudoOut.startsWith('Error:') && sudoOut.includes('large-file shell probe blocked'),
+            `sudo wrapper still preflights large file (got: ${JSON.stringify(sudoOut)})`);
+
+        const pipeOut = await executeBuiltinTool('bash', {
+            command: `echo x | cat ${JSON.stringify(big)}`,
+        }, cwd);
+        assert(pipeOut.startsWith('Error:') && pipeOut.includes('large-file shell probe blocked'),
+            `pipeline stage still preflights large file (got: ${JSON.stringify(pipeOut)})`);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+}
+
+// ── 12. dynamic paths are blocked with explicit-path guidance ───────────
+{
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-large-dyn-'));
+    const big = join(root, 'big.txt');
+    try {
+        writeFileSync(big, 'x'.repeat(60 * 1024), 'utf8');
+        const out = await executeBuiltinTool('bash', {
+            command: `FILE=${JSON.stringify(big)} cat "$FILE"`,
+        }, cwd);
+        assert(out.startsWith('Error:'), `dynamic path: blocked with Error (got: ${JSON.stringify(out)})`);
+        assert(out.includes('explicit path'), 'dynamic path: explicit-path guidance included');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+}
+
+// ── 13. output redirect target is not mistaken for probe input ─────────
+{
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-large-redir-'));
+    const small = join(root, 'small.txt');
+    const outFile = join(root, 'existing-large.out');
+    try {
+        writeFileSync(small, 'hello\n', 'utf8');
+        writeFileSync(outFile, 'x'.repeat(60 * 1024), 'utf8');
+        const out = await executeBuiltinTool('bash', {
+            command: `head -n 1 ${JSON.stringify(small)} > ${JSON.stringify(outFile)}`,
+        }, cwd);
+        assert(!out.startsWith('Error:'), `output redirect target should not trigger preflight (got: ${JSON.stringify(out)})`);
+        const redirected = existsSync(outFile) ? readFileSync(outFile, 'utf8') : '';
+        assert(redirected.includes('hello'), 'output redirect command still runs and writes redirected content');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+}
+
+// ── 14. dynamic cd makes relative-path probe skip rather than false-block ──
+{
+    const res = preflightShellLargeFileProbe('cd "$HOME/project" && cat huge.log', cwd);
+    assert(res === null, `dynamic cd with relative target is skipped, not blocked (got: ${JSON.stringify(res)})`);
 }
 
 const total = passed + failed;

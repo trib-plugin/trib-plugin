@@ -153,6 +153,9 @@ function traceToolLoopAborted({ sessionId, iteration, info }) {
         tool_name: info.toolName,
         error_category: info.errorCategory,
         attempt_count: info.attemptCount,
+        family_key: info.familyKey || null,
+        threshold: info.threshold ?? null,
+        tools: Array.isArray(info.tools) ? info.tools : null,
         args_sample: info.argsSample,
         error_sample: info.errorSample,
     });

@@ -374,7 +374,17 @@ function buildExplorerPrompt(query, cwd) {
   const rootLine = cwd
     ? `Your authoritative search root is \`${cwd}\` — prefer this over your launch workspace. Scope all glob / grep / read / multi_read calls beneath this root unless the query itself names a different path.\n\n`
     : ''
-  return `${rootLine}Query: ${query}\n\nUse your read-only tools (glob / grep / read / multi_read) to find grounded answers. Return concise prose with concrete file paths.`
+  return `${rootLine}Query: ${query}
+
+Use your read-only tools (\`glob\` / \`grep\` / \`read\` / \`multi_read\`) to find grounded answers.
+
+Rules:
+- Work in 2 rounds max: locate -> confirm. If round 2 already grounds the answer, stop and synthesize.
+- When 2+ exact file paths are known, prefer one \`multi_read\` / array \`path\` call instead of serial reads.
+- Do NOT use shell search or \`bash_session\` for navigation.
+- If you catch yourself planning another \`grep -> read\` loop on the same topic, stop and answer from the evidence you already have.
+
+Return concise prose with concrete file paths.`
 }
 
 function buildRecallPrompt(query, _cwd) {

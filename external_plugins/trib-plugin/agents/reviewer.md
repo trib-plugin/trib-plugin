@@ -20,4 +20,9 @@ Use the internal retrieval tools for navigation:
 - `code_graph` — imports, references, callers (prefer over raw `grep` for symbol resolution)
 - `read` — known path
 
+These retrieval tools return in the SAME turn for delegated role sessions — don't shell out first.
+- `read`: compare multiple files by batching `path` as an array
+- `grep`: batch alternate literals/patterns in one call
+- `edit`: when suggesting concrete fixes, prefer `edits` array / `apply_patch` over serial replacements
+
 Avoid `bash_session` for search / navigation. Use `grep` array patterns when a literal string match is enough.

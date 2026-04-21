@@ -1378,15 +1378,40 @@ function _resolveShellPathToken(token, cwd) {
     if (/[`$*?[\]{}]/.test(value)) return null;
     return resolveAgainstCwd(normalizeInputPath(value), cwd);
 }
+function _isShellOutputRedirectToken(tok) {
+    const lower = String(tok || '').toLowerCase();
+    return lower === '>' || lower === '>>'
+        || /^(?:\d+>>?|\d+>|&>>?|&>)$/.test(lower);
+}
+function _isShellInputRedirectToken(tok) {
+    const lower = String(tok || '').toLowerCase();
+    return lower === '<' || lower === '<<'
+        || /^(?:\d*<<?)$/.test(lower);
+}
 function _extractShellPathArgs(tokens, cwd, { minIndex = 1 } = {}) {
     const out = [];
     for (let i = minIndex; i < tokens.length; i++) {
         const tok = tokens[i];
         if (!tok || tok === '--') continue;
-        if (tok === '>' || tok === '>>') {
+        if (/^\d+$/.test(tok) && (_isShellOutputRedirectToken(tokens[i + 1]) || _isShellInputRedirectToken(tokens[i + 1]))) {
+            continue;
+        }
+        if (_isShellOutputRedirectToken(tok)) {
+            i++;
+            continue;
+        }
+        if (_isShellInputRedirectToken(tok)) {
             const redirected = _resolveShellPathToken(tokens[i + 1], cwd);
             if (redirected) out.push(redirected);
             i++;
+            continue;
+        }
+        const outputInline = /^(?:\d+>>?|\d+>|&>>?|&>)(.+)?$/i.exec(tok);
+        if (outputInline) continue;
+        const inputInline = /^(?:\d*<<?)(.+)$/i.exec(tok);
+        if (inputInline) {
+            const redirected = _resolveShellPathToken(inputInline[1], cwd);
+            if (redirected) out.push(redirected);
             continue;
         }
         const resolved = _resolveShellPathToken(tok, cwd);
@@ -1396,6 +1421,93 @@ function _extractShellPathArgs(tokens, cwd, { minIndex = 1 } = {}) {
 }
 const LARGE_SHELL_FILE_PROBE_BYTES = 50 * 1024;
 const CODE_GRAPH_HINT_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
+const LARGE_FILE_READ_CMDS = new Set(['cat', 'less', 'more', 'view', 'bat']);
+
+function _isExplicitAbsoluteShellPath(value) {
+    return isAbsolute(value)
+        || /^[A-Za-z]:[\\/]/.test(value)
+        || value.startsWith('\\\\');
+}
+
+function _hasDynamicShellBits(value) {
+    return /[`$*?[\]{}]/.test(String(value || ''));
+}
+
+function _shellSplitPipelineSegments(segment) {
+    const parts = [];
+    let current = '';
+    let quote = null;
+    let escape = false;
+    for (let i = 0; i < segment.length; i++) {
+        const ch = segment[i];
+        if (escape) {
+            current += ch;
+            escape = false;
+            continue;
+        }
+        if (ch === '\\') {
+            current += ch;
+            escape = true;
+            continue;
+        }
+        if (quote) {
+            current += ch;
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '\'' || ch === '"') {
+            quote = ch;
+            current += ch;
+            continue;
+        }
+        if (ch === '|') {
+            if (current.trim()) parts.push(current.trim());
+            current = '';
+            if (segment[i + 1] === '&') i++;
+            continue;
+        }
+        current += ch;
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+}
+
+function _stripShellProbeWrappers(tokens) {
+    const out = _stripShellAssignments(tokens || []);
+    let idx = 0;
+    while (idx < out.length) {
+        const tok = String(out[idx] || '').toLowerCase();
+        if (!tok) { idx++; continue; }
+        if (tok === 'sudo' || tok === 'nohup' || tok === 'exec') {
+            out.splice(idx, 1);
+            continue;
+        }
+        if (tok === 'command') {
+            out.splice(idx, 1);
+            while (idx < out.length && String(out[idx] || '').startsWith('-')) out.splice(idx, 1);
+            continue;
+        }
+        if (tok === 'env') {
+            out.splice(idx, 1);
+            while (idx < out.length) {
+                const cur = String(out[idx] || '');
+                const lower = cur.toLowerCase();
+                if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cur) || lower === '-i') {
+                    out.splice(idx, 1);
+                    continue;
+                }
+                if (lower === '-u' && idx + 1 < out.length) {
+                    out.splice(idx, 2);
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
+        break;
+    }
+    return out;
+}
 
 function _shellOptionConsumesValue(cmd, tok) {
     const lower = String(tok || '').toLowerCase();
@@ -1412,16 +1524,105 @@ function _shellOptionConsumesValue(cmd, tok) {
     return false;
 }
 
-function _extractShellProbePaths(tokens, cwd) {
+function _isHeadTailBounded(tokens) {
+    for (let i = 1; i < tokens.length; i++) {
+        const tok = String(tokens[i] || '').toLowerCase();
+        if (tok === '-n' || tok === '-c') return true;
+        if (/^-(?:n|c)\d+$/.test(tok)) return true;
+        if (/^-\d+$/.test(tok)) return true;
+    }
+    return false;
+}
+
+function _isGrepBounded(tokens) {
+    for (let i = 1; i < tokens.length; i++) {
+        const tok = String(tokens[i] || '').toLowerCase();
+        if (tok === '-m' || tok === '--max-count') return true;
+        if (/^-m\d+$/.test(tok)) return true;
+        if (/^--max-count=/.test(tok)) return true;
+    }
+    return false;
+}
+
+function _isSedBounded(tokens) {
+    const hasN = tokens.some((tok) => String(tok || '').toLowerCase() === '-n');
+    if (!hasN) return false;
+    const scriptIdx = tokens.findIndex((tok, idx) => idx > 0 && !String(tok || '').startsWith('-'));
+    if (scriptIdx === -1) return false;
+    const script = String(tokens[scriptIdx] || '');
+    return /\b\d+(?:,\d+)?p\b/.test(script) || /^\d+(?:,\d+)?p$/.test(script);
+}
+
+function _isAwkBounded(tokens) {
+    const scriptIdx = tokens.findIndex((tok, idx) => idx > 0 && !String(tok || '').startsWith('-'));
+    if (scriptIdx === -1) return false;
+    const script = String(tokens[scriptIdx] || '');
+    return /\bNR\s*(?:==|<=|<|>=|>)\s*\d+/.test(script) || /NR\s*>=\s*\d+\s*&&\s*NR\s*<=\s*\d+/.test(script);
+}
+
+function _classifyShellProbeToken(token, cwd, { cwdKnown = true } = {}) {
+    const value = String(token || '').trim();
+    if (!value || value === '--') return { kind: 'skip' };
+    if (_hasDynamicShellBits(value)) return { kind: 'dynamic', raw: value };
+    const normalized = normalizeInputPath(value);
+    if (!cwdKnown && !_isExplicitAbsoluteShellPath(normalized)) {
+        return { kind: 'relative-unknown', raw: value };
+    }
+    return { kind: 'path', path: resolveAgainstCwd(normalized, cwd), raw: value };
+}
+
+function _extractShellProbeTargets(tokens, cwd, { minIndex = 1, cwdKnown = true } = {}) {
+    const out = { paths: [], dynamicToken: null, skippedRelativeUnknown: false };
+    for (let i = minIndex; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (!tok || tok === '--') continue;
+        if (/^\d+$/.test(tok) && (_isShellOutputRedirectToken(tokens[i + 1]) || _isShellInputRedirectToken(tokens[i + 1]))) {
+            continue;
+        }
+        if (_isShellOutputRedirectToken(tok)) {
+            i++;
+            continue;
+        }
+        if (_isShellInputRedirectToken(tok)) {
+            const info = _classifyShellProbeToken(tokens[i + 1], cwd, { cwdKnown });
+            if (info.kind === 'path') out.paths.push(info.path);
+            else if (info.kind === 'dynamic' && !out.dynamicToken) out.dynamicToken = info.raw;
+            else if (info.kind === 'relative-unknown') out.skippedRelativeUnknown = true;
+            i++;
+            continue;
+        }
+        const outputInline = /^(?:\d+>>?|\d+>|&>>?|&>)(.+)?$/i.exec(tok);
+        if (outputInline) continue;
+        const inputInline = /^(?:\d*<<?)(.+)$/i.exec(tok);
+        if (inputInline) {
+            const info = _classifyShellProbeToken(inputInline[1], cwd, { cwdKnown });
+            if (info.kind === 'path') out.paths.push(info.path);
+            else if (info.kind === 'dynamic' && !out.dynamicToken) out.dynamicToken = info.raw;
+            else if (info.kind === 'relative-unknown') out.skippedRelativeUnknown = true;
+            continue;
+        }
+        const info = _classifyShellProbeToken(tok, cwd, { cwdKnown });
+        if (info.kind === 'path') out.paths.push(info.path);
+        else if (info.kind === 'dynamic' && !out.dynamicToken) out.dynamicToken = info.raw;
+        else if (info.kind === 'relative-unknown') out.skippedRelativeUnknown = true;
+    }
+    return out;
+}
+
+function _extractShellProbePaths(tokens, cwd, { cwdKnown = true } = {}) {
     const cmd = String(tokens?.[0] || '').toLowerCase();
-    if (!cmd) return [];
-    if (['cat', 'head', 'tail', 'wc'].includes(cmd)) {
-        return _extractShellPathArgs(tokens, cwd, { minIndex: 1 });
+    if (!cmd) return { paths: [], dynamicToken: null, skippedRelativeUnknown: false, cmd: '' };
+    if (LARGE_FILE_READ_CMDS.has(cmd)) {
+        return { ..._extractShellProbeTargets(tokens, cwd, { minIndex: 1, cwdKnown }), cmd };
+    }
+    if (cmd === 'head' || cmd === 'tail') {
+        if (_isHeadTailBounded(tokens)) return { paths: [], dynamicToken: null, skippedRelativeUnknown: false, cmd };
+        return { ..._extractShellProbeTargets(tokens, cwd, { minIndex: 1, cwdKnown }), cmd };
     }
     if (cmd === 'grep' || cmd === 'rg') {
+        if (_isGrepBounded(tokens)) return { paths: [], dynamicToken: null, skippedRelativeUnknown: false, cmd };
         let i = 1;
         let sawPattern = false;
-        const out = [];
         while (i < tokens.length) {
             const tok = tokens[i];
             if (!tok) { i++; continue; }
@@ -1435,13 +1636,12 @@ function _extractShellProbePaths(tokens, cwd) {
                 i++;
                 continue;
             }
-            const resolved = _resolveShellPathToken(tok, cwd);
-            if (resolved) out.push(resolved);
-            i++;
+            break;
         }
-        return out;
+        return { ..._extractShellProbeTargets(tokens, cwd, { minIndex: i, cwdKnown }), cmd };
     }
-    if (cmd === 'sed' || cmd === 'awk') {
+    if (cmd === 'sed') {
+        if (_isSedBounded(tokens)) return { paths: [], dynamicToken: null, skippedRelativeUnknown: false, cmd };
         let i = 1;
         while (i < tokens.length) {
             const tok = tokens[i];
@@ -1456,9 +1656,25 @@ function _extractShellProbePaths(tokens, cwd) {
             i++;
             break;
         }
-        return _extractShellPathArgs(tokens, cwd, { minIndex: i });
+        return { ..._extractShellProbeTargets(tokens, cwd, { minIndex: i, cwdKnown }), cmd };
     }
-    return [];
+    if (cmd === 'awk') {
+        if (_isAwkBounded(tokens)) return { paths: [], dynamicToken: null, skippedRelativeUnknown: false, cmd };
+        let i = 1;
+        while (i < tokens.length) {
+            const tok = tokens[i];
+            if (!tok) { i++; continue; }
+            if (tok === '--') { i++; break; }
+            if (tok.startsWith('-')) {
+                i += _shellOptionConsumesValue(cmd, tok) ? 2 : 1;
+                continue;
+            }
+            i++;
+            break;
+        }
+        return { ..._extractShellProbeTargets(tokens, cwd, { minIndex: i, cwdKnown }), cmd };
+    }
+    return { paths: [], dynamicToken: null, skippedRelativeUnknown: false, cmd };
 }
 
 function _buildLargeShellFileProbeMessage(fullPath, sizeBytes, cmd, cwd) {
@@ -1481,35 +1697,57 @@ function _buildLargeShellFileProbeMessage(fullPath, sizeBytes, cmd, cwd) {
 export function preflightShellLargeFileProbe(command, cwd) {
     const text = String(command || '').trim();
     let localCwd = resolve(cwd || process.cwd());
+    let cwdKnown = true;
     if (!text) return null;
     for (const segment of _shellSplitSegments(text)) {
-        const parsed = _shellTokenize(segment);
-        if (!parsed) return null;
-        const tokens = _stripShellAssignments(parsed);
-        if (tokens.length === 0) continue;
-        const joined = tokens.join(' ');
-        if (/^cd\b/i.test(joined)) {
-            const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
-            const resolved = _resolveShellPathToken(target, localCwd);
-            if (resolved) localCwd = resolved;
-            continue;
-        }
-        const cmd = String(tokens[0] || '').toLowerCase();
-        const paths = _extractShellProbePaths(tokens, localCwd);
-        for (const candidate of paths) {
-            try {
-                const st = statSync(candidate);
-                if (!st.isFile()) continue;
-                if (st.size < LARGE_SHELL_FILE_PROBE_BYTES) continue;
+        for (const stage of _shellSplitPipelineSegments(segment)) {
+            const parsed = _shellTokenize(stage);
+            if (!parsed) return null;
+            const tokens = _stripShellProbeWrappers(parsed);
+            if (tokens.length === 0) continue;
+            const joined = tokens.join(' ');
+            if (/^cd\b/i.test(joined)) {
+                const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
+                if (_hasDynamicShellBits(target)) {
+                    cwdKnown = false;
+                } else {
+                    const resolved = _resolveShellPathToken(target, localCwd);
+                    if (resolved) {
+                        localCwd = resolved;
+                        cwdKnown = true;
+                    } else {
+                        cwdKnown = false;
+                    }
+                }
+                continue;
+            }
+            const probe = _extractShellProbePaths(tokens, localCwd, { cwdKnown });
+            if (probe.dynamicToken) {
                 return {
-                    cmd,
-                    path: candidate,
-                    sizeBytes: st.size,
-                    message: _buildLargeShellFileProbeMessage(candidate, st.size, cmd, localCwd),
+                    cmd: probe.cmd,
+                    path: null,
+                    sizeBytes: null,
+                    message: `shell probe requires an explicit path: \`${probe.cmd}\` is using dynamic path token \`${probe.dynamicToken}\`. Expand variables/globs first and retry with an explicit file path.`,
                 };
-            } catch {
-                // Ignore nonexistent / inaccessible candidates — shell can
-                // surface those normally if the command proceeds.
+            }
+            if (probe.skippedRelativeUnknown && probe.paths.length === 0) {
+                continue;
+            }
+            for (const candidate of probe.paths) {
+                try {
+                    const st = statSync(candidate);
+                    if (!st.isFile()) continue;
+                    if (st.size < LARGE_SHELL_FILE_PROBE_BYTES) continue;
+                    return {
+                        cmd: probe.cmd,
+                        path: candidate,
+                        sizeBytes: st.size,
+                        message: _buildLargeShellFileProbeMessage(candidate, st.size, probe.cmd, localCwd),
+                    };
+                } catch {
+                    // Ignore nonexistent / inaccessible candidates — shell can
+                    // surface those normally if the command proceeds.
+                }
             }
         }
     }
@@ -1901,16 +2139,16 @@ export async function executeBuiltinTool(name, args, cwd) {
             const command = args.command;
             if (!command)
                 return 'Error: command is required';
-            const largeProbe = preflightShellLargeFileProbe(command, workDir);
-            if (largeProbe) {
-                return `Error: ${largeProbe.message}`;
-            }
-            const shellEffects = analyzeShellCommandEffects(command, workDir);
             for (const pattern of BLOCKED_PATTERNS) {
                 if (pattern.test(command)) {
                     return `Error: blocked command pattern — "${command}" matches safety rule`;
                 }
             }
+            const largeProbe = preflightShellLargeFileProbe(command, workDir);
+            if (largeProbe) {
+                return `Error: ${largeProbe.message}`;
+            }
+            const shellEffects = analyzeShellCommandEffects(command, workDir);
             const timeout = args.timeout || 30000;
             const mergeStderr = args.merge_stderr === true;
             try {

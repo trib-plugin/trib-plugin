@@ -22,15 +22,16 @@ Every serial repeat of the same tool wastes a full turn. Use array / multi form 
 
 ## Routing
 
+**Information-retrieval tools are top priority. Always prefer `recall` / `search` / `explore` (and `read` / `glob` / `list` / `grep` for known-path / pattern work) over `bash` for any lookup. Using `bash` with `ls` / `cat` / `find` / `head` / `tail` / `grep` for file or code lookup is a rule violation — `bash` is shell-only work (git, build, test, run).**
+
+- **Order when unsure: recall → search → explore → grep+read. This order is mandatory, not a suggestion. Skip a step only when you already know which tool the query belongs to.**
+- Past context → `recall`. External web / URL / GitHub → `search`. Local filesystem → `explore`.
 - Known path → `read` directly. Unknown location → `grep` / `glob` first, then targeted `read`.
 - Code structure (imports, dependents, symbols, references, callers): `code_graph` before raw `grep`.
 - Multi-file or already-clear edits: `apply_patch` before repeated `read` → `edit`.
 - Shell work across turns: `bash_session` reuses shell state — don't replay setup in repeated `bash` calls.
 - Large tool outputs may be saved to a path with a preview; only `read` that path if the preview is insufficient.
-
-- Past context → `recall`. External web / URL / GitHub → `search`.
-- Local filesystem → `explore` — one natural-language query fans glob + grep out in parallel; ideal for multi-angle questions ("how does X work, and where is it configured?") where several patterns need to land in one shot. Known path → `read` directly.
-- Order when unsure: recall → search → explore → grep+read.
+- `explore` — one natural-language query fans glob + grep out in parallel; ideal for multi-angle questions ("how does X work, and where is it configured?") where several patterns need to land in one shot.
 
 ## Scope boundaries
 

@@ -16,7 +16,7 @@
  *   8. Unknown session_id minted rather than erroring (stable resume).
  */
 
-import { executeBashSessionTool } from '../src/agent/orchestrator/tools/bash-session.mjs';
+import { executeBashSessionTool, __getBashSessionStateForTesting } from '../src/agent/orchestrator/tools/bash-session.mjs';
 import {
   executeBuiltinTool,
   invalidateBuiltinResultCache,
@@ -76,6 +76,18 @@ try {
     assert(extractId(second) === id, 'second call reuses same session id');
     assert(/\/tmp/.test(second), `cwd persisted across calls (got: ${JSON.stringify(second)})`);
     assert(/\bbar\b/.test(second), `exported $FOO persisted across calls (got: ${JSON.stringify(second)})`);
+  }
+
+  // ── 2b. Actual shell cwd is re-synced even after a failing command ─────
+  {
+    const first = await run({ command: 'cd /tmp && false' });
+    const id = extractId(first);
+    track(id);
+    assert(!!id, 'cwd-sync session minted');
+    const state = __getBashSessionStateForTesting(id);
+    assert(state && /\/tmp/.test(String(state.cwd || '')), `cwd sync updates stored cwd after failing command (got: ${JSON.stringify(state)})`);
+    const second = await run({ session_id: id, command: 'pwd' });
+    assert(/\/tmp/.test(second), `pwd reflects synced cwd after failing command (got: ${JSON.stringify(second)})`);
   }
 
   // ── 3. close:true terminates; reusing id mints fresh shell ───────────
@@ -180,6 +192,23 @@ try {
       assert(r.startsWith('Error:'), `large-file bash_session probe blocked (got: ${JSON.stringify(r.slice(0, 120))})`);
       assert(!extractId(r), 'large-file probe does not mint a bash_session');
       assert(r.includes('large-file shell probe blocked'), 'large-file probe explains why it was blocked');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // ── 8c. Dynamic cd sync makes later relative probes use real shell cwd ──
+  {
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-session-dyncd-'));
+    const big = join(root, 'huge.log');
+    try {
+      writeFileSync(big, 'x'.repeat(60 * 1024), 'utf8');
+      const first = await run({ command: `ROOT=${JSON.stringify(root)}; cd "$ROOT" && echo primed` });
+      const id = extractId(first);
+      track(id);
+      const second = await run({ session_id: id, command: 'cat huge.log' });
+      assert(second.startsWith('Error:'), `dynamic cd later blocks relative large-file probe (got: ${JSON.stringify(second)})`);
+      assert(second.includes('large-file shell probe blocked'), 'dynamic cd later uses actual shell cwd for probe');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

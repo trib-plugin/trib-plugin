@@ -339,9 +339,10 @@ const EDIT_ERR = 'Error: old_string did not match';
 
 // 23. Family warn text phrasing
 {
-    const text = buildToolFamilyWarn({ familyKey: 'structure_probe', count: 10, tools: ['read', 'grep'] });
+    const text = buildToolFamilyWarn({ familyKey: 'structure_probe', count: 10, tools: ['read', 'grep'], abortThreshold: 16 });
     assert(text.includes('10 consecutive'), '23. family warn mentions streak count');
     assert(text.includes('`code_graph`'), '23. structure family warn names code_graph');
+    assert(text.includes('16 consecutive structure probe'), '23. family warn mentions hard stop threshold');
     const editText = buildToolFamilyWarn({ familyKey: 'edit_roundtrip', count: 5, tools: ['edit', 'multi_edit'] });
     assert(editText.includes('`apply_patch`'), '23. edit family warn names apply_patch');
     assert(editText.includes('Advisory only'), '23. family warn marks itself advisory');
@@ -386,6 +387,7 @@ const EDIT_ERR = 'Error: old_string did not match';
         abortThreshold: 4,
         sameToolThresholds: { read: 2 },
         sameToolAbortThresholds: { read: 4 },
+        toolFamilyAbortThresholds: { structure_probe: 6 },
         totalToolWarnThresholds: [5],
         totalToolAbortThresholds: [7],
     });
@@ -414,6 +416,19 @@ const EDIT_ERR = 'Error: old_string did not match';
         let budgetAbort = null;
         for (let i = 6; i <= 7; i++) budgetAbort = feed(g3, 'write', { path: `/tmp/${i}` }, 'ok', i);
         assert(budgetAbort.action === 'abort', '27. custom total-tool abort threshold applies');
+
+        const g4 = createGuard();
+        let familyAbort = null;
+        const seq = [
+            ['read', { path: '/a' }],
+            ['grep', { pattern: 'X' }],
+            ['glob', { pattern: '*.js' }],
+            ['list', { path: '/src' }],
+            ['read', { path: '/b' }],
+            ['grep', { pattern: 'Y' }],
+        ];
+        for (let i = 0; i < seq.length; i++) familyAbort = feed(g4, seq[i][0], seq[i][1], 'ok', i + 1);
+        assert(familyAbort.action === 'abort', '27. custom family abort threshold applies');
     } finally {
         resetGuardConfigForTesting();
     }
@@ -437,6 +452,34 @@ const EDIT_ERR = 'Error: old_string did not match';
     assert(last.action === 'abort', '29. 60th tool call hard-aborts on total budget');
     assert(String(last.info?.errorCategory || '').includes('tool-budget@60'), '29. budget abort category carries threshold');
     assert(last.info?.attemptCount === 60, '29. budget abort reports total call count');
+}
+
+// 30. Default structure/search family loops hard-abort before runaway growth
+{
+    const g = createGuard();
+    let last = null;
+    const seq = [
+        ['read', { path: '/a' }],
+        ['grep', { pattern: 'X' }],
+        ['glob', { pattern: '*.js' }],
+        ['list', { path: '/src' }],
+        ['read', { path: '/b' }],
+        ['grep', { pattern: 'Y' }],
+        ['glob', { pattern: '*.ts' }],
+        ['list', { path: '/pkg' }],
+        ['read', { path: '/c' }],
+        ['grep', { pattern: 'Z' }],
+        ['glob', { pattern: '*.mjs' }],
+        ['list', { path: '/lib' }],
+        ['read', { path: '/d' }],
+        ['grep', { pattern: 'W' }],
+        ['glob', { pattern: '*.json' }],
+        ['list', { path: '/etc' }],
+    ];
+    for (let i = 0; i < seq.length; i++) last = feed(g, seq[i][0], seq[i][1], 'ok', i + 1);
+    assert(last.action === 'abort', '30. 16th structure_probe call hard-aborts');
+    assert(String(last.info?.errorCategory || '').includes('tool-family@16:structure_probe'), '30. family abort category carries family key');
+    assert(Array.isArray(last.info?.tools) && last.info.tools.length >= 2, '30. family abort includes distinct tool set');
 }
 
 console.log(`test-tool-loop-guard: ${passed} pass / ${failed} fail`);

@@ -36,6 +36,10 @@ const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
 const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(
     Object.fromEntries(Object.entries(DEFAULT_SAME_TOOL_THRESHOLDS).map(([name, value]) => [name, value * 2])),
 );
+const DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS = Object.freeze({
+    structure_probe: 16,
+    search_fanout: 16,
+});
 
 const DEFAULT_CONFIG = Object.freeze({
     detectThreshold: 4,
@@ -62,6 +66,7 @@ const DEFAULT_CONFIG = Object.freeze({
             tools: Object.freeze(['search', 'recall', 'explore', 'web_search', 'memory_search']),
         }),
     ]),
+    toolFamilyAbortThresholds: DEFAULT_TOOL_FAMILY_ABORT_THRESHOLDS,
     totalToolWarnThresholds: Object.freeze([24, 48]),
     totalToolAbortThresholds: Object.freeze([60]),
 });
@@ -98,6 +103,10 @@ function buildRuntimeConfig(overrides = {}) {
                 minDistinctTools: rule.minDistinctTools,
                 tools: new Set(rule.tools),
             })),
+        toolFamilyAbortThresholds: new Map(Object.entries({
+            ...DEFAULT_CONFIG.toolFamilyAbortThresholds,
+            ...(overrides.toolFamilyAbortThresholds || {}),
+        })),
         totalToolWarnThresholds: Array.isArray(overrides.totalToolWarnThresholds)
             ? [...overrides.totalToolWarnThresholds]
             : [...DEFAULT_CONFIG.totalToolWarnThresholds],
@@ -290,6 +299,7 @@ export function buildToolFamilyWarn(info) {
     const family = String(info?.familyKey || '');
     const count = Number(info?.count || 0);
     const tools = Array.isArray(info?.tools) ? info.tools : [];
+    const abortThreshold = Number.isFinite(info?.abortThreshold) ? info.abortThreshold : null;
     const toolList = tools.length ? tools.map((t) => `\`${t}\``).join(', ') : '`tool`';
     const lines = [
         `⚠ Mixed-tool soft-warn: this session has made ${count} consecutive low-level ${family.replace(/_/g, ' ')} calls across ${toolList}.`,
@@ -306,6 +316,9 @@ export function buildToolFamilyWarn(info) {
         lines.push(`- If the answer is already repo-local, switch from external / memory search back to local tools.`);
     } else {
         lines.push(`- A higher-level tool or a synthesis step will likely yield more than another low-level probe.`);
+    }
+    if (abortThreshold) {
+        lines.push(`- Hard stop: at ${abortThreshold} consecutive ${family.replace(/_/g, ' ')} calls this session will abort.`);
     }
     lines.push(`(Advisory only — the call is not blocked.)`);
     return lines.join('\n');
@@ -425,9 +438,33 @@ export function checkToolCall(guard, event) {
             distinctTools: new Set(),
             warned: false,
         };
+        const familyAbortThreshold = cfg.toolFamilyAbortThresholds.get(rule.key) ?? null;
         if (rule.tools.has(toolKey)) {
             prev.count += 1;
             prev.distinctTools.add(toolKey);
+            if (familyAbortThreshold !== null
+                && prev.count >= familyAbortThreshold
+                && prev.distinctTools.size >= rule.minDistinctTools) {
+                const argsSample = (() => {
+                    try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
+                })();
+                const errorSample = String(result).slice(0, 300);
+                return {
+                    action: 'abort',
+                    info: {
+                        signature: `family:${rule.key}`,
+                        toolName,
+                        errorCategory: `tool-family@${familyAbortThreshold}:${rule.key}`,
+                        attemptCount: prev.count,
+                        argsSample,
+                        errorSample,
+                        iteration,
+                        familyKey: rule.key,
+                        threshold: familyAbortThreshold,
+                        tools: [...prev.distinctTools].sort(),
+                    },
+                };
+            }
             if (!prev.warned
                 && prev.count >= rule.threshold
                 && prev.distinctTools.size >= rule.minDistinctTools) {
@@ -440,6 +477,7 @@ export function checkToolCall(guard, event) {
                         familyKey: rule.key,
                         count: prev.count,
                         tools: [...prev.distinctTools].sort(),
+                        abortThreshold: familyAbortThreshold,
                     }),
                 };
             }

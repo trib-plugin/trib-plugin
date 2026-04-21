@@ -40,6 +40,9 @@ try {
         sameToolAbortThresholds: {
           read: 4,
         },
+        toolFamilyAbortThresholds: {
+          structure_probe: 6,
+        },
         totalToolWarnThresholds: [5],
         totalToolAbortThresholds: [7],
       },
@@ -78,6 +81,21 @@ try {
     assert(last.action === 'budget_warn', 'config: totalToolWarnThresholds from config apply');
     for (let i = 6; i <= 7; i++) last = feed(g, 'write', { path: `/tmp/${i}` }, 'ok', i);
     assert(last.action === 'abort', 'config: totalToolAbortThresholds from config apply');
+  }
+
+  {
+    const g = createGuard();
+    let last = null;
+    const seq = [
+      ['read', { path: '/a' }],
+      ['grep', { pattern: 'X' }],
+      ['glob', { pattern: '*.js' }],
+      ['list', { path: '/src' }],
+      ['read', { path: '/b' }],
+      ['grep', { pattern: 'Y' }],
+    ];
+    for (let i = 0; i < seq.length; i++) last = feed(g, seq[i][0], seq[i][1], 'ok', i + 1);
+    assert(last.action === 'abort', 'config: toolFamilyAbortThresholds from config apply');
   }
 } finally {
   resetGuardConfigForTesting();

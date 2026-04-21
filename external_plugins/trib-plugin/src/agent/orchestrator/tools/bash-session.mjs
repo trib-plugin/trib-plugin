@@ -363,9 +363,25 @@ function _runCommand(entry, command, timeoutMs) {
     });
 }
 
+async function _syncSessionCwd(entry, timeoutMs) {
+    try {
+        const result = await _runCommand(entry, 'pwd', Math.min(timeoutMs, 2000));
+        if (result?.exit_code !== 0) return;
+        const stdout = stripAnsi(result.stdout || '').trim();
+        if (!stdout) return;
+        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        if (lines.length > 0) entry.cwd = lines[lines.length - 1];
+    } catch {
+        // Best-effort only — a failed cwd sync should never fail the user's command.
+    }
+}
+
 async function bash_session(args) {
     const command = typeof args?.command === 'string' ? args.command : '';
     if (!command) return 'Error: command is required';
+    if (isBlocked(command)) {
+        return `Error: blocked command pattern — "${command}" matches safety rule`;
+    }
     const baseCwd = (() => {
         const explicitId = typeof args?.session_id === 'string' ? args.session_id : '';
         if (explicitId) {
@@ -376,9 +392,6 @@ async function bash_session(args) {
     })();
     const largeProbe = preflightShellLargeFileProbe(command, baseCwd);
     if (largeProbe) return `Error: ${largeProbe.message}`;
-    if (isBlocked(command)) {
-        return `Error: blocked command pattern — "${command}" matches safety rule`;
-    }
     const rawTimeout = typeof args?.timeout === 'number' ? args.timeout : DEFAULT_TIMEOUT_MS;
     // Accept seconds OR milliseconds for ergonomics: values ≤ 600 are
     // treated as seconds (matches the spec's "max 600s"); larger values
@@ -402,6 +415,9 @@ async function bash_session(args) {
     }
     if (result.exit_code === 0 && shellEffects.finalCwd) {
         entry.cwd = shellEffects.finalCwd;
+    }
+    if (!close && !result.timed_out) {
+        await _syncSessionCwd(entry, effectiveTimeout);
     }
     if (shellEffects.mutationMode === 'paths') {
         invalidateBuiltinResultCache(shellEffects.paths);

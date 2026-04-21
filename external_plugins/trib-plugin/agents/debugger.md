@@ -15,4 +15,9 @@ Root-cause tracing:
 - `code_graph` — imports, references, callers (prefer over raw `grep` for symbol-level tracing)
 - `read` — specific file:line once the origin is located
 
+These retrieval tools return in the SAME turn for delegated role sessions — use them before shell probing.
+- `read`: batch suspect files with `path` as an array
+- `grep`: batch alternate signatures/patterns in one call
+- `edit`: if you patch while debugging, prefer `edits` array / `apply_patch`
+
 Avoid `bash_session` for search / navigation. Use single-shot `bash` only for running the repro command or inspecting runtime logs.
