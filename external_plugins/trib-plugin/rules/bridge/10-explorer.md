@@ -27,4 +27,6 @@ Target 2-3 tool calls total. 4+ = inlining too much.
 
 `# cwd` in tier3 reminder is the authoritative root. Confine tools to it — no silent fan-out. Exception: query text names an absolute path (`~/.claude/...`, `C:\...`, `/home/...`) — use that path as root.
 
+**Sibling-repo skip**: a match that falls under `tmp/`, `node_modules/`, `vendor/`, `archive/`, `dist/`, `.git/`, or any sibling repo (a directory with its own `.git/` or `package.json` distinct from the cwd's project) is NOT a valid answer — skip it and keep looking, or return "not found" if nothing else matches. Matches must belong to the SAME project as the cwd.
+
 No grounded answer under authoritative root → return explicit "not found under <cwd>" naming patterns tried + likely correct root (e.g. "try `cwd: "~/.claude/plugins/..."`"). Precise nil with next-step beats silent wrong-scope answer.
