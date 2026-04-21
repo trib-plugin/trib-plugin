@@ -17,6 +17,15 @@
  */
 
 import { executeBashSessionTool } from '../src/agent/orchestrator/tools/bash-session.mjs';
+import {
+  executeBuiltinTool,
+  invalidateBuiltinResultCache,
+  resetBuiltinCacheStatsForTesting,
+  getBuiltinCacheStatsForTesting,
+} from '../src/agent/orchestrator/tools/builtin.mjs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 let passed = 0;
 let failed = 0;
@@ -159,6 +168,56 @@ try {
     track(extractId(r));
     assert(extractId(r) === bogusId, `unknown session_id is minted verbatim (got: ${JSON.stringify(r)})`);
     assert(/\bresumed\b/.test(r), 'minted-from-unknown session executes the command');
+  }
+
+  // ── 9. Read-only bash_session keeps builtin caches warm ──────────────
+  {
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-cache-ro-'));
+    try {
+      mkdirSync(join(root, 'one'), { recursive: true });
+      writeFileSync(join(root, 'one', 'a.txt'), 'hello\n', 'utf8');
+      invalidateBuiltinResultCache();
+      await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      resetBuiltinCacheStatsForTesting();
+
+      const res = await run({ command: `cd ${JSON.stringify(root)} && pwd && ls` });
+      track(extractId(res));
+      const afterShell = getBuiltinCacheStatsForTesting();
+      const listAgain = await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      const afterList = getBuiltinCacheStatsForTesting();
+
+      assert(afterShell.globalInvalidations === 0, `read-only bash_session skips global cache invalidation (got: ${JSON.stringify(afterShell)})`);
+      assert(afterList.hits >= 1, `builtin cache still hits after read-only bash_session (got: ${JSON.stringify(afterList)})`);
+      assert(listAgain.includes('a.txt'), `cached list remains usable after read-only bash_session (got: ${JSON.stringify(listAgain)})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // ── 10. Mutating bash_session still invalidates builtin caches ───────
+  {
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-cache-rw-'));
+    try {
+      mkdirSync(join(root, 'one'), { recursive: true });
+      writeFileSync(join(root, 'one', 'a.txt'), 'hello\n', 'utf8');
+      invalidateBuiltinResultCache();
+      await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      resetBuiltinCacheStatsForTesting();
+
+      const res = await run({ command: `touch ${JSON.stringify(join(root, 'one', 'b.txt'))}` });
+      track(extractId(res));
+      const afterShell = getBuiltinCacheStatsForTesting();
+      const listAgain = await executeBuiltinTool('list', { path: join(root, 'one') }, root);
+      const afterList = getBuiltinCacheStatsForTesting();
+
+      assert(afterShell.globalInvalidations >= 1, `mutating bash_session still invalidates caches (got: ${JSON.stringify(afterShell)})`);
+      assert(afterList.misses >= 1, `list cache rebuilds after mutating bash_session (got: ${JSON.stringify(afterList)})`);
+      assert(listAgain.includes('b.txt'), `rebuilt list sees shell-created file (got: ${JSON.stringify(listAgain)})`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 } finally {
   await closeAll();

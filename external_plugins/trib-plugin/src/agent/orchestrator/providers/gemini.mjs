@@ -4,9 +4,9 @@ import { loadConfig } from '../config.mjs';
 import { estimateGeminiTokens } from '../bridge-trace.mjs';
 
 const MODELS = [
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', contextWindow: 1000000 },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'gemini', contextWindow: 1000000 },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini', contextWindow: 1000000 },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', provider: 'gemini', contextWindow: 1000000 },
+    { id: 'gemini-3-pro', name: 'Gemini 3 Pro', provider: 'gemini', contextWindow: 1000000 },
+    { id: 'gemini-3-flash', name: 'Gemini 3 Flash', provider: 'gemini', contextWindow: 1000000 },
 ];
 
 /**
@@ -245,7 +245,7 @@ export class GeminiProvider {
             throw reason instanceof Error ? reason : new Error('Gemini request aborted by session close');
         }
 
-        const useModel = model || 'gemini-2.5-flash';
+        const useModel = model || 'gemini-3-flash';
         const systemInstruction = messages
             .filter(m => m.role === 'system')
             .map(m => m.content)
@@ -359,7 +359,7 @@ export class GeminiProvider {
 
     async isAvailable() {
         try {
-            const model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash' });
             await model.generateContent('hi');
             return true;
         }

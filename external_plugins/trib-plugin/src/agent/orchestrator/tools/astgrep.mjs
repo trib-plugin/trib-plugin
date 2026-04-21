@@ -417,9 +417,9 @@ async function sgRewrite(args, cwd) {
   return capOutput(body);
 }
 
-// Tool definitions consumed by build-tools-manifest. Shape mirrors
-// lsp.mjs — title / annotations / description / inputSchema — so server.mjs
-// can route dispatches without extra wiring.
+// Tool definitions consumed by build-tools-manifest. Shape mirrors the other
+// orchestrator tool modules — title / annotations / description / inputSchema —
+// so server.mjs can route dispatches without extra wiring.
 export const ASTGREP_TOOL_DEFS = [
   {
     name: 'sg_search',

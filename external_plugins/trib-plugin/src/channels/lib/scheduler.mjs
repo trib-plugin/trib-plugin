@@ -1,9 +1,8 @@
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, unlinkSync, appendFileSync } from "fs";
 import { join, isAbsolute } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { DATA_DIR } from "./config.mjs";
-import { appendFileSync } from "fs";
 import { runScript as execScript, ensureNopluginDir } from "./executor.mjs";
 import { makeBridgeLlm } from '../../agent/orchestrator/smart-bridge/bridge-llm.mjs';
 
@@ -713,8 +712,9 @@ ${scriptResult}
 Prefer the topic "${preferredTopic}" if it is available and suitable. Only choose another source when that topic is unavailable or clearly not a good fit right now.
 ` : "";
     // Task-level variables substituted at dispatch time.
-    // Full template lives in agents/proactive-decision.md (identity block);
-    // the task block below carries only the runtime context snapshot.
+    // Full template lives in rules/bridge/50-proactive-decision.md (auto-
+    // injected into BP2 roleCatalog by loadHiddenRoleSnippets); the task
+    // block below carries only the runtime context snapshot.
     const task = `## Current Time
 ${timeInfo}
 

@@ -16,7 +16,7 @@ Never `read` a file end-to-end unless < ~200 lines. Larger files: `grep` target 
 
 ## "How does X work" queries
 
-Open-ended "how/어떻게" questions tempt chain-reading many files. Pattern:
+Open-ended "how" questions tempt chain-reading many files. Pattern:
 1. `grep` keyword (parallel patterns if any) → locate entry point.
 2. `read` entry point with `offset`/`limit` on the hit — not whole file.
 3. Synthesize. If unanswered, one follow-up `grep`+`read` is the ceiling.

@@ -19,18 +19,37 @@ import { createHash } from 'crypto';
 const DETECT_THRESHOLD = 4;
 const ABORT_THRESHOLD = 5;
 
-// Same-tool repetition (success or failure). The error-loop signature
-// above only catches identical-error reruns; an agent that calls the same
-// investigative tool with different args many times in a row never trips
-// it. This second track watches a small whitelist of "search-like" tools
-// (cheap to call, easy to over-use) and emits a soft-warn once when the
-// run-up crosses the threshold. Soft only — never aborts — to avoid
-// becoming the next thing that hangs deep work mid-stride.
-const SAME_TOOL_WARN_THRESHOLD = 12;
-const SAME_TOOL_WHITELIST = new Set([
-    'search', 'recall', 'explore',
-    'web_search', 'memory_search',
+// Same-tool repetition (success or failure). The error-loop signature above
+// only catches identical-error reruns; an agent that calls the same tool with
+// different args many times in a row never trips it. This second track watches
+// the investigative tools that dominate real iter blow-ups and emits a
+// soft-warn once when the run-up crosses the per-tool threshold. Soft only —
+// never aborts — to avoid becoming the next thing that hangs deep work
+// mid-stride.
+const SAME_TOOL_WARN_THRESHOLDS = new Map([
+    // Search-like tools: expensive mostly in iterations, not local side
+    // effects. Keep the threshold relatively high.
+    ['search', 12],
+    ['recall', 12],
+    ['explore', 12],
+    ['web_search', 12],
+    ['memory_search', 12],
+    // Local investigative tools: these are where long worker/debugger runs
+    // actually balloon in the trace logs, so warn earlier.
+    ['read', 8],
+    ['multi_read', 8],
+    ['grep', 8],
+    ['glob', 8],
+    ['list', 8],
+    // Shell loops are especially costly because setup/probe commands tend to
+    // be re-run with minimal new information each iteration.
+    ['bash', 10],
+    ['bash_session', 10],
 ]);
+
+function sameToolThreshold(toolName) {
+    return SAME_TOOL_WARN_THRESHOLDS.get(String(toolName || '').toLowerCase()) ?? null;
+}
 
 const ERROR_RULES = [
     { cat: 'edit-match-fail', test: (t) => t.includes('old_string') && (t.includes('did not match') || t.includes('not found') || t.includes('match')) },
@@ -127,14 +146,38 @@ export function buildSoftWarn(info) {
  */
 export function buildSameToolWarn(info) {
     const toolName = info.toolName || 'tool';
-    return [
+    const toolKey = String(toolName).toLowerCase();
+    const lines = [
         `⚠ Repeated-tool soft-warn: \`${toolName}\` has been called ${info.count} times in this session.`,
         `Before calling \`${toolName}\` again, consider:`,
-        `- You likely have enough information already — synthesize and proceed.`,
-        `- A different tool may yield more (e.g. read for known files, grep for in-file content, lsp_definition for symbol resolution).`,
-        `- If you DO call again, narrow the next query meaningfully (different angle, narrower scope, different cwd).`,
+    ];
+    if (toolKey === 'read' || toolKey === 'multi_read') {
+        lines.push(`- Batch file paths into one read call (array \`path\`) instead of serial reads.`);
+        lines.push(`- If you are still locating the code, use \`grep\` / \`glob\` first; if you already know the hit, use \`offset\` / \`limit\` instead of re-reading whole files.`);
+    } else if (toolKey === 'grep') {
+        lines.push(`- OR-join multiple patterns / globs in one \`grep\` call instead of serial probes.`);
+        lines.push(`- If the exact file is known, switch to \`read\`; if this is a structural/symbol lookup, prefer \`code_graph\`.`);
+    } else if (toolKey === 'glob') {
+        lines.push(`- Batch patterns in one \`glob\` call, then switch to \`read\` / \`grep\` once you have hits.`);
+        lines.push(`- A broader or repeated \`glob\` rarely helps after 2 rounds unless the root path changed.`);
+    } else if (toolKey === 'bash') {
+        lines.push(`- Combine dependent commands with \`&&\` / \`;\` instead of multiple one-line bash turns.`);
+        lines.push(`- If you need shell state across turns (cwd, env, venv), switch to \`bash_session\` instead of replaying setup commands.`);
+    } else if (toolKey === 'bash_session') {
+        lines.push(`- Reuse one \`session_id\` and run the next meaningful command, not another setup/probe variant of the same step.`);
+        lines.push(`- If the shell already told you enough, synthesize the result before issuing another command.`);
+    } else if (toolKey === 'search' || toolKey === 'recall' || toolKey === 'explore' || toolKey === 'web_search' || toolKey === 'memory_search') {
+        lines.push(`- Batch related queries in one call and narrow by root/site/type before widening again.`);
+        lines.push(`- If the first 1-2 rounds grounded the answer, synthesize now instead of probing a third angle.`);
+    } else {
+        lines.push(`- You likely have enough information already — synthesize and proceed.`);
+        lines.push(`- A different tool may yield more (e.g. read for known files, grep for in-file content, code_graph for structure).`);
+    }
+    lines.push(`- If you DO call again, narrow the next query meaningfully (different angle, narrower scope, different cwd).`);
+    lines.push(
         `(Advisory only — the call is not blocked.)`,
-    ].join('\n');
+    );
+    return lines.join('\n');
 }
 
 /**
@@ -164,21 +207,23 @@ export function createGuard() {
  */
 export function checkToolCall(guard, event) {
     const { toolName, args, result, iteration } = event;
+    const toolKey = String(toolName || '').toLowerCase();
 
     // ── Same-tool repetition track (independent of error-loop signature).
-    // Whitelist only; non-whitelisted tools also reset the run so an
+    // Thresholded whitelist only; non-whitelisted tools also reset the run so an
     // intermixed call sequence breaks the streak.
     let sameToolWarn = null;
-    if (SAME_TOOL_WHITELIST.has(toolName)) {
-        if (guard.sameToolName === toolName) {
+    const sameToolWarnThreshold = sameToolThreshold(toolKey);
+    if (sameToolWarnThreshold !== null) {
+        if (guard.sameToolName === toolKey) {
             guard.sameToolCount += 1;
         } else {
-            guard.sameToolName = toolName;
+            guard.sameToolName = toolKey;
             guard.sameToolCount = 1;
         }
-        if (guard.sameToolCount >= SAME_TOOL_WARN_THRESHOLD
-            && !guard.sameToolWarnedFor.has(toolName)) {
-            guard.sameToolWarnedFor.add(toolName);
+        if (guard.sameToolCount >= sameToolWarnThreshold
+            && !guard.sameToolWarnedFor.has(toolKey)) {
+            guard.sameToolWarnedFor.add(toolKey);
             sameToolWarn = {
                 toolName,
                 count: guard.sameToolCount,

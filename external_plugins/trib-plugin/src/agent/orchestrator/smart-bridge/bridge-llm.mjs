@@ -160,14 +160,14 @@ export function makeBridgeLlm(opts = {}) {
         // so every role lands on the same provider-side cache shard. Per-role
         // differentiation rides in the user-message header (permission + role
         // line) plus an optional short Pool C snippet. Tools stay on preset
-        // default ('full'); permission enforces the read-only contract via
-        // manager.mjs's PERMISSION_DENY mapping.
+        // default ('full'); the read-only contract is enforced at call time
+        // via loop.mjs's READ_BLOCKED_TOOLS guard, not at schema build time.
         const hidden = getHiddenRole(opts.role);
         const isPoolC = Boolean(hidden);
         // Permission resolution: explicit opts.permission > hidden-role default
         // ('read' for Pool C) > unset (preset/full default). Callers may still
-        // pass `permission: 'readwrite'` explicitly to opt a Pool B role into
-        // the same header format without the read-only deny list.
+        // pass `permission: 'read-write'` explicitly to opt a Pool B role into
+        // the same header format without the read-only call-time guard.
         const permission = opts.permission || (isPoolC ? 'read' : null);
         const sessionOpts = {
             preset,

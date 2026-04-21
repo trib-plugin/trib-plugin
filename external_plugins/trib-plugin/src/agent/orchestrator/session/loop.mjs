@@ -1,11 +1,15 @@
 import { executeMcpTool, isMcpTool } from '../mcp/client.mjs';
 import { executeBuiltinTool, isBuiltinTool } from '../tools/builtin.mjs';
+import { executeBashSessionTool } from '../tools/bash-session.mjs';
+import { executePatchTool } from '../tools/patch.mjs';
+import { executeCodeGraphTool, isCodeGraphTool } from '../tools/code-graph.mjs';
 import { executeInternalTool, isInternalTool } from '../internal-tools.mjs';
 import { collectSkillsCached, loadSkillContent } from '../context/collect.mjs';
 import { traceBridgeLoop, traceBridgeTool, traceToolLoopAborted, traceToolLoopDetected, estimateProviderPayloadBytes } from '../bridge-trace.mjs';
 import { markSessionToolCall, updateSessionStage, SessionClosedError } from './manager.mjs';
 import { trimMessages } from './trim.mjs';
 import { createGuard, checkToolCall, ToolLoopAbortError } from '../tool-loop-guard.mjs';
+import { maybeOffloadToolResult } from './tool-result-offload.mjs';
 import {
     shouldCompress,
     compress,
@@ -17,18 +21,21 @@ const MAX_ITERATIONS = 100;
 // Write-class tools that a permission=read session must not execute. The
 // schema still advertises them to keep one unified shard; this runtime set
 // is the fail-safe reject at call time.
-const READ_BLOCKED_TOOLS = new Set(['bash', 'write', 'edit', 'multi_edit', 'batch_edit']);
+const READ_BLOCKED_TOOLS = new Set(['bash', 'bash_session', 'write', 'edit', 'multi_edit', 'batch_edit', 'apply_patch', 'job_cancel', 'rename_symbol_refs', 'rename_file_refs']);
 // Eager-dispatch allowlist: read-only builtins can safely start executing
 // during SSE parsing so tool work overlaps with the rest of the stream.
 // Writes, bash, MCP and skills stay serial after send() returns.
-const EAGER_TOOLS = new Set(['read', 'grep', 'glob']);
+const EAGER_TOOLS = new Set(['read', 'multi_read', 'grep', 'glob', 'list']);
 function isEagerDispatchable(name) { return EAGER_TOOLS.has(name); }
 const SKILL_TOOL_NAMES = new Set(['skills_list', 'skill_view', 'skill_execute']);
+const SPECIAL_TOOL_NAMES = new Set(['bash_session', 'apply_patch', 'code_graph']);
+const BASH_SESSION_HEADER_RE = /\[session: ([^\]\r\n]+)\]/;
 /**
  * Execute a single tool call — routes to MCP or builtin.
  */
 function getToolKind(name) {
     if (SKILL_TOOL_NAMES.has(name)) return 'skill';
+    if (SPECIAL_TOOL_NAMES.has(name)) return 'builtin';
     if (isMcpTool(name)) return 'mcp';
     if (isInternalTool(name)) return 'internal';
     if (isBuiltinTool(name)) return 'builtin';
@@ -49,7 +56,12 @@ function executeSkill(cwd, name, _args) {
     const content = loadSkillContent(name, cwd);
     return content || `Error: skill "${name}" not found`;
 }
-async function executeTool(name, args, cwd, callerSessionId) {
+function extractBashSessionId(result) {
+    if (typeof result !== 'string') return null;
+    const match = BASH_SESSION_HEADER_RE.exec(result);
+    return match ? match[1] : null;
+}
+async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
     if (name === 'skills_list') {
         return buildSkillsListResponse(cwd);
     }
@@ -62,11 +74,30 @@ async function executeTool(name, args, cwd, callerSessionId) {
     if (isMcpTool(name)) {
         return executeMcpTool(name, args);
     }
+    if (isCodeGraphTool(name)) {
+        return executeCodeGraphTool(name, args, cwd);
+    }
     if (isInternalTool(name)) {
         // callerSessionId propagates into server.mjs dispatchTool so that
         // dispatchAiWrapped can detect and reject recursive calls from a
         // hidden-role session (recall/search/explore → self).
         return executeInternalTool(name, args, { callerSessionId });
+    }
+    if (name === 'bash' && sessionRef?.owner === 'bridge') {
+        const routedArgs = { ...(args || {}) };
+        if (sessionRef.implicitBashSessionId) {
+            routedArgs.session_id = sessionRef.implicitBashSessionId;
+        }
+        const result = await executeBashSessionTool('bash_session', routedArgs, cwd);
+        const sessionId = extractBashSessionId(result);
+        if (sessionId) sessionRef.implicitBashSessionId = sessionId;
+        return result;
+    }
+    if (name === 'bash_session') {
+        return executeBashSessionTool(name, args, cwd);
+    }
+    if (name === 'apply_patch') {
+        return executePatchTool(name, args, cwd);
     }
     if (isBuiltinTool(name)) {
         return executeBuiltinTool(name, args, cwd);
@@ -255,7 +286,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                         result = `Error: tool "${call.name}" is not available on this session (permission=read). Use read/multi_read/grep/glob/recall/search/explore or the read-only MCP tools instead.`;
                         toolEndedAt = Date.now();
                     } else {
-                        result = await executeTool(call.name, call.arguments, cwd, sessionId);
+                        result = await executeTool(call.name, call.arguments, cwd, sessionId, sessionRef);
                         toolEndedAt = Date.now();
                     }
                 }
@@ -265,6 +296,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                 toolEndedAt = Date.now();
                 result = `Error: ${err instanceof Error ? err.message : String(err)}`;
             }
+            result = maybeOffloadToolResult(sessionId, call.id, call.name, result);
             traceBridgeTool({
                 sessionId,
                 iteration: iterations,

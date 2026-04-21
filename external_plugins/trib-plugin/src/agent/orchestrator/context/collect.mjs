@@ -303,6 +303,41 @@ export function loadAllAgentBodies() {
     }
 }
 
+function buildToolRoutingHint(opts) {
+    const toolNames = new Set((Array.isArray(opts.tools) ? opts.tools : [])
+        .map(t => String(t?.name || '').toLowerCase())
+        .filter(Boolean));
+    if (toolNames.size === 0) return '';
+
+    const permission = String(opts.permission || opts.roleTemplate?.permission || '').toLowerCase();
+    const canWrite = permission !== 'read';
+    const lines = [];
+
+    if (canWrite && toolNames.has('apply_patch')) {
+        lines.push('- multi-file or already-clear edits: prefer `apply_patch` before repeated `read` → `edit`');
+    }
+    if (toolNames.has('read')) {
+        if (toolNames.has('grep') || toolNames.has('glob')) {
+            lines.push('- known file -> `read`; unknown location -> `grep` / `glob` first, then targeted `read`');
+        } else {
+            lines.push('- use `read` for exact file inspection; avoid re-reading the same file without a new reason');
+        }
+    }
+    if (toolNames.has('code_graph')) {
+        lines.push('- code structure questions: prefer `code_graph` for imports, dependents, symbols, and references before raw `grep`');
+    }
+    if (canWrite && opts.bashIsPersistent && toolNames.has('bash')) {
+        lines.push('- bridge `bash` reuses the same shell state across turns; do not replay setup unless the environment changed');
+    } else if (canWrite && toolNames.has('bash_session')) {
+        lines.push('- shell work across turns: use `bash_session` instead of replaying setup commands');
+    }
+    if (toolNames.has('read')) {
+        lines.push('- large tool outputs may be saved to a path with a preview; only `read` that saved path if the preview is insufficient');
+    }
+
+    return lines.length > 0 ? `# tool-routing\n${lines.join('\n')}` : '';
+}
+
 // --- Compose system prompt — 4-BP cache layout ---
 // Returns { baseRules, roleCatalog, sessionMarker, volatileTail } mapping
 // directly to the breakpoint plan:
@@ -364,6 +399,10 @@ export function composeSystemPrompt(opts) {
                         ? 'full — all tools'
                         : 'unknown — treat as read-only';
         sessionMarkerParts.push(`# permission\n${permission} — ${allow}.`);
+    }
+    const toolRoutingHint = buildToolRoutingHint(opts);
+    if (toolRoutingHint) {
+        sessionMarkerParts.push(toolRoutingHint);
     }
     if (opts.projectContext) {
         sessionMarkerParts.push('# project-context\n' + opts.projectContext);

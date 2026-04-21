@@ -19,15 +19,17 @@ Natural-language mapping (caller's local clock; KST when unspecified):
 
 | phrasing | period |
 |---|---|
-| 오늘 / today | `1d` |
-| 어제 / yesterday | `YYYY-MM-DD` of yesterday |
-| 지난주 / last week | `7d` |
-| 지난달 / last month | `30d` |
-| 최근 / recent / lately | omit (default `30d`) |
-| 전체 / everything | `all` |
-| 방금 전 / just now | `1h` |
-| 그 날 (specific date) | `YYYY-MM-DD` |
-| 그 기간 (date range) | `YYYY-MM-DD~YYYY-MM-DD` |
+| today | `1d` |
+| yesterday | `YYYY-MM-DD` of yesterday |
+| last week | `7d` |
+| last month | `30d` |
+| recent / lately | omit (default `30d`) |
+| everything | `all` |
+| just now | `1h` |
+| specific date | `YYYY-MM-DD` |
+| date range | `YYYY-MM-DD~YYYY-MM-DD` |
+
+Caller may use the same time words in any language (e.g. Korean, Japanese); map by meaning, not literal string.
 
 Keep time wording in the query verbatim (don't strip — text-search grounds on it). Add `period` only when window is unambiguous; if vague ("recently"), omit and rely on default recency weighting.
 

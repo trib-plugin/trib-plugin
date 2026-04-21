@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'fs';
+import { appendFileSync, mkdirSync, statSync, renameSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { getPluginData } from './config.mjs';
 import { normalizeUsage } from './smart-bridge/cache-obs.mjs';
@@ -6,6 +6,45 @@ import { normalizeUsage } from './smart-bridge/cache-obs.mjs';
 const HISTORY_DIR = join(getPluginData(), 'history');
 const TRACE_PATH = join(HISTORY_DIR, 'bridge-trace.jsonl');
 const WARNED_KEYS = new Set();
+
+// Rotation — bridge-trace grows a few thousand rows per day. Without a cap
+// a single session file reaches hundreds of megabytes over a few months
+// and post-hoc analysis tools start choking on it. Rotate on append when
+// the live file crosses MAX_TRACE_BYTES, and keep at most MAX_ROTATIONS
+// historical shards (older ones are deleted on rotation).
+const MAX_TRACE_BYTES = 100 * 1024 * 1024; // 100 MB
+const MAX_ROTATIONS = 5;                    // keep last 5 rotated shards
+const ROTATION_CHECK_EVERY_N = 100;         // cheap size check cadence
+let _appendsSinceCheck = 0;
+
+function _rotateIfOversized() {
+    try {
+        const stat = statSync(TRACE_PATH);
+        if (stat.size < MAX_TRACE_BYTES) return;
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const rotated = `${TRACE_PATH}.${ts}`;
+        renameSync(TRACE_PATH, rotated);
+        _pruneOldRotations();
+    } catch (err) {
+        if (err?.code !== 'ENOENT') {
+            // Rotation failure is non-fatal — fall through and keep appending
+            // to the original file; next cycle may succeed.
+        }
+    }
+}
+
+function _pruneOldRotations() {
+    try {
+        const base = `${TRACE_PATH.split(/[\\/]/).pop()}.`;
+        const files = readdirSync(HISTORY_DIR)
+            .filter(name => name.startsWith(base))
+            .sort()
+            .reverse(); // newest first (ISO timestamps sort chronologically)
+        for (const name of files.slice(MAX_ROTATIONS)) {
+            try { unlinkSync(join(HISTORY_DIR, name)); } catch { /* ignore */ }
+        }
+    } catch { /* best-effort */ }
+}
 
 function normalizeSessionId(sessionId) {
     return sessionId ? String(sessionId) : 'no-session';
@@ -19,6 +58,10 @@ function appendBridgeTrace(record = {}) {
     if (process.env.TRIB_BRIDGE_TRACE_DISABLE === '1') return;
     try {
         mkdirSync(HISTORY_DIR, { recursive: true });
+        if (++_appendsSinceCheck >= ROTATION_CHECK_EVERY_N) {
+            _appendsSinceCheck = 0;
+            if (existsSync(TRACE_PATH)) _rotateIfOversized();
+        }
         const row = {
             ts: record.ts || new Date().toISOString(),
             ...record,

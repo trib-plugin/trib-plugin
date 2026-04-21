@@ -200,7 +200,6 @@ const MODELS = [
     { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'anthropic-oauth', contextWindow: 1000000 },
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic-oauth', contextWindow: 1000000 },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic-oauth', contextWindow: 200000 },
-    { id: 'claude-sonnet-4-0', name: 'Claude Sonnet 4', provider: 'anthropic-oauth', contextWindow: 200000 },
     { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic-oauth', contextWindow: 200000 },
 ];
 
@@ -212,7 +211,6 @@ const MAX_TOKENS = {
     'claude-opus-4-7': 32768,
     'claude-opus-4-6': 32768,
     'claude-sonnet-4-6': 16384,
-    'claude-sonnet-4-0': 16384,
     'claude-haiku-4-5-20251001': 8192,
 };
 
@@ -364,7 +362,17 @@ function toAnthropicMessages(
 
 // --- SSE parser ---
 
-async function parseSSEStream(response, signal, abortStream, onStreamDelta, onToolCall) {
+function _captureMidstreamAbort(state, reason) {
+    if (!state) return;
+    const reasonName = reason?.name || '';
+    if (reasonName === 'BridgeStallAbortError' || reasonName === 'StreamStalledAbortError') {
+        state.watchdogAbort = reasonName;
+    } else {
+        state.userAbort = true;
+    }
+}
+
+async function parseSSEStream(response, signal, abortStream, onStreamDelta, onToolCall, state) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
@@ -389,7 +397,12 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
 
     const onAbort = () => { try { reader.cancel('SSE aborted'); } catch {} };
     if (signal) {
-        if (signal.aborted) throw new Error('Anthropic OAuth SSE stream aborted');
+        if (signal.aborted) {
+            _captureMidstreamAbort(state, signal.reason);
+            throw signal.reason instanceof Error
+                ? signal.reason
+                : new Error('Anthropic OAuth SSE stream aborted');
+        }
         signal.addEventListener('abort', onAbort, { once: true });
     }
 
@@ -398,8 +411,17 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
         while (true) {
             let chunk;
             try { chunk = await reader.read(); } catch (err) {
-                if (idleTimedOut) throw new Error('Anthropic OAuth SSE stream timed out after 300000ms of inactivity');
-                if (signal?.aborted) throw new Error('Anthropic OAuth SSE stream aborted');
+                if (idleTimedOut) {
+                    const idleErr = new Error('Anthropic OAuth SSE stream timed out after 300000ms of inactivity');
+                    idleErr.code = 'ETIMEDOUT';
+                    throw idleErr;
+                }
+                if (signal?.aborted) {
+                    _captureMidstreamAbort(state, signal.reason);
+                    throw signal.reason instanceof Error
+                        ? signal.reason
+                        : new Error('Anthropic OAuth SSE stream aborted');
+                }
                 throw err;
             }
             const { done, value } = chunk;
@@ -432,6 +454,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                     const event = JSON.parse(data);
 
                     if (event.type === 'message_start' && event.message) {
+                        if (state) state.sawMessageStart = true;
                         if (event.message.model) model = event.message.model;
                         if (event.message.usage) {
                             usage.inputTokens = event.message.usage.input_tokens || 0;
@@ -477,6 +500,7 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                             };
                             toolCalls.push(call);
                             pendingToolInputs.delete(event.index);
+                            if (state) state.emittedToolCall = true;
                             // Eager dispatch: let the loop start this tool
                             // before message_stop arrives. The loop keys
                             // pending promises by call.id so order is safe.
@@ -490,6 +514,9 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
                             usage.outputTokens = event.usage.output_tokens || 0;
                             usage.raw = { ...(usage.raw || {}), ...event.usage };
                         }
+                    }
+                    if (event.type === 'message_stop') {
+                        if (state) state.sawCompleted = true;
                     }
                     // Unified prompt volume — what the model actually ingested.
                     // Anthropic splits input into three billable slots (uncached
@@ -516,6 +543,45 @@ async function parseSSEStream(response, signal, abortStream, onStreamDelta, onTo
     }
 }
 
+/**
+ * Classify an Anthropic SSE failure for single-shot mid-stream retry.
+ *
+ * Retry is allowed only after `message_start` and before `message_stop`,
+ * and only when no tool call has already been surfaced to the loop.
+ * That keeps recovery limited to transport/stream stalls without risking
+ * duplicate eager tool execution.
+ */
+export function _classifyMidstreamError(err, state) {
+    if (!state) return null;
+    if ((state.attemptIndex | 0) >= 1) return null;
+    if (state.sawCompleted) return null;
+    if (!state.sawMessageStart) return null;
+    if (state.userAbort) return null;
+    if (state.emittedToolCall) return null;
+
+    if (!err) return null;
+    const status = Number(err?.httpStatus || 0);
+    if (status === 401 || status === 403 || status === 429) return null;
+
+    const name = err?.name || '';
+    if (name === 'BridgeStallAbortError') return 'bridge_stall';
+    if (name === 'StreamStalledAbortError') return 'stream_stalled';
+    if (state.watchdogAbort === 'BridgeStallAbortError') return 'bridge_stall';
+    if (state.watchdogAbort === 'StreamStalledAbortError') return 'stream_stalled';
+
+    const code = err?.code || err?.cause?.code || '';
+    if (code === 'ECONNRESET') return 'reset';
+    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT') return 'timeout';
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'EAI_NODATA') return 'dns';
+
+    const msg = String(err?.message || '').toLowerCase();
+    if (msg.includes('stream timed out after 300000ms of inactivity')) return 'sse_idle_timeout';
+    if (msg.includes('body stream') && msg.includes('terminated')) return 'stream_terminated';
+    if (msg.includes('fetch failed')) return 'fetch_failed';
+
+    return null;
+}
+
 // --- Build request body ---
 
 function resolveCacheTtls(opts) {
@@ -537,10 +603,17 @@ function resolveCacheTtls(opts) {
     // tools BP is dropped — system BP covers the tools prefix via
     // Anthropic's prompt cache prefix semantics (order: tools → system
     // → messages).
+    // tier3 defaults to 1h (stable) — sessionMarker content is stable per
+    // (role, permission, project) tuple and Anthropic only spends the BP
+    // slot when findTier3Index() actually finds a <system-reminder> block,
+    // so this default is free for sessions that don't carry one. Previously
+    // null here meant any caller that skipped smart bridge resolve (CLI,
+    // raw create_session tool) silently lost the tier3 cache layer even
+    // though their message layout supported it.
     return {
         tools: pick('tools', CACHE_TTL_STABLE),
         system: pick('system', CACHE_TTL_STABLE),
-        tier3: pick('tier3', null),
+        tier3: pick('tier3', CACHE_TTL_STABLE),
         messages: pick('messages', CACHE_TTL_VOLATILE),
     };
 }
@@ -677,9 +750,12 @@ export class AnthropicOAuthProvider {
         const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
         const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
         const externalSignal = opts.signal || null;
+        // Test seam: lets the retry harness drive stream outcomes without a
+        // live OAuth session.
+        const parseSSEFn = typeof opts._parseSSEFn === 'function' ? opts._parseSSEFn : parseSSEStream;
 
         let creds = this.ensureAuth();
-        const useModel = model || 'claude-sonnet-4-0';
+        const useModel = model || 'claude-sonnet-4-6';
         const body = buildRequestBody(messages, useModel, tools, sendOpts);
         const sessionId = opts.sessionId || null;
         const iteration = Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null;
@@ -740,6 +816,8 @@ export class AnthropicOAuthProvider {
                 throw err;
             }
         };
+        // Test seam: injectable request factory for retry-path tests.
+        const doRequestImpl = typeof opts._doRequestFn === 'function' ? opts._doRequestFn : doRequest;
 
         // Retry on transient 5xx / connect errors before SSE stream begins.
         const isTransientStatus = s => s === 502 || s === 503 || s === 504;
@@ -762,110 +840,155 @@ export class AnthropicOAuthProvider {
 
         const MAX_ATTEMPTS = 5;
         const BACKOFF_MS = [0, 1000, 2000, 4000, 8000];
-        let response, controller, cancelHandler;
-        let lastStatus = null;
-        let attempt = 0;
+        // One retry only: enough to recover transient stream loss without
+        // quietly replaying long-running work multiple times.
+        const MAX_MIDSTREAM_RETRIES = 1;
+        let firstAttemptError = null;
+        let firstAttemptClassifier = null;
 
-        while (attempt < MAX_ATTEMPTS) {
-            if (externalSignal?.aborted) {
-                const reason = externalSignal.reason;
-                throw reason instanceof Error ? reason : new Error('Anthropic OAuth request aborted by session close');
-            }
-            if (attempt > 0) {
-                process.stderr.write(`[anthropic-oauth] retry attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${lastStatus || 'network error'}\n`);
-                await sleep(BACKOFF_MS[attempt]);
+        for (let attemptIndex = 0; attemptIndex <= MAX_MIDSTREAM_RETRIES; attemptIndex++) {
+            let response, controller, cancelHandler;
+            let lastStatus = null;
+            let attempt = 0;
+
+            while (attempt < MAX_ATTEMPTS) {
                 if (externalSignal?.aborted) {
                     const reason = externalSignal.reason;
                     throw reason instanceof Error ? reason : new Error('Anthropic OAuth request aborted by session close');
                 }
-            }
-            try {
-                ({ response, controller, cancelHandler } = await doRequest(creds.accessToken));
-            } catch (err) {
-                if (externalSignal?.aborted) throw err;
-                if (isTransientErr(err) && attempt < MAX_ATTEMPTS - 1) {
-                    lastStatus = err.code || err.message || 'network error';
+                if (attempt > 0) {
+                    process.stderr.write(`[anthropic-oauth] retry attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${lastStatus || 'network error'}\n`);
+                    await sleep(BACKOFF_MS[attempt]);
+                    if (externalSignal?.aborted) {
+                        const reason = externalSignal.reason;
+                        throw reason instanceof Error ? reason : new Error('Anthropic OAuth request aborted by session close');
+                    }
+                }
+                try {
+                    ({ response, controller, cancelHandler } = await doRequestImpl(creds.accessToken));
+                } catch (err) {
+                    if (externalSignal?.aborted) throw err;
+                    if (isTransientErr(err) && attempt < MAX_ATTEMPTS - 1) {
+                        lastStatus = err.code || err.message || 'network error';
+                        attempt++;
+                        continue;
+                    }
+                    throw err;
+                }
+                if (isTransientStatus(response.status) && attempt < MAX_ATTEMPTS - 1) {
+                    try { await response.text(); } catch {}
+                    if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+                    lastStatus = response.status;
                     attempt++;
                     continue;
                 }
-                throw err;
+                break;
             }
-            if (isTransientStatus(response.status) && attempt < MAX_ATTEMPTS - 1) {
-                try { await response.text(); } catch {}
+
+            // Handle 401 — re-read credentials (Claude Code may have refreshed)
+            if (response.status === 401) {
+                process.stderr.write(`[anthropic-oauth] Got 401, re-reading credentials...\n`);
                 if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
-                lastStatus = response.status;
-                attempt++;
-                continue;
-            }
-            break;
-        }
-
-        // Handle 401 — re-read credentials (Claude Code may have refreshed)
-        if (response.status === 401) {
-            process.stderr.write(`[anthropic-oauth] Got 401, re-reading credentials...\n`);
-            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
-            this.credentials = null;
-            creds = this.ensureAuth();
-            ({ response, controller, cancelHandler } = await doRequest(creds.accessToken));
-        }
-
-        if (!response.ok) {
-            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
-            const text = await response.text().catch(() => '');
-            const safeText = this.scrubTokens(text).slice(0, 200);
-            process.stderr.write(`[anthropic-oauth] API error ${response.status}: ${safeText}\n`);
-
-            // Phase I: on unknown/404 model errors, force a catalog refresh and
-            // retry once. Protects against a silently-rotated model id.
-            const isUnknownModel = response.status === 404
-                || /unknown[_\s-]?model|model[_\s-]?not[_\s-]?found/i.test(safeText);
-            if (isUnknownModel && !opts._modelRetry) {
-                process.stderr.write(`[anthropic-oauth] unknown model — refreshing catalog + 1 retry\n`);
-                await this._refreshModelCache();
-                return this.send(messages, model, tools, { ...opts, _modelRetry: true });
-            }
-            throw new Error(`Anthropic OAuth API ${response.status}: ${safeText}`);
-        }
-
-        process.stderr.write(`[anthropic-oauth] Response ${response.status}, parsing SSE...\n`);
-        try { onStageChange?.('streaming'); } catch {}
-
-        try {
-            const sseStartedAt = Date.now();
-            const result = await parseSSEStream(response, controller.signal, () => controller.abort(), onStreamDelta, onToolCall);
-
-            traceBridgeSse({
-                sessionId,
-                sseParseMs: Date.now() - sseStartedAt,
-            });
-
-            const liveModel = result.model || useModel;
-            traceBridgeUsage({
-                sessionId,
-                iteration,
-                inputTokens: result.usage?.inputTokens || 0,
-                outputTokens: result.usage?.outputTokens || 0,
-                cachedTokens: result.usage?.cachedTokens || 0,
-                cacheWriteTokens: result.usage?.cacheWriteTokens || 0,
-                promptTokens: result.usage?.promptTokens || 0,
-                model: liveModel,
-                modelDisplay: _displayModel(liveModel),
-                rawUsage: result.usage?.raw || null,
-                provider: 'anthropic-oauth',
-            });
-
-            // Phase I: if the live response surfaced a model id we don't know
-            // about yet, kick off a background catalog refresh. Fire-and-forget
-            // — do not await, do not surface errors.
-            if (result.model && !_catalogHas(result.model)) {
-                void this._refreshModelCache();
+                this.credentials = null;
+                creds = this.ensureAuth();
+                ({ response, controller, cancelHandler } = await doRequestImpl(creds.accessToken));
             }
 
-            process.stderr.write(`[anthropic-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
-            return result;
-        } finally {
-            if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+            if (!response.ok) {
+                if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+                const text = await response.text().catch(() => '');
+                const safeText = this.scrubTokens(text).slice(0, 200);
+                process.stderr.write(`[anthropic-oauth] API error ${response.status}: ${safeText}\n`);
+
+                // Phase I: on unknown/404 model errors, force a catalog refresh and
+                // retry once. Protects against a silently-rotated model id.
+                const isUnknownModel = response.status === 404
+                    || /unknown[_\s-]?model|model[_\s-]?not[_\s-]?found/i.test(safeText);
+                if (isUnknownModel && !opts._modelRetry) {
+                    process.stderr.write(`[anthropic-oauth] unknown model — refreshing catalog + 1 retry\n`);
+                    await this._refreshModelCache();
+                    return this.send(messages, model, tools, { ...opts, _modelRetry: true });
+                }
+                throw new Error(`Anthropic OAuth API ${response.status}: ${safeText}`);
+            }
+
+            process.stderr.write(`[anthropic-oauth] Response ${response.status}, parsing SSE...\n`);
+            try { onStageChange?.('streaming'); } catch {}
+
+            const midState = {
+                attemptIndex,
+                sawMessageStart: false,
+                sawCompleted: false,
+                emittedToolCall: false,
+                userAbort: false,
+                watchdogAbort: null,
+            };
+
+            try {
+                const sseStartedAt = Date.now();
+                const result = await parseSSEFn(
+                    response,
+                    controller.signal,
+                    () => controller.abort(),
+                    onStreamDelta,
+                    onToolCall,
+                    midState,
+                );
+
+                traceBridgeSse({
+                    sessionId,
+                    sseParseMs: Date.now() - sseStartedAt,
+                });
+
+                const liveModel = result.model || useModel;
+                traceBridgeUsage({
+                    sessionId,
+                    iteration,
+                    inputTokens: result.usage?.inputTokens || 0,
+                    outputTokens: result.usage?.outputTokens || 0,
+                    cachedTokens: result.usage?.cachedTokens || 0,
+                    cacheWriteTokens: result.usage?.cacheWriteTokens || 0,
+                    promptTokens: result.usage?.promptTokens || 0,
+                    model: liveModel,
+                    modelDisplay: _displayModel(liveModel),
+                    rawUsage: result.usage?.raw || null,
+                    provider: 'anthropic-oauth',
+                });
+
+                // Phase I: if the live response surfaced a model id we don't know
+                // about yet, kick off a background catalog refresh. Fire-and-forget
+                // — do not await, do not surface errors.
+                if (result.model && !_catalogHas(result.model)) {
+                    void this._refreshModelCache();
+                }
+
+                process.stderr.write(`[anthropic-oauth] Done: ${result.content.length} chars, ${result.toolCalls?.length || 0} tool calls\n`);
+                try {
+                    Object.defineProperty(result, '__midstreamRetries', { value: attemptIndex, enumerable: false });
+                } catch { /* ignore non-extensible result */ }
+                return result;
+            } catch (err) {
+                const classifier = _classifyMidstreamError(err, midState);
+                if (classifier && attemptIndex < MAX_MIDSTREAM_RETRIES) {
+                    firstAttemptError = err;
+                    firstAttemptClassifier = classifier;
+                    try { controller?.abort?.(err); } catch { /* best-effort stream teardown */ }
+                    try {
+                        process.stderr.write(`[anthropic-oauth] mid-stream recovered: retry ${attemptIndex + 1}/${MAX_MIDSTREAM_RETRIES} (cause: ${classifier})\n`);
+                    } catch {}
+                    continue;
+                }
+                if (attemptIndex > 0 && firstAttemptError) {
+                    try { firstAttemptError.midstreamRetries = attemptIndex; } catch {}
+                    try { firstAttemptError.midstreamClassifier = firstAttemptClassifier; } catch {}
+                    throw firstAttemptError;
+                }
+                throw err;
+            } finally {
+                if (cancelHandler && externalSignal) externalSignal.removeEventListener('abort', cancelHandler);
+            }
         }
+        throw firstAttemptError || new Error('Anthropic OAuth mid-stream retry: unreachable');
     }
 
     async listModels() {
@@ -963,7 +1086,7 @@ export class AnthropicOAuthProvider {
     }
 }
 
-// Additive export for test harness (scripts/test-sse-ping-keepalive.mjs).
+// Additive exports for test harnesses.
 // Lets the SSE parser be exercised in isolation against a synthetic
 // ReadableStream without needing a live OAuth session.
 export { parseSSEStream };

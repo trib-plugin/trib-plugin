@@ -103,7 +103,3 @@ function _normalize(result) {
     if (typeof result === 'string') return result;
     return JSON.stringify(result);
 }
-
-export function hasInternalTools() {
-    return _executor !== null && _tools.length > 0;
-}

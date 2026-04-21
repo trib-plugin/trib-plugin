@@ -1,3 +1,5 @@
+import { isOffloadedToolResultText, compactOffloadedToolResultText } from './tool-result-offload.mjs';
+
 // Rough token estimate: ~4 chars per token
 function estimateTokens(text) {
     return Math.ceil(text.length / 4);
@@ -19,7 +21,16 @@ const TOOL_MISSING_STUB = '[Result from earlier conversation — see context sum
  */
 function truncateToolResults(messages) {
     return messages.map(m => {
-        if (m.role === 'tool' && m.content.length > TOOL_TRUNCATE_THRESHOLD) {
+        if (m.role === 'tool'
+            && typeof m.content === 'string'
+            && isOffloadedToolResultText(m.content)) {
+            const compact = compactOffloadedToolResultText(m.content);
+            return compact === m.content ? m : { ...m, content: compact };
+        }
+        if (m.role === 'tool'
+            && typeof m.content === 'string'
+            && m.content.length > TOOL_TRUNCATE_THRESHOLD
+            && !isOffloadedToolResultText(m.content)) {
             return { ...m, content: m.content.slice(0, TOOL_TRUNCATE_THRESHOLD) + '\n[truncated]' };
         }
         return m;
@@ -43,6 +54,10 @@ export function pruneOldToolResults(messages, protectTailCount) {
         const content = m.content || '';
         if (content.length <= PRUNE_OLD_TOOL_MIN_CHARS) return m;
         if (content === PRUNE_STUB_TEXT) return m;
+        if (isOffloadedToolResultText(content)) {
+            const compact = compactOffloadedToolResultText(content);
+            return compact === content ? m : { ...m, content: compact };
+        }
         changed = true;
         return { ...m, content: PRUNE_STUB_TEXT };
     });
@@ -128,9 +143,10 @@ export function sanitizeToolPairs(messages) {
             if (!tc?.id) continue;
             const existing = toolById.get(tc.id);
             if (existing && filtered.includes(existing)) continue;
+            const preserved = existing?.content;
             result.push({
                 role: 'tool',
-                content: TOOL_MISSING_STUB,
+                content: isOffloadedToolResultText(preserved) ? preserved : TOOL_MISSING_STUB,
                 toolCallId: tc.id,
             });
         }

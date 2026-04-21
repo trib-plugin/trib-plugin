@@ -4,7 +4,7 @@ import { warnBridgeOnce } from '../bridge-trace.mjs';
 const PRESETS = {
     openai: {
         baseURL: 'https://api.openai.com/v1',
-        defaultModel: 'gpt-4o',
+        defaultModel: 'gpt-5.4',
     },
     groq: {
         baseURL: 'https://api.groq.com/openai/v1',
@@ -12,7 +12,7 @@ const PRESETS = {
     },
     openrouter: {
         baseURL: 'https://openrouter.ai/api/v1',
-        defaultModel: 'anthropic/claude-sonnet-4',
+        defaultModel: 'anthropic/claude-sonnet-4.6',
         extraHeaders: { 'HTTP-Referer': 'trib-agent', 'X-Title': 'trib-agent' },
     },
     xai: {

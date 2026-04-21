@@ -12,41 +12,64 @@
  */
 
 import { buildVirtualProfile } from './profiles.mjs';
-import { CacheRegistry, hashContent, DEFAULT_TTL_SECONDS } from './registry.mjs';
+import { CacheRegistry } from './registry.mjs';
 import { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCacheType } from './cache-strategy.mjs';
+import { getHiddenRole } from '../internal-roles.mjs';
 
 let _sharedInstance = null;
 
-// Role resolver injected by agent/index.mjs at boot. Avoids lazy-import
-// circular dependency between the two modules.
-let _getRoleConfig = null;
+// Plugin-managed Pool C roles (explorer / recall-agent / search-agent /
+// cycle1-agent / cycle2-agent) live in internal-roles.mjs, not
+// user-workflow.json. The resolver normalises them into the same RoleConfig
+// shape user-defined roles produce so every caller lands in the cache
+// registry with a stable profileId — no per-call branching, no fallback
+// chain in downstream code.
+function _hiddenRoleConfig(role) {
+    const hidden = getHiddenRole(role);
+    if (!hidden) return null;
+    return {
+        name: role,
+        behavior: 'stateless',
+        preset: null,
+        desc_path: hidden.description || null,
+    };
+}
+
+// Unified role resolver. Defaults to the hidden-role registry so SmartBridge
+// is usable standalone before agent/init() runs; setRoleResolver() layers the
+// user-workflow.json lookup on top once available. One function, one shape —
+// downstream code never checks for null or picks a branch.
+let _resolveRole = _hiddenRoleConfig;
 
 /**
- * Install the role-config lookup. Called once by agent/index.mjs after
- * the user-workflow.json cache is populated.
+ * Install the user-workflow role lookup. Called once by agent/index.mjs after
+ * the user-workflow.json cache is populated. The resulting resolver returns
+ * user-defined roles when present and hidden-role metadata otherwise.
  */
 export function setRoleResolver(fn) {
-    _getRoleConfig = typeof fn === 'function' ? fn : null;
+    const userResolver = typeof fn === 'function' ? fn : null;
+    _resolveRole = userResolver
+        ? (role) => userResolver(role) || _hiddenRoleConfig(role)
+        : _hiddenRoleConfig;
 }
 
 async function _lazyGetRoleConfig(role) {
-    if (_getRoleConfig) return _getRoleConfig(role);
-    // Fallback: try a dynamic import. This path only executes when a
-    // caller reaches resolve() before agent/init() ran — unusual, but
-    // kept so tests and scripts can use SmartBridge standalone.
+    // User-workflow resolver already installed — synchronous lookup is fine.
+    if (_resolveRole !== _hiddenRoleConfig) return _resolveRole(role);
+    // Pre-init: dynamic import so standalone tests / scripts still see the
+    // user-workflow roles without requiring agent/init() to have run.
     try {
         const mod = await import('../../index.mjs');
         if (typeof mod.getRoleConfig === 'function') {
-            _getRoleConfig = mod.getRoleConfig;
-            return _getRoleConfig(role);
+            setRoleResolver(mod.getRoleConfig);
+            return _resolveRole(role);
         }
     } catch { /* ignore */ }
-    return null;
+    return _hiddenRoleConfig(role);
 }
 
 function _syncGetRoleConfig(role) {
-    if (_getRoleConfig) return _getRoleConfig(role);
-    return null;
+    return _resolveRole(role);
 }
 
 export class SmartBridge {
@@ -183,7 +206,3 @@ export function getSmartBridge() {
     return _sharedInstance;
 }
 
-// Re-exports for convenience.
-export { CacheRegistry, hashContent, DEFAULT_TTL_SECONDS };
-export { buildProviderCacheOpts, computePrefixContent, ttlSecondsForCacheType };
-export { buildVirtualProfile };

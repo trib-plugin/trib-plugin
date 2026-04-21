@@ -36,6 +36,9 @@ import {
   normalizeOutputPath,
   isSafePath,
   atomicWrite,
+  invalidateBuiltinResultCache,
+  recordReadSnapshotForPath,
+  clearReadSnapshotForPath,
 } from './builtin.mjs';
 
 const DEV_NULL = /^\/dev\/null$/;
@@ -403,6 +406,13 @@ async function apply_patch(args, cwd) {
 
   const lines = [];
   lines.push(`applied: ${written.length} file(s)` + (failures.length ? `, ${failures.length} failed` : '') + (skipped.length ? `, ${skipped.length} skipped` : ''));
+  if (written.length > 0) {
+    invalidateBuiltinResultCache(written.map((p) => p.fullPath));
+    for (const p of written) {
+      if (p.kind === 'delete') clearReadSnapshotForPath(p.fullPath);
+      else recordReadSnapshotForPath(p.fullPath);
+    }
+  }
   for (const p of written) {
     lines.push(`  OK   ${p.kind.padEnd(6)} ${p.displayPath} (${p.lines_changed} lines changed across ${p.hunks_applied} hunk${p.hunks_applied === 1 ? '' : 's'})`);
   }

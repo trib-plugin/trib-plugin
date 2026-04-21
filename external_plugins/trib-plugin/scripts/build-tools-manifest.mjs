@@ -7,7 +7,7 @@
  * requests without a runtime handler discovery pass.
  *
  * Modules now include the orchestrator-side builtin file tools and the
- * LSP-backed symbol tools — previously hand-merged into tools.json.
+ * common code-graph tools — previously hand-merged into tools.json.
  * Every tool is single-source-of-truth in code; this script only
  * filters and stitches.
  *
@@ -50,7 +50,7 @@ const MODULES = [
   { name: 'search',   path: 'src/search/index.mjs',                      key: 'TOOL_DEFS' },
   { name: 'agent',    path: 'src/agent/index.mjs',                       key: 'TOOL_DEFS' },
   { name: 'builtin',  path: 'src/agent/orchestrator/tools/builtin.mjs',  key: 'BUILTIN_TOOLS' },
-  { name: 'lsp',      path: 'src/agent/orchestrator/tools/lsp.mjs',      key: 'LSP_TOOL_DEFS' },
+  { name: 'code_graph', path: 'src/agent/orchestrator/tools/code-graph.mjs', key: 'CODE_GRAPH_TOOL_DEFS' },
   { name: 'astgrep',  path: 'src/agent/orchestrator/tools/astgrep.mjs',  key: 'ASTGREP_TOOL_DEFS' },
   { name: 'patch',    path: 'src/agent/orchestrator/tools/patch.mjs',    key: 'PATCH_TOOL_DEFS' },
   { name: 'bash_session', path: 'src/agent/orchestrator/tools/bash-session.mjs', key: 'BASH_SESSION_TOOL_DEFS' },

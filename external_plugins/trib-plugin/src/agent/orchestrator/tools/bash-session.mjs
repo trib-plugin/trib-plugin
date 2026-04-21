@@ -39,6 +39,7 @@ import { spawn } from 'node:child_process';
 import * as nodeUtil from 'node:util';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { invalidateBuiltinResultCache } from './builtin.mjs';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 600_000;
@@ -57,6 +58,34 @@ const SMART_BASH_TAIL_LINES = 80;
 // own line. `__TRIB_END__` + exit status, anchored at line start.
 const MARKER = '__TRIB_END__';
 const MARKER_RE = new RegExp(`^${MARKER}:(-?\\d+)\\s*$`, 'm');
+const MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
+const READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
+
+function _stripLeadingAssignments(segment) {
+    let rest = String(segment || '').trim();
+    while (true) {
+        const m = /^([A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^"' \t]+))\s+/.exec(rest);
+        if (!m) break;
+        rest = rest.slice(m[0].length).trim();
+    }
+    return rest;
+}
+
+function commandLikelyMutatesWorkspace(command) {
+    const text = String(command || '').trim();
+    if (!text) return false;
+    if (MUTATION_PATTERN.test(text)) return true;
+    if (/(^|[^0-9])>>?/.test(text)) return true;
+    if (/\btee\b/.test(text)) return true;
+    const segments = text.split(/&&|\|\||;|\n|\|/);
+    if (segments.length === 0) return true;
+    for (const rawSegment of segments) {
+        const segment = _stripLeadingAssignments(rawSegment);
+        if (!segment) continue;
+        if (!READ_ONLY_SEGMENT_RE.test(segment)) return true;
+    }
+    return false;
+}
 
 // --- ANSI strip (self-contained; mirrors builtin.mjs's implementation) ---
 const _ANSI_REGEX = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\|\u009C))/g;
@@ -377,6 +406,13 @@ async function bash_session(args) {
     } catch (err) {
         return `Error: ${err?.message || String(err)}`;
     }
+    // Keep builtin caches warm across clearly read-only shell use (pwd/ls/cd/
+    // export/source/grep/cat/git status) so persistent-shell workflows don't
+    // blow away read/list/graph cache on every turn. Commands that may mutate
+    // the workspace still invalidate conservatively.
+    if (commandLikelyMutatesWorkspace(command)) {
+        invalidateBuiltinResultCache();
+    }
 
     if (close) {
         _killSession(id, 'close-requested');
@@ -436,6 +472,12 @@ export async function executeBashSessionTool(name, args, _cwd) {
         default:
             throw new Error(`Unknown bash-session tool: ${name}`);
     }
+}
+
+export function closeBashSession(sessionId, reason = 'external-close') {
+    if (!sessionId || !_sessions.has(sessionId)) return false;
+    _killSession(sessionId, reason);
+    return true;
 }
 
 // Best-effort cleanup on process exit so orphan bash children don't linger

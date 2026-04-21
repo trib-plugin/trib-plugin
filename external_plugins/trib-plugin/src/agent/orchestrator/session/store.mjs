@@ -283,6 +283,7 @@ export function sweepStaleSessions(ttlMs) {
                     id: session.id,
                     owner: session.owner || 'unknown',
                     idleMinutes: Math.round((now - lastActive) / 60000),
+                    bashSessionId: session.implicitBashSessionId || null,
                 });
             } else {
                 remaining++;

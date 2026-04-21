@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import * as nodeUtil from 'node:util';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
+import { getPluginData } from '../config.mjs';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
@@ -201,9 +202,9 @@ export function normalizeInputPath(p) {
 }
 
 // Normalise output paths for display: on Windows, unify all separators to
-// forward slash so `C:/.../tools\lsp.mjs`-style mixed-slash strings don't
-// reach the model. Native Windows APIs accept forward slashes too, so this
-// is a purely cosmetic (and downstream copy-paste friendly) normalisation.
+// forward slash so mixed-slash strings don't reach the model. Native Windows
+// APIs accept forward slashes too, so this is a purely cosmetic (and
+// downstream copy-paste friendly) normalisation.
 export function normalizeOutputPath(p) {
     if (typeof p !== 'string') return p;
     if (process.platform !== 'win32') return p;
@@ -435,9 +436,9 @@ async function streamReadRange(fullPath, offset, limit) {
 }
 
 // Shared display helper: produce the cwd-relative, forward-slash path the
-// model sees. list / tree / find_files / lsp.mjs all need the same recipe;
-// exporting it here keeps the convention (relative when inside cwd, normalized
-// separators) pinned to one location.
+// model sees. Multiple tools need the same recipe; exporting it here keeps
+// the convention (relative when inside cwd, normalized separators) pinned
+// to one location.
 export function toDisplayPath(abs, cwd) {
     return normalizeOutputPath(cwdRelativePath(abs, cwd));
 }
@@ -633,15 +634,67 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. If you need shell state across turns (cwd, env, sourced venv), use `bash_session` instead of replaying setup in repeated `bash` calls. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
                 command: { type: 'string', description: 'Shell command.' },
                 timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
                 merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block.' },
+                run_in_background: { type: 'boolean', description: 'Run command in the background and return a job id immediately. Use for long builds/tests/servers.' },
             },
             required: ['command'],
+        },
+    },
+    {
+        name: 'jobs_list',
+        title: 'List Background Jobs',
+        annotations: { title: 'List Background Jobs', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'List recent background shell jobs with status, pid, and start time.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'job_status',
+        title: 'Background Job Status',
+        annotations: { title: 'Background Job Status', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Get status for a background shell job. Returns pid, command, output paths, and completion state.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                job_id: { type: 'string', description: 'Background job id returned by bash with run_in_background:true.' },
+            },
+            required: ['job_id'],
+        },
+    },
+    {
+        name: 'job_read',
+        title: 'Read Background Job Output',
+        annotations: { title: 'Read Background Job Output', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        description: 'Read stdout/stderr from a background shell job using the same line-oriented behavior as read/tail.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                job_id: { type: 'string', description: 'Background job id.' },
+                stream: { type: 'string', enum: ['stdout', 'stderr'], description: 'Which stream to read. Default stdout.' },
+                mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'Read mode. Default tail.' },
+                n: { type: 'number', description: 'Lines for head/tail mode. Default 40.' },
+                offset: { type: 'number', description: 'Start line for full mode (0-based).' },
+                limit: { type: 'number', description: 'Max lines for full mode.' },
+            },
+            required: ['job_id'],
+        },
+    },
+    {
+        name: 'job_cancel',
+        title: 'Cancel Background Job',
+        annotations: { title: 'Cancel Background Job', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+        description: 'Terminate a running background shell job.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                job_id: { type: 'string', description: 'Background job id.' },
+            },
+            required: ['job_id'],
         },
     },
     {
@@ -679,6 +732,8 @@ export const BUILTIN_TOOLS = [
             properties: {
                 pattern: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Glob pattern(s).' },
                 path: { type: 'string', description: 'Base dir. Default: cwd. Capped at 100.' },
+                head_limit: { type: 'number', description: 'Max file paths to return. Default 100; 0 = unlimited.' },
+                offset: { type: 'number', description: 'Skip N file paths before applying head_limit.' },
             },
             required: ['pattern'],
         },
@@ -698,6 +753,7 @@ export const BUILTIN_TOOLS = [
                 sort: { type: 'string', enum: ['name', 'mtime', 'size'], description: 'list mode sort key. Default name.' },
                 type: { type: 'string', enum: ['any', 'file', 'dir'], description: 'Filter by entry type. Default any.' },
                 head_limit: { type: 'number', description: 'Max rows/lines. 0 = unlimited.' },
+                offset: { type: 'number', description: 'Skip N rows/entries before applying head_limit.' },
                 name: { type: 'string', description: 'find mode: filename glob (e.g. `*.mjs`).' },
                 min_size: { type: 'number', description: 'find mode: minimum size in bytes (file only).' },
                 max_size: { type: 'number', description: 'find mode: maximum size in bytes (file only).' },
@@ -731,30 +787,159 @@ export const BUILTIN_TOOLS = [
 // Anthropic prompt cache already covers the messages layer; this layer
 // dedupes back-to-back builtin tool calls with identical args so spawning
 // ripgrep or re-reading the same file is avoided when the agent loops on
-// the same query in a tight iter. Any mutation (write / edit / bash /
-// multi_edit / batch_edit) invalidates the whole cache — safer than
-// trying to invalidate a subset, and the TTL is short enough that the
-// lost hit ratio is small.
-const RESULT_CACHE = new Map(); // key → { ts, value }
+// the same query in a tight iter. Mutations invalidate affected cache
+// entries by path/scope where possible; shell commands still fall back to
+// a full clear because arbitrary commands can mutate anything.
+const RESULT_CACHE = new Map(); // key → { ts, value, paths, scopes }
 const RESULT_CACHE_TTL_MS = 30_000;
 const RESULT_CACHE_MAX_ENTRIES = 200;
+const STAT_CACHE = new Map(); // fullPath → { ts, stat }
+const STAT_CACHE_TTL_MS = 5_000;
+const STAT_CACHE_MAX_ENTRIES = 2_000;
+const BUILTIN_CACHE_STATS = {
+    hits: 0,
+    misses: 0,
+    sets: 0,
+    pathInvalidations: 0,
+    globalInvalidations: 0,
+    invalidatedResultEntries: 0,
+    invalidatedStatEntries: 0,
+};
+function _canonicalCachePath(p) {
+    const full = normalize(resolve(String(p || '')));
+    return process.platform === 'win32' ? full.toLowerCase() : full;
+}
+function _normalizeCacheMetaPaths(values) {
+    if (!Array.isArray(values)) return [];
+    return Array.from(new Set(
+        values
+            .filter(Boolean)
+            .map((v) => _canonicalCachePath(v)),
+    ));
+}
+function _cachePathsOverlap(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return a.startsWith(b.endsWith(sep) ? b : `${b}${sep}`)
+        || b.startsWith(a.endsWith(sep) ? a : `${a}${sep}`);
+}
+function _cacheEntryOverlapsPaths(entry, affectedPaths) {
+    const entryPaths = Array.isArray(entry?.paths) ? entry.paths : [];
+    const entryScopes = Array.isArray(entry?.scopes) ? entry.scopes : [];
+    for (const affected of affectedPaths) {
+        for (const p of entryPaths) {
+            if (_cachePathsOverlap(p, affected)) return true;
+        }
+        for (const scope of entryScopes) {
+            if (_cachePathsOverlap(scope, affected)) return true;
+        }
+    }
+    return false;
+}
 function _cacheGet(key) {
     const entry = RESULT_CACHE.get(key);
-    if (!entry) return null;
-    if (Date.now() - entry.ts > RESULT_CACHE_TTL_MS) {
-        RESULT_CACHE.delete(key);
+    if (!entry) {
+        BUILTIN_CACHE_STATS.misses++;
         return null;
     }
+    if (Date.now() - entry.ts > RESULT_CACHE_TTL_MS) {
+        RESULT_CACHE.delete(key);
+        BUILTIN_CACHE_STATS.misses++;
+        return null;
+    }
+    BUILTIN_CACHE_STATS.hits++;
     return entry.value;
 }
-function _cacheSet(key, value) {
+function _cacheSet(key, value, meta = {}) {
     if (RESULT_CACHE.size >= RESULT_CACHE_MAX_ENTRIES) {
         const oldest = RESULT_CACHE.keys().next().value;
         if (oldest) RESULT_CACHE.delete(oldest);
     }
-    RESULT_CACHE.set(key, { ts: Date.now(), value });
+    RESULT_CACHE.set(key, {
+        ts: Date.now(),
+        value,
+        paths: _normalizeCacheMetaPaths(meta.paths),
+        scopes: _normalizeCacheMetaPaths(meta.scopes),
+    });
+    BUILTIN_CACHE_STATS.sets++;
 }
-function _cacheInvalidateAll() { RESULT_CACHE.clear(); }
+function _statCacheGet(fullPath, now = Date.now()) {
+    const entry = STAT_CACHE.get(fullPath);
+    if (!entry) return null;
+    if (now - entry.ts > STAT_CACHE_TTL_MS) {
+        STAT_CACHE.delete(fullPath);
+        return null;
+    }
+    return entry.stat;
+}
+function _statCacheSet(fullPath, stat, now = Date.now()) {
+    if (STAT_CACHE.size >= STAT_CACHE_MAX_ENTRIES) {
+        const oldest = STAT_CACHE.keys().next().value;
+        if (oldest) STAT_CACHE.delete(oldest);
+    }
+    STAT_CACHE.set(fullPath, { ts: now, stat });
+}
+export function getCachedReadOnlyStat(fullPath, loader = statSync, now = Date.now()) {
+    const cached = _statCacheGet(fullPath, now);
+    if (cached) return cached;
+    const stat = loader(fullPath);
+    _statCacheSet(fullPath, stat, now);
+    return stat;
+}
+function _cacheInvalidateAll() {
+    BUILTIN_CACHE_STATS.globalInvalidations++;
+    BUILTIN_CACHE_STATS.invalidatedResultEntries += RESULT_CACHE.size;
+    BUILTIN_CACHE_STATS.invalidatedStatEntries += STAT_CACHE.size;
+    RESULT_CACHE.clear();
+    STAT_CACHE.clear();
+}
+function _cacheInvalidatePaths(paths) {
+    const affectedPaths = _normalizeCacheMetaPaths(Array.isArray(paths) ? paths : [paths]);
+    if (affectedPaths.length === 0) {
+        _cacheInvalidateAll();
+        return;
+    }
+    BUILTIN_CACHE_STATS.pathInvalidations++;
+    for (const [key, entry] of RESULT_CACHE) {
+        if (_cacheEntryOverlapsPaths(entry, affectedPaths)) {
+            RESULT_CACHE.delete(key);
+            BUILTIN_CACHE_STATS.invalidatedResultEntries++;
+        }
+    }
+    for (const key of [...STAT_CACHE.keys()]) {
+        if (affectedPaths.some((affected) => _cachePathsOverlap(_canonicalCachePath(key), affected))) {
+            STAT_CACHE.delete(key);
+            BUILTIN_CACHE_STATS.invalidatedStatEntries++;
+        }
+    }
+}
+export function invalidateBuiltinResultCache(paths = null) {
+    if (Array.isArray(paths) ? paths.length > 0 : Boolean(paths)) {
+        _cacheInvalidatePaths(paths);
+        return;
+    }
+    _cacheInvalidateAll();
+}
+export function recordReadSnapshotForPath(fullPath) {
+    try {
+        _recordReadSnapshot(fullPath);
+    } catch { /* ignore snapshot failures */ }
+}
+export function clearReadSnapshotForPath(fullPath) {
+    try { _readFiles.delete(fullPath); } catch { /* ignore */ }
+}
+export function resetBuiltinCacheStatsForTesting() {
+    BUILTIN_CACHE_STATS.hits = 0;
+    BUILTIN_CACHE_STATS.misses = 0;
+    BUILTIN_CACHE_STATS.sets = 0;
+    BUILTIN_CACHE_STATS.pathInvalidations = 0;
+    BUILTIN_CACHE_STATS.globalInvalidations = 0;
+    BUILTIN_CACHE_STATS.invalidatedResultEntries = 0;
+    BUILTIN_CACHE_STATS.invalidatedStatEntries = 0;
+}
+export function getBuiltinCacheStatsForTesting() {
+    return { ...BUILTIN_CACHE_STATS };
+}
 
 // --- Read-before-Edit tracking (Claude Code parity) ---
 //
@@ -782,6 +967,124 @@ function _recordReadSnapshot(fullPath, st) {
     } catch {
         _readFiles.set(fullPath, { mtimeMs: Date.now(), size: 0 });
     }
+}
+
+function getShellJobsDir() {
+    const dir = join(getPluginData(), 'shell-jobs');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    return dir;
+}
+function shellJobDetailPath(jobId) { return join(getShellJobsDir(), `${jobId}.json`); }
+function shellJobStdoutPath(jobId) { return join(getShellJobsDir(), `${jobId}.stdout.log`); }
+function shellJobStderrPath(jobId) { return join(getShellJobsDir(), `${jobId}.stderr.log`); }
+function shellJobExitPath(jobId) { return join(getShellJobsDir(), `${jobId}.exit`); }
+function shellJobDonePath(jobId) { return join(getShellJobsDir(), `${jobId}.done`); }
+function writeShellJobDetail(detail) {
+    writeFileSync(shellJobDetailPath(detail.jobId), JSON.stringify(detail, null, 2), 'utf-8');
+}
+function readShellJobDetail(jobId) {
+    try {
+        const p = shellJobDetailPath(jobId);
+        if (!existsSync(p)) return null;
+        return JSON.parse(readFileSync(p, 'utf-8'));
+    } catch {
+        return null;
+    }
+}
+function listShellJobDetails() {
+    try {
+        return readdirSync(getShellJobsDir())
+            .filter((f) => f.endsWith('.json'))
+            .map((f) => {
+                try { return JSON.parse(readFileSync(join(getShellJobsDir(), f), 'utf-8')); }
+                catch { return null; }
+            })
+            .filter(Boolean)
+            .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
+    } catch {
+        return [];
+    }
+}
+function isPidAlive(pid) {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+function shellQuoteSingle(s) {
+    return `'${String(s).replace(/'/g, `'\"'\"'`)}'`;
+}
+function refreshShellJob(jobId) {
+    const detail = readShellJobDetail(jobId);
+    if (!detail) return null;
+    if (detail.status !== 'running') return detail;
+    const exitPath = shellJobExitPath(jobId);
+    if (existsSync(exitPath)) {
+        let exitCode = null;
+        try {
+            const raw = readFileSync(exitPath, 'utf-8').trim();
+            const parsed = parseInt(raw, 10);
+            exitCode = Number.isFinite(parsed) ? parsed : null;
+        } catch { /* ignore */ }
+        let finishedAt = new Date().toISOString();
+        try {
+            finishedAt = new Date(statSync(exitPath).mtimeMs).toISOString();
+        } catch { /* ignore */ }
+        detail.status = exitCode === 0 ? 'completed' : 'failed';
+        detail.exitCode = exitCode;
+        detail.finishedAt = finishedAt;
+        writeShellJobDetail(detail);
+        return detail;
+    }
+    if (detail.pid && !isPidAlive(detail.pid)) {
+        detail.status = 'failed';
+        detail.finishedAt = new Date().toISOString();
+        detail.error = 'process exited without completion marker';
+        writeShellJobDetail(detail);
+    }
+    return detail;
+}
+function startBackgroundShellJob({ command, timeoutMs, workDir, mergeStderr, spawnEnv, shell, shellArg }) {
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const stdoutPath = shellJobStdoutPath(jobId);
+    const stderrPath = shellJobStderrPath(jobId);
+    const exitPath = shellJobExitPath(jobId);
+    const donePath = shellJobDonePath(jobId);
+    const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+    const wrapped = `{ ${command}; rc=$?; printf '%s' \"$rc\" > ${shellQuoteSingle(exitPath)}; touch ${shellQuoteSingle(donePath)}; exit $rc; }`;
+    const child = spawn(shell, [shellArg, wrapped], {
+        cwd: workDir,
+        env: spawnEnv,
+        detached: true,
+        stdio: [
+            'ignore',
+            openSync(stdoutPath, 'a'),
+            openSync(mergeStderr ? stdoutPath : stderrPath, 'a'),
+        ],
+        windowsHide: true,
+    });
+    child.unref();
+    const detail = {
+        jobId,
+        kind: 'bash',
+        status: 'running',
+        command,
+        cwd: workDir,
+        pid: child.pid,
+        mergeStderr,
+        timeoutMs,
+        timeoutSeconds,
+        stdoutPath,
+        stderrPath: mergeStderr ? stdoutPath : stderrPath,
+        exitPath,
+        donePath,
+        startedAt: new Date().toISOString(),
+    };
+    writeShellJobDetail(detail);
+    return detail;
 }
 
 // --- Blocked commands for safety ---
@@ -885,6 +1188,114 @@ async function runRg(argsList, execOptions = {}) {
         }
         throw err;
     }
+}
+
+export function buildGrepCacheKey(parts) {
+    const {
+        patterns,
+        searchPath,
+        globPatterns,
+        outputMode,
+        headLimit,
+        offset,
+        caseInsensitive,
+        showLineNumbers,
+        beforeN,
+        afterN,
+        contextN,
+        multilineMode,
+        fileType,
+    } = parts;
+    return [
+        'grep',
+        patterns.join('\x01'),
+        searchPath,
+        globPatterns.join('\x01'),
+        outputMode,
+        String(headLimit),
+        String(offset),
+        caseInsensitive ? 'i1' : 'i0',
+        showLineNumbers ? 'n1' : 'n0',
+        beforeN ?? '',
+        afterN ?? '',
+        contextN ?? '',
+        multilineMode ? 'm1' : 'm0',
+        fileType || '',
+    ].join('|');
+}
+
+export function buildGrepRgArgs(parts) {
+    const {
+        patterns,
+        searchPath,
+        globPatterns,
+        outputMode,
+        caseInsensitive,
+        showLineNumbers,
+        beforeN,
+        afterN,
+        contextN,
+        multilineMode,
+        fileType,
+    } = parts;
+    const rgArgs = ['--color', 'never'];
+    if (outputMode === 'files_with_matches') {
+        rgArgs.push('--files-with-matches');
+    } else if (outputMode === 'count') {
+        rgArgs.push('--count');
+    } else {
+        rgArgs.push('--no-heading');
+        if (showLineNumbers) rgArgs.push('--line-number');
+        if (beforeN !== null) rgArgs.push('-B', String(beforeN));
+        if (afterN !== null) rgArgs.push('-A', String(afterN));
+        if (contextN !== null) rgArgs.push('-C', String(contextN));
+    }
+    if (caseInsensitive) rgArgs.push('-i');
+    if (multilineMode) rgArgs.push('-U', '--multiline-dotall');
+    if (fileType) rgArgs.push('--type', fileType);
+    for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
+    for (const g of globPatterns) rgArgs.push('--glob', g);
+    for (const p of patterns) rgArgs.push('-e', p);
+    rgArgs.push(searchPath);
+    return rgArgs;
+}
+
+export function buildGlobCacheKey({ patterns, basePath, headLimit, offset }) {
+    return ['glob', patterns.join('\x01'), basePath, headLimit ?? '', offset ?? ''].join('|');
+}
+
+export function buildListCacheKey(parts) {
+    const {
+        mode,
+        inputPath,
+        depth,
+        hidden,
+        sort,
+        typeFilter,
+        headLimit,
+        offset,
+        namePattern,
+        minSize,
+        maxSize,
+        modifiedAfter,
+        modifiedBefore,
+    } = parts;
+    return [
+        'list',
+        mode,
+        inputPath,
+        depth,
+        hidden ? 'h1' : 'h0',
+        sort || '',
+        typeFilter || '',
+        headLimit,
+        offset ?? '',
+        namePattern || '',
+        minSize ?? '',
+        maxSize ?? '',
+        modifiedAfter || '',
+        modifiedBefore || '',
+    ].join('|');
 }
 // --- Unified diff computation (LCS-based) ---
 //
@@ -1053,6 +1464,26 @@ export async function executeBuiltinTool(name, args, cwd) {
                     const prefix = toolDirs.filter((p) => existsSync(p)).join(';');
                     if (prefix) spawnEnv.PATH = prefix + (existing ? ';' + existing : '');
                 }
+                if (args.run_in_background === true) {
+                    const job = startBackgroundShellJob({
+                        command,
+                        timeoutMs: timeout,
+                        workDir,
+                        mergeStderr,
+                        spawnEnv,
+                        shell,
+                        shellArg,
+                    });
+                    return [
+                        `[job: ${job.jobId}]`,
+                        `[pid: ${job.pid}]`,
+                        `[stdout: ${normalizeOutputPath(job.stdoutPath)}]`,
+                        mergeStderr ? null : `[stderr: ${normalizeOutputPath(job.stderrPath)}]`,
+                        '',
+                        `Background job started for command: ${command}`,
+                        `Use jobs_list / job_status / job_read / job_cancel to inspect it.`,
+                    ].filter(Boolean).join('\n');
+                }
                 const result = spawnSync(shell, [shellArg, command], {
                     encoding: 'utf-8',
                     timeout,
@@ -1105,6 +1536,64 @@ export async function executeBuiltinTool(name, args, cwd) {
                 _cacheInvalidateAll();
             }
         }
+        case 'jobs_list': {
+            const jobs = listShellJobDetails().map((detail) => refreshShellJob(detail.jobId) || detail);
+            if (jobs.length === 0) return '(no background jobs)';
+            return jobs.map((job) =>
+                `${job.jobId}\t${job.status}\tpid=${job.pid ?? '-'}\t${job.startedAt || '-'}\t${job.command || ''}`
+            ).join('\n');
+        }
+        case 'job_status': {
+            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
+            if (!jobId) return 'Error: job_id is required';
+            const job = refreshShellJob(jobId);
+            if (!job) return `Error: job not found: ${jobId}`;
+            return JSON.stringify(job, null, 2);
+        }
+        case 'job_read': {
+            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
+            if (!jobId) return 'Error: job_id is required';
+            const job = refreshShellJob(jobId);
+            if (!job) return `Error: job not found: ${jobId}`;
+            const stream = args.stream === 'stderr' ? 'stderr' : 'stdout';
+            const path = stream === 'stderr' ? job.stderrPath : job.stdoutPath;
+            if (!path) return `Error: ${stream} path missing for job ${jobId}`;
+            const mode = args.mode || 'tail';
+            const jobCwd = getPluginData();
+            if (mode === 'head') return executeBuiltinTool('head', { path, n: args.n || 40 }, jobCwd);
+            if (mode === 'count') return executeBuiltinTool('wc', { path }, jobCwd);
+            if (mode === 'full') {
+                return executeBuiltinTool('read', {
+                    path,
+                    offset: typeof args.offset === 'number' ? args.offset : 0,
+                    limit: typeof args.limit === 'number' ? args.limit : 2000,
+                }, jobCwd);
+            }
+            return executeBuiltinTool('tail', { path, n: args.n || 40 }, jobCwd);
+        }
+        case 'job_cancel': {
+            const jobId = typeof args.job_id === 'string' ? args.job_id : '';
+            if (!jobId) return 'Error: job_id is required';
+            const job = refreshShellJob(jobId);
+            if (!job) return `Error: job not found: ${jobId}`;
+            if (job.status !== 'running') return `Job ${jobId} already ${job.status}`;
+            if (!job.pid || !isPidAlive(job.pid)) {
+                job.status = 'failed';
+                job.finishedAt = new Date().toISOString();
+                job.error = 'process not running';
+                writeShellJobDetail(job);
+                return `Job ${jobId} is no longer running`;
+            }
+            try {
+                process.kill(job.pid, 'SIGTERM');
+            } catch (err) {
+                return `Error: failed to cancel ${jobId}: ${err?.message || String(err)}`;
+            }
+            job.status = 'cancelled';
+            job.finishedAt = new Date().toISOString();
+            writeShellJobDetail(job);
+            return `Cancelled job ${jobId}`;
+        }
         case 'read': {
             // Unified-read dispatch (v0.6.283+):
             //   path: string[]              → multi_read (parallel per-file)
@@ -1126,10 +1615,6 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!isSafePath(filePath, workDir))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
-            const wantFull = args.full === true;
-            const cacheKey = `read|${fullPath}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}|${wantFull ? 'f' : 's'}`;
-            const cached = _cacheGet(cacheKey);
-            if (cached !== null) return cached;
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
             // throw a small error response when the file is too big rather
             // than truncating to 25K tokens of content. Throw is decisively
@@ -1149,13 +1634,17 @@ export async function executeBuiltinTool(name, args, cwd) {
                 const hint = similar ? ` Did you mean "${normalizeOutputPath(similar)}"?` : '';
                 return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}${hint}`;
             }
+            const wantFull = args.full === true;
+            const cacheKey = `read|${fullPath}|${st.mtimeMs}|${st.size}|${typeof args.offset === 'number' ? args.offset : 'd'}|${typeof args.limit === 'number' ? args.limit : 'd'}|${wantFull ? 'f' : 's'}`;
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             if (st.size > READ_MAX_SIZE_BYTES) {
                 if (!hasRangeArgs) {
                     return `Error: file size ${st.size} bytes exceeds ${READ_MAX_SIZE_BYTES}-byte cap. Use offset+limit to read a range.`;
                 }
                 try {
                     const out = await streamReadRange(fullPath, offset, limit);
-                    _cacheSet(cacheKey, out);
+                    _cacheSet(cacheKey, out, { paths: [fullPath] });
                     _recordReadSnapshot(fullPath, st);
                     return out;
                 } catch (err) {
@@ -1184,7 +1673,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     const { text } = smartReadTruncate(out, lines.length, st.size);
                     out = text;
                 }
-                _cacheSet(cacheKey, out);
+                _cacheSet(cacheKey, out, { paths: [fullPath] });
                 _recordReadSnapshot(fullPath, st);
                 return out;
             }
@@ -1281,7 +1770,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // Serial edits all land in `content`; a single atomicWrite
                 // publishes the final state.
                 await atomicWrite(fullPath, content);
-                _cacheInvalidateAll();
+                invalidateBuiltinResultCache([fullPath]);
                 _recordReadSnapshot(fullPath);
                 return `Edited: ${normalizeOutputPath(filePath)} (${edits.length} replacements applied)`;
             } catch (err) {
@@ -1353,7 +1842,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // openai-oauth-ws.mjs). atomicWrite preserves the file mode
                 // on overwrite so we don't inadvertently widen 0o600 → 0o644.
                 await atomicWrite(fullPath, content);
-                _cacheInvalidateAll();
+                invalidateBuiltinResultCache([fullPath]);
                 // Write establishes the on-disk state the model just
                 // authored, so a subsequent Edit does not need a fresh
                 // Read round-trip.
@@ -1441,7 +1930,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     : content.replace(oldStr, () => newStr);
                 // v0.6.248: atomic write — see `write` handler for rationale.
                 await atomicWrite(fullPath, updated);
-                _cacheInvalidateAll();
+                invalidateBuiltinResultCache([fullPath]);
                 // Refresh the snapshot to the post-write mtime so a chain
                 // of edits against the same file doesn't trip the stale
                 // check on the second hop.
@@ -1503,7 +1992,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 const newFileContent = updated.join('\n');
                 // v0.6.248: atomic write — tempfile + fsync + rename.
                 await atomicWrite(fullPath, newFileContent);
-                _cacheInvalidateAll();
+                invalidateBuiltinResultCache([fullPath]);
                 _recordReadSnapshot(fullPath);
                 const replacedCount = endLine - startLine + 1;
                 const insertedCount = newLines.length;
@@ -1533,9 +2022,6 @@ export async function executeBuiltinTool(name, args, cwd) {
             const headLimitRaw = args.head_limit;
             const headLimit = headLimitRaw === 0 ? Infinity : (headLimitRaw || 250);
             const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
-            const cacheKey = `grep|${patterns.join('\x01')}|${searchPath}|${globPatterns.join('\x01')}|${outputMode}|${headLimit}|${offset}`;
-            const cached = _cacheGet(cacheKey);
-            if (cached !== null) return cached;
             // Extended rg flag decoding (Anthropic GrepTool parity): case
             // fold, line numbers, -A/-B/-C windowing, and multiline dot.
             // Context flags and line numbers are silently ignored outside
@@ -1548,28 +2034,40 @@ export async function executeBuiltinTool(name, args, cwd) {
                 ? args['-C']
                 : (typeof args.context === 'number' ? args.context : null);
             const multilineMode = args.multiline === true;
+            const fileType = typeof args.type === 'string' && args.type.trim()
+                ? args.type.trim()
+                : '';
+            const cacheKey = buildGrepCacheKey({
+                patterns,
+                searchPath,
+                globPatterns,
+                outputMode,
+                headLimit,
+                offset,
+                caseInsensitive,
+                showLineNumbers,
+                beforeN,
+                afterN,
+                contextN,
+                multilineMode,
+                fileType,
+            });
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             try {
-                const rgArgs = ['--color', 'never'];
-                if (outputMode === 'files_with_matches') {
-                    rgArgs.push('--files-with-matches');
-                } else if (outputMode === 'count') {
-                    rgArgs.push('--count');
-                } else {
-                    rgArgs.push('--no-heading');
-                    if (showLineNumbers) rgArgs.push('--line-number');
-                    if (beforeN !== null) rgArgs.push('-B', String(beforeN));
-                    if (afterN !== null) rgArgs.push('-A', String(afterN));
-                    if (contextN !== null) rgArgs.push('-C', String(contextN));
-                }
-                if (caseInsensitive) rgArgs.push('-i');
-                if (multilineMode) rgArgs.push('-U', '--multiline-dotall');
-                for (const ex of DEFAULT_IGNORE_GLOBS) rgArgs.push('--glob', ex);
-                for (const g of globPatterns) rgArgs.push('--glob', g);
-                // Use -e for each pattern so rg OR-joins them in a single
-                // process. `-e` takes the pattern as a flag value, which also
-                // avoids ambiguity with patterns starting with `-`.
-                for (const p of patterns) rgArgs.push('-e', p);
-                rgArgs.push(searchPath);
+                const rgArgs = buildGrepRgArgs({
+                    patterns,
+                    searchPath,
+                    globPatterns,
+                    outputMode,
+                    caseInsensitive,
+                    showLineNumbers,
+                    beforeN,
+                    afterN,
+                    contextN,
+                    multilineMode,
+                    fileType,
+                });
                 const stdout = await runRg(rgArgs, { cwd: workDir });
                 const allLines = stdout.split('\n').filter(Boolean);
                 // Apply offset before head_limit so pagination is predictable:
@@ -1584,7 +2082,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     ? `\n... [${remaining} more entries]`
                     : '';
                 const out = capShellOutput((normalized.join('\n') + truncated) || '(no matches)');
-                _cacheSet(cacheKey, out);
+                _cacheSet(cacheKey, out, { scopes: [resolveAgainstCwd(searchPath, workDir)] });
                 return out;
             }
             catch (err) {
@@ -1606,7 +2104,10 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (patterns.length === 0)
                 return 'Error: pattern is required';
             const basePath = args.path || '.';
-            const cacheKey = `glob|${patterns.join('\x01')}|${basePath}`;
+            const headLimitRaw = args.head_limit;
+            const headLimit = headLimitRaw === 0 ? Infinity : (headLimitRaw || 100);
+            const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
+            const cacheKey = buildGlobCacheKey({ patterns, basePath, headLimit, offset });
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
             // Group patterns by resolved baseDir so multiple absolute roots
@@ -1647,19 +2148,21 @@ export async function executeBuiltinTool(name, args, cwd) {
             // to mtime=0 so missing/race-condition entries land at the
             // end rather than aborting the whole sort.
             const withStat = unique.map((p) => {
-                try { return { path: p, mtime: statSync(p).mtimeMs }; }
+                try { return { path: p, mtime: getCachedReadOnlyStat(p).mtimeMs }; }
                 catch { return { path: p, mtime: 0 }; }
             });
             withStat.sort((a, b) => b.mtime - a.mtime);
-            const capped = withStat.slice(0, 100).map((entry) => {
+            const windowed = offset > 0 ? withStat.slice(offset) : withStat;
+            const capped = (headLimit === Infinity ? windowed : windowed.slice(0, headLimit)).map((entry) => {
                 // Relativise against workDir when the file lives inside it
                 // — matches Anthropic GlobTool toRelativePath and trims the
                 // redundant absolute prefix from the model's context.
                 const displayed = cwdRelativePath(entry.path, workDir);
                 return normalizeOutputPath(displayed);
             });
-            const out = capShellOutput(capped.join('\n') || '(no files found)');
-            _cacheSet(cacheKey, out);
+            const remaining = windowed.length - capped.length;
+            const out = capShellOutput((capped.join('\n') + (remaining > 0 ? `\n... [${remaining} more entries]` : '')) || '(no files found)');
+            _cacheSet(cacheKey, out, { scopes: [...groups.keys()].map((root) => resolveAgainstCwd(root, workDir)) });
             return out;
         }
         case 'list': {
@@ -1676,12 +2179,27 @@ export async function executeBuiltinTool(name, args, cwd) {
             const sort = ['name', 'mtime', 'size'].includes(args.sort) ? args.sort : 'name';
             const typeFilter = ['any', 'file', 'dir'].includes(args.type) ? args.type : 'any';
             const headLimit = parseInt(args.head_limit ?? 200, 10);
+            const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
+            const gatherLimit = headLimit > 0 ? offset + headLimit : 0;
+            const needsGlobalStat = sort === 'mtime' || sort === 'size';
+            const cacheKey = buildListCacheKey({
+                mode: 'list',
+                inputPath,
+                depth,
+                hidden,
+                sort,
+                typeFilter,
+                headLimit,
+                offset,
+            });
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             if (!isSafePath(inputPath, workDir)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
             let st;
-            try { st = statSync(fullPath); }
+            try { st = getCachedReadOnlyStat(fullPath); }
             catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
             if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
 
@@ -1699,10 +2217,18 @@ export async function executeBuiltinTool(name, args, cwd) {
                     if (typeFilter === 'dir' && !isDir) return;
                     const entType = isDir ? 'dir' : (isFile ? 'file' : (ent.isSymbolicLink() ? 'symlink' : 'other'));
                     let size = 0, mtimeMs = 0;
-                    try { const s = statSync(entPath); size = s.size; mtimeMs = s.mtimeMs; }
-                    catch { /* keep zero */ }
-                    rows.push({ path: cwdRelativePath(entPath, workDir), type: entType, size, mtimeMs });
-                    if (headLimit > 0 && rows.length >= headLimit) return false;
+                    if (needsGlobalStat) {
+                        try { const s = getCachedReadOnlyStat(entPath); size = s.size; mtimeMs = s.mtimeMs; }
+                        catch { /* keep zero */ }
+                    }
+                    rows.push({
+                        path: cwdRelativePath(entPath, workDir),
+                        type: entType,
+                        size,
+                        mtimeMs,
+                        fullPath: entPath,
+                    });
+                    if (gatherLimit > 0 && rows.length >= gatherLimit) return false;
                 },
             });
 
@@ -1710,11 +2236,23 @@ export async function executeBuiltinTool(name, args, cwd) {
             else if (sort === 'size') rows.sort((a, b) => b.size - a.size);
             else rows.sort((a, b) => a.path.localeCompare(b.path));
 
-            const sliced = headLimit > 0 ? rows.slice(0, headLimit) : rows;
+            const windowed = offset > 0 ? rows.slice(offset) : rows;
+            const sliced = headLimit > 0 ? windowed.slice(0, headLimit) : windowed;
+            if (!needsGlobalStat) {
+                for (const row of sliced) {
+                    try {
+                        const s = getCachedReadOnlyStat(row.fullPath);
+                        row.size = s.size;
+                        row.mtimeMs = s.mtimeMs;
+                    } catch { /* keep zero */ }
+                }
+            }
             const lines = sliced.map(r =>
                 `${normalizeOutputPath(r.path)}\t${r.type}\t${r.size}\t${formatMtime(r.mtimeMs)}`);
-            if (rows.length > sliced.length) lines.push(`... ${rows.length - sliced.length} more entries`);
-            return lines.join('\n') || '(empty directory)';
+            if (windowed.length > sliced.length) lines.push(`... ${windowed.length - sliced.length} more entries`);
+            const out = lines.join('\n') || '(empty directory)';
+            _cacheSet(cacheKey, out, { scopes: [fullPath] });
+            return out;
         }
         case 'tree': {
             args.path = normalizeInputPath(args.path);
@@ -1722,12 +2260,25 @@ export async function executeBuiltinTool(name, args, cwd) {
             const depth = Math.min(Math.max(parseInt(args.depth ?? 3, 10) || 3, 1), 6);
             const hidden = Boolean(args.hidden);
             const headLimit = parseInt(args.head_limit ?? 200, 10);
+            const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
+            const cacheKey = buildListCacheKey({
+                mode: 'tree',
+                inputPath,
+                depth,
+                hidden,
+                sort: '',
+                typeFilter: '',
+                headLimit,
+                offset,
+            });
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
             if (!isSafePath(inputPath, workDir)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
             let st;
-            try { st = statSync(fullPath); }
+            try { st = getCachedReadOnlyStat(fullPath); }
             catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
             if (!st.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
             const lines = [`${normalizeOutputPath(basename(fullPath))}/`];
@@ -1751,11 +2302,19 @@ export async function executeBuiltinTool(name, args, cwd) {
                     if (ent.isDirectory()) {
                         prefixStack[ctx.depth] = prefix + (ctx.isLast ? '    ' : '│   ');
                     }
-                    if (headLimit > 0 && lines.length >= headLimit) return false;
+                    const gatherLimit = headLimit > 0 ? offset + headLimit + 1 : 0;
+                    if (gatherLimit > 0 && lines.length >= gatherLimit) return false;
                 },
             });
-            if (headLimit > 0 && lines.length >= headLimit) lines.push('... (truncated, increase head_limit)');
-            return lines.join('\n');
+            const root = lines[0];
+            const body = lines.slice(1);
+            const windowed = offset > 0 ? body.slice(offset) : body;
+            const sliced = headLimit > 0 ? windowed.slice(0, headLimit) : windowed;
+            const outLines = [root, ...sliced];
+            if (windowed.length > sliced.length) outLines.push('... (truncated, increase head_limit)');
+            const out = outLines.join('\n');
+            _cacheSet(cacheKey, out, { scopes: [fullPath] });
+            return out;
         }
         case 'find_files': {
             args.path = normalizeInputPath(args.path);
@@ -1765,6 +2324,24 @@ export async function executeBuiltinTool(name, args, cwd) {
             const minSize = typeof args.min_size === 'number' ? args.min_size : null;
             const maxSize = typeof args.max_size === 'number' ? args.max_size : null;
             const headLimit = parseInt(args.head_limit ?? 100, 10);
+            const offset = typeof args.offset === 'number' && args.offset > 0 ? args.offset : 0;
+            const cacheKey = buildListCacheKey({
+                mode: 'find',
+                inputPath,
+                depth: '',
+                hidden: false,
+                sort: '',
+                typeFilter,
+                headLimit,
+                offset,
+                namePattern,
+                minSize,
+                maxSize,
+                modifiedAfter: args.modified_after || '',
+                modifiedBefore: args.modified_before || '',
+            });
+            const cached = _cacheGet(cacheKey);
+            if (cached !== null) return cached;
 
             const parseTime = (v) => {
                 if (typeof v !== 'string') return null;
@@ -1789,7 +2366,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
             let rootStat;
-            try { rootStat = statSync(fullPath); }
+            try { rootStat = getCachedReadOnlyStat(fullPath); }
             catch (err) { return `Error: ${normalizeErrorMessage(err instanceof Error ? err.message : String(err))}`; }
             if (!rootStat.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
 
@@ -1805,7 +2382,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     if (typeFilter === 'dir' && !isDir) return;
                     if (nameRegex && !nameRegex.test(ent.name)) return;
                     let stat;
-                    try { stat = statSync(entPath); } catch { return; }
+                    try { stat = getCachedReadOnlyStat(entPath); } catch { return; }
                     if (isFile) {
                         if (minSize !== null && stat.size < minSize) return;
                         if (maxSize !== null && stat.size > maxSize) return;
@@ -1813,14 +2390,20 @@ export async function executeBuiltinTool(name, args, cwd) {
                     if (after !== null && stat.mtimeMs < after) return;
                     if (before !== null && stat.mtimeMs > before) return;
                     matches.push({ path: cwdRelativePath(entPath, workDir), size: stat.size, mtimeMs: stat.mtimeMs });
-                    if (headLimit > 0 && matches.length >= headLimit) return false;
+                    const gatherLimit = headLimit > 0 ? offset + headLimit : 0;
+                    if (gatherLimit > 0 && matches.length >= gatherLimit) return false;
                 },
             });
 
             matches.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
-            const lines = matches.map(m =>
+            const windowed = offset > 0 ? matches.slice(offset) : matches;
+            const sliced = headLimit > 0 ? windowed.slice(0, headLimit) : windowed;
+            const lines = sliced.map(m =>
                 `${normalizeOutputPath(m.path)}\t${m.size}\t${formatMtime(m.mtimeMs)}`);
-            return lines.join('\n') || '(no matches)';
+            if (windowed.length > sliced.length) lines.push(`... ${windowed.length - sliced.length} more entries`);
+            const out = lines.join('\n') || '(no matches)';
+            _cacheSet(cacheKey, out, { scopes: [fullPath] });
+            return out;
         }
         case 'head': {
             // Thin wrapper around `read` with offset:0+limit:n. Keeps all
@@ -1964,6 +2547,7 @@ export function isBuiltinTool(name) {
 // use the local bindings unchanged; these named exports just make the
 // same functions + constants reachable from the test harness.
 export {
+    computeUnifiedDiff,
     smartMiddleTruncate,
     smartReadTruncate,
     SMART_READ_MAX_BYTES,

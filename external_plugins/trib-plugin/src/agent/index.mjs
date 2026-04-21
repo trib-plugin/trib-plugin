@@ -840,7 +840,7 @@ export async function handleToolCall(name, args, opts = {}) {
           // stream-watchdog (which fires at 300s/600s on raw stream silence).
           // This one catches the bridge-specific case where the lead is
           // waiting on a `worker finished` notification that never arrives:
-          // if the SSE stream is quiet beyond STALL_TIMEOUT_S (default 90s)
+          // if the SSE stream is quiet beyond STALL_TIMEOUT_S (default 600s)
           // and the session isn't in `tool_running`, emit via notifyFn and
           // abort so the outer catch renders a normal error footer.
           const stallWatch = startBridgeStallWatchdog({

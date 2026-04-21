@@ -25,7 +25,7 @@ import {
     findSessionByScopeKey,
 } from './session/manager.mjs';
 import { createJob, completeJob } from './jobs.mjs';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { spawn } from 'child_process';
@@ -207,6 +207,12 @@ async function cmdBridge(args) {
                 session = createSession({
                     preset,
                     agent: role,
+                    // Pass `role` so the session manager's smart bridge resolve
+                    // fires and the session picks up providerCacheOpts (tier3
+                    // 1h BP, registry tracking). Without it `opts.role` was
+                    // undefined here — CLI bridge runs silently skipped the
+                    // tier3 cache layer even though they carried a role flag.
+                    role: role || undefined,
                     owner: scope ? 'bridge' : 'user',
                     scopeKey: runtimeSpec.scopeKey,
                     lane: runtimeSpec.lane,

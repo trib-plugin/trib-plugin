@@ -6,6 +6,10 @@ import { agentLoop } from './loop.mjs';
 import { getMcpTools } from '../mcp/client.mjs';
 import { getInternalTools } from '../internal-tools.mjs';
 import { BUILTIN_TOOLS } from '../tools/builtin.mjs';
+import { BASH_SESSION_TOOL_DEFS } from '../tools/bash-session.mjs';
+import { PATCH_TOOL_DEFS } from '../tools/patch.mjs';
+import { CODE_GRAPH_TOOL_DEFS } from '../tools/code-graph.mjs';
+import { closeBashSession } from '../tools/bash-session.mjs';
 import { collectSkillsCached, buildSkillToolDefs, loadAgentTemplate, loadRoleTemplate, composeSystemPrompt, collectProjectMd } from '../context/collect.mjs';
 import { saveSession, loadSession, deleteSession, listStoredSessions, getStoredSessionsRaw, sweepStaleSessions, markSessionClosed } from './store.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
@@ -74,47 +78,6 @@ function getSmartBridgeSync() {
     return _smartBridgeApi;
 }
 
-// ── Phase B §6 Worker lifecycle triggers ────────────────────────────────
-// Defaults can be overridden per call via opts or via agent-config.json →
-// { workerLifecycle: { idleMs, softTokens, hardTokens } }.
-const DEFAULT_LIFECYCLE = Object.freeze({
-    idleMs: 5 * 60 * 1000,
-    softTokens: 150_000,
-    hardTokens: 180_000,
-});
-
-function _lifecycleConfig(opts = {}) {
-    return {
-        idleMs: opts.idleMs ?? DEFAULT_LIFECYCLE.idleMs,
-        softTokens: opts.softTokens ?? DEFAULT_LIFECYCLE.softTokens,
-        hardTokens: opts.hardTokens ?? DEFAULT_LIFECYCLE.hardTokens,
-    };
-}
-
-/**
- * Classify a session against Phase B §6 close triggers.
- *
- * Returns one of:
- *   null             — session still usable
- *   'idle'           — last completed ask() older than idleMs
- *   'hard-tokens'    — cumulative tokens ≥ hardTokens (must close)
- *   'soft-tokens'    — cumulative tokens ≥ softTokens (schedule close)
- *
- * Callers (bridge_spawn / askSession wrappers) decide how to act: hard-tokens
- * and idle trigger close-and-respawn immediately; soft-tokens may defer.
- */
-export function isSessionStale(session, opts = {}) {
-    if (!session) return null;
-    const cfg = _lifecycleConfig(opts);
-    const now = Date.now();
-    const tokens = session.tokensCumulative || 0;
-    if (tokens >= cfg.hardTokens) return 'hard-tokens';
-    const lastUsed = session.lastUsedAt || session.updatedAt || session.createdAt || now;
-    if (now - lastUsed > cfg.idleMs) return 'idle';
-    if (tokens >= cfg.softTokens) return 'soft-tokens';
-    return null;
-}
-
 /**
  * Thrown when a session is closed while a call is in-flight. Callers (bridge
  * handler, CLI) should render this as "cancelled" rather than a hard error.
@@ -177,77 +140,26 @@ function _getMcpToolsCached() {
 // explicitly, BP_1 hash differs across profiles with different tool subsets
 // (by design — sub-task profile cannot see bash; worker-full can), and
 // adding a new toolset id here is a localised change.
-// Phase L — permission-based tool filter. Applied AFTER toolSpec expansion so
-// every profile still gets the same base set, but `read` roles have write tools
-// stripped and `read-write` is a pass-through. `full` disables the filter.
 //
-// Bash is dual-use (cat/ls vs rm/cp); we ship it in all tiers and rely on the
-// role's Tier 3 system-reminder to forbid destructive shells. See
-// docs/common-permission-manual.md.
-//
-// MCP tools are not filtered by name here — MCP surfaces too many per-plugin
-// actions to pattern-match reliably. Role system-prompts declare which MCP
-// actions are allowed (see "Tool Categories" in the common guide).
-const WRITE_TOOL_NAMES = new Set(['write', 'edit']);
+// Unified-shard policy — the session's tool array never narrows with
+// permission or role. Every bridge session ships the same tool schema so
+// BP_1 stays bit-identical and the provider-side cache shard is shared
+// workspace-wide. Write-class tools are still rejected at call time by
+// loop.mjs's READ_BLOCKED_TOOLS guard (for permission=read) and the
+// bridge-deny list (for Lead-only admin surface); those operate AFTER the
+// schema is built, so cache integrity is preserved.
 
-// Permission → hard deny list. Applied on top of the soft permission filter so
-// high-risk tools cannot slip through even when they carry no
-// readOnlyHint:false annotation. Callers can still pass `opts.disallowedTools`
-// to extend the list per dispatch; that merges with the permission default.
-//
-// Scope discipline: this list only encodes the PERMISSION semantics — what a
-// given permission level means as a tool category. Cross-cutting concerns
-// (like the Pool C recursion-break on recall/search/explore/bridge) belong
-// at the caller site via `opts.disallowedTools` (see bridge-llm.mjs Pool C
-// branch) so that Pool B read-permission callers keep their investigation
-// tools intact.
-// Unified-shard policy — no schema-level deny lists. Every tool stays in the
-// session's tool array regardless of permission. Write-class tools are still
-// rejected at call time by loop.mjs's READ_BLOCKED_TOOLS guard.
-const PERMISSION_DENY = {
-    read:      [],
-    readwrite: [],
-    'read-write': [],
-    full:      [],
-};
+const ALL_BUILTIN_SESSION_TOOLS = _dedupByName([
+    ...BUILTIN_TOOLS,
+    ...BASH_SESSION_TOOL_DEFS,
+    ...PATCH_TOOL_DEFS,
+    ...CODE_GRAPH_TOOL_DEFS,
+]);
 
-function denyListFor() {
-    return [];
-}
-
-// A tool counts as write-capable if:
-//   (a) its bare name is a built-in writer (write/edit/…), OR
-//   (b) its tools.json annotation says readOnlyHint:false (which internal
-//       tools like reply/react/edit_message/schedule_*/reload_config set).
-// MCP tools (mcp__foo__bar) have no annotations here and are deliberately
-// excluded — per-server MCP surfaces are too varied to pattern-match; role
-// system-prompts gate them textually instead.
-function _isWriteTool(t) {
-    const name = String(t?.name || '').toLowerCase();
-    if (WRITE_TOOL_NAMES.has(name)) return true;
-    const ann = t?.annotations;
-    if (ann && typeof ann === 'object' && ann.readOnlyHint === false) return true;
-    return false;
-}
-
-function _applyPermissionFilter(tools, _permission) {
-    // Unified-shard policy — tool schema never changes with permission.
-    // Write-blocking for permission=read happens at call time in loop.mjs
-    // (READ_BLOCKED_TOOLS), not at schema build time, so BP_1 stays
-    // bit-identical across every role.
-    return Array.isArray(tools) ? tools : tools;
-}
-
-function resolveSessionTools(toolSpec, skills, permission) {
+function resolveSessionTools(toolSpec, skills) {
     const mcp = _getMcpToolsCached();
     const skillTools = buildSkillToolDefs(skills);
-
-    const base = _computeBaseTools(toolSpec, mcp, skillTools);
-    const filtered = _applyPermissionFilter(base, permission);
-    if (permission && permission !== 'full' && filtered.length !== base.length) {
-        process.stderr.write(`[session] permission=${permission} tools=${filtered.length} (filtered from ${base.length})\n`);
-    }
-    return filtered;
+    return _computeBaseTools(toolSpec, mcp, skillTools);
 }
 
 // Dedup by name, first occurrence wins. BUILTIN_TOOLS is passed in ahead
@@ -280,10 +192,10 @@ function _dedupByName(tools) {
 // maintaining a parallel copy that silently drifts.
 //
 // KEEP (bridge agents can call):
-//   - core file / shell: read, edit, write, bash, grep, glob
+//   - core file / shell: read, edit, write, bash, bash_session, grep, glob
 //   - IO helpers: head, tail, wc, list, tree, find_files,
 //                 multi_read, multi_edit, batch_edit
-//   - LSP: lsp_definition / lsp_references / lsp_hover / lsp_symbols
+//   - Code graph / refactors: code_graph, rename_symbol_refs, rename_file_refs
 //   - memory read: recall (memory admin tool itself is Lead-only)
 //   - information retrieval: search, explore
 export const BRIDGE_DENY_TOOLS = Object.freeze([
@@ -300,12 +212,9 @@ export const BRIDGE_DENY_TOOLS = Object.freeze([
     // Memory admin — cycle1/cycle2/flush/rebuild/prune/remember are
     // maintenance ops Lead drives. Bridge agents read memory via `recall`.
     'memory',
-    // Patch / AST / specialised editors — edit/write cover code changes;
-    // these large-schema specialists bloat BP_1.
-    'apply_patch', 'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
-    // Persistent bash — `bash` handles one-off shell work; session
-    // persistence is a Lead-scoped convenience.
-    'bash_session',
+    // AST / specialised editors kept off the bridge schema for now —
+    // apply_patch stays because it cuts edit/read round-trips on multi-file work.
+    'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
 ]);
 
 function _computeBaseTools(toolSpec, mcp, skillTools) {
@@ -317,7 +226,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
             return _dedupByName([...skillTools]);
         }
         if (toolSpec.includes('full')) {
-            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
+            return _dedupByName([...ALL_BUILTIN_SESSION_TOOLS, ...mcp, ...skillTools]);
         }
         const byName = new Map();
         const add = (tool) => { if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool); };
@@ -326,15 +235,15 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
             const tag = String(tagRaw || '').trim();
             switch (tag) {
                 case 'tools:filesystem':
-                    addMany(BUILTIN_TOOLS.filter(t => ['read', 'write', 'edit', 'grep', 'glob'].includes(t.name)));
+                    addMany(ALL_BUILTIN_SESSION_TOOLS.filter(t => ['read', 'write', 'edit', 'apply_patch', 'grep', 'glob'].includes(t.name)));
                     break;
                 case 'tools:readonly':
-                    addMany(BUILTIN_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name)));
+                    addMany(ALL_BUILTIN_SESSION_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name)));
                     break;
                 case 'tools:bash':
                 case 'tools:git':
                 case 'tools:analysis':
-                    addMany(BUILTIN_TOOLS.filter(t => t.name === 'bash'));
+                    addMany(ALL_BUILTIN_SESSION_TOOLS.filter(t => t.name === 'bash' || t.name === 'bash_session'));
                     break;
                 case 'tools:mcp':
                     addMany(mcp);
@@ -353,27 +262,35 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
         case 'mcp':
             return _dedupByName([...mcp, ...skillTools]);
         case 'readonly': {
-            const readTools = BUILTIN_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name));
+            const readTools = ALL_BUILTIN_SESSION_TOOLS.filter(t => ['read', 'grep', 'glob'].includes(t.name));
             return _dedupByName([...readTools, ...mcp, ...skillTools]);
         }
         case 'full':
         default:
-            return _dedupByName([...BUILTIN_TOOLS, ...mcp, ...skillTools]);
+            return _dedupByName([...ALL_BUILTIN_SESSION_TOOLS, ...mcp, ...skillTools]);
     }
 }
 
-// Kept for backwards compatibility with callers that pass a raw string.
-function resolveToolPreset(preset, skills) {
-    return resolveSessionTools(preset, skills);
-}
 let nextId = Date.now();
+// Known context windows for the current-generation models this plugin
+// routes to. Anything not listed falls through to guessContextWindow() —
+// local llama/mistral/phi default to 8192, everything else 128000. Keep
+// this map trimmed to live models; older generations slow down reads
+// without buying anything.
 const CONTEXT_WINDOWS = {
-    'gpt-4o': 128000, 'gpt-4.1': 1000000, 'gpt-4.1-mini': 1000000, 'o4-mini': 200000,
-    'gpt-5.4-mini': 1000000, 'gpt-5.4': 1000000, 'gpt-5.4-nano': 1000000, 'gpt-5.4-pro': 1000000,
-    'gpt-5.2-codex': 1000000, 'gpt-5.2': 1000000, 'gpt-5.1-codex': 1000000,
-    'claude-opus-4-7': 1000000, 'claude-opus-4-0': 200000, 'claude-sonnet-4-0': 200000, 'claude-haiku-4-5-20251001': 200000,
-    'gemini-2.5-pro': 1000000, 'gemini-2.5-flash': 1000000, 'gemini-2.0-flash': 1000000,
-    'llama-3.3-70b-versatile': 128000, 'llama3.3:latest': 8192, 'grok-3-beta': 131072,
+    // OpenAI GPT-5.4 family
+    'gpt-5.4': 1000000,
+    'gpt-5.4-mini': 1000000,
+    'gpt-5.4-nano': 1000000,
+    'gpt-5.4-pro': 1000000,
+    // Anthropic Claude 4.x
+    'claude-opus-4-7': 1000000,
+    'claude-sonnet-4-6': 1000000,
+    'claude-haiku-4-5-20251001': 200000,
+    // Google Gemini 3.x
+    'gemini-3.1-pro': 1000000,
+    'gemini-3-pro': 1000000,
+    'gemini-3-flash': 1000000,
 };
 function guessContextWindow(model) {
     if (CONTEXT_WINDOWS[model])
@@ -479,6 +396,20 @@ export function createSession(opts) {
         ? loadRoleTemplate(resolvedRole, dataDir)
         : null;
 
+    // Profile wins over preset.tools — profile.tools carries toolset ids
+    // (['tools:filesystem','tools:search']) that expand to an explicit tool
+    // subset, which is how BP_1 actually gets shaped per Phase B spec. When
+    // no profile resolves, fall back to the preset.tools string ('full' /
+    // 'readonly' / 'mcp') so raw createSession callers still work.
+    const toolSpec = Array.isArray(profile?.tools) ? profile.tools : toolPreset;
+
+    // Permission is metadata only — tool schema stays bit-identical regardless
+    // of role or permission (unified-shard policy). Write-blocking for
+    // `permission=read` happens at call time in loop.mjs's READ_BLOCKED_TOOLS
+    // guard, not at schema build time.
+    const permission = opts.permission || profile?.permission || roleTemplate?.permission || null;
+    const toolsForRouting = resolveSessionTools(toolSpec, skills);
+
     const { baseRules, roleCatalog, sessionMarker, volatileTail } = composeSystemPrompt({
         userPrompt: opts.systemPrompt,
         bridgeRules: bridgeRules || undefined,
@@ -488,9 +419,11 @@ export function createSession(opts) {
         profile: profile || undefined,
         role: resolvedRole,
         skipRoleReminder: opts.skipRoleReminder || false,
-        permission: opts.permission || null,
+        permission,
         taskBrief: opts.taskBrief || null,
         projectContext: projectContext || null,
+        tools: toolsForRouting,
+        bashIsPersistent: opts.owner === 'bridge' && toolsForRouting.some(t => t?.name === 'bash'),
         // Effective cwd rides in tier3Reminder so explore-like tools know
         // their search root without needing to shove "Override cwd:" into
         // the user message body (that used to fragment the shard prefix).
@@ -525,32 +458,18 @@ export function createSession(opts) {
         messages.push({ role: 'user', content: `Reference files:\n\n${fileContext}` });
         messages.push({ role: 'assistant', content: 'Understood. I have the files in context.' });
     }
-    // Profile wins over preset.tools — profile.tools carries toolset ids
-    // (['tools:filesystem','tools:search']) that expand to an explicit tool
-    // subset, which is how BP_1 actually gets shaped per Phase B spec. When
-    // no profile resolves, fall back to the preset.tools string ('full' /
-    // 'readonly' / 'mcp') so raw createSession callers still work.
-    const toolSpec = Array.isArray(profile?.tools) ? profile.tools : toolPreset;
+    let tools = toolsForRouting;
 
-    // Phase L — resolve permission for tool filtering. Priority:
-    //   opts.permission (explicit)
-    //   profile.permission (from role config)
-    //   'full' (no filter)
-    const permission = opts.permission || profile?.permission || null;
-    let tools = resolveSessionTools(toolSpec, skills, permission);
-
-    // disallowedTools — Anthropic BuiltInAgentDefinition pattern. Caller
-    // can name specific tools to strip after toolset expansion + permission
-    // filter. Merged with the permission default deny list so 'read'
-    // automatically strips bash / write / edit even when the caller forgets
-    // to pass the explicit list.
-    const permDeny = denyListFor(permission);
+    // Deny-list layers, merged into one set and applied after schema build:
+    //   - opts.disallowedTools : per-call caller override (Anthropic
+    //     BuiltInAgentDefinition pattern)
+    //   - BRIDGE_DENY_TOOLS    : Lead-only admin surface (channel, session
+    //     lifecycle, schedule/config, bridge dispatch, bash_session, AST
+    //     editors). See BRIDGE_DENY_TOOLS declaration for the full keep/strip
+    //     rationale. Pool A (Lead) still sees the full tools.json.
     const callerDeny = Array.isArray(opts.disallowedTools) ? opts.disallowedTools.map(n => String(n)) : [];
-    // Bridge sessions (Pool B/C) strip the Lead-only admin surface. Deny list
-    // is BRIDGE_DENY_TOOLS (module-scope, exported) — see its declaration for
-    // the full keep/strip rationale. Pool A (Lead) still sees full tools.json.
     const bridgeDeny = opts.owner === 'bridge' ? BRIDGE_DENY_TOOLS : [];
-    const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
+    const mergedDeny = [...new Set([...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {
         const denySet = new Set(mergedDeny);
         const before = tools.length;
@@ -593,8 +512,9 @@ export function createSession(opts) {
         updatedAt: Date.now(),
         totalInputTokens: 0,
         totalOutputTokens: 0,
-        // Phase B §6 Worker lifecycle — refreshed on each completed ask().
-        // `isSessionStale()` reads these to decide close-and-respawn.
+        // Refreshed on each completed ask() — surfaced by list_sessions for
+        // debugging + consumed by store.mjs's idle-sweep to reclaim stalled
+        // bridge sessions past RUNNING_STALL_MS.
         lastUsedAt: Date.now(),
         tokensCumulative: 0,
         role: opts.role || null,
@@ -612,6 +532,11 @@ export function createSession(opts) {
         // scheduler/webhook). Role or source-specific context must be
         // injected into the message tail, not the shared prefix.
         promptCacheKey: providerCacheKey(presetObj?.provider || opts.provider),
+        // Bridge shell continuity: when a bridge session first routes a
+        // `bash` call through the persistent shell helper, the minted
+        // bash_session id is stored here so later `bash` calls can reuse
+        // the same shell state automatically.
+        implicitBashSessionId: null,
         // Hermes-style in-flight compressor state
         compressionCount: 0,
         previousSummary: null,
@@ -619,55 +544,12 @@ export function createSession(opts) {
         // profile-driven cache settings into provider sendOpts.
         profileId: profile?.id || null,
         providerCacheOpts: providerCacheOpts || null,
-        // Profile lifecycle behavior, copied at spawn so role names remain
-        // user-configurable without leaking into reset logic. "stateless"
-        // sessions are truncated back to the initial head between dispatches.
+        // Profile lifecycle behavior, copied at spawn. Kept for bridge-trace
+        // joinability — scheduler/webhook callers filter by behavior even
+        // though the orchestrator no longer branches on the value.
         behavior: profile?.behavior || null,
-        // Frozen head length covering the bit-identical Pool B prefix (system
-        // Tier 2 + Tier 3 reminder + ack, plus optional reference-files pair).
-        // resetStatelessSession() truncates messages to this length between
-        // dispatches so the provider cache handle survives while per-task
-        // transcript does not.
-        initialHeadLength: messages.length,
     };
     saveSession(session);
-    return session;
-}
-
-/**
- * Phase C Ship 3 — reset a stateless session for the next dispatch.
- *
- * Profiles marked `behavior: "stateless"` (e.g. `sub-task`) carry no
- * transcript across dispatches — only the prefix-handle is reused, per
- * Phase B §4.5. Instead of destroying and recreating the session (which
- * would churn the `prompt_cache_key` and force a fresh Anthropic prefix
- * write), we truncate the message list back to the initial Pool B head
- * and clear compressor state.
- *
- * Idempotent: on a freshly created session `messages.length === head`, so
- * the slice is a no-op. Safe to call unconditionally after resume.
- */
-export function resetStatelessSession(sessionId) {
-    const session = loadSession(sessionId);
-    if (!session) return null;
-    const head = Number.isInteger(session.initialHeadLength) ? session.initialHeadLength : 0;
-    let mutated = false;
-    if (head > 0 && session.messages.length > head) {
-        session.messages = session.messages.slice(0, head);
-        mutated = true;
-    }
-    if (session.compressionCount) {
-        session.compressionCount = 0;
-        mutated = true;
-    }
-    if (session.previousSummary) {
-        session.previousSummary = null;
-        mutated = true;
-    }
-    if (mutated) {
-        session.updatedAt = Date.now();
-        saveSession(session);
-    }
     return session;
 }
 
@@ -999,8 +881,8 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
         unlock();
     }
 }
-// --- find or create session by scopeKey (atomic, prevents duplicate creation) ---
-const _scopeCreateLocks = new Map();
+// Session lookup by scopeKey — used by CLI bridge to resume a pinned
+// scope session when the caller passes --scope (agent/<name>).
 export function findSessionByScopeKey(scopeKey) {
     if (!scopeKey) return null;
     const sessions = listStoredSessions();
@@ -1009,37 +891,6 @@ export function findSessionByScopeKey(scopeKey) {
     // bit is the authoritative tombstone flag; `status === 'error'` is not,
     // since transient-error sessions remain resumable.
     return sessions.find(s => s.scopeKey === scopeKey && s.closed !== true) || null;
-}
-export function findOrCreateSession(scopeKey, createFn) {
-    if (!scopeKey) return createFn();
-    // Synchronous lock: if another call is creating for this scope, wait
-    const existing = findSessionByScopeKey(scopeKey);
-    if (existing) {
-        // Phase B §6.1 — Worker lifecycle triggers evaluated on reuse.
-        // Stale sessions (idle > 5min OR tokens ≥ hard threshold) are closed
-        // and a fresh session is spawned. Soft-token returns here are left
-        // to the caller to decide (defer vs immediate close).
-        const stale = isSessionStale(existing);
-        if (stale === 'idle' || stale === 'hard-tokens') {
-            try { markSessionClosed(existing.id); } catch { /* ignore */ }
-            process.stderr.write(`[session] respawn on ${stale} (scope=${scopeKey}, id=${existing.id})\n`);
-        } else {
-            return existing;
-        }
-    }
-    // Check again with lock to prevent race
-    if (_scopeCreateLocks.has(scopeKey)) {
-        // Another create just happened, re-check
-        const retry = findSessionByScopeKey(scopeKey);
-        if (retry) return retry;
-    }
-    _scopeCreateLocks.set(scopeKey, true);
-    try {
-        const session = createFn();
-        return session;
-    } finally {
-        _scopeCreateLocks.delete(scopeKey);
-    }
 }
 // --- resume (reload tools for a stored session) ---
 export function resumeSession(sessionId, preset) {
@@ -1067,7 +918,7 @@ export function resumeSession(sessionId, preset) {
             if (Array.isArray(profile?.tools)) toolSpec = profile.tools;
         } catch { /* ignore lookup failures, keep preset fallback */ }
     }
-    session.tools = resolveSessionTools(toolSpec, skills, session.permission || null);
+    session.tools = resolveSessionTools(toolSpec, skills);
     const newTools = session.tools;
     const missing = oldTools.filter(t => !newTools.find(n => n.name === t.name));
     if (missing.length) {
@@ -1124,6 +975,8 @@ export function updateSessionStatus(id, status) {
  */
 export function closeSession(id) {
     if (!id) return false;
+    const persisted = loadSession(id);
+    const bashSessionId = persisted?.implicitBashSessionId || null;
     // 1. Tombstone first — this wins the race against saveSession().
     const newGen = markSessionClosed(id);
     // 2. Mark runtime as closed so post-await validation in askSession fires.
@@ -1137,6 +990,9 @@ export function closeSession(id) {
         //    unwind immediately; providers that don't will still be caught by
         //    the generation check after their await eventually returns.
         try { entry.controller?.abort(new SessionClosedError(id, 'closeSession')); } catch { /* ignore */ }
+    }
+    if (bashSessionId) {
+        try { closeBashSession(bashSessionId, `bridge-close:${id}`); } catch { /* ignore */ }
     }
     // 4. Defer runtime map clear to next tick so any settling askSession can
     //    observe `closed=true` / bumped generation before we yank the entry.
@@ -1158,6 +1014,9 @@ function sweepIdleSessions() {
         if (cleaned > 0) {
             for (const d of details) {
                 _clearSessionRuntime(d.id);
+                if (d.bashSessionId) {
+                    try { closeBashSession(d.bashSessionId, `idle-sweep:${d.id}`); } catch { /* ignore */ }
+                }
                 process.stderr.write(`[bridge-session] idle cleanup: closed ${d.id} (idle ${d.idleMinutes}m, owner=${d.owner})\n`);
             }
             process.stderr.write(`[bridge-session] idle sweep: cleaned ${cleaned} session(s), ${remaining} remaining\n`);
@@ -1222,9 +1081,4 @@ export function stopIdleCleanup() {
         clearInterval(_cleanupTimer);
         _cleanupTimer = null;
     }
-}
-
-/** Exposed for tests and shutdown cleanup. */
-export function _getCleanupTimer() {
-    return _cleanupTimer;
 }

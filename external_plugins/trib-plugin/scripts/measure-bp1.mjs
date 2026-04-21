@@ -28,6 +28,8 @@ const require_ = createRequire(import.meta.url);
 // (src/agent/orchestrator/session/manager.mjs) so this bench cannot drift
 // from what createSession actually strips. Resolved lazily inside main().
 let BRIDGE_UNSAFE_TOOLS = null;
+let SYNTHETIC_DEFS = null;
+let SKILL_DEFS = null;
 
 async function loadBridgeUnsafe() {
     if (BRIDGE_UNSAFE_TOOLS) return BRIDGE_UNSAFE_TOOLS;
@@ -40,6 +42,30 @@ async function loadBridgeUnsafe() {
     return BRIDGE_UNSAFE_TOOLS;
 }
 
+async function loadSyntheticDefs() {
+    if (SYNTHETIC_DEFS) return SYNTHETIC_DEFS;
+    const modPath = join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'synthetic-tools.mjs');
+    const mod = await import(pathToFileURL(modPath).href);
+    if (!Array.isArray(mod.SYNTHETIC_TOOL_DEFS)) {
+        throw new Error('synthetic-tools.mjs does not export SYNTHETIC_TOOL_DEFS');
+    }
+    SYNTHETIC_DEFS = mod.SYNTHETIC_TOOL_DEFS;
+    return SYNTHETIC_DEFS;
+}
+
+async function loadSkillDefs() {
+    if (SKILL_DEFS) return SKILL_DEFS;
+    const modPath = join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'context', 'collect.mjs');
+    const mod = await import(pathToFileURL(modPath).href);
+    if (typeof mod.buildSkillToolDefs !== 'function') {
+        throw new Error('collect.mjs does not export buildSkillToolDefs');
+    }
+    // Pass a non-empty placeholder so the 3 skill meta tools emit; runtime
+    // behaviour only gates on `skills.length > 0`.
+    SKILL_DEFS = mod.buildSkillToolDefs([{ name: '__measure-bp1-placeholder' }]);
+    return SKILL_DEFS;
+}
+
 const TOKENS_PER_BYTE = 0.25; // ≈ 4 chars/token for English-ish prose
 
 function bytesToTokens(n) {
@@ -48,20 +74,38 @@ function bytesToTokens(n) {
 
 async function measureTools() {
     const deny = await loadBridgeUnsafe();
-    const tools = require_(join(PLUGIN_ROOT, 'tools.json'));
-    const kept = tools.filter(t => !deny.has(t.name));
-    const stripped = tools.filter(t => deny.has(t.name));
-    const per = kept.map(t => ({
+    const publicTools = require_(join(PLUGIN_ROOT, 'tools.json'));
+    const synthetic = await loadSyntheticDefs();
+    const skillTools = await loadSkillDefs();
+
+    // Runtime bridge session composes:
+    //   (1) public tools.json minus BRIDGE_DENY_TOOLS
+    //   (2) synthetic internal tools (memory_search, web_search) — registered
+    //       via server.mjs addInternalTools at boot, not in tools.json
+    //   (3) skill meta tools (skills_list / skill_view / skill_execute) —
+    //       emitted by buildSkillToolDefs whenever any skill is registered
+    // Measuring only (1) used to under-report BP_1 by ~1k tokens; this pass
+    // mirrors the real session.tools array.
+    const publicKept = publicTools.filter(t => !deny.has(t.name));
+    const stripped = publicTools.filter(t => deny.has(t.name));
+    const allKept = [...publicKept, ...synthetic, ...skillTools];
+    const per = allKept.map(t => ({
         name: t.name,
+        source: publicKept.includes(t)
+            ? 'public'
+            : (synthetic.includes(t) ? 'synthetic' : 'skill'),
         bytes: JSON.stringify(t).length,
         descBytes: (t.description || '').length,
         schemaBytes: JSON.stringify(t.inputSchema || {}).length,
     }));
     per.sort((a, b) => b.bytes - a.bytes);
     return {
-        kept,
+        kept: allKept,
         stripped,
         per,
+        publicCount: publicKept.length,
+        syntheticCount: synthetic.length,
+        skillCount: skillTools.length,
         totalBytes: per.reduce((a, b) => a + b.bytes, 0),
     };
 }
@@ -78,7 +122,6 @@ async function measureSystemBase() {
         'rules/shared/02-memory.md',
         'rules/shared/03-search.md',
         'rules/shared/04-explore.md',
-        'rules/shared/05-lsp.md',
         'rules/bridge/00-common.md',
     ];
     const perFile = files.map(f => {
@@ -117,7 +160,14 @@ async function main() {
     const snapshot = {
         version: pluginVersion,
         measuredAt: new Date().toISOString(),
-        tools: { count: tools.kept.length, strippedCount: tools.stripped.length, totalBytes: tools.totalBytes },
+        tools: {
+            count: tools.kept.length,
+            publicCount: tools.publicCount,
+            syntheticCount: tools.syntheticCount,
+            skillCount: tools.skillCount,
+            strippedCount: tools.stripped.length,
+            totalBytes: tools.totalBytes,
+        },
         systemBase: { totalBytes: sb.totalBytes, perFile: sb.perFile },
         bp1Total,
         bp1Tokens,
@@ -134,10 +184,14 @@ async function main() {
     console.log('='.repeat(58));
     console.log();
     console.log(`Tools schema (bridge-safe filter applied)`);
-    console.log(formatRow('total', tools.totalBytes, `(${tools.kept.length} kept, ${tools.stripped.length} stripped)`));
+    console.log(formatRow(
+        'total',
+        tools.totalBytes,
+        `(${tools.kept.length} kept = ${tools.publicCount} public + ${tools.syntheticCount} synthetic + ${tools.skillCount} skill, ${tools.stripped.length} stripped)`,
+    ));
     console.log(`  top 5 by size:`);
     for (const t of tools.per.slice(0, 5)) {
-        console.log(`      ${String(t.bytes).padStart(5)}  ${t.name}  (d=${t.descBytes} s=${t.schemaBytes})`);
+        console.log(`      ${String(t.bytes).padStart(5)}  ${t.name.padEnd(18)}  [${t.source}]  (d=${t.descBytes} s=${t.schemaBytes})`);
     }
     console.log();
     console.log(`systemBase rules (buildBridgeInjectionContent)`);

@@ -2,7 +2,7 @@
  * Unified config reader/writer.
  * Single file: trib-config.json with sections: channels, agent, memory, search.
  */
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
 

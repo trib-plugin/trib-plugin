@@ -16,8 +16,9 @@
  */
 
 import { homedir } from 'os'
-import { resolve as resolvePath, isAbsolute } from 'path'
-import { loadConfig } from './config.mjs'
+import { resolve as resolvePath, isAbsolute, join } from 'path'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { loadConfig, getPluginData } from './config.mjs'
 import { resolvePresetName } from './smart-bridge/bridge-llm.mjs'
 import { smartReadTruncate } from './tools/builtin.mjs'
 import { addPending, removePending } from './dispatch-persist.mjs'
@@ -35,6 +36,158 @@ const ROLE_BY_TOOL = Object.freeze({
 const _dispatchResults = new Map() // id → { status, role, tool, queries, createdAt, completedAt?, content?, error? }
 const DISPATCH_RESULT_MAX_ENTRIES = 200
 const DISPATCH_RESULT_TTL_MS = 30 * 60_000 // 30 minutes — enough for the Lead to loop back, short enough to not hoard memory
+const QUERY_RESULT_CACHE_MAX_ENTRIES = 256
+const QUERY_RESULT_CACHE_TTLS_MS = Object.freeze({
+  recall: 60_000,
+  explore: 60_000,
+  search: 30_000,
+})
+const _queryResultCache = new Map() // key → { ts, content }
+const _queryInflight = new Map() // key → Promise<string>
+const QUERY_CACHE_DISK_FILE = 'aiwrapped-query-cache.json'
+const QUERY_CACHE_DISK_MAX_CONTENT_CHARS = 64 * 1024
+let _diskCacheLoaded = false
+let _cacheFlushTimer = null
+
+function cacheTtlMs(tool) {
+  return QUERY_RESULT_CACHE_TTLS_MS[tool] || 30_000
+}
+
+function normalizeQueryForCache(query) {
+  return String(query || '')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[，、]/g, ',')
+    .replace(/[。]/g, '.')
+    .replace(/[？]/g, '?')
+    .replace(/[！]/g, '!')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function buildQueryCacheKey(tool, query, cwd, brief) {
+  return [
+    tool,
+    brief === false ? 'full' : 'brief',
+    cwd || '',
+    normalizeQueryForCache(query),
+  ].join('|')
+}
+
+function getDiskCachePath() {
+  return join(getPluginData(), QUERY_CACHE_DISK_FILE)
+}
+
+function ensureDiskCacheLoaded(now = Date.now()) {
+  if (_diskCacheLoaded) return
+  _diskCacheLoaded = true
+  try {
+    const path = getDiskCachePath()
+    if (!existsSync(path)) return
+    const raw = JSON.parse(readFileSync(path, 'utf-8'))
+    if (!raw || typeof raw !== 'object') return
+    for (const [key, entry] of Object.entries(raw)) {
+      if (!entry || typeof entry !== 'object') continue
+      const ts = Number(entry.ts || 0)
+      const content = typeof entry.content === 'string' ? entry.content : null
+      if (!content || !Number.isFinite(ts)) continue
+      const tool = key.split('|', 1)[0]
+      if (now - ts > cacheTtlMs(tool)) continue
+      _queryResultCache.set(key, { ts, content })
+    }
+    pruneQueryCaches(now)
+  } catch {
+    // Best-effort cache load — ignore corrupt or missing files.
+  }
+}
+
+function scheduleDiskCacheFlush() {
+  if (_cacheFlushTimer) return
+  _cacheFlushTimer = setTimeout(() => {
+    _cacheFlushTimer = null
+    try {
+      const path = getDiskCachePath()
+      mkdirSync(getPluginData(), { recursive: true })
+      const payload = {}
+      const now = Date.now()
+      for (const [key, entry] of _queryResultCache) {
+        const tool = key.split('|', 1)[0]
+        if (!entry?.content || now - (entry.ts || 0) > cacheTtlMs(tool)) continue
+        payload[key] = {
+          ts: entry.ts,
+          content: entry.content.slice(0, QUERY_CACHE_DISK_MAX_CONTENT_CHARS),
+        }
+      }
+      const tmp = `${path}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify(payload), 'utf-8')
+      renameSync(tmp, path)
+    } catch {
+      // Best-effort only — never let cache persistence affect dispatch.
+    }
+  }, 250)
+  if (typeof _cacheFlushTimer.unref === 'function') _cacheFlushTimer.unref()
+}
+
+function resetQueryCachesForTesting() {
+  _queryResultCache.clear()
+  _queryInflight.clear()
+  _diskCacheLoaded = false
+  if (_cacheFlushTimer) {
+    clearTimeout(_cacheFlushTimer)
+    _cacheFlushTimer = null
+  }
+}
+
+function pruneQueryCaches(now = Date.now()) {
+  for (const [key, entry] of _queryResultCache) {
+    const tool = key.split('|', 1)[0]
+    if (now - (entry?.ts || 0) > cacheTtlMs(tool)) {
+      _queryResultCache.delete(key)
+    }
+  }
+  while (_queryResultCache.size > QUERY_RESULT_CACHE_MAX_ENTRIES) {
+    const oldest = _queryResultCache.keys().next().value
+    if (!oldest) break
+    _queryResultCache.delete(oldest)
+  }
+  scheduleDiskCacheFlush()
+}
+
+function getCachedQueryResult(tool, key, now = Date.now()) {
+  ensureDiskCacheLoaded(now)
+  const entry = _queryResultCache.get(key)
+  if (!entry) return null
+  if (now - entry.ts > cacheTtlMs(tool)) {
+    _queryResultCache.delete(key)
+    scheduleDiskCacheFlush()
+    return null
+  }
+  return entry.content
+}
+
+async function runCachedQuery(tool, key, runner) {
+  ensureDiskCacheLoaded()
+  pruneQueryCaches()
+  const cached = getCachedQueryResult(tool, key)
+  if (cached !== null) return cached
+  const inflight = _queryInflight.get(key)
+  if (inflight) return inflight
+  const p = Promise.resolve()
+    .then(runner)
+    .then((content) => {
+      _queryResultCache.set(key, { ts: Date.now(), content })
+      _queryInflight.delete(key)
+      pruneQueryCaches()
+      scheduleDiskCacheFlush()
+      return content
+    })
+    .catch((err) => {
+      _queryInflight.delete(key)
+      throw err
+    })
+  _queryInflight.set(key, p)
+  return p
+}
 
 function _pruneDispatchResults() {
   if (_dispatchResults.size < DISPATCH_RESULT_MAX_ENTRIES) return
@@ -123,8 +276,11 @@ export async function dispatchAiWrapped(name, args, ctx) {
   const resolvedCwd = resolveCwd(args.cwd)
   Promise.allSettled(
     queries.map((q) => {
-      const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
-      return llm({ prompt: spec.build(q, resolvedCwd) })
+      const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
+      return runCachedQuery(name, key, async () => {
+        const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
+        return llm({ prompt: spec.build(q, resolvedCwd) })
+      })
     }),
   ).then((settled) => {
     const merged = queries.length === 1
@@ -157,6 +313,20 @@ export async function dispatchAiWrapped(name, args, ctx) {
   })
   const queryCount = queries.length === 1 ? `1 query` : `${queries.length} queries`
   return ok(`${name} started — ${queryCount}. Merged answer will be auto-pushed via the channel (handle ${id}).`)
+}
+
+export const _internals = {
+  buildQueryCacheKey,
+  cacheTtlMs,
+  getCachedQueryResult,
+  normalizeQueryForCache,
+  ensureDiskCacheLoaded,
+  scheduleDiskCacheFlush,
+  pruneQueryCaches,
+  runCachedQuery,
+  resetQueryCachesForTesting,
+  _queryResultCache,
+  _queryInflight,
 }
 
 

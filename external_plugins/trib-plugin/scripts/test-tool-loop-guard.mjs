@@ -255,20 +255,40 @@ const EDIT_ERR = 'Error: old_string did not match';
     assert(r24.action === 'same_tool_warn', '16. fresh 12-streak after reset fires warn');
 }
 
-// 17. Non-whitelisted tools never fire same-tool warn
+// 17. Read becomes same-tool warn at the tighter read threshold (8)
 {
     const g = createGuard();
     let last;
-    for (let i = 1; i <= 30; i++) last = feed(g, 'Read', { path: `/p${i}` }, 'content', i);
-    assert(last.action === 'continue', '17. 30 Read calls never fire same_tool_warn (not whitelisted)');
+    for (let i = 1; i <= 8; i++) last = feed(g, 'Read', { path: `/p${i}` }, 'content', i);
+    assert(last.action === 'same_tool_warn', '17. 8th Read call fires same_tool_warn');
 }
 
-// 18. Same-tool warn text phrasing
+// 18. Bash becomes same-tool warn at the shell threshold (10)
+{
+    const g = createGuard();
+    let last;
+    for (let i = 1; i <= 10; i++) last = feed(g, 'bash', { command: `echo ${i}` }, 'ok', i);
+    assert(last.action === 'same_tool_warn', '18. 10th bash call fires same_tool_warn');
+}
+
+// 19. Non-whitelisted tools never fire same-tool warn
+{
+    const g = createGuard();
+    let last;
+    for (let i = 1; i <= 30; i++) last = feed(g, 'Write', { path: `/p${i}` }, 'ok', i);
+    assert(last.action === 'continue', '19. 30 Write calls never fire same_tool_warn (not whitelisted)');
+}
+
+// 20. Same-tool warn text phrasing
 {
     const text = buildSameToolWarn({ toolName: 'search', count: 12 });
-    assert(text.includes('`search`'), '18. warn back-ticks tool name');
-    assert(text.includes('12 times'), '18. warn mentions call count');
-    assert(text.includes('Advisory only'), '18. warn marks itself advisory (non-blocking)');
+    assert(text.includes('`search`'), '20. warn back-ticks tool name');
+    assert(text.includes('12 times'), '20. warn mentions call count');
+    assert(text.includes('Advisory only'), '20. warn marks itself advisory (non-blocking)');
+    const bashText = buildSameToolWarn({ toolName: 'bash', count: 10 });
+    assert(bashText.includes('bash_session'), '20. bash warn points to bash_session');
+    const readText = buildSameToolWarn({ toolName: 'read', count: 8 });
+    assert(readText.includes('offset') && readText.includes('limit'), '20. read warn points to offset/limit reads');
 }
 
 console.log(`test-tool-loop-guard: ${passed} pass / ${failed} fail`);

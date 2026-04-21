@@ -1,4 +1,27 @@
-# Smart Bridge Phase B — Design Spec v1.3
+# Smart Bridge Phase B — Design Spec v1.3 _(ARCHIVED)_
+
+> **⚠ ARCHIVED — 2026-04-21**
+>
+> This document is kept as a historical design record of the Phase B
+> Smart Bridge rollout. Several names and mechanisms described below
+> (`maintenance-llm.mjs`, `system-bridge.mjs`, `ttl-learner.mjs`,
+> `POOL_C_TOOL_KEEP`, `opts.allowedTools`, `PERMISSION_DENY`,
+> `findOrCreateSession`, `resetStatelessSession`, `isSessionStale`, the
+> worker-lifecycle respawn triggers) have since been removed or replaced
+> during subsequent cleanup passes. Do **not** treat this file as a
+> description of current behaviour.
+>
+> For the current state read the code:
+> - Schema deny list: `BRIDGE_DENY_TOOLS` in `src/agent/orchestrator/session/manager.mjs`
+> - Role normalisation: `src/agent/orchestrator/smart-bridge/index.mjs`
+> - Pool C hidden roles: `src/agent/orchestrator/internal-roles.mjs`
+> - Cache strategy: `src/agent/orchestrator/smart-bridge/cache-strategy.mjs`
+> - Synthetic tool defs: `src/agent/orchestrator/synthetic-tools.mjs`
+> - Runtime permission guard: `READ_BLOCKED_TOOLS` in `src/agent/orchestrator/session/loop.mjs`
+>
+> Everything below is the original spec, preserved verbatim for provenance.
+
+---
 
 > **Status**: Spec finalized (pending Ship 0 empirical validation)
 > **Design period**: 2026-04-16 evening → 2026-04-17

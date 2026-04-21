@@ -132,7 +132,7 @@ Role delegation      bridge
 File / code          read, multi_read, write, edit, multi_edit,
                      batch_edit, glob, grep
 Shell                bash
-Codebase symbols     lsp_definition, lsp_references, lsp_symbols
+Code graph           code_graph
 Info retrieval       recall, search, explore
 Memory               memory
 ```
