@@ -7,6 +7,60 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlink
 import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { getPluginData } from '../config.mjs';
+
+const WINDOWS_RENAME_RETRY_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const WINDOWS_RENAME_RETRY_MAX = 3;
+const WINDOWS_RENAME_RETRY_DELAY_MS = 50;
+
+function _sleepSync(ms) {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+        // Busy-wait is acceptable here because the session store is already
+        // synchronous and the retry window is tiny.
+    }
+}
+
+function _renameWithRetrySync(tmp, target) {
+    const maxAttempts = process.platform === 'win32' ? WINDOWS_RENAME_RETRY_MAX : 1;
+    let lastErr = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            renameSync(tmp, target);
+            return;
+        } catch (err) {
+            lastErr = err;
+            if (process.platform === 'win32'
+                && WINDOWS_RENAME_RETRY_CODES.has(err?.code)
+                && attempt < maxAttempts - 1) {
+                _sleepSync(WINDOWS_RENAME_RETRY_DELAY_MS);
+                continue;
+            }
+            break;
+        }
+    }
+    // Antivirus / indexer handle contention on Windows can still make rename
+    // lose after a few short retries. Fall back to replace-or-copy so a
+    // session save does not take down the whole bridge turn.
+    try {
+        unlinkSync(target);
+    } catch (err) {
+        if (err?.code !== 'ENOENT') {
+            // Keep going — the copy fallback below may still succeed.
+        }
+    }
+    try {
+        renameSync(tmp, target);
+        return;
+    } catch {}
+    writeFileSync(target, readFileSync(tmp), 'utf-8');
+    try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
+    if (lastErr) {
+        try {
+            process.stderr.write(`[session-store] rename fallback used for ${target}: ${lastErr.code || lastErr.message}\n`);
+        } catch { /* ignore logging failure */ }
+    }
+}
+
 function getStoreDir() {
     const dir = join(getPluginData(), 'sessions');
     if (!existsSync(dir))
@@ -98,7 +152,7 @@ function _doSave(payload) {
             _drainQueue(id);
             return;
         }
-        renameSync(tmp, target);
+        _renameWithRetrySync(tmp, target);
     } catch (err) {
         try { unlinkSync(tmp); } catch { /* ignore cleanup failure */ }
         _savePending.delete(id);
@@ -123,7 +177,7 @@ export function markSessionClosed(id) {
     const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';
     try {
         writeFileSync(tmp, JSON.stringify(tombstone), 'utf-8');
-        renameSync(tmp, target);
+        _renameWithRetrySync(tmp, target);
     } catch {
         try { unlinkSync(tmp); } catch { /* ignore */ }
         return null;
@@ -161,21 +215,15 @@ const DEFAULT_SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes idle — aligned with
 // backstop reclaims the file so the sweep doesn't leak zombies indefinitely.
 const RUNNING_STALL_MS = 10 * 60 * 1000;
 
-export function listStoredSessions(ttlMs) {
-    const maxAge = ttlMs || DEFAULT_SESSION_TTL_MS;
+export function listStoredSessions(_ttlMs) {
     const dir = getStoreDir();
     if (!existsSync(dir))
         return [];
     const files = readdirSync(dir).filter(f => f.endsWith('.json'));
     const sessions = [];
-    const now = Date.now();
     for (const f of files) {
         try {
             const session = JSON.parse(readFileSync(join(dir, f), 'utf-8'));
-            if (now - (session.updatedAt || session.createdAt || 0) > maxAge) {
-                try { unlinkSync(join(dir, f)); } catch { /* ignore */ }
-                continue;
-            }
             sessions.push(session);
         }
         catch { /* skip corrupt */ }

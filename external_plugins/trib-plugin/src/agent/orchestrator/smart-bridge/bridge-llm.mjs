@@ -52,19 +52,16 @@ function pluginRoot() {
         || join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'plugins', 'marketplaces', 'trib-plugin', 'external_plugins', 'trib-plugin');
 }
 
-// Per-role tool whitelist for hidden roles. Only the tools a role
-// actually needs survive the `allowedTools` filter in manager.mjs; the rest
-// are stripped so the BP_1 tool schema (and the shard it caches) shrinks to
-// the minimum. Roles not listed here fall through to tools=full minus the
-// read-permission deny list (legacy behaviour).
-// Unified-shard policy — hidden roles keep the same tool schema as every
-// other bridge session so BP_1 is bit-identical across roles and the
-// provider-side cache shard is shared. Per-role behaviour is steered via
-// rules/bridge/*.md (concatenated into BP2 roleCatalog by
-// loadAllAgentBodies — every bridge session carries the full hidden-role
-// catalog so the shard stays bit-identical across roles) and runtime guards
-// (loop.mjs write-block + ai-wrapped-dispatch recursion break).
-const POOL_C_TOOL_KEEP = Object.freeze({});
+// Unified-shard policy — every bridge session (Pool B + Pool C) shares the
+// same tool schema so BP_1 is bit-identical across roles and one provider-side
+// cache shard serves every caller. Per-role behaviour is steered by:
+//   1. rules/bridge/*.md concatenated into BP2 roleCatalog (via
+//      loadAllAgentBodies — every bridge session carries the full hidden-role
+//      catalog so the shard stays bit-identical across roles)
+//   2. call-time guards (loop.mjs write-block + ai-wrapped-dispatch
+//      recursion break)
+// See manager.mjs resolveSessionTools / BRIDGE_DENY_TOOLS for the single
+// source of truth on the shared schema surface.
 
 function buildUnifiedHeader({ permission, role }) {
     const lines = [];

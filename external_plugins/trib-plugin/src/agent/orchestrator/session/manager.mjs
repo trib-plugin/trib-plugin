@@ -560,26 +560,15 @@ export function createSession(opts) {
         }
     }
 
-    // allowedTools is a hard whitelist applied after the deny filters. Used by
-    // Pool C hidden roles to shrink the tool schema to the minimum their job
-    // needs (e.g. recall-agent only sees memory_search + read/grep/glob).
-    // Unlike deny, this flips the default from "everything except X" to
-    // "nothing except X" — drops BP_1 cache prefix size dramatically.
-    if (Array.isArray(opts.allowedTools) && opts.allowedTools.length > 0) {
-        const allowSet = new Set(opts.allowedTools.map(n => String(n).toLowerCase()));
-        const before = tools.length;
-        tools = tools.filter(t => allowSet.has(String(t?.name || '').toLowerCase()));
-        if (tools.length !== before) {
-            process.stderr.write(`[session] allowedTools=${opts.allowedTools.join(',')} kept ${tools.length}/${before} tools\n`);
-        }
-    }
-
-    // Phase L invariants have been retired under the unified-shard policy —
-    // the session's tool array is always the full set regardless of role or
-    // permission, so a schema-time invariant on "this role must lack write
-    // tools" would always trip. Write-blocking for permission=read is now
-    // handled at call time in loop.mjs (READ_BLOCKED_TOOLS guard).
-    // (Kept this block as documentation — do not re-add filter logic here.)
+    // Unified-shard policy — no role-specific schema filter.
+    // Every bridge session (Pool B + Pool C) gets the same tool array so the
+    // provider-side cache shard is bit-identical across roles. Role-specific
+    // behaviour is steered at two other layers:
+    //   1. prompt (rules/bridge/*.md concatenated into BP2 roleCatalog)
+    //   2. call-time guards (loop.mjs READ_BLOCKED_TOOLS + ai-wrapped-dispatch
+    //      recursion break)
+    // Do NOT re-introduce an `opts.allowedTools` whitelist here — it would
+    // fragment the shard and force every role onto its own cache prefix.
     if (resolvedRole) {
         process.stderr.write(`[session] role=${resolvedRole} permission=${permission || 'full'} tools=${tools.length}\n`);
     }

@@ -135,9 +135,9 @@ try {
     if (s.owner === 'bridge' && (!s.mcpPid || s.mcpPid !== process.pid)) { closeSession(s.id); closed++ }
   }
   log(`[session-cleanup] closed ${closed} stale bridge sessions (pid≠${process.pid}), ${sessions.length - closed} remaining`)
-  // Start periodic idle session cleanup (every 5 min, 30 min TTL)
+  // Start periodic idle session cleanup (check every 5 min; TTL lives in session/store.mjs)
   startIdleCleanup()
-  log(`[session-cleanup] idle sweep timer started (interval=5m, ttl=30m)`)
+  log(`[session-cleanup] idle sweep timer started (interval=5m)`)
 } catch (e) {
   log(`[session-cleanup] failed: ${e && (e.stack || e.message) || e}`)
 }
