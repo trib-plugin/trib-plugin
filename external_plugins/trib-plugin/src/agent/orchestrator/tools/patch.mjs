@@ -41,6 +41,7 @@ import {
   clearReadSnapshotForPath,
 } from './builtin.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
+import { getCapabilities } from '../../../shared/config.mjs';
 
 const DEV_NULL = /^\/dev\/null$/;
 
@@ -113,6 +114,12 @@ async function apply_patch(args, cwd) {
   }
   const basePath = resolveBasePath(cwd, args?.base_path);
   const dryRun = args?.dry_run === true;
+  // B2: capability-gated HOME access. Scope check below honours the same
+  // `allowHome` flag the builtin tools read, so patches can't escape cwd
+  // unless `capabilities.homeAccess` is explicitly enabled.
+  let allowHome = false;
+  try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
+  const pathOpts = { allowHome };
   // Default true — atomic batch semantics match batch_edit.
   const rejectPartial = args?.reject_partial !== false;
 
@@ -146,7 +153,7 @@ async function apply_patch(args, cwd) {
     // Scope-check the resolved absolute path, not the raw header, so
     // `a/../../escape.txt` is caught after path resolution.
     const fullPath = resolveEntryPath(basePath, headerName);
-    if (!isSafePath(fullPath, basePath) && !isSafePath(fullPath, cwd)) {
+    if (!isSafePath(fullPath, basePath, pathOpts) && !isSafePath(fullPath, cwd, pathOpts)) {
       plan.push({
         ok: false,
         index: i,

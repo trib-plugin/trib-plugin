@@ -42,6 +42,7 @@ import {
   invalidateBuiltinResultCache,
 } from './builtin.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
+import { getCapabilities } from '../../../shared/config.mjs';
 
 const execAsync = promisify(exec);
 
@@ -257,7 +258,9 @@ function resolvePath(cwd, p) {
 
 function scopeCheck(label, rawPath, cwd) {
   const norm = normalizeInputPath(rawPath);
-  if (!isSafePath(norm, cwd)) {
+  let allowHome = false;
+  try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
+  if (!isSafePath(norm, cwd, { allowHome })) {
     throw Object.assign(
       new Error(`${label}: path outside allowed scope — ${normalizeOutputPath(norm)}`),
       { code: 'EOUTSIDE', path: normalizeOutputPath(norm) });

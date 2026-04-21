@@ -805,6 +805,27 @@ async function handleMemoryAction(args) {
     }
   }
 
+  if (action === 'delete') {
+    if (args.confirm !== 'DELETE ALL MEMORY') {
+      return { text: 'delete requires confirm: "DELETE ALL MEMORY"', isError: true }
+    }
+    const preCount = db.prepare(`SELECT COUNT(*) c FROM entries`).get().c
+    db.exec('BEGIN')
+    try {
+      db.prepare(`DELETE FROM entries`).run()
+      // FTS + vec_entries are maintained via AFTER DELETE triggers on
+      // entries, so cascade happens automatically. Explicit safety net
+      // below in case a future migration drops a trigger.
+      try { db.exec(`DELETE FROM entries_fts`) } catch {}
+      try { db.exec(`DELETE FROM vec_entries`) } catch {}
+      db.exec('COMMIT')
+    } catch (e) {
+      try { db.exec('ROLLBACK') } catch {}
+      return { text: `delete failed: ${e.message}`, isError: true }
+    }
+    return { text: `deleted all memory entries (count=${preCount})` }
+  }
+
   if (action === 'forget') {
     const rawId = args.id
     const rawElement = args.element
@@ -858,17 +879,19 @@ const TOOL_DEFS = [
     name: 'memory',
     title: 'Memory Cycle',
     annotations: { title: 'Memory Cycle', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact).',
+    description: 'Run memory operations: cycle2/sleep (promote+dedup), flush, rebuild, prune, cycle1, backfill, status, remember (store fact), forget (archive a root), delete (wipe all entries; requires confirm).',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['sleep','cycle2','flush','rebuild','rebuild_classifications','prune','cycle1','backfill','status','remember'], description: 'Operation to run' },
+        action: { type: 'string', enum: ['sleep','cycle2','flush','rebuild','rebuild_classifications','prune','cycle1','backfill','status','remember','forget','delete'], description: 'Operation to run' },
         topic: { type: 'string', description: 'Topic for remember' },
-        element: { type: 'string', description: 'Content for remember' },
+        element: { type: 'string', description: 'Content for remember; also accepted as a substring match target for forget' },
         importance: { type: 'string', description: 'Importance for remember (default: fact)' },
         maxDays: { type: 'number', description: 'Age threshold in days for the `prune` action. Unclassified entries older than this are deleted. Default 30, minimum 1. Ignored by other actions.' },
         window: { type: 'string', description: 'Time window: 1d, 3d, 7d, 30d, all' },
         limit: { type: 'number', description: 'Max episodes to backfill (default 100)' },
+        id: { type: 'number', description: 'Entry id for forget action.' },
+        confirm: { type: 'string', description: 'Required for delete action. Must be exactly "DELETE ALL MEMORY".' },
       },
       required: ['action'],
     },
@@ -878,12 +901,13 @@ const TOOL_DEFS = [
     title: 'Recall',
     aiWrapped: true,
     annotations: { title: 'Recall', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Past context from the memory store. `query`: string or array (parallel fan-out). Async; merged answer auto-pushed. External web → `search`, codebase → `explore`.',
+    description: 'Past context from the memory store. `query`: string or array (parallel fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. External web → `search`, codebase → `explore`.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
         cwd: { type: 'string', description: 'Optional workspace hint. Absolute path; `~` and forward slashes supported.' },
+        background: { type: 'boolean', description: 'Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins.' },
       },
       required: ['query'],
       additionalProperties: false,
@@ -894,12 +918,13 @@ const TOOL_DEFS = [
     title: 'Explore',
     aiWrapped: true,
     annotations: { title: 'Explore', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    description: 'Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Async; merged answer auto-pushed. Past context → `recall`, external web → `search`.',
+    description: 'Internal codebase search. `query`: string or array (parallel fan-out). `cwd` is authoritative search root (no silent fan-out). Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, external web → `search`.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
         cwd: { type: 'string', description: 'Authoritative search root. Absolute path; `~` and forward slashes supported. Omit → launch workspace. Target plugin tree via `cwd: "~/.claude/..."`. No silent fan-out.' },
+        background: { type: 'boolean', description: 'Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins.' },
       },
       required: ['query'],
       additionalProperties: false,

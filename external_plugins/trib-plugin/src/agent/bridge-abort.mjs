@@ -56,7 +56,7 @@ export function attachBridgeAbort(params) {
         catch { /* best-effort */ }
         try { emit(`${modelTag}${role} aborted by user`, { silent_to_agent: true }); }
         catch { /* best-effort */ }
-        try { closeSession(sessionId); }
+        try { closeSession(sessionId, 'request-abort'); }
         catch (e) {
             try { log(`[bridge] closeSession failed during abort: ${e && e.message || e}\n`); }
             catch { /* best-effort */ }

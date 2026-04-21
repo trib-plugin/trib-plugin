@@ -10,6 +10,7 @@ import {
 } from './builtin.mjs';
 import { executePatchTool } from './patch.mjs';
 import { getPluginData } from '../config.mjs';
+import { getCapabilities } from '../../../shared/config.mjs';
 
 const CODE_GRAPH_TTL_MS = 30_000;
 const CODE_GRAPH_MAX_FILES = 10_000;
@@ -1581,7 +1582,10 @@ async function renameFileRefs(args, cwd) {
   const newAbs = isAbsolute(normNewPath) ? pathResolve(normNewPath) : pathResolve(cwd, normNewPath);
   const lang = _graphLanguage(oldAbs);
   if (!lang) return `rename_file_refs: unsupported file type for ${normFile}`;
-  if (!isSafePath(normFile, cwd) || !isSafePath(normNewPath, cwd)) {
+  let allowHome = false;
+  try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
+  const pathOpts = { allowHome };
+  if (!isSafePath(normFile, cwd, pathOpts) || !isSafePath(normNewPath, cwd, pathOpts)) {
     return `Error: path outside allowed scope — ${normalizeOutputPath(normFile)} -> ${normalizeOutputPath(normNewPath)}`;
   }
   let oldText = '';

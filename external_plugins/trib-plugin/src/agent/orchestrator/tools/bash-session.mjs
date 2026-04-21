@@ -39,7 +39,7 @@ import { spawn } from 'node:child_process';
 import * as nodeUtil from 'node:util';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { invalidateBuiltinResultCache, analyzeShellCommandEffects } from './builtin.mjs';
+import { invalidateBuiltinResultCache, analyzeShellCommandEffects, preflightShellLargeFileProbe } from './builtin.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -55,10 +55,10 @@ const SMART_BASH_MAX_BYTES = 30 * 1024;
 const SMART_BASH_HEAD_LINES = 80;
 const SMART_BASH_TAIL_LINES = 80;
 
-// Marker must be something no legitimate shell output would print on its
-// own line. `__TRIB_END__` + exit status, anchored at line start.
-const MARKER = '__TRIB_END__';
-const MARKER_RE = new RegExp(`^${MARKER}:(-?\\d+)\\s*$`, 'm');
+// Marker prefix for per-command sentinels. A random suffix is added on each
+// command so user output that happens to contain the static prefix does not
+// terminate the command early.
+const MARKER_PREFIX = '__TRIB_END__';
 
 // --- ANSI strip (self-contained; mirrors builtin.mjs's implementation) ---
 const _ANSI_REGEX = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\|\u009C))/g;
@@ -68,6 +68,10 @@ const _stripAnsi = typeof nodeUtil.stripVTControlCharacters === 'function'
 function stripAnsi(s) {
     if (typeof s !== 'string' || s.length === 0) return s;
     return _stripAnsi(s);
+}
+
+function escapeRegex(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // --- Smart middle-truncate (shared with bash tool) ---
@@ -272,6 +276,13 @@ function _runCommand(entry, command, timeoutMs) {
 
         let finished = false;
         let timeoutHandle = null;
+        const marker = `${MARKER_PREFIX}:${randomUUID()}`;
+        const markerRe = new RegExp(`^${escapeRegex(marker)}:(-?\\d+)\\s*$`, 'm');
+
+        const onExit = () => {
+            if (finished) return;
+            fail(new Error('bash_session: shell exited before command completed'));
+        };
 
         const cleanup = () => {
             finished = true;
@@ -279,6 +290,7 @@ function _runCommand(entry, command, timeoutMs) {
             entry.lastUsed = Date.now();
             if (timeoutHandle) clearTimeout(timeoutHandle);
             entry.proc.stdout.removeListener('data', onStdout);
+            entry.proc.removeListener('exit', onExit);
         };
 
         const settle = (result) => {
@@ -294,7 +306,7 @@ function _runCommand(entry, command, timeoutMs) {
         };
 
         const onStdout = () => {
-            const m = MARKER_RE.exec(entry.stdoutBuf);
+            const m = markerRe.exec(entry.stdoutBuf);
             if (!m) return;
             const exitCode = Number(m[1]);
             // Everything before the marker line is the real stdout.
@@ -315,10 +327,7 @@ function _runCommand(entry, command, timeoutMs) {
         // Check the buffer in case the marker already arrived (tiny commands).
         onStdout();
 
-        entry.proc.on('exit', () => {
-            if (finished) return;
-            fail(new Error('bash_session: shell exited before command completed'));
-        });
+        entry.proc.on('exit', onExit);
 
         timeoutHandle = setTimeout(() => {
             // Timeout: surface what we have but don't leave the shell in a
@@ -345,7 +354,7 @@ function _runCommand(entry, command, timeoutMs) {
         // Write the command + sentinel. Newline before `echo` in case the
         // command didn't end with one. `$?` captures the final pipeline's
         // exit status as of bash semantics.
-        const payload = `${command}\necho "${MARKER}:$?"\n`;
+        const payload = `${command}\necho "${marker}:$?"\n`;
         try {
             entry.proc.stdin.write(payload, 'utf-8');
         } catch (err) {
@@ -357,6 +366,16 @@ function _runCommand(entry, command, timeoutMs) {
 async function bash_session(args) {
     const command = typeof args?.command === 'string' ? args.command : '';
     if (!command) return 'Error: command is required';
+    const baseCwd = (() => {
+        const explicitId = typeof args?.session_id === 'string' ? args.session_id : '';
+        if (explicitId) {
+            const existing = _sessions.get(explicitId);
+            if (existing?.cwd) return existing.cwd;
+        }
+        return process.cwd();
+    })();
+    const largeProbe = preflightShellLargeFileProbe(command, baseCwd);
+    if (largeProbe) return `Error: ${largeProbe.message}`;
     if (isBlocked(command)) {
         return `Error: blocked command pattern — "${command}" matches safety rule`;
     }
@@ -455,6 +474,17 @@ export function closeBashSession(sessionId, reason = 'external-close') {
     if (!sessionId || !_sessions.has(sessionId)) return false;
     _killSession(sessionId, reason);
     return true;
+}
+
+export function __getBashSessionStateForTesting(sessionId) {
+    const entry = _sessions.get(sessionId);
+    if (!entry) return null;
+    return {
+        busy: entry.busy,
+        dead: entry.dead,
+        cwd: entry.cwd,
+        exitListenerCount: entry.proc.listenerCount('exit'),
+    };
 }
 
 // Best-effort cleanup on process exit so orphan bash children don't linger

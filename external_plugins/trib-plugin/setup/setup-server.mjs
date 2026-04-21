@@ -900,6 +900,67 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+// -- B6 General module toggles (channels / memory / search / agent) --
+  // Stored as a top-level `modules` section inside trib-config.json.
+  // Missing keys default to enabled:true so pre-B6 configs keep all
+  // modules on. Changes require a plugin restart to take effect.
+  if (req.method === 'GET' && path === '/modules') {
+    const tribCfg = readJsonFile(TRIB_CONFIG_PATH);
+    const raw = tribCfg && typeof tribCfg === 'object' ? tribCfg.modules : null;
+    const out = {};
+    for (const name of ['channels', 'memory', 'search', 'agent']) {
+      const entry = raw && typeof raw === 'object' ? raw[name] : null;
+      const enabled = entry && typeof entry === 'object' && entry.enabled === false ? false : true;
+      out[name] = { enabled };
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(out));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/modules') {
+    const data = await readBody(req);
+    const tribCfg = readJsonFile(TRIB_CONFIG_PATH) || {};
+    const sanitized = {};
+    for (const name of ['channels', 'memory', 'search', 'agent']) {
+      const entry = data && typeof data === 'object' ? data[name] : null;
+      const enabled = entry && typeof entry === 'object' && entry.enabled === false ? false : true;
+      sanitized[name] = { enabled };
+    }
+    tribCfg.modules = sanitized;
+    writeJsonFile(TRIB_CONFIG_PATH, tribCfg);
+    console.log('  Config saved: modules');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, modules: sanitized }));
+    return;
+  }
+
+  // -- B2 Security capabilities (homeAccess) ---------------------------
+  // Stored as a top-level `capabilities` section inside trib-config.json.
+  // Missing keys default to `false` so out-of-the-box installs stay
+  // cwd-only; flipping a toggle takes effect on the next tool call
+  // (capability is re-read per invocation in builtin.mjs/patch.mjs).
+  if (req.method === 'GET' && path === '/capabilities') {
+    const tribCfg = readJsonFile(TRIB_CONFIG_PATH);
+    const raw = tribCfg && typeof tribCfg === 'object' ? tribCfg.capabilities : null;
+    const out = { homeAccess: !!(raw && typeof raw === 'object' && raw.homeAccess === true) };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(out));
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/capabilities') {
+    const data = await readBody(req);
+    const tribCfg = readJsonFile(TRIB_CONFIG_PATH) || {};
+    const sanitized = { homeAccess: !!(data && typeof data === 'object' && data.homeAccess === true) };
+    tribCfg.capabilities = sanitized;
+    writeJsonFile(TRIB_CONFIG_PATH, tribCfg);
+    console.log('  Config saved: capabilities');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, capabilities: sanitized }));
+    return;
+  }
+
   // -- Schedules CRUD --
   const SCHEDULES_DIR = join(DATA_DIR, 'schedules');
 
@@ -1386,6 +1447,40 @@ const server = http.createServer(async (req, res) => {
     } finally {
       try { db?.close?.(); } catch {}
       _backfillInProgress = false;
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/memory/delete') {
+    const data = await readBody(req);
+    if (data?.confirm !== 'DELETE ALL MEMORY') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'confirm must be exactly "DELETE ALL MEMORY"' }));
+      return;
+    }
+    let db;
+    try {
+      db = openMemoryDb();
+      db.exec('PRAGMA busy_timeout = 30000');
+      const preCount = db.prepare('SELECT COUNT(*) c FROM entries').get().c;
+      db.exec('BEGIN');
+      try {
+        db.prepare('DELETE FROM entries').run();
+        try { db.prepare('DELETE FROM entries_fts').run(); } catch {}
+        try { db.prepare('DELETE FROM vec_entries').run(); } catch {}
+        db.exec('COMMIT');
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw e;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, deleted: preCount }));
+    } catch (err) {
+      console.error(`[memory delete] failed: ${err.message}`);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    } finally {
+      try { db?.close?.(); } catch {}
     }
     return;
   }

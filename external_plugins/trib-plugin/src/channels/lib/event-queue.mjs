@@ -142,6 +142,22 @@ class EventQueue {
     }
   }
   processBatch() {
+    // Belt-and-suspenders ownership guard: if this process is not the
+    // active owner, do nothing. The runtime should only have started this
+    // queue on the owner path, but an ownership hand-off can briefly leave
+    // two processes both ticking — this short-circuits that window.
+    if (this.ownerGetter) {
+      let isOwner = true;
+      try { isOwner = !!this.ownerGetter(); } catch { isOwner = true; }
+      if (!isOwner) {
+        if (!this.ownerSkipLogged) {
+          logEvent("queue: skipping batch tick — not owner");
+          this.ownerSkipLogged = true;
+        }
+        return;
+      }
+      this.ownerSkipLogged = false;
+    }
     const files = this.readQueueFiles();
     const lowFiles = files.filter((f) => f.startsWith("2-"));
     if (lowFiles.length === 0) return;
@@ -155,27 +171,28 @@ class EventQueue {
       groups.set(item.name, group);
     }
     for (const [name, group] of groups) {
-      const combined = group.items.length === 1 ? group.items[0].prompt : `Batch of ${group.items.length} events:
+      // Claim all batch files atomically BEFORE building the combined
+      // prompt so overlapping batch ticks don't double-process. Files
+      // that fail to claim are dropped from this batch, and their
+      // corresponding items are excluded from the prompt.
+      const claimedPairs = [];
+      for (let i = 0; i < group.files.length; i++) {
+        const claimed = this.claimFile(group.files[i]);
+        if (claimed) claimedPairs.push({ file: claimed, item: group.items[i] });
+      }
+      if (claimedPairs.length === 0) continue;
+      const combined = claimedPairs.length === 1 ? claimedPairs[0].item.prompt : `Batch of ${claimedPairs.length} events:
 
-${group.items.map((it, i) => `--- Event ${i + 1} ---
-${it.prompt}`).join("\n\n")}`;
+${claimedPairs.map((p, i) => `--- Event ${i + 1} ---
+${p.item.prompt}`).join("\n\n")}`;
       const batchItem = {
-        ...group.items[0],
+        ...claimedPairs[0].item,
         prompt: combined
       };
-      // Claim all batch files atomically before executing so overlapping
-      // batch ticks don't double-process. Files that fail to claim are
-      // dropped from this batch.
-      const claimedFiles = [];
-      for (const file of group.files) {
-        const claimed = this.claimFile(file);
-        if (claimed) claimedFiles.push(claimed);
-      }
-      if (claimedFiles.length === 0) continue;
-      logEvent(`${name}: processing batch of ${group.items.length}`);
+      logEvent(`${name}: processing batch of ${claimedPairs.length}`);
       this.executeItem(batchItem, null);
-      for (const file of claimedFiles) {
-        this.moveInProgressToProcessed(file, "batched");
+      for (const { file: claimedPath } of claimedPairs) {
+        this.moveInProgressToProcessed(claimedPath, "batched");
       }
     }
   }

@@ -84,11 +84,15 @@ function getSmartBridgeSync() {
  * handler, CLI) should render this as "cancelled" rather than a hard error.
  */
 export class SessionClosedError extends Error {
-    constructor(sessionId, reason) {
+    constructor(sessionId, reason, closeReason) {
         super(reason ? `Session "${sessionId}" closed: ${reason}` : `Session "${sessionId}" closed`);
         this.name = 'SessionClosedError';
         this.sessionId = sessionId;
         this.cancelled = true;
+        // closeReason is the diagnostic enum (request-abort / manual /
+        // idle-sweep / runner-crash). Kept separate from `reason` (the free
+        // -form message) so consumers can branch on it without regex parsing.
+        this.reason = closeReason || null;
     }
 }
 let _mcpToolsCache = null;
@@ -533,10 +537,10 @@ export function createSession(opts) {
         // scheduler/webhook). Role or source-specific context must be
         // injected into the message tail, not the shared prefix.
         promptCacheKey: providerCacheKey(presetObj?.provider || opts.provider),
-        // Bridge shell continuity: when a bridge session first routes a
-        // `bash` call through the persistent shell helper, the minted
-        // bash_session id is stored here so later `bash` calls can reuse
-        // the same shell state automatically.
+        // Bridge shell continuity: when a bridge session explicitly opts into
+        // persistent shell state (`bash` with `persistent:true`, or direct
+        // `bash_session`), the minted bash_session id is stored here so later
+        // opted-in `bash` calls can reuse the same shell state.
         implicitBashSessionId: null,
         // Hermes-style in-flight compressor state
         compressionCount: 0,
@@ -769,7 +773,8 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
             // drop the save so the tombstone on disk isn't overwritten.
             const currentRuntime = _runtimeState.get(sessionId);
             if (currentRuntime?.closed || currentRuntime?.generation !== askGeneration) {
-                throw new SessionClosedError(sessionId, 'closed during call');
+                const reason = currentRuntime?.closedReason;
+                throw new SessionClosedError(sessionId, `closed during call (reason=${reason || 'unknown'})`, reason || null);
             }
             // Update and save. outgoing is mutated in place by agentLoop
             // (compaction + safety trim), so its length reflects post-loop state.
@@ -974,24 +979,36 @@ export function updateSessionStatus(id, status) {
  * Long-term cleanup: `sweepTombstones()` below unlinks tombstones older than
  * TOMBSTONE_MAX_AGE_MS (24h — vastly longer than any realistic in-flight race).
  */
-export function closeSession(id) {
+export function closeSession(id, reason = 'manual') {
     if (!id) return false;
     const persisted = loadSession(id);
     const bashSessionId = persisted?.implicitBashSessionId || null;
     // 1. Tombstone first — this wins the race against saveSession().
-    const newGen = markSessionClosed(id);
+    const newGen = markSessionClosed(id, reason);
     // 2. Mark runtime as closed so post-await validation in askSession fires.
     const entry = _runtimeState.get(id);
     if (entry) {
         entry.closed = true;
+        entry.closedReason = reason;
         if (typeof newGen === 'number') entry.generation = newGen;
         entry.stage = 'cancelling';
         entry.updatedAt = Date.now();
         // 3. Abort the in-flight controller. Providers that honour the signal
         //    unwind immediately; providers that don't will still be caught by
         //    the generation check after their await eventually returns.
-        try { entry.controller?.abort(new SessionClosedError(id, 'closeSession')); } catch { /* ignore */ }
+        try { entry.controller?.abort(new SessionClosedError(id, `closeSession (reason=${reason})`, reason)); } catch { /* ignore */ }
     }
+    // Diagnostic: one-line stderr so operators can distinguish the four close
+    // pathways (request-abort / manual / idle-sweep / runner-crash). iterCount
+    // is not currently tracked on runtime state; askStartedAt is — derive
+    // duration from it when present.
+    try {
+        const askStartedAt = entry?.askStartedAt;
+        const durationMs = (typeof askStartedAt === 'number') ? (Date.now() - askStartedAt) : null;
+        const parts = [`session=${id}`, `reason=${reason}`];
+        if (durationMs != null) parts.push(`duration=${durationMs}ms`);
+        process.stderr.write(`[bridge-close] ${parts.join(' ')}\n`);
+    } catch { /* best-effort */ }
     if (bashSessionId) {
         try { closeBashSession(bashSessionId, `bridge-close:${id}`); } catch { /* ignore */ }
     }

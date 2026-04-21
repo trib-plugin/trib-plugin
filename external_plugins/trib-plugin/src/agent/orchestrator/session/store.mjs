@@ -167,11 +167,11 @@ function _doSave(payload) {
  * Used by closeSession() to plant a tombstone that races against in-flight
  * saveSession() calls.
  */
-export function markSessionClosed(id) {
+export function markSessionClosed(id, reason = 'manual') {
     const existing = loadSession(id);
     if (!existing) return null;
     const newGen = (typeof existing.generation === 'number' ? existing.generation : 0) + 1;
-    const tombstone = { ...existing, closed: true, generation: newGen, updatedAt: Date.now() };
+    const tombstone = { ...existing, closed: true, closedReason: reason, generation: newGen, updatedAt: Date.now() };
     // Bypass the queue + guard — this IS the tombstone write.
     const target = sessionPath(id);
     const tmp = target + '.' + randomBytes(6).toString('hex') + '.tmp';

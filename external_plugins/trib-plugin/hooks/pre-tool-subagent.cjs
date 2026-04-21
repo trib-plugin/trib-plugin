@@ -4,7 +4,8 @@
  *
  * PermissionRequest hooks don't fire for sub-agents (Claude Code bug #23983).
  * This hook intercepts sub-agent Edit/Write calls to protected paths
- * (~/.claude/) and runs the Discord approval flow directly.
+ * (anywhere inside $HOME but outside the session's cwd — see
+ * isProtectedPath below) and runs the Discord approval flow directly.
  *
  * Unified signal-based flow (matches main session):
  *   1. POST Discord prompt with perm-{uuid}-{action} buttons.
@@ -71,16 +72,32 @@ function discordApi(method, apiPath, token, body) {
   });
 }
 
-function isProtectedPath(filePath) {
+// B2: protected-path expansion. Previously only `/.claude/` triggered
+// Discord approval; now any Edit/Write landing inside HOME but OUTSIDE
+// the session's cwd is treated as protected. Matches the central path
+// policy in src/agent/orchestrator/tools/builtin.mjs#isSafePath — that
+// helper already rejects HOME targets by default for the main agent;
+// this hook applies the same principle to sub-agents by routing any
+// such target through Discord (whose Session Allow button is the
+// escape valve for workflows that actually need HOME writes).
+function isProtectedPath(filePath, cwd) {
   if (!filePath) return false;
-  const norm = filePath.replace(/\\/g, '/').toLowerCase();
-  return norm.includes('/.claude/');
+  const norm = path.resolve(filePath).replace(/\\/g, '/').toLowerCase();
+  const homeNorm = (process.env.HOME || process.env.USERPROFILE || '').replace(/\\/g, '/').toLowerCase();
+  const cwdNorm = (cwd || process.cwd()).replace(/\\/g, '/').toLowerCase();
+  if (!homeNorm) return false;
+  // Inside HOME but outside cwd → protected (requires Discord approval).
+  const insideHome = norm === homeNorm || norm.startsWith(homeNorm.endsWith('/') ? homeNorm : homeNorm + '/');
+  const insideCwd = cwdNorm && (norm === cwdNorm || norm.startsWith(cwdNorm.endsWith('/') ? cwdNorm : cwdNorm + '/'));
+  return insideHome && !insideCwd;
 }
 
-// Scan RUNTIME_ROOT for a signal file whose payload.toolName matches and
-// whose name timestamp is >= hookStartedAt. Returns the claimed file path
-// (after unlink) or null. Only the first matching signal is consumed.
-function findAndClaimSignal(toolName, hookStartedAt) {
+// Scan RUNTIME_ROOT for a signal file whose payload (toolName, filePath,
+// toolUseId) matches and whose name timestamp is >= hookStartedAt. Returns
+// the claimed file path (after unlink) or null. Only the first matching
+// signal is consumed. toolUseId is optional: when falsy, matching falls
+// back to (toolName, filePath).
+function findAndClaimSignal(toolName, filePath, toolUseId, hookStartedAt) {
   let entries;
   try { entries = fs.readdirSync(RUNTIME_ROOT); } catch { return null; }
   for (const name of entries) {
@@ -94,6 +111,8 @@ function findAndClaimSignal(toolName, hookStartedAt) {
     let payload;
     try { payload = JSON.parse(raw); } catch { continue; }
     if (payload?.toolName !== toolName) continue;
+    if (payload?.filePath !== filePath) continue;
+    if (toolUseId && payload?.toolUseId !== toolUseId) continue;
     try { fs.unlinkSync(p); } catch {}
     return p;
   }
@@ -121,7 +140,14 @@ process.stdin.on('end', async () => {
     if (toolName !== 'Edit' && toolName !== 'Write') process.exit(0);
 
     const filePath = toolInput.file_path || '';
-    if (!isProtectedPath(filePath)) process.exit(0);
+    // Resolve the session cwd: hook payload carries it on newer Claude Code
+    // builds (`data.cwd` or `data.tool_input.cwd`); older builds omit it, in
+    // which case process.cwd() is the correct fallback (the hook runs inside
+    // the same working directory as the session).
+    const hookCwd = data.cwd || toolInput.cwd || process.cwd();
+    if (!isProtectedPath(filePath, hookCwd)) process.exit(0);
+
+    const toolUseId = data.tool_use_id ?? data.toolUseId ?? '';
 
     const route = shouldRoutePermissionToDiscord();
     if (route.route !== 'discord') process.exit(0);
@@ -209,8 +235,9 @@ process.stdin.on('end', async () => {
         return;
       }
 
-      // Terminal-approval path: signal file from post-tool-use with matching toolName
-      const claimed = findAndClaimSignal(toolName, hookStartedAt);
+      // Terminal-approval path: signal file from post-tool-use with matching
+      // (toolName, filePath, toolUseId) — toolUseId optional.
+      const claimed = findAndClaimSignal(toolName, filePath, toolUseId, hookStartedAt);
       if (claimed) {
         await patchAndExit('\n\n↩️ Resolved from terminal.', null);
         return;

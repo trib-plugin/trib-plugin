@@ -112,10 +112,14 @@ class Scheduler {
   // on cold start so we don't fire immediately after restart.
   proactiveFiredToday = 0;
   // count of proactive fires today (telemetry only)
+  proactiveInFlight = false;
+  // true while an in-progress fireProactiveTick is awaiting the LLM
   deferred = /* @__PURE__ */ new Map();
   // name -> deferred-until timestamp
   skippedToday = /* @__PURE__ */ new Set();
   // names skipped for today
+  skippedTodayDate = "";
+  // "YYYY-MM-DD" local date the skippedToday set belongs to
   holidayCountry = null;
   // ISO country code for holiday check
   holidayChecked = "";
@@ -161,10 +165,20 @@ class Scheduler {
   }
   /** Skip a schedule for the rest of today */
   skipToday(name) {
+    this.rolloverSkippedTodayIfNeeded();
     this.skippedToday.add(name);
+  }
+  /** Roll the skippedToday bucket over when the local date has changed */
+  rolloverSkippedTodayIfNeeded() {
+    const today = new Date().toLocaleDateString('sv-SE');
+    if (this.skippedTodayDate !== today) {
+      this.skippedToday.clear();
+      this.skippedTodayDate = today;
+    }
   }
   /** Check if a schedule should be skipped (deferred or skipped today) */
   shouldSkip(name) {
+    this.rolloverSkippedTodayIfNeeded();
     if (this.skippedToday.has(name)) return true;
     const until = this.deferred.get(name);
     if (until && Date.now() < until) return true;
@@ -707,6 +721,12 @@ ${scriptResult}
     this.proactiveDbUpdater = dbUpdater;
   }
   async fireProactiveTick(preferredTopic) {
+    // In-flight guard: during the ~90s LLM call, subsequent ticks must not
+    // overlap even while the session still reads as idle.
+    if (this.proactiveInFlight) {
+      logSchedule('proactive: skip (already in-flight)\n');
+      return;
+    }
     // Pre-check: skip LLM call entirely if user is active (manual trigger with topic bypasses)
     if (!preferredTopic && this.getSessionState() !== 'idle') {
       logSchedule('proactive: skip (session active, pre-check)\n');
@@ -737,45 +757,53 @@ ${data.memory || "(no recent context)"}
 ## Available Conversation Sources
 ${sourcesText}
 ${preferredTopicText}`;
+    // Advance baseline + set in-flight at fire-intent time: baseline now
+    // moves on "we attempted a fire" (not on "talk succeeded"), so skip /
+    // error / parse-fail branches no longer re-enter every tick.
+    this.proactiveLastFireAt = Date.now();
+    this.proactiveInFlight = true;
     logSchedule("proactive: firing LLM\n");
     const presetId = this.proactive?.model || 'sonnet-mid';
     try {
-      const raw = await proactiveLlm({ prompt: task, preset: presetId, mode: 'active', timeout: 90000, sourceName: 'proactive' });
-      let result;
       try {
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        result = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-      } catch {
-        logSchedule("proactive: failed to parse response\n");
-        return;
-      }
-      if (!result) return;
-      if (result.log || result.researchSummary) {
-        const logPath = join(DATA_DIR, "proactive.log");
-        const parts = [`[${(/* @__PURE__ */ new Date()).toISOString()}]`];
-        if (result.log) parts.push(result.log);
-        if (result.researchSummary) parts.push(`research: ${result.researchSummary}`);
+        const raw = await proactiveLlm({ prompt: task, preset: presetId, mode: 'active', timeout: 90000, sourceName: 'proactive' });
+        let result;
         try {
-          appendFileSync(logPath, parts.join(' ') + '\n');
-        } catch {}
+          const jsonMatch = raw.match(/\{[\s\S]*\}/);
+          result = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+        } catch {
+          logSchedule("proactive: failed to parse response\n");
+          return;
+        }
+        if (!result) return;
+        if (result.log || result.researchSummary) {
+          const logPath = join(DATA_DIR, "proactive.log");
+          const parts = [`[${(/* @__PURE__ */ new Date()).toISOString()}]`];
+          if (result.log) parts.push(result.log);
+          if (result.researchSummary) parts.push(`research: ${result.researchSummary}`);
+          try {
+            appendFileSync(logPath, parts.join(' ') + '\n');
+          } catch {}
+        }
+        if (result.sourceUpdates) {
+          this.proactiveDbUpdater?.(result.sourceUpdates);
+        }
+        if (result.action !== "talk" || !result.message) {
+          logSchedule(`proactive: skip (${result.log || "no reason"})\n`);
+          return;
+        }
+        logSchedule(`proactive: "${result.sourcePicked}" \u2192 inject\n`);
+        this.proactiveFiredToday++;
+        if (this.injectFn) {
+          this.injectFn("", `proactive:${result.sourcePicked || "chat"}`, " ", {
+            instruction: result.message
+          });
+        }
+      } catch (err) {
+        logSchedule(`proactive: LLM error: ${err.message}\n`);
       }
-      if (result.sourceUpdates) {
-        this.proactiveDbUpdater?.(result.sourceUpdates);
-      }
-      if (result.action !== "talk" || !result.message) {
-        logSchedule(`proactive: skip (${result.log || "no reason"})\n`);
-        return;
-      }
-      logSchedule(`proactive: "${result.sourcePicked}" \u2192 inject\n`);
-      this.proactiveLastFireAt = Date.now();
-      this.proactiveFiredToday++;
-      if (this.injectFn) {
-        this.injectFn("", `proactive:${result.sourcePicked || "chat"}`, " ", {
-          instruction: result.message
-        });
-      }
-    } catch (err) {
-      logSchedule(`proactive: LLM error: ${err.message}\n`);
+    } finally {
+      this.proactiveInFlight = false;
     }
   }
   // ── Helpers ─────────────────────────────────────────────────────────

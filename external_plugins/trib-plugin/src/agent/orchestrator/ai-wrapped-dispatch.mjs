@@ -247,13 +247,43 @@ export async function dispatchAiWrapped(name, args, ctx) {
   // when the caller explicitly wants the uncapped synthesis. See
   // bridge-llm.mjs::applyBriefCap for the cap shape.
   const brief = args.brief !== false;
+  const resolvedCwd = resolveCwd(args.cwd)
 
-  // Always dispatched + notification. There is no synchronous mode. Spawning
-  // inline would block the MCP response for 14+ seconds while the
-  // sub-agents stream, long enough for Claude Code's MCP client to drop
-  // the connection. Dispatching in the background and returning a handle
-  // immediately — with the merged answer delivered later via the channel
-  // notification bridge — eliminates that failure mode entirely.
+  // Sync vs background. Lead (external MCP client, no callerSessionId)
+  // defaults to background=true to avoid Claude Code's ~14s MCP request
+  // timeout. Role sessions (callerSessionId set — worker / reviewer / ...)
+  // default to background=false so the merged answer lands in the SAME
+  // turn; otherwise a role can't use the result for its next step and
+  // falls back to ad-hoc shell search (the bash_session loop failure).
+  const background = typeof args.background === 'boolean'
+    ? args.background
+    : !ctx?.callerSessionId
+
+  if (!background) {
+    const settled = await Promise.allSettled(
+      queries.map((q) => {
+        const key = buildQueryCacheKey(name, q, resolvedCwd, brief)
+        return runCachedQuery(name, key, async () => {
+          const llm = makeBridgeLlm({ role: spec.role, cwd: resolvedCwd, brief })
+          return llm({ prompt: spec.build(q, resolvedCwd) })
+        })
+      }),
+    )
+    const merged = queries.length === 1
+      ? (settled[0].status === 'fulfilled'
+          ? (settled[0].value || '(no response)')
+          : `[${spec.label} error] ${settled[0].reason?.message || String(settled[0].reason)}`)
+      : settled.map((r, i) => {
+          const header = `### Query ${i + 1}: ${queries[i]}`
+          if (r.status === 'fulfilled') return `${header}\n${r.value || '(no response)'}`
+          return `${header}\n[${spec.label} error] ${r.reason?.message || String(r.reason)}`
+        }).join('\n\n---\n\n')
+    return ok(merged)
+  }
+
+  // Background dispatch path. The caller (Lead) gets an immediate handle;
+  // sub-agents stream in the background and the merged answer is pushed
+  // via the channel notification bridge.
   _pruneDispatchResults()
   const id = `dispatch_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   _dispatchResults.set(id, {
@@ -277,7 +307,6 @@ export async function dispatchAiWrapped(name, args, ctx) {
   if (typeof ctx?.notifyFn === 'function') {
     try { ctx.notifyFn(`${name} started`) } catch { /* best-effort */ }
   }
-  const resolvedCwd = resolveCwd(args.cwd)
   Promise.allSettled(
     queries.map((q) => {
       const key = buildQueryCacheKey(name, q, resolvedCwd, brief)

@@ -969,10 +969,19 @@ try {
         try { payload = JSON.parse(raw); } catch { return; }
         const toolName = payload?.toolName;
         if (!toolName) return;
+        const sigFilePath = payload?.filePath || '';
         let oldestKey = null;
         let oldestEntry = null;
         for (const [k, v] of pendingPermRequests) {
           if (v.toolName !== toolName) continue;
+          // Bind on filePath too. If both sides are empty (non-file tools
+          // like Bash), toolName alone is the match. Otherwise both must
+          // equal — prevents two concurrent Edit/Write requests from
+          // cross-approving each other.
+          const vFilePath = v.filePath || '';
+          if (vFilePath || sigFilePath) {
+            if (vFilePath !== sigFilePath) continue;
+          }
           if (!oldestEntry || v.createdAt < oldestEntry.createdAt) {
             oldestKey = k;
             oldestEntry = v;
@@ -2157,6 +2166,13 @@ if (_isWorkerMode && process.send) {
     if (msg && msg.type === 'permission_request_inbound') {
       try {
         const { request_id, tool_name, description, input_preview } = msg.params || {};
+        // tool_input arrives via the passthrough() schema in server.mjs when
+        // Claude Code includes it in the permission_request notification.
+        // Used to bind the pendingPermRequest to a specific file so two
+        // concurrent Edit/Write requests cannot cross-approve via the
+        // terminal signal.
+        const toolInputParam = (msg.params && (msg.params.tool_input || msg.params.toolInput)) || {};
+        const filePathParam = toolInputParam.file_path || '';
         if (!request_id || !tool_name) return;
         if (pendingPermRequests.size > 100) {
           const cutoff = Date.now() - 30 * 60 * 1000;
@@ -2195,6 +2211,7 @@ if (_isWorkerMode && process.send) {
         const messageId = Array.isArray(sentIds) && sentIds.length > 0 ? sentIds[0] : null;
         pendingPermRequests.set(request_id, {
           toolName: tool_name,
+          filePath: filePathParam,
           createdAt: Date.now(),
           channelId: target,
           messageId,

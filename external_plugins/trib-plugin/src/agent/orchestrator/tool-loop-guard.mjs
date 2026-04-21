@@ -17,25 +17,31 @@
 import { createHash } from 'crypto';
 import { loadConfig, getPluginData } from './config.mjs';
 
+const DEFAULT_SAME_TOOL_THRESHOLDS = Object.freeze({
+    search: 12,
+    recall: 12,
+    explore: 12,
+    web_search: 12,
+    memory_search: 12,
+    read: 8,
+    multi_read: 8,
+    grep: 8,
+    glob: 8,
+    list: 8,
+    job_status: 3,
+    job_read: 5,
+    bash: 10,
+    bash_session: 10,
+});
+const DEFAULT_SAME_TOOL_ABORT_THRESHOLDS = Object.freeze(
+    Object.fromEntries(Object.entries(DEFAULT_SAME_TOOL_THRESHOLDS).map(([name, value]) => [name, value * 2])),
+);
+
 const DEFAULT_CONFIG = Object.freeze({
     detectThreshold: 4,
     abortThreshold: 5,
-    sameToolThresholds: Object.freeze({
-        search: 12,
-        recall: 12,
-        explore: 12,
-        web_search: 12,
-        memory_search: 12,
-        read: 8,
-        multi_read: 8,
-        grep: 8,
-        glob: 8,
-        list: 8,
-        job_status: 3,
-        job_read: 5,
-        bash: 10,
-        bash_session: 10,
-    }),
+    sameToolThresholds: DEFAULT_SAME_TOOL_THRESHOLDS,
+    sameToolAbortThresholds: DEFAULT_SAME_TOOL_ABORT_THRESHOLDS,
     toolFamilyWarnRules: Object.freeze([
         Object.freeze({
             key: 'structure_probe',
@@ -57,6 +63,7 @@ const DEFAULT_CONFIG = Object.freeze({
         }),
     ]),
     totalToolWarnThresholds: Object.freeze([24, 48]),
+    totalToolAbortThresholds: Object.freeze([60]),
 });
 let _runtimeConfig = null;
 let _loadedRuntimeConfig = null;
@@ -65,13 +72,25 @@ let _loadedRuntimeConfigKey = '';
 const RUNTIME_CONFIG_CACHE_TTL_MS = 60_000;
 
 function buildRuntimeConfig(overrides = {}) {
+    const sameToolThresholds = {
+        ...DEFAULT_CONFIG.sameToolThresholds,
+        ...(overrides.sameToolThresholds || {}),
+    };
+    const sameToolAbortThresholds = {};
+    const overrideSameToolAbort = overrides.sameToolAbortThresholds || {};
+    for (const [name, warnThreshold] of Object.entries(sameToolThresholds)) {
+        const overrideThreshold = overrideSameToolAbort[name];
+        if (Number.isFinite(overrideThreshold)) {
+            sameToolAbortThresholds[name] = overrideThreshold;
+        } else {
+            sameToolAbortThresholds[name] = warnThreshold * 2;
+        }
+    }
     return {
         detectThreshold: Number.isFinite(overrides.detectThreshold) ? overrides.detectThreshold : DEFAULT_CONFIG.detectThreshold,
         abortThreshold: Number.isFinite(overrides.abortThreshold) ? overrides.abortThreshold : DEFAULT_CONFIG.abortThreshold,
-        sameToolThresholds: new Map(Object.entries({
-            ...DEFAULT_CONFIG.sameToolThresholds,
-            ...(overrides.sameToolThresholds || {}),
-        })),
+        sameToolThresholds: new Map(Object.entries(sameToolThresholds)),
+        sameToolAbortThresholds: new Map(Object.entries(sameToolAbortThresholds)),
         toolFamilyWarnRules: (Array.isArray(overrides.toolFamilyWarnRules) ? overrides.toolFamilyWarnRules : DEFAULT_CONFIG.toolFamilyWarnRules)
             .map((rule) => ({
                 key: rule.key,
@@ -82,6 +101,9 @@ function buildRuntimeConfig(overrides = {}) {
         totalToolWarnThresholds: Array.isArray(overrides.totalToolWarnThresholds)
             ? [...overrides.totalToolWarnThresholds]
             : [...DEFAULT_CONFIG.totalToolWarnThresholds],
+        totalToolAbortThresholds: Array.isArray(overrides.totalToolAbortThresholds)
+            ? [...overrides.totalToolAbortThresholds]
+            : [...DEFAULT_CONFIG.totalToolAbortThresholds],
     };
 }
 
@@ -119,6 +141,10 @@ function sameToolThreshold(toolName) {
 
 function sameToolThresholdFromConfig(config, toolName) {
     return config.sameToolThresholds.get(String(toolName || '').toLowerCase()) ?? null;
+}
+
+function sameToolAbortThresholdFromConfig(config, toolName) {
+    return config.sameToolAbortThresholds.get(String(toolName || '').toLowerCase()) ?? null;
 }
 
 const ERROR_RULES = [
@@ -217,6 +243,7 @@ export function buildSoftWarn(info) {
 export function buildSameToolWarn(info) {
     const toolName = info.toolName || 'tool';
     const toolKey = String(toolName).toLowerCase();
+    const abortThreshold = Number.isFinite(info.abortThreshold) ? info.abortThreshold : null;
     const lines = [
         `⚠ Repeated-tool soft-warn: \`${toolName}\` has been called ${info.count} times in this session.`,
         `Before calling \`${toolName}\` again, consider:`,
@@ -250,6 +277,9 @@ export function buildSameToolWarn(info) {
         lines.push(`- A different tool may yield more (e.g. read for known files, grep for in-file content, code_graph for structure).`);
     }
     lines.push(`- If you DO call again, narrow the next query meaningfully (different angle, narrower scope, different cwd).`);
+    if (abortThreshold) {
+        lines.push(`- Hard stop: at ${abortThreshold} repeated \`${toolName}\` calls this session will abort.`);
+    }
     lines.push(
         `(Advisory only — the call is not blocked.)`,
     );
@@ -283,12 +313,14 @@ export function buildToolFamilyWarn(info) {
 
 export function buildToolBudgetWarn(info) {
     const count = Number(info?.count || 0);
+    const abortThreshold = Number.isFinite(info?.abortThreshold) ? info.abortThreshold : null;
     const lines = [
         `⚠ Tool-budget soft-warn: this session has already made ${count} tool calls.`,
         `Before calling another low-level tool, pause and consider:`,
         `- Do you already have enough evidence to synthesize an answer or patch?`,
         `- If not, can you switch up a level: \`code_graph\` for structure, \`apply_patch\` for clear edits, \`bash_session\` for stateful shell work?`,
         `- If you still need another call, make it meaningfully narrower than the previous one.`,
+        ...(abortThreshold ? [`- Hard stop: at ${abortThreshold} total tool calls this session will abort.`] : []),
         `(Advisory only — the call is not blocked.)`,
     ];
     return lines.join('\n');
@@ -343,6 +375,7 @@ export function checkToolCall(guard, event) {
     // intermixed call sequence breaks the streak.
     let sameToolWarn = null;
     const sameToolWarnThreshold = sameToolThresholdFromConfig(cfg, toolKey);
+    const sameToolAbortThreshold = sameToolAbortThresholdFromConfig(cfg, toolKey);
     if (sameToolWarnThreshold !== null) {
         if (guard.sameToolName === toolKey) {
             guard.sameToolCount += 1;
@@ -350,13 +383,34 @@ export function checkToolCall(guard, event) {
             guard.sameToolName = toolKey;
             guard.sameToolCount = 1;
         }
+        if (sameToolAbortThreshold !== null && guard.sameToolCount >= sameToolAbortThreshold) {
+            const argsSample = (() => {
+                try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
+            })();
+            const errorSample = String(result).slice(0, 300);
+            return {
+                action: 'abort',
+                info: {
+                    signature: `same-tool:${toolKey}`,
+                    toolName,
+                    errorCategory: `same-tool-repeat@${sameToolAbortThreshold}`,
+                    attemptCount: guard.sameToolCount,
+                    argsSample,
+                    errorSample,
+                    iteration,
+                    threshold: sameToolAbortThreshold,
+                },
+            };
+        }
         if (guard.sameToolCount >= sameToolWarnThreshold
             && !guard.sameToolWarnedFor.has(toolKey)) {
             guard.sameToolWarnedFor.add(toolKey);
             sameToolWarn = {
                 toolName,
                 count: guard.sameToolCount,
-                text: buildSameToolWarn({ toolName, count: guard.sameToolCount }),
+                threshold: sameToolWarnThreshold,
+                abortThreshold: sameToolAbortThreshold,
+                text: buildSameToolWarn({ toolName, count: guard.sameToolCount, abortThreshold: sameToolAbortThreshold }),
             };
         }
     } else {
@@ -398,16 +452,44 @@ export function checkToolCall(guard, event) {
     }
 
     let budgetWarn = null;
+    let budgetAbortThreshold = null;
     for (const threshold of cfg.totalToolWarnThresholds) {
         if (guard.totalToolCalls >= threshold && !guard.totalToolWarnedThresholds.has(threshold)) {
             guard.totalToolWarnedThresholds.add(threshold);
             budgetWarn = {
                 count: guard.totalToolCalls,
                 threshold,
-                text: buildToolBudgetWarn({ count: guard.totalToolCalls, threshold }),
+                abortThreshold: null,
+                text: buildToolBudgetWarn({ count: guard.totalToolCalls, threshold, abortThreshold: cfg.totalToolAbortThresholds[0] ?? null }),
             };
             break;
         }
+    }
+    for (const threshold of cfg.totalToolAbortThresholds) {
+        if (guard.totalToolCalls >= threshold) {
+            budgetAbortThreshold = threshold;
+            break;
+        }
+    }
+
+    if (budgetAbortThreshold !== null) {
+        const argsSample = (() => {
+            try { return JSON.stringify(args).slice(0, 300); } catch { return String(args).slice(0, 300); }
+        })();
+        const errorSample = String(result).slice(0, 300);
+        return {
+            action: 'abort',
+            info: {
+                signature: `tool-budget:${budgetAbortThreshold}`,
+                toolName,
+                errorCategory: `tool-budget@${budgetAbortThreshold}`,
+                attemptCount: guard.totalToolCalls,
+                argsSample,
+                errorSample,
+                iteration,
+                threshold: budgetAbortThreshold,
+            },
+        };
     }
 
     if (!isErrorResult(result)) {
@@ -421,7 +503,7 @@ export function checkToolCall(guard, event) {
             return {
                 action: 'same_tool_warn',
                 warnText: sameToolWarn.text,
-                info: { toolName: sameToolWarn.toolName, count: sameToolWarn.count },
+                info: { toolName: sameToolWarn.toolName, count: sameToolWarn.count, threshold: sameToolWarn.threshold, abortThreshold: sameToolWarn.abortThreshold },
             };
         }
         if (familyWarn) {
@@ -435,7 +517,7 @@ export function checkToolCall(guard, event) {
             return {
                 action: 'budget_warn',
                 warnText: budgetWarn.text,
-                info: { count: budgetWarn.count, threshold: budgetWarn.threshold },
+                info: { count: budgetWarn.count, threshold: budgetWarn.threshold, abortThreshold: cfg.totalToolAbortThresholds[0] ?? null },
             };
         }
         return { action: 'continue' };
@@ -486,7 +568,7 @@ export function checkToolCall(guard, event) {
         return {
             action: 'same_tool_warn',
             warnText: sameToolWarn.text,
-            info: { toolName: sameToolWarn.toolName, count: sameToolWarn.count },
+            info: { toolName: sameToolWarn.toolName, count: sameToolWarn.count, threshold: sameToolWarn.threshold, abortThreshold: sameToolWarn.abortThreshold },
         };
     }
     if (familyWarn) {
@@ -500,7 +582,7 @@ export function checkToolCall(guard, event) {
         return {
             action: 'budget_warn',
             warnText: budgetWarn.text,
-            info: { count: budgetWarn.count, threshold: budgetWarn.threshold },
+            info: { count: budgetWarn.count, threshold: budgetWarn.threshold, abortThreshold: cfg.totalToolAbortThresholds[0] ?? null },
         };
     }
     return { action: 'continue' };

@@ -342,7 +342,7 @@ const TOOLS = [
     name: 'bridge',
     title: 'Bridge to External Model',
     annotations: { title: 'Bridge to External Model', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Use this to hand off code, research, debug, review, or test work — the lead does not do these directly.',
+    description: 'Delegate one turn of work to an external agent by role. Role maps to a preset via user-workflow.json (e.g. worker→OPUS XHIGH, reviewer→GPT5.4). Detached by default: returns immediately with jobId + sessionId while the worker continues in the background. Use close_session(sessionId) to stop early.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -583,7 +583,7 @@ export async function handleToolCall(name, args, opts = {}) {
         // cleanup. We don't wait for the abort to unwind — callers get an
         // immediate ack and unknown IDs return the same shape for simplicity
         // (Q1: unified {ok: true}).
-        closeSession(args.sessionId);
+        closeSession(args.sessionId, 'manual');
         return ok({ ok: true, sessionId: args.sessionId });
       }
 
@@ -760,6 +760,28 @@ export async function handleToolCall(name, args, opts = {}) {
         const jobId = `bridge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const modelLabel = preset.model || preset.name;
         const emit = notifyFn || (() => {});
+        // Public `bridge` is intentionally detached: we return immediately and
+        // keep the session alive until it completes (or is explicitly closed).
+        // Tying requestSignal to session lifetime caused long reviewer runs to
+        // flip to `role cancelled` when the MCP request lifecycle ended before
+        // the detached worker finished. Detached mode therefore does NOT wire
+        // request abort into closeSession(); operators can still stop the work
+        // explicitly through close_session(sessionId).
+        const bridgeDetached = true;
+        if (bridgeDetached && requestSignal) {
+          const onRequestAbortIgnored = () => {
+            try {
+              process.stderr.write(
+                `[bridge] request aborted after detach; session continues: session=${session.id} role=${role} job=${jobId}\n`,
+              );
+            } catch { /* best-effort */ }
+          };
+          if (requestSignal.aborted) {
+            queueMicrotask(onRequestAbortIgnored);
+          } else {
+            try { requestSignal.addEventListener('abort', onRequestAbortIgnored, { once: true }); } catch { /* ignore */ }
+          }
+        }
         // Short model tag for bridge worker lifecycle notifications.
         // Strip the redundant `claude-` vendor prefix; other providers
         // (gpt-*, etc.) pass through unchanged. Falls back to empty on
@@ -788,7 +810,7 @@ export async function handleToolCall(name, args, opts = {}) {
         // See src/agent/bridge-abort.mjs for the extracted, unit-testable
         // attach helper.
         const abortHandle = attachBridgeAbort({
-          signal: requestSignal,
+          signal: bridgeDetached ? null : requestSignal,
           sessionId: session.id,
           role,
           jobId,
@@ -805,7 +827,7 @@ export async function handleToolCall(name, args, opts = {}) {
             } catch (e) {
               try { process.stderr.write(`[bridge] worktree cleanup on abort failed: ${e.message || e}\n`); } catch {}
             }
-            closeSession(id);
+            closeSession(id, 'request-abort');
           },
           emit,
         });
@@ -906,7 +928,15 @@ export async function handleToolCall(name, args, opts = {}) {
               // the unwind. Mark the session as errored and fall through.
               updateSessionStatus(session.id, 'error');
             } else if (err instanceof SessionClosedError) {
-              emit(`${role} cancelled`);
+              // Prefer the structured enum on the error; fall back to
+              // regex-parsing the message for older call paths that might
+              // have constructed the error without the third arg.
+              let reason = err.reason || null;
+              if (!reason && typeof err.message === 'string') {
+                const m = err.message.match(/reason=([\w-]+)/);
+                if (m) reason = m[1];
+              }
+              emit(`${role} cancelled (reason=${reason || 'unknown'})`);
               // Cancellation isn't an error; flip to idle so the next sweep
               // pass can reclaim the file instead of leaving a 'running'
               // zombie until the 24h tombstone window expires.
@@ -976,10 +1006,17 @@ export async function handleToolCall(name, args, opts = {}) {
               try { process.stderr.write(`[bridge] worktree cleanup on detached crash failed: ${cleanupErr?.message || cleanupErr}\n`); } catch {}
             }
           }
-          try { closeSession(session.id); } catch {}
+          try { closeSession(session.id, 'runner-crash'); } catch {}
         });
 
-        return ok(`${jobId} · ${role} · ${modelLabel}`);
+        return ok({
+          jobId,
+          sessionId: session.id,
+          role,
+          model: modelLabel,
+          detached: true,
+          hint: 'Use close_session(sessionId) to stop this detached bridge worker early.',
+        });
       }
 
       default:

@@ -746,7 +746,9 @@
   <!-- Category sidebar -->
   <div class="cat-bar">
     <div class="cat-label">General</div>
+    <div class="cat-item" data-panel="general-modules" onclick="switchCat(this)">Modules</div>
     <div class="cat-item" data-panel="general-injection" onclick="switchCat(this)">Injection Mode</div>
+    <div class="cat-item" data-panel="general-security" onclick="switchCat(this)">Security</div>
     <div class="cat-sep"></div>
     <div class="cat-label">Channels</div>
     <div class="cat-item active" data-panel="connection" onclick="switchCat(this)">Connection</div>
@@ -1243,6 +1245,19 @@
             </div>
           </div>
         </div>
+        <div class="sec">
+          <div class="sec-title" style="color:#e5534b">Danger zone</div>
+          <div class="sec-body">
+            <div class="r" style="flex-direction:column;align-items:stretch;gap:8px">
+              <div style="font-size:12px;color:var(--text-3);line-height:1.5">Delete ALL memory entries (active + archived + pending). This is irreversible. Type <code>DELETE ALL MEMORY</code> below to enable the button.</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="r-input" id="mem-del-confirm" type="text" placeholder="DELETE ALL MEMORY" style="flex:1" oninput="memDeleteConfirmCheck()">
+                <button class="save" id="mem-btn-delete" onclick="memDeleteAll()" disabled style="width:auto;height:34px;padding:0 16px;font-size:12px;background:#e5534b;opacity:0.4;cursor:not-allowed">Delete all</button>
+              </div>
+              <div class="warn-msg" id="warn-mem-delete"></div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="save-area">
         <div class="warn-msg" id="warn-mem-settings"></div>
@@ -1386,6 +1401,59 @@
 
     <!-- ============ GENERAL MODULE ============ -->
 
+    <!-- GENERAL MODULES (B6) -->
+    <div class="panel" id="panel-general-modules">
+      <div class="hdr"><h1>Modules</h1></div>
+      <div class="sec">
+        <div class="sec-desc">Enable or disable each trib-plugin module independently. Modules without static dependencies keep working alone; cross-module runtime features (core-memory injection, synthetic bridge tools) degrade cleanly when their upstream is off.</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Channels</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-channels-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">Discord I/O, scheduler, webhook, proactive chat.</div>
+
+          <div class="r toggle-row">
+            <span class="r-name-wide">Memory</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-memory-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">Persistent memory DB + core-memory context injection. (Required for channels' core-memory inject and agent's <code>memory_search</code> tool.)</div>
+
+          <div class="r toggle-row">
+            <span class="r-name-wide">Search</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-search-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">Web search + URL scrape + GitHub. (Required for agent's <code>web_search</code> tool.)</div>
+
+          <div class="r toggle-row">
+            <span class="r-name-wide">Agent</span>
+            <label class="toggle">
+              <input type="checkbox" id="mod-agent-enabled" checked onchange="saveModulesConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 10px">External model orchestration (<code>bridge</code>, sessions). Disabling this turns off <code>memory_search</code>/<code>web_search</code> synthetic tools too — they are registered through agent.</div>
+
+          <div class="note-box">
+            <span class="note-icon">!</span>
+            <span>Changing these toggles requires a full plugin restart (exit Claude Code and reopen) to take effect. The setting is saved immediately.</span>
+          </div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-general-modules"></div>
+      </div>
+    </div>
+
     <!-- GENERAL INJECTION -->
     <div class="panel" id="panel-general-injection">
       <div class="hdr"><h1>Injection Mode</h1></div>
@@ -1420,6 +1488,27 @@
       <div class="save-area">
         <div class="warn-msg" id="warn-general-injection"></div>
         <button class="save" onclick="genSavePanel()">Save</button>
+      </div>
+    </div>
+
+    <!-- GENERAL SECURITY (B2) -->
+    <div class="panel" id="panel-general-security">
+      <div class="hdr"><h1>Security</h1></div>
+      <div class="sec">
+        <div class="sec-title">Security</div>
+        <div class="sec-body">
+          <div class="r toggle-row">
+            <span class="r-name-wide">Allow HOME-wide write access</span>
+            <label class="toggle">
+              <input type="checkbox" id="sec-home-access" onchange="saveSecurityConfig()">
+              <span class="toggle-track"></span>
+            </label>
+          </div>
+          <div class="sec-desc" style="padding:0 14px 12px">When OFF (default), file tools are limited to the working directory. When ON, tools may edit anywhere under your home folder. This only controls the in-process path gate; sub-agent Edit/Write to HOME paths always go through Discord approval regardless.</div>
+        </div>
+      </div>
+      <div class="save-area">
+        <div class="warn-msg" id="warn-general-security"></div>
       </div>
     </div>
 
@@ -1622,6 +1711,73 @@ async function genSavePanel() {
   }
 }
 
+// ============================================================
+// GENERAL MODULES (B6) — enable/disable per-module
+// ============================================================
+async function loadModulesConfig() {
+  try {
+    const r = await fetch('/modules').then(r => r.json());
+    for (const name of ['channels', 'memory', 'search', 'agent']) {
+      const el = document.getElementById('mod-' + name + '-enabled');
+      if (el) el.checked = !(r && r[name] && r[name].enabled === false);
+    }
+  } catch {
+    // On load failure, leave all toggles at their default (checked).
+  }
+}
+
+async function saveModulesConfig() {
+  const warnEl = document.getElementById('warn-general-modules');
+  if (warnEl) warnEl.textContent = '';
+  const payload = {};
+  for (const name of ['channels', 'memory', 'search', 'agent']) {
+    const el = document.getElementById('mod-' + name + '-enabled');
+    payload[name] = { enabled: el ? !!el.checked : true };
+  }
+  try {
+    const res = await fetch('/modules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('save failed');
+    isDirty = false;
+  } catch (e) {
+    if (warnEl) warnEl.textContent = 'Save failed — check setup-server log.';
+  }
+}
+
+// ============================================================
+// GENERAL SECURITY (B2) — capability toggles
+// ============================================================
+async function loadSecurityConfig() {
+  try {
+    const r = await fetch('/capabilities').then(r => r.json());
+    const el = document.getElementById('sec-home-access');
+    if (el) el.checked = !!(r && r.homeAccess === true);
+  } catch {
+    // On load failure, leave toggle at default (off).
+  }
+}
+
+async function saveSecurityConfig() {
+  const warnEl = document.getElementById('warn-general-security');
+  if (warnEl) warnEl.textContent = '';
+  const el = document.getElementById('sec-home-access');
+  const payload = { homeAccess: el ? !!el.checked : false };
+  try {
+    const res = await fetch('/capabilities', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('save failed');
+    isDirty = false;
+  } catch (e) {
+    if (warnEl) warnEl.textContent = 'Save failed — check setup-server log.';
+  }
+}
+
 // MD Library module removed — role MD editing is now in the Custom
 // Workflow panel, Common MD is plugin-fixed (rules/agent.md) and not
 // user-editable, and Project MDs are no longer part of the UI.
@@ -1815,6 +1971,8 @@ window.addEventListener('load', async () => {
     loadMemoryData(),
     loadSearchConfig(),
     genLoadConfig(),
+    loadModulesConfig(),
+    loadSecurityConfig(),
     wfLoadConfig(),
     loadLearningConfig(),
   ]);
@@ -2861,6 +3019,32 @@ async function memRunBackfill() {
   const btn = document.getElementById('mem-btn-backfill'); const window_ = document.getElementById('mem-set-backfill-window').value;
   btn.textContent = 'Running...'; btn.disabled = true;
   try { await fetch('/memory/backfill', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({window:window_}) }); btn.textContent='\u2713 Done'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); } catch { btn.textContent='Failed'; setTimeout(()=>{btn.textContent='Run';btn.disabled=false},2000); }
+}
+
+function memDeleteConfirmCheck() {
+  const input = document.getElementById('mem-del-confirm'); const btn = document.getElementById('mem-btn-delete');
+  const ready = (input.value === 'DELETE ALL MEMORY');
+  btn.disabled = !ready;
+  btn.style.opacity = ready ? '1' : '0.4';
+  btn.style.cursor = ready ? 'pointer' : 'not-allowed';
+}
+
+async function memDeleteAll() {
+  const input = document.getElementById('mem-del-confirm'); const btn = document.getElementById('mem-btn-delete'); const warn = document.getElementById('warn-mem-delete');
+  if (input.value !== 'DELETE ALL MEMORY') return;
+  if (!window.confirm('Delete ALL memory entries? This cannot be undone.')) return;
+  warn.textContent = ''; btn.textContent = 'Deleting...'; btn.disabled = true;
+  try {
+    const r = await fetch('/memory/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ confirm:'DELETE ALL MEMORY' }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'unknown error');
+    warn.style.color = 'var(--text-3)'; warn.textContent = 'Deleted ' + j.deleted + ' entries.';
+    btn.textContent = '✓ Deleted'; input.value = '';
+    setTimeout(() => { btn.textContent = 'Delete all'; memDeleteConfirmCheck(); }, 2500);
+  } catch (e) {
+    warn.style.color = '#e5534b'; warn.textContent = 'Failed: ' + (e.message || e);
+    btn.textContent = 'Delete all'; btn.disabled = false;
+  }
 }
 
 async function memLoadFiles() { try{const data=await fetch('/memory/files').then(r=>r.json());document.getElementById('mem-file-bot').value=data['bot.md']||'';document.getElementById('mem-file-user-profile').value=data['user.md']||'';}catch{} }

@@ -24,10 +24,14 @@ let input = '';
 process.stdin.on('data', d => { input += d; });
 process.stdin.on('end', () => {
   let toolName = '';
+  let filePath = '';
+  let toolUseId = '';
   try {
     if (input) {
       const payload = JSON.parse(input);
       toolName = payload?.tool_name || payload?.toolName || '';
+      filePath = payload?.tool_input?.file_path || payload?.toolInput?.file_path || '';
+      toolUseId = payload?.tool_use_id || payload?.toolUseId || '';
     }
   } catch { /* ignore parse errors */ }
 
@@ -40,7 +44,7 @@ process.stdin.on('end', () => {
   try {
     const rand = crypto.randomBytes(4).toString('hex');
     const signalFile = path.join(RUNTIME_ROOT, `tool-exec-${Date.now()}-${rand}.signal`);
-    fs.writeFileSync(signalFile, JSON.stringify({ toolName, ts: Date.now() }));
+    fs.writeFileSync(signalFile, JSON.stringify({ toolName, filePath, toolUseId, ts: Date.now() }));
   } catch (err) {
     process.stderr.write(`[post-tool-use] Failed to write signal file: ${err.message}\n`);
   }

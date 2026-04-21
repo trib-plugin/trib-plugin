@@ -92,8 +92,38 @@ try {
   }
 } catch (e) { log(`config sync: ${e.message}`) }
 
+// ── Module enable flags (B6 General toggles) ──────────────────────
+// Snapshotted once at boot — toggling in the setup UI requires a full
+// plugin restart to take effect. All four default to enabled:true when
+// the `modules` section is absent (backcompat for pre-B6 configs).
+const MODULE_NAMES = ['channels', 'memory', 'search', 'agent']
+const MODULE_ENABLED = (() => {
+  const out = { channels: true, memory: true, search: true, agent: true }
+  try {
+    const raw = JSON.parse(readFileSync(join(PLUGIN_DATA, 'trib-config.json'), 'utf8'))
+    const mods = raw && typeof raw === 'object' ? raw.modules : null
+    if (mods && typeof mods === 'object') {
+      for (const name of MODULE_NAMES) {
+        const entry = mods[name]
+        if (entry && typeof entry === 'object' && entry.enabled === false) out[name] = false
+      }
+    }
+  } catch { /* missing / malformed — keep all enabled */ }
+  return out
+})()
+const isModuleEnabled = (name) => MODULE_ENABLED[name] !== false
+
 // ── Static manifest ─────────────────────────────────────────────────
-const TOOL_DEFS = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'tools.json'), 'utf8'))
+const RAW_TOOL_DEFS = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'tools.json'), 'utf8'))
+// Hide tools belonging to disabled modules from BOTH the ListTools
+// response AND the bridge's internal-tools registry. `builtin` / `lsp` /
+// `bash_session` / `patch` are not module-gated — they ride along with
+// the plugin regardless.
+const TOOL_DEFS = RAW_TOOL_DEFS.filter(t => {
+  if (!t.module) return true
+  if (MODULE_NAMES.includes(t.module)) return isModuleEnabled(t.module)
+  return true
+})
 const TOOL_MODULE = Object.fromEntries(TOOL_DEFS.map(t => [t.name, t.module]))
 const TOOL_BY_NAME = Object.fromEntries(TOOL_DEFS.map(t => [t.name, t]))
 const PLUGIN_VERSION = JSON.parse(
@@ -449,7 +479,15 @@ async function loadModule(name) {
 // toolExecutor passed through agentContext(). Single source of tool routing.
 async function dispatchTool(name, args, callerCtx = {}) {
   const def = TOOL_BY_NAME[name]
-  if (!def) throw new Error(`Unknown tool: ${name}`)
+  if (!def) {
+    // Distinguish "disabled module" from "unknown tool" so callers (and
+    // the Lead) get an actionable message instead of a generic miss.
+    const rawDef = RAW_TOOL_DEFS.find(t => t.name === name)
+    if (rawDef && rawDef.module && MODULE_NAMES.includes(rawDef.module) && !isModuleEnabled(rawDef.module)) {
+      throw new Error(`module '${rawDef.module}' is disabled — enable it in the setup UI (General → Modules) and restart the plugin`)
+    }
+    throw new Error(`Unknown tool: ${name}`)
+  }
 
   if (def.aiWrapped) {
     const { dispatchAiWrapped } = await import(
@@ -575,8 +613,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 //
 // Search eager-load stays fire-and-forget: it doesn't seed any registry,
 // just avoids the first-call compile-JIT cost.
-loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
+if (isModuleEnabled('search')) {
+  loadModule('search').catch(e => log(`eager search init failed: ${e.message}`))
+} else {
+  log(`module 'search' disabled — skipping eager init`)
+}
 try {
+  if (!isModuleEnabled('agent')) {
+    log(`module 'agent' disabled — skipping eager init, bridge and synthetic tools will not register`)
+  } else {
   await loadModule('agent').then(async () => {
     // Populate the in-process tool registry at boot so ALL session entry
     // points (direct createSession / resumeSession, not just handleToolCall)
@@ -603,22 +648,31 @@ try {
       const { SYNTHETIC_TOOL_DEFS } = await import(
         pathToFileURL(join(PLUGIN_ROOT, 'src', 'agent', 'orchestrator', 'synthetic-tools.mjs')).href
       )
-      const SYNTHETIC_EXECUTORS = {
-        memory_search: async (args) => callWorker('memory', 'search_memories', args || {}),
-        web_search: async (args) => {
+      const SYNTHETIC_EXECUTORS = {}
+      // memory_search is only useful when the memory worker is running;
+      // web_search routes through the search module. Gate each on its
+      // owning module's enable flag so disabling memory / search cleanly
+      // removes the synthetic bridge tool too.
+      if (isModuleEnabled('memory')) {
+        SYNTHETIC_EXECUTORS.memory_search = async (args) => callWorker('memory', 'search_memories', args || {})
+      }
+      if (isModuleEnabled('search')) {
+        SYNTHETIC_EXECUTORS.web_search = async (args) => {
           const searchMod = await loadModule('search')
           return searchMod.handleToolCall('search', args || {})
-        },
+        }
       }
-      addInternalTools(SYNTHETIC_TOOL_DEFS.map(def => ({
+      const syntheticEntries = SYNTHETIC_TOOL_DEFS.map(def => ({
         def,
         executor: SYNTHETIC_EXECUTORS[def.name],
-      })).filter(entry => typeof entry.executor === 'function'))
-      log(`internal-tools registry populated tools=${ctx.internalTools.length}+${SYNTHETIC_TOOL_DEFS.length}`)
+      })).filter(entry => typeof entry.executor === 'function')
+      addInternalTools(syntheticEntries)
+      log(`internal-tools registry populated tools=${ctx.internalTools.length}+${syntheticEntries.length} (synthetic defs=${SYNTHETIC_TOOL_DEFS.length})`)
     } catch (e) {
       log(`internal-tools registry populate failed: ${e.message}`)
     }
   })
+  }
 } catch (e) { log(`eager agent init failed: ${e.message}`) }
 
 // ── Transport ───────────────────────────────────────────────────────
@@ -746,10 +800,29 @@ setImmediate(() => {
 // ── Spawn workers: memory + channels ──────────────────────────────
 // Workers own all heavy work. Session recap, buffer flush, cycle
 // scheduling all run inside the worker process. No in-process fallback.
+//
+// B6 gating:
+// - memory disabled → worker not spawned; channels boots immediately
+//   (episode delivery integration degrades to no-op).
+// - channels disabled → worker never spawned regardless of memory state.
 setImmediate(() => {
-  spawnWorker('memory')
-  // channels + CLAUDE.md depend on memory — wait for memory ready
-  const memEntry = workers.get('memory')
+  const memoryOn = isModuleEnabled('memory')
+  const channelsOn = isModuleEnabled('channels')
+
+  if (memoryOn) spawnWorker('memory')
+  else log(`module 'memory' disabled — skipping worker spawn`)
+
+  if (!channelsOn) {
+    log(`module 'channels' disabled — skipping worker spawn`)
+    // CLAUDE.md reconcile is driven by channels/injection config; when
+    // channels is off we still reconcile once so managed blocks stay in
+    // sync with the current mode.
+    try { reconcileClaudeMd() } catch {}
+    return
+  }
+
+  // channels + CLAUDE.md depend on memory — wait for memory ready when enabled
+  const memEntry = memoryOn ? workers.get('memory') : null
   if (memEntry) {
     const onReady = (msg) => {
       if (msg.type === 'ready') {
@@ -767,10 +840,13 @@ setImmediate(() => {
       }
     }, 10000)
   } else {
+    // memory disabled (or spawn failed) — boot channels immediately.
+    // Previously this branch only covered the spawn-failed case; with B6
+    // the memory-disabled path also lands here.
     setTimeout(() => {
       reconcileClaudeMd()
-      spawnWorker('channels')
-    }, 2000)
+      if (!workers.has('channels')) spawnWorker('channels')
+    }, memoryOn ? 2000 : 0)
   }
 })
 

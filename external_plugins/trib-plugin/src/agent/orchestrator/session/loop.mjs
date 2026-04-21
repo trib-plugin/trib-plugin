@@ -61,6 +61,24 @@ function extractBashSessionId(result) {
     const match = BASH_SESSION_HEADER_RE.exec(result);
     return match ? match[1] : null;
 }
+
+export function buildBridgeBashSessionArgs(args, sessionRef) {
+    if (sessionRef?.owner !== 'bridge') return null;
+    const routedArgs = { ...(args || {}) };
+    const explicitSessionId = typeof routedArgs.session_id === 'string' && routedArgs.session_id.trim()
+        ? routedArgs.session_id.trim()
+        : null;
+    const wantsPersistent = routedArgs.persistent === true || !!explicitSessionId;
+    if (!wantsPersistent) return null;
+    if (!explicitSessionId && sessionRef?.implicitBashSessionId) {
+        routedArgs.session_id = sessionRef.implicitBashSessionId;
+    } else if (explicitSessionId) {
+        routedArgs.session_id = explicitSessionId;
+    }
+    delete routedArgs.persistent;
+    return routedArgs;
+}
+
 async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
     if (name === 'skills_list') {
         return buildSkillsListResponse(cwd);
@@ -83,10 +101,10 @@ async function executeTool(name, args, cwd, callerSessionId, sessionRef) {
         // hidden-role session (recall/search/explore → self).
         return executeInternalTool(name, args, { callerSessionId });
     }
-    if (name === 'bash' && sessionRef?.owner === 'bridge') {
-        const routedArgs = { ...(args || {}) };
-        if (sessionRef.implicitBashSessionId) {
-            routedArgs.session_id = sessionRef.implicitBashSessionId;
+    if (name === 'bash') {
+        const routedArgs = buildBridgeBashSessionArgs(args, sessionRef);
+        if (!routedArgs) {
+            return executeBuiltinTool(name, args, cwd);
         }
         const result = await executeBashSessionTool('bash_session', routedArgs, cwd);
         const sessionId = extractBashSessionId(result);

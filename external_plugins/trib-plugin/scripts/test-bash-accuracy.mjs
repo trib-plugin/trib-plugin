@@ -19,7 +19,9 @@
  */
 
 import { executeBuiltinTool } from '../src/agent/orchestrator/tools/builtin.mjs';
-import { existsSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 let passed = 0;
 let failed = 0;
@@ -154,6 +156,24 @@ const cwd = process.cwd();
         `merge_stderr: no [stderr] block when flag set (got: ${JSON.stringify(out)})`);
     assert(out.includes('out') && out.includes('err'),
         `merge_stderr: both streams present in merged output`);
+}
+
+// ── 9. large-file shell probe is blocked with tool guidance ────────────
+{
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-large-'));
+    const big = join(root, 'big.txt');
+    try {
+        writeFileSync(big, 'x'.repeat(60 * 1024), 'utf8');
+        const out = await executeBuiltinTool('bash', {
+            command: `cat ${JSON.stringify(big)}`,
+        }, cwd);
+        assert(out.startsWith('Error:'), `large-file probe: blocked with Error (got: ${JSON.stringify(out.slice(0, 120))})`);
+        assert(out.includes('large-file shell probe blocked'), 'large-file probe: reason included');
+        assert(out.includes('`read`') && out.includes('builtin `grep`') && out.includes('`edit`'),
+            `large-file probe: remediation hints included (got: ${JSON.stringify(out)})`);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 }
 
 const total = passed + failed;

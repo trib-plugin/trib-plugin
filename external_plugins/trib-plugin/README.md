@@ -102,9 +102,11 @@ trib-plugin/
 Schedules may carry a `script` (produces input), a `prompt` (template), or both.
 
 ### Proactive chat
-- Frequency levels 1–5 (3 / 5 / 7 / 10 / 15 fires per day, with matching 180 / 120 / 90 / 60 / 30-minute idle guards).
-- Topic selection delegated to a dedicated scheduler role (`rules/bridge/50-proactive-decision.md`). Decisions read from core memory only; on `skip` the slot is dropped silently.
-- Per-source engagement scoring feeds back into future topic picks.
+- Frequency levels 1–5 set the minimum **period** between fires (≈ 3h / 2h / 1.5h / 1h / 30m). A tick fires only when the period has elapsed **and** the active session has been idle for 15 minutes.
+- Cold start uses `proactiveStartAt` as the baseline so a restart does not fire immediately; subsequent fires advance `proactiveLastFireAt`. Quiet-hours and per-schedule skip gates still apply.
+- Topic selection is delegated to `rules/bridge/50-proactive-decision.md`. The role reads recent user utterances plus ACTIVE `preference` / `fact` / user-profile core memory; `rule` / `constraint` / `decision` are excluded upstream.
+- Topic repetition filter: a 14-day TTL is enforced on `proactive-history.md` (append + prune performed by the role itself).
+- On `skip` the tick is dropped silently. Source lifecycle (`add` / score up-down / `remove`) feeds back into future topic picks.
 
 ### Voice transcription
 - Whisper.cpp + FFmpeg pipeline.

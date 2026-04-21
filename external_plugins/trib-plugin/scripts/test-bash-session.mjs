@@ -170,6 +170,21 @@ try {
     assert(/\bresumed\b/.test(r), 'minted-from-unknown session executes the command');
   }
 
+  // ── 8b. Large-file shell probes are blocked before a session is minted ──
+  {
+    const root = mkdtempSync(join(tmpdir(), 'trib-bash-session-large-'));
+    const big = join(root, 'big.txt');
+    try {
+      writeFileSync(big, 'x'.repeat(60 * 1024), 'utf8');
+      const r = await run({ command: `grep x ${JSON.stringify(big)}` });
+      assert(r.startsWith('Error:'), `large-file bash_session probe blocked (got: ${JSON.stringify(r.slice(0, 120))})`);
+      assert(!extractId(r), 'large-file probe does not mint a bash_session');
+      assert(r.includes('large-file shell probe blocked'), 'large-file probe explains why it was blocked');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
   // ── 9. Read-only bash_session keeps builtin caches warm ──────────────
   {
     const root = mkdtempSync(join(tmpdir(), 'trib-bash-cache-ro-'));

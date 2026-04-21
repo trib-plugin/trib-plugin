@@ -503,12 +503,13 @@ const toolDefinitions = [
     name: 'search',
     title: 'Search',
     aiWrapped: true,
-    description: 'External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Async; merged answer auto-pushed. Past context → `recall`, codebase → `explore`.',
+    description: 'External web search, URL scrape, GitHub code/issues/repos. `query`: string or array (parallel fan-out); URL → scrape, `owner/repo` → GitHub. Lead: async (merged answer auto-pushed via channel). Role sessions: sync in-turn. Use `background:true/false` to override. Past context → `recall`, codebase → `explore`.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 }], description: 'Natural language query or array (parallel fan-out).' },
         cwd: { type: 'string', description: 'Optional workspace hint. Rarely needed.' },
+        background: { type: 'boolean', description: 'Default: true for Lead (async + channel push), false for role sessions (sync, merged answer returned in-turn). Explicit value wins.' },
       },
       required: ['query'],
       additionalProperties: false,

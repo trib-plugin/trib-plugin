@@ -289,11 +289,12 @@ const EDIT_ERR = 'Error: old_string did not match';
 
 // 20. Same-tool warn text phrasing
 {
-    const text = buildSameToolWarn({ toolName: 'search', count: 12 });
+    const text = buildSameToolWarn({ toolName: 'search', count: 12, abortThreshold: 24 });
     assert(text.includes('`search`'), '20. warn back-ticks tool name');
     assert(text.includes('12 times'), '20. warn mentions call count');
+    assert(text.includes('24 repeated'), '20. warn mentions hard stop threshold');
     assert(text.includes('Advisory only'), '20. warn marks itself advisory (non-blocking)');
-    const bashText = buildSameToolWarn({ toolName: 'bash', count: 10 });
+    const bashText = buildSameToolWarn({ toolName: 'bash', count: 10, abortThreshold: 20 });
     assert(bashText.includes('bash_session'), '20. bash warn points to bash_session');
     const readText = buildSameToolWarn({ toolName: 'read', count: 8 });
     assert(readText.includes('offset') && readText.includes('limit'), '20. read warn points to offset/limit reads');
@@ -362,9 +363,10 @@ const EDIT_ERR = 'Error: old_string did not match';
 
 // 25. Budget warn text phrasing
 {
-    const text = buildToolBudgetWarn({ count: 24, threshold: 24 });
+    const text = buildToolBudgetWarn({ count: 24, threshold: 24, abortThreshold: 60 });
     assert(text.includes('24 tool calls'), '25. budget warn mentions tool-call count');
     assert(text.includes('`code_graph`') && text.includes('`apply_patch`') && text.includes('`bash_session`'), '25. budget warn points to up-level tools');
+    assert(text.includes('60 total tool calls'), '25. budget warn mentions hard stop threshold');
     assert(text.includes('Advisory only'), '25. budget warn marks itself advisory');
 }
 
@@ -383,7 +385,9 @@ const EDIT_ERR = 'Error: old_string did not match';
         detectThreshold: 3,
         abortThreshold: 4,
         sameToolThresholds: { read: 2 },
+        sameToolAbortThresholds: { read: 4 },
         totalToolWarnThresholds: [5],
+        totalToolAbortThresholds: [7],
     });
     try {
         const g1 = createGuard();
@@ -398,15 +402,41 @@ const EDIT_ERR = 'Error: old_string did not match';
         const g2 = createGuard();
         const r1 = feed(g2, 'read', { path: '/a' }, 'ok', 1);
         const r2 = feed(g2, 'read', { path: '/b' }, 'ok', 2);
+        const r3 = feed(g2, 'read', { path: '/c' }, 'ok', 3);
+        const r4 = feed(g2, 'read', { path: '/d' }, 'ok', 4);
         assert(r1.action === 'continue' && r2.action === 'same_tool_warn', '27. custom same-tool threshold applies');
+        assert(r3.action === 'continue' && r4.action === 'abort', '27. custom same-tool abort threshold applies');
 
         const g3 = createGuard();
         let budget = null;
         for (let i = 1; i <= 5; i++) budget = feed(g3, 'write', { path: `/tmp/${i}` }, 'ok', i);
         assert(budget.action === 'budget_warn', '27. custom total-tool threshold applies');
+        let budgetAbort = null;
+        for (let i = 6; i <= 7; i++) budgetAbort = feed(g3, 'write', { path: `/tmp/${i}` }, 'ok', i);
+        assert(budgetAbort.action === 'abort', '27. custom total-tool abort threshold applies');
     } finally {
         resetGuardConfigForTesting();
     }
+}
+
+// 28. Default same-tool success repetition hard-aborts at 2x warn threshold
+{
+    const g = createGuard();
+    let last;
+    for (let i = 1; i <= 20; i++) last = feed(g, 'bash_session', { command: `echo ${i}` }, 'ok', i);
+    assert(last.action === 'abort', '28. 20th bash_session call hard-aborts');
+    assert(last.info?.toolName === 'bash_session', '28. same-tool abort retains tool name');
+    assert(String(last.info?.errorCategory || '').includes('same-tool-repeat@20'), '28. same-tool abort category carries threshold');
+}
+
+// 29. Default total budget hard-aborts at 60 calls
+{
+    const g = createGuard();
+    let last = null;
+    for (let i = 1; i <= 60; i++) last = feed(g, 'write', { path: `/tmp/${i}` }, 'ok', i);
+    assert(last.action === 'abort', '29. 60th tool call hard-aborts on total budget');
+    assert(String(last.info?.errorCategory || '').includes('tool-budget@60'), '29. budget abort category carries threshold');
+    assert(last.info?.attemptCount === 60, '29. budget abort reports total call count');
 }
 
 console.log(`test-tool-loop-guard: ${passed} pass / ${failed} fail`);

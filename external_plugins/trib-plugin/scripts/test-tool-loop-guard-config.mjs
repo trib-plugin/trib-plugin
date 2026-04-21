@@ -37,7 +37,11 @@ try {
         sameToolThresholds: {
           read: 2,
         },
+        sameToolAbortThresholds: {
+          read: 4,
+        },
         totalToolWarnThresholds: [5],
+        totalToolAbortThresholds: [7],
       },
     },
   }, null, 2));
@@ -49,8 +53,12 @@ try {
     const g = createGuard();
     const r1 = feed(g, 'read', { path: '/a' }, 'ok', 1);
     const r2 = feed(g, 'read', { path: '/b' }, 'ok', 2);
+    const r3 = feed(g, 'read', { path: '/c' }, 'ok', 3);
+    const r4 = feed(g, 'read', { path: '/d' }, 'ok', 4);
     assert(r1.action === 'continue', 'config: first read call stays continue');
     assert(r2.action === 'same_tool_warn', 'config: sameToolThreshold from config applies');
+    assert(r3.action === 'continue', 'config: sameToolAbortThreshold waits until configured limit');
+    assert(r4.action === 'abort', 'config: sameToolAbortThreshold from config applies');
   }
 
   {
@@ -68,6 +76,8 @@ try {
     let last = null;
     for (let i = 1; i <= 5; i++) last = feed(g, 'write', { path: `/tmp/${i}` }, 'ok', i);
     assert(last.action === 'budget_warn', 'config: totalToolWarnThresholds from config apply');
+    for (let i = 6; i <= 7; i++) last = feed(g, 'write', { path: `/tmp/${i}` }, 'ok', i);
+    assert(last.action === 'abort', 'config: totalToolAbortThresholds from config apply');
   }
 } finally {
   resetGuardConfigForTesting();

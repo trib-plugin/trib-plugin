@@ -9,6 +9,7 @@ import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { getPluginData } from '../config.mjs';
 import { markCodeGraphDirtyPaths } from './code-graph.mjs';
+import { getCapabilities } from '../../../shared/config.mjs';
 const execAsync = promisify(exec);
 
 // ANSI / VT control sequence stripper. Node v19.8+ ships a battle-tested
@@ -462,12 +463,13 @@ function formatMtime(mtimeMs) {
 // B35 note: `err.message` is returned verbatim by callers — no
 // String.prototype.replace with substitution-capable strings. If a caller
 // needs to massage the message, use an arrow-function replacer.
-async function openForRead(filePath, workDir) {
+async function openForRead(filePath, workDir, opts = {}) {
     if (typeof filePath !== 'string' || !filePath) {
         throw Object.assign(new Error('path is required'), { code: 'EARG' });
     }
     const norm = normalizeInputPath(filePath);
-    if (!isSafePath(norm, workDir)) {
+    const allowHome = opts.allowHome === true;
+    if (!isSafePath(norm, workDir, { allowHome })) {
         throw Object.assign(
             new Error(`path outside allowed scope — ${normalizeOutputPath(norm)}`),
             { code: 'EOUTSIDE' });
@@ -635,7 +637,7 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. If you need shell state across turns (cwd, env, sourced venv), use `bash_session` instead of replaying setup in repeated `bash` calls. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. DEFAULT = one-shot shell. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Only opt into persistent shell state when you truly need cwd/env/venv continuity: pass `persistent:true` (bridge sessions) or call `bash_session` directly. Set `run_in_background:true` for long builds/tests/servers, then inspect with `job_status` / `job_wait` / `job_read` / `jobs_list`. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -643,6 +645,8 @@ export const BUILTIN_TOOLS = [
                 timeout: { type: 'number', description: 'ms, default 30000, max 600000.' },
                 merge_stderr: { type: 'boolean', description: 'Merge stderr into stdout (legacy 2>&1 behaviour). Default false: stderr is surfaced as a separate `[stderr]` block.' },
                 run_in_background: { type: 'boolean', description: 'Run command in the background and return a job id immediately. Use for long builds/tests/servers.' },
+                persistent: { type: 'boolean', description: 'Bridge sessions only: opt into persistent shell state. When true, the bridge routes this `bash` call through `bash_session` and reuses the shell on later `persistent:true` calls.' },
+                session_id: { type: 'string', description: 'Bridge sessions only: explicit persistent shell session id to reuse. Prefer `persistent:true` unless you need to target a specific shell.' },
             },
             required: ['command'],
         },
@@ -1240,7 +1244,7 @@ const BLOCKED_PATTERNS = [
 const SHELL_MUTATION_PATTERN = /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
 const SHELL_READ_ONLY_SEGMENT_RE = /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|source|\.|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
 const SHELL_GLOBAL_MUTATORS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'python', 'python3', 'git', 'cargo', 'go', 'make', 'cmake', 'dd']);
-export function isSafePath(filePath, cwd) {
+export function isSafePath(filePath, cwd, { allowHome = false } = {}) {
     const baseCwd = normalize(resolve(cwd));
     const normalized = normalize(resolve(baseCwd, filePath));
     // Boundary-aware containment check: a path is "inside" baseCwd iff
@@ -1255,6 +1259,11 @@ export function isSafePath(filePath, cwd) {
         return c.startsWith(p.endsWith(sep) ? p : p + sep);
     };
     if (!isInside(normalized, baseCwd)) {
+        // HOME fallback is now an explicit opt-in capability (B2). When
+        // `allowHome=false` (the default), paths outside cwd are rejected
+        // outright — no silent widening to $HOME. The main-agent path
+        // gate passes `allowHome` from `capabilities.homeAccess`.
+        if (!allowHome) return false;
         const home = process.env.HOME || process.env.USERPROFILE || '';
         if (home && isInside(normalized, normalize(home))) return true;
         return false;
@@ -1385,6 +1394,128 @@ function _extractShellPathArgs(tokens, cwd, { minIndex = 1 } = {}) {
     }
     return out;
 }
+const LARGE_SHELL_FILE_PROBE_BYTES = 50 * 1024;
+const CODE_GRAPH_HINT_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
+
+function _shellOptionConsumesValue(cmd, tok) {
+    const lower = String(tok || '').toLowerCase();
+    if (cmd === 'grep' || cmd === 'rg') {
+        if (['-e', '-f', '-g', '--glob', '-A', '-B', '-C', '--context', '-t', '--type', '--type-add', '-m', '--max-count'].includes(lower)) return true;
+        if (/^-[AABCegfmt]$/.test(lower)) return true;
+    }
+    if (cmd === 'sed') {
+        if (['-e', '-f'].includes(lower)) return true;
+    }
+    if (cmd === 'awk') {
+        if (['-f', '-F', '-v'].includes(lower)) return true;
+    }
+    return false;
+}
+
+function _extractShellProbePaths(tokens, cwd) {
+    const cmd = String(tokens?.[0] || '').toLowerCase();
+    if (!cmd) return [];
+    if (['cat', 'head', 'tail', 'wc'].includes(cmd)) {
+        return _extractShellPathArgs(tokens, cwd, { minIndex: 1 });
+    }
+    if (cmd === 'grep' || cmd === 'rg') {
+        let i = 1;
+        let sawPattern = false;
+        const out = [];
+        while (i < tokens.length) {
+            const tok = tokens[i];
+            if (!tok) { i++; continue; }
+            if (!sawPattern) {
+                if (tok === '--') { i++; continue; }
+                if (tok.startsWith('-')) {
+                    i += _shellOptionConsumesValue(cmd, tok) ? 2 : 1;
+                    continue;
+                }
+                sawPattern = true;
+                i++;
+                continue;
+            }
+            const resolved = _resolveShellPathToken(tok, cwd);
+            if (resolved) out.push(resolved);
+            i++;
+        }
+        return out;
+    }
+    if (cmd === 'sed' || cmd === 'awk') {
+        let i = 1;
+        while (i < tokens.length) {
+            const tok = tokens[i];
+            if (!tok) { i++; continue; }
+            if (tok === '--') { i++; break; }
+            if (tok.startsWith('-')) {
+                i += _shellOptionConsumesValue(cmd, tok) ? 2 : 1;
+                continue;
+            }
+            // First non-option token is the script/program. Remaining
+            // path-like args are candidate target files.
+            i++;
+            break;
+        }
+        return _extractShellPathArgs(tokens, cwd, { minIndex: i });
+    }
+    return [];
+}
+
+function _buildLargeShellFileProbeMessage(fullPath, sizeBytes, cmd, cwd) {
+    const kb = Math.round(sizeBytes / 1024);
+    const display = normalizeOutputPath(cwdRelativePath(fullPath, cwd));
+    const lines = [
+        `large-file shell probe blocked: \`${cmd}\` is targeting \`${display}\` (${kb} KB).`,
+        'Use higher-signal tools instead:',
+        '- `read` with `offset`/`limit` for targeted inspection',
+        '- builtin `grep` with array patterns for content search',
+        '- `edit` with `edits` array or `apply_patch` for changes',
+    ];
+    if (CODE_GRAPH_HINT_EXTS.has(extname(fullPath).toLowerCase())) {
+        lines.push('- `code_graph` for structural navigation (imports, symbols, dependents)');
+    }
+    lines.push('If shell state is truly required, narrow the file/range first and retry with a smaller target.');
+    return lines.join('\n');
+}
+
+export function preflightShellLargeFileProbe(command, cwd) {
+    const text = String(command || '').trim();
+    let localCwd = resolve(cwd || process.cwd());
+    if (!text) return null;
+    for (const segment of _shellSplitSegments(text)) {
+        const parsed = _shellTokenize(segment);
+        if (!parsed) return null;
+        const tokens = _stripShellAssignments(parsed);
+        if (tokens.length === 0) continue;
+        const joined = tokens.join(' ');
+        if (/^cd\b/i.test(joined)) {
+            const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
+            const resolved = _resolveShellPathToken(target, localCwd);
+            if (resolved) localCwd = resolved;
+            continue;
+        }
+        const cmd = String(tokens[0] || '').toLowerCase();
+        const paths = _extractShellProbePaths(tokens, localCwd);
+        for (const candidate of paths) {
+            try {
+                const st = statSync(candidate);
+                if (!st.isFile()) continue;
+                if (st.size < LARGE_SHELL_FILE_PROBE_BYTES) continue;
+                return {
+                    cmd,
+                    path: candidate,
+                    sizeBytes: st.size,
+                    message: _buildLargeShellFileProbeMessage(candidate, st.size, cmd, localCwd),
+                };
+            } catch {
+                // Ignore nonexistent / inaccessible candidates — shell can
+                // surface those normally if the command proceeds.
+            }
+        }
+    }
+    return null;
+}
+
 export function analyzeShellCommandEffects(command, cwd) {
     const text = String(command || '').trim();
     let localCwd = resolve(cwd || process.cwd());
@@ -1756,11 +1887,24 @@ function computeUnifiedDiff(a, b, ctx, fromLabel, toLabel) {
 // --- Tool execution ---
 export async function executeBuiltinTool(name, args, cwd) {
     const workDir = cwd || process.cwd();
+    // B2 path policy: capability-gated HOME access. When
+    // `capabilities.homeAccess` is false (default), all path-validation
+    // helpers below reject any path outside `workDir`; when true, the
+    // old HOME fallback is re-enabled. Read once per tool invocation so
+    // config changes apply immediately on the next call without a
+    // process restart.
+    let allowHome = false;
+    try { allowHome = getCapabilities().homeAccess === true; } catch { allowHome = false; }
+    const pathOpts = { allowHome };
     switch (name) {
         case 'bash': {
             const command = args.command;
             if (!command)
                 return 'Error: command is required';
+            const largeProbe = preflightShellLargeFileProbe(command, workDir);
+            if (largeProbe) {
+                return `Error: ${largeProbe.message}`;
+            }
             const shellEffects = analyzeShellCommandEffects(command, workDir);
             for (const pattern of BLOCKED_PATTERNS) {
                 if (pattern.test(command)) {
@@ -1972,7 +2116,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             const filePath = args.path;
             if (!filePath)
                 return 'Error: path is required';
-            if (!isSafePath(filePath, workDir))
+            if (!isSafePath(filePath, workDir, pathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // Pre-read size cap (Anthropic FileReadTool/limits.ts pattern):
@@ -2074,7 +2218,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             const edits = Array.isArray(args.edits) ? args.edits : [];
             if (!filePath) return 'Error: path is required';
             if (edits.length === 0) return 'Error: edits array is required';
-            if (!isSafePath(filePath, workDir)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
+            if (!isSafePath(filePath, workDir, pathOpts)) return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // F2 fix: one stat syscall covers both existence check and mtime
             // read. existsSync + statSync was a TOCTOU window where the file
@@ -2186,7 +2330,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 return 'Error: path is required';
             if (content === undefined)
                 return 'Error: content is required';
-            if (!isSafePath(filePath, workDir))
+            if (!isSafePath(filePath, workDir, pathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             try {
                 const fullPath = resolveAgainstCwd(filePath, workDir);
@@ -2250,7 +2394,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             const replaceAll = args.replace_all === true;
             if (!filePath || !oldStr)
                 return 'Error: path and old_string are required';
-            if (!isSafePath(filePath, workDir))
+            if (!isSafePath(filePath, workDir, pathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             // F2 fix: single stat syscall replaces existsSync + statSync pair.
@@ -2317,7 +2461,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             if (!filePath) return 'Error: path is required';
             if (!Number.isFinite(startLine) || startLine < 1) return 'Error: start_line must be >= 1';
             if (!Number.isFinite(endLine) || endLine < startLine) return 'Error: end_line must be >= start_line';
-            if (!isSafePath(filePath, workDir))
+            if (!isSafePath(filePath, workDir, pathOpts))
                 return `Error: path outside allowed scope — ${normalizeOutputPath(filePath)}`;
             const fullPath = resolveAgainstCwd(filePath, workDir);
             let elStat;
@@ -2558,7 +2702,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             });
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
-            if (!isSafePath(inputPath, workDir)) {
+            if (!isSafePath(inputPath, workDir, pathOpts)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
@@ -2637,7 +2781,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             });
             const cached = _cacheGet(cacheKey);
             if (cached !== null) return cached;
-            if (!isSafePath(inputPath, workDir)) {
+            if (!isSafePath(inputPath, workDir, pathOpts)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
@@ -2725,7 +2869,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             // note lives in one place (see compileSimpleGlob).
             const nameRegex = compileSimpleGlob(namePattern);
 
-            if (!isSafePath(inputPath, workDir)) {
+            if (!isSafePath(inputPath, workDir, pathOpts)) {
                 return `Error: path outside allowed scope — ${normalizeOutputPath(inputPath)}`;
             }
             const fullPath = resolveAgainstCwd(inputPath, workDir);
@@ -2781,7 +2925,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             // via openForRead. ETOOBIG escapes to the large-file fallback
             // so behaviour is unchanged for files past READ_MAX_SIZE_BYTES.
             let opened;
-            try { opened = await openForRead(args.path, workDir); }
+            try { opened = await openForRead(args.path, workDir, pathOpts); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     try {
@@ -2827,7 +2971,7 @@ export async function executeBuiltinTool(name, args, cwd) {
             // via openForRead. ETOOBIG escapes to the streaming fallback so
             // files past READ_MAX_SIZE_BYTES still report lines + bytes.
             let opened;
-            try { opened = await openForRead(args.path, workDir); }
+            try { opened = await openForRead(args.path, workDir, pathOpts); }
             catch (err) {
                 if (err && err.code === 'ETOOBIG') {
                     // F11: words are skipped for files past the cap because
@@ -2865,7 +3009,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     fromContent = String(args.from ?? '');
                 } else {
                     if (args.from == null || args.from === '') return 'Error: from is required';
-                    const opened = await openForRead(args.from, workDir);
+                    const opened = await openForRead(args.from, workDir, pathOpts);
                     fromContent = opened.content;
                     fromLabel = opened.displayPath;
                 }
@@ -2873,7 +3017,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                     toContent = String(args.to ?? '');
                 } else {
                     if (args.to == null || args.to === '') return 'Error: to is required';
-                    const opened = await openForRead(args.to, workDir);
+                    const opened = await openForRead(args.to, workDir, pathOpts);
                     toContent = opened.content;
                     toLabel = opened.displayPath;
                 }
