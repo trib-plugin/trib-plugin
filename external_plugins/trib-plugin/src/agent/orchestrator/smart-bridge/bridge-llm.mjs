@@ -153,16 +153,6 @@ export function makeBridgeLlm(opts = {}) {
             agentId: roleLabel,
         });
 
-        try {
-            traceBridgePreset({
-                sessionId: null,
-                role: roleLabel,
-                presetName,
-                model: runtimeSpec?.model || null,
-                provider: runtimeSpec?.provider || null,
-            });
-        } catch { /* telemetry best-effort */ }
-
         // Callers (e.g. aiWrapped explore dispatch) may pass an explicit
         // `cwd` to scope the agent's filesystem view. Absolute path expected
         // (aiWrapped already expands `~` and resolves relatives). Falls back
@@ -211,6 +201,20 @@ export function makeBridgeLlm(opts = {}) {
         // (account-level), not the session level, so we lose nothing from
         // skipping pool reuse. Mixing risk = 0.
         const session = createSession(sessionOpts);
+
+        // Emit role/preset trace AFTER session.id is known so post-hoc
+        // analysis (e.g. matching stalled sess_xxx → role) can join cleanly.
+        // Pre-session emission stamped sessionId="no-session" and broke that
+        // join; failed createSession paths intentionally skip the trace.
+        try {
+            traceBridgePreset({
+                sessionId: session.id,
+                role: roleLabel,
+                presetName,
+                model: runtimeSpec?.model || null,
+                provider: runtimeSpec?.provider || null,
+            });
+        } catch { /* telemetry best-effort */ }
 
         updateSessionStatus(session.id, 'running');
         let terminalStatus = 'idle';

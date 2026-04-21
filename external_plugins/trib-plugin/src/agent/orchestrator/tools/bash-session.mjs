@@ -189,12 +189,34 @@ function _evictOldestIfFull() {
     throw new Error(`bash_session pool full (${MAX_SESSIONS} concurrent sessions, all busy)`);
 }
 
+// Build the env handed to the child bash. On Windows, Node inherits the
+// host cmd.exe PATH, which usually does NOT include Git Bash's `usr/bin`
+// — so the child bash starts with no coreutils (grep / sed / head / awk).
+// We prepend the Git Bash / MSYS tool dirs so the user gets the familiar
+// POSIX environment they expect from a bash shell.
+function buildBashEnv() {
+    const env = { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' };
+    if (process.platform === 'win32') {
+        const toolDirs = [
+            'C:\\Program Files\\Git\\usr\\bin',
+            'C:\\Program Files\\Git\\mingw64\\bin',
+            'C:\\Program Files (x86)\\Git\\usr\\bin',
+            'C:\\msys64\\usr\\bin',
+            'C:\\msys64\\mingw64\\bin',
+        ];
+        const existing = env.PATH || env.Path || '';
+        const prefix = toolDirs.filter((p) => existsSync(p)).join(';');
+        if (prefix) env.PATH = prefix + (existing ? ';' + existing : '');
+    }
+    return env;
+}
+
 function _spawnSession(id) {
     _evictOldestIfFull();
     const shell = resolveBash();
     const proc = spawn(shell, [], {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' },
+        env: buildBashEnv(),
         windowsHide: true,
     });
     proc.stdout.setEncoding('utf-8');

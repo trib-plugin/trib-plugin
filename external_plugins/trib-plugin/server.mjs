@@ -19,7 +19,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import { fork } from 'child_process'
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch } from 'fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, watch as fsWatch, existsSync, unlinkSync } from 'fs'
 import { join, resolve as pathResolve } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
@@ -31,6 +31,42 @@ if (!PLUGIN_ROOT || !PLUGIN_DATA) {
   throw new Error('trib-plugin: CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA must be set')
 }
 mkdirSync(PLUGIN_DATA, { recursive: true })
+
+// ── Singleton lock ──────────────────────────────────────────────────
+// Prevents two server.mjs instances (e.g. marketplaces/ path vs cache/
+// path) from running in parallel and firing schedules / workers twice.
+// Strategy: pidfile in PLUGIN_DATA. On boot, if an existing pidfile's
+// owner is still alive we exit 0 and let the incumbent keep serving.
+// Stale files (process gone) are overwritten.
+const LOCK_PATH = join(PLUGIN_DATA, 'server.lock')
+function _isPidAlive(pid) {
+  if (!pid || pid === process.pid) return false
+  try { process.kill(pid, 0); return true } catch (err) {
+    // EPERM means the pid exists but we can't signal it — still alive.
+    return err?.code === 'EPERM'
+  }
+}
+try {
+  if (existsSync(LOCK_PATH)) {
+    const raw = readFileSync(LOCK_PATH, 'utf-8').trim()
+    const existingPid = Number.parseInt(raw, 10)
+    if (Number.isFinite(existingPid) && _isPidAlive(existingPid)) {
+      process.stderr.write(`[server] another trib-plugin instance already running (pid=${existingPid}); exiting.\n`)
+      process.exit(0)
+    }
+  }
+} catch { /* malformed lock — overwrite below */ }
+writeFileSync(LOCK_PATH, String(process.pid))
+const _releaseLock = () => {
+  try {
+    const raw = readFileSync(LOCK_PATH, 'utf-8').trim()
+    if (Number.parseInt(raw, 10) === process.pid) unlinkSync(LOCK_PATH)
+  } catch { /* ignore */ }
+}
+process.on('exit', _releaseLock)
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGBREAK']) {
+  try { process.on(sig, () => { _releaseLock(); process.exit(0) }) } catch { /* unsupported on platform */ }
+}
 
 globalThis.__tribFastEntry = true
 

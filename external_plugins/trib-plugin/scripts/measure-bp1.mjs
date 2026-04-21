@@ -28,18 +28,23 @@ const require_ = createRequire(import.meta.url);
 // createSession `bridgeDeny` list. Adding / removing tools here without
 // updating manager.mjs (or vice versa) will make the bench lie.
 const BRIDGE_UNSAFE_TOOLS = new Set([
-    // Discord / channel
+    // Discord / channel (Lead-only)
     'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
     'activate_channel_bridge',
-    // Session lifecycle
+    // Session lifecycle (Lead-only)
     'create_session', 'close_session', 'list_sessions', 'list_models',
-    // Schedule / config admin
+    // Schedule / config admin (Lead-only)
     'schedule_status', 'trigger_schedule', 'schedule_control', 'reload_config',
     // Role delegation
     'bridge',
     // Memory admin (recall stays for reads)
     'memory',
-    // LSP on-demand (roles opt in via allowedTools)
+    // Patch / AST / specialised editors — edit/write cover code changes;
+    // these large-schema specialists bloat the cached prefix.
+    'apply_patch', 'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
+    // Persistent bash session — `bash` alone is enough for one-off calls
+    'bash_session',
+    // LSP on-demand (roles opt in via allowedTools — excluded from default prefix)
     'lsp_definition', 'lsp_references', 'lsp_symbols',
 ]);
 

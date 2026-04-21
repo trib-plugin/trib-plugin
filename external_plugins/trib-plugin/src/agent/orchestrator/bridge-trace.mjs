@@ -12,6 +12,11 @@ function normalizeSessionId(sessionId) {
 }
 
 function appendBridgeTrace(record = {}) {
+    // Test isolation — when run-all-tests.mjs sets this env, fixture
+    // sessionIds (s1..s7, m1..m3) and other test-driven trace events
+    // would otherwise pollute the production bridge-trace.jsonl, skewing
+    // post-hoc stall / loop analysis. Skip the write entirely.
+    if (process.env.TRIB_BRIDGE_TRACE_DISABLE === '1') return;
     try {
         mkdirSync(HISTORY_DIR, { recursive: true });
         const row = {

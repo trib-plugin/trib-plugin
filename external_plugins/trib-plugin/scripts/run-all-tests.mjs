@@ -54,7 +54,10 @@ function runOne(file) {
     let timedOut = false
     const child = spawn(process.execPath, [join(SCRIPTS_DIR, file)], {
       cwd: SCRIPTS_DIR,
-      env: process.env,
+      // TRIB_BRIDGE_TRACE_DISABLE keeps test fixture sessionIds (s1..s7,
+      // m1..m3) and other test-driven trace events out of the production
+      // bridge-trace.jsonl. See bridge-trace.mjs:appendBridgeTrace.
+      env: { ...process.env, TRIB_BRIDGE_TRACE_DISABLE: '1' },
     })
     const timer = setTimeout(() => {
       timedOut = true

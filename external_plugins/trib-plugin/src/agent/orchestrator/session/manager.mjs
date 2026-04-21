@@ -509,6 +509,23 @@ export function createSession(opts) {
     // session lifecycle, or schedule/config admin — those are Lead-only
     // surfaces. Stripping them shrinks the tool-schema prefix (~9 KB from
     // BP1) without losing any capability agents actually use during work.
+    // Bridge session tool policy — keep only the essentials bridge agents
+    // actually need. Pool A (Lead) still sees the full tools.json; this
+    // deny list only applies when `owner === 'bridge'`.
+    //
+    // KEEP (bridge agents can call):
+    //   - core file / shell: read, edit, write, bash, grep, glob
+    //   - IO helpers: head, tail, wc, list, tree, find_files,
+    //     multi_read, multi_edit, batch_edit
+    //   - LSP: lsp_definition / lsp_references / lsp_hover / lsp_symbols
+    //   - memory read: recall  (memory admin tool itself is Lead-only)
+    //   - information retrieval: search, explore
+    //
+    // The rest of the surface — patch / AST / duplicate file variants /
+    // session+channel+schedule admin — does not belong in the Pool B
+    // shard. Stripping them here shrinks BP_1 (tool-schema prefix) from
+    // ~12k tokens back down to ~5k and removes a lot of noise the agent
+    // never meaningfully uses.
     const bridgeDeny = opts.owner === 'bridge' ? [
         // Discord / channel (Lead-only)
         'reply', 'react', 'edit_message', 'download_attachment', 'fetch',
@@ -521,17 +538,16 @@ export function createSession(opts) {
         // dispatch. Recall/search/explore stay (they're info retrieval,
         // not role delegation).
         'bridge',
-        // Memory admin — cycle1/cycle2/flush/rebuild/prune are maintenance;
-        // remember() is user-triggered via Lead. Agents read memory via
-        // `recall` (kept), so there's no capability loss for the work path.
+        // Memory admin — cycle1/cycle2/flush/rebuild/prune/remember are
+        // maintenance ops Lead drives. Bridge agents read memory via
+        // `recall` (kept), so the work path loses nothing.
         'memory',
-        // LSP tools — TS/JS-only semantic symbol lookup. Stripped by
-        // default because typical Pool B/C workloads cover symbol search
-        // fine via `grep` (+ `rules/shared/05-lsp.md` is still available to Lead).
-        // Per-role opt-in (allowedTools override) isn't currently wired —
-        // this is a hard strip. If a role needs LSP, revisit the filter
-        // ordering in this file (deny runs before whitelist today).
-        'lsp_definition', 'lsp_references', 'lsp_symbols',
+        // Patch / AST / specialised editors — the agent uses edit / write
+        // for code changes; these large-schema specialists bloat BP_1.
+        'apply_patch', 'sg_search', 'sg_rewrite', 'edit_lines', 'diff',
+        // Persistent bash — `bash` is enough for shell work inside a
+        // single call; session persistence is a Lead-scoped convenience.
+        'bash_session',
     ] : [];
     const mergedDeny = [...new Set([...permDeny, ...callerDeny, ...bridgeDeny])];
     if (mergedDeny.length) {

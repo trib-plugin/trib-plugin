@@ -1,4 +1,4 @@
-import { exec, spawnSync } from 'child_process';
+import { exec, spawn, spawnSync } from 'child_process';
 import { readFileSync, writeFileSync, statSync, existsSync, createReadStream, readdirSync, mkdirSync, openSync, readSync, closeSync, renameSync, unlinkSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import { readFile } from 'fs/promises';
@@ -554,14 +554,16 @@ export const BUILTIN_TOOLS = [
         name: 'read',
         title: 'Read',
         annotations: { title: 'Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read a file with cat -n line numbering, size cap, optional offset/limit. Big files (>30 KB or >600 lines) return a head+tail summary unless `full:true` or an explicit offset/limit is supplied.',
+        description: 'Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path.' },
-                offset: { type: 'number', description: 'Start line (0-based).' },
-                limit: { type: 'number', description: 'Max lines (default 2000).' },
-                full: { type: 'boolean', description: 'Opt out of the smart head/tail cap for big files. Default false.' },
+                path: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'File path, or array of paths for parallel read.' },
+                mode: { type: 'string', enum: ['full', 'head', 'tail', 'count'], description: 'full (default) | head | tail | count.' },
+                n: { type: 'number', description: 'Lines for head / tail mode. Default 20.' },
+                offset: { type: 'number', description: 'Start line for full mode (0-based).' },
+                limit: { type: 'number', description: 'Max lines for full mode (default 2000).' },
+                full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
             },
             required: ['path'],
         },
@@ -570,15 +572,31 @@ export const BUILTIN_TOOLS = [
         name: 'edit',
         title: 'Edit',
         annotations: { title: 'Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Replace one unique occurrence of `old_string` with `new_string`. Must match exactly once.',
+        description: 'Replace text in file(s). PREFER MULTI-EDIT FORM — pass `edits` array to batch N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'File path.' },
-                old_string: { type: 'string', description: 'Text to find (exactly once).' },
-                new_string: { type: 'string', description: 'Replacement.' },
+                path: { type: 'string', description: 'File path (single-edit form).' },
+                old_string: { type: 'string', description: 'Text to find (single-edit form, unique unless replace_all).' },
+                new_string: { type: 'string', description: 'Replacement (single-edit form).' },
+                replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring unique match.' },
+                edits: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            path: { type: 'string', description: 'Per-edit path. Omit to reuse the top-level path.' },
+                            old_string: { type: 'string' },
+                            new_string: { type: 'string' },
+                            replace_all: { type: 'boolean' },
+                        },
+                        required: ['old_string', 'new_string'],
+                    },
+                    minItems: 1,
+                    description: 'Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`.',
+                },
             },
-            required: ['path', 'old_string', 'new_string'],
+            required: [],
         },
     },
     {
@@ -615,7 +633,7 @@ export const BUILTIN_TOOLS = [
         name: 'bash',
         title: 'Bash',
         annotations: { title: 'Bash', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-        description: 'Execute a shell command. Destructive patterns (rm -rf /, force-push, format) are blocked.',
+        description: 'Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Destructive patterns (rm -rf /, force-push, format) are blocked.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -630,7 +648,7 @@ export const BUILTIN_TOOLS = [
         name: 'grep',
         title: 'Grep',
         annotations: { title: 'Grep', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ripgrep content search. `pattern` / `glob` accept string or array (OR-joined). Output modes: `files_with_matches` (default), `content`, `count`.',
+        description: 'ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -655,7 +673,7 @@ export const BUILTIN_TOOLS = [
         name: 'glob',
         title: 'Glob',
         annotations: { title: 'Glob', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'File path search via `rg --files`. `pattern` accepts string or array (OR-joined).',
+        description: 'File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Use `grep` for in-file content search.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -666,177 +684,30 @@ export const BUILTIN_TOOLS = [
         },
     },
     {
-        name: 'multi_edit',
-        title: 'Multi Edit',
-        annotations: { title: 'Multi Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Apply ordered replacements to ONE file. Any match failure aborts the batch (no partial writes). `replace_all:true` drops uniqueness check.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'File path.' },
-                edits: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            old_string: { type: 'string', description: 'Text to find (unique unless replace_all).' },
-                            new_string: { type: 'string', description: 'Replacement.' },
-                            replace_all: { type: 'boolean', description: 'Replace all, skip uniqueness.' },
-                        },
-                        required: ['old_string', 'new_string'],
-                    },
-                    minItems: 1,
-                },
-            },
-            required: ['path', 'edits'],
-        },
-    },
-    {
-        name: 'multi_read',
-        title: 'Multi Read',
-        annotations: { title: 'Multi Read', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read several files in parallel. Returns `### <path>` sections; per-file errors inline.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                reads: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string', description: 'File path.' },
-                            offset: { type: 'number' },
-                            limit: { type: 'number' },
-                            full: { type: 'boolean', description: 'Opt out of the big-file head/tail cap. Default false.' },
-                        },
-                        required: ['path'],
-                    },
-                    minItems: 1,
-                },
-            },
-            required: ['reads'],
-        },
-    },
-    {
         name: 'list',
         title: 'List Directory',
         annotations: { title: 'List Directory', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Directory listing with metadata (name, type, size, mtime). Faster + more useful than `bash ls` because it returns parseable rows and respects head_limit. For pure path-pattern search use `glob` (rg --files backend); for content search use `grep`. Defaults to depth 1 — increase for recursive walk.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'Directory to list. Defaults to cwd. Supports `~` expansion.' },
-                depth: { type: 'number', description: 'Recursion depth (1 = direct children only, max 10). Default 1.' },
-                hidden: { type: 'boolean', description: 'Include dotfiles (`.foo`). Default false.' },
-                sort: { type: 'string', enum: ['name', 'mtime', 'size'], description: 'Sort key. Default name.' },
-                type: { type: 'string', enum: ['any', 'file', 'dir'], description: 'Filter by entry type. Default any.' },
-                head_limit: { type: 'number', description: 'Max rows. Default 200, 0 = unlimited.' },
-            },
-            required: [],
-        },
-    },
-    {
-        name: 'tree',
-        title: 'Directory Tree',
-        annotations: { title: 'Directory Tree', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'ASCII directory tree visualization. Quick way to grasp project shape before diving in. For metadata (size/mtime) use `list`; for content search use `grep`. Defaults to depth 3.',
+        description: 'Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use `glob` for pure path patterns and `grep` for content.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'Root directory. Defaults to cwd. Supports `~` expansion.' },
-                depth: { type: 'number', description: 'Tree depth (1-6). Default 3.' },
-                hidden: { type: 'boolean', description: 'Include dotfiles. Default false.' },
-                head_limit: { type: 'number', description: 'Max lines. Default 200, 0 = unlimited.' },
+                mode: { type: 'string', enum: ['list', 'tree', 'find'], description: 'list (default) | tree | find.' },
+                depth: { type: 'number', description: 'Recursion depth. list: 1 default, max 10. tree: 3 default, max 6.' },
+                hidden: { type: 'boolean', description: 'Include dotfiles (`.foo`). Default false.' },
+                sort: { type: 'string', enum: ['name', 'mtime', 'size'], description: 'list mode sort key. Default name.' },
+                type: { type: 'string', enum: ['any', 'file', 'dir'], description: 'Filter by entry type. Default any.' },
+                head_limit: { type: 'number', description: 'Max rows/lines. 0 = unlimited.' },
+                name: { type: 'string', description: 'find mode: filename glob (e.g. `*.mjs`).' },
+                min_size: { type: 'number', description: 'find mode: minimum size in bytes (file only).' },
+                max_size: { type: 'number', description: 'find mode: maximum size in bytes (file only).' },
+                modified_after: { type: 'string', description: 'find mode: ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`).' },
+                modified_before: { type: 'string', description: 'find mode: ISO 8601 date or relative `Nh`/`Nd`.' },
             },
             required: [],
         },
     },
-    {
-        name: 'find_files',
-        title: 'Find Files (metadata filter)',
-        annotations: { title: 'Find Files', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Find files by metadata — name pattern, size range, modification time range, type. Complements `glob` (path patterns) and `grep` (content). Useful for "files modified in the last 24h", "files larger than 10MB", etc.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'Root directory. Defaults to cwd.' },
-                name: { type: 'string', description: 'Glob pattern for filename (e.g. `*.mjs`). Optional.' },
-                type: { type: 'string', enum: ['any', 'file', 'dir'], description: 'Entry type filter. Default any.' },
-                min_size: { type: 'number', description: 'Minimum size in bytes (file only). Optional.' },
-                max_size: { type: 'number', description: 'Maximum size in bytes (file only). Optional.' },
-                modified_after: { type: 'string', description: 'ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`). Optional.' },
-                modified_before: { type: 'string', description: 'ISO 8601 date or relative `Nh`/`Nd`. Optional.' },
-                head_limit: { type: 'number', description: 'Max results. Default 100, 0 = unlimited.' },
-            },
-            required: [],
-        },
-    },
-    {
-        name: 'head',
-        title: 'Head N Lines',
-        annotations: { title: 'Head N Lines', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read the first N lines of a file. Cleaner than `read` with offset:0+limit:N when you just want a quick peek at the top of a file. For middle-of-file ranges use `read` with offset/limit.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
-                n: { type: 'number', description: 'Number of lines to read from the top. Default 20.' },
-            },
-            required: ['path'],
-        },
-    },
-    {
-        name: 'tail',
-        title: 'Tail N Lines',
-        annotations: { title: 'Tail N Lines', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Read the last N lines of a file — typically used for log inspection. For full-file or specific ranges use `read`.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
-                n: { type: 'number', description: 'Number of lines from the bottom. Default 20.' },
-            },
-            required: ['path'],
-        },
-    },
-    {
-        name: 'wc',
-        title: 'Word Count',
-        annotations: { title: 'Word Count', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: 'Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics. Word count is skipped for files exceeding the read cap (256 KB) — lines/bytes only.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'File path. Supports `~` expansion.' },
-            },
-            required: ['path'],
-        },
-    },
-    {
-        name: 'batch_edit',
-        title: 'Batch Edit',
-        annotations: { title: 'Batch Edit', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-        description: 'Apply edits across multiple files. Per-entry failures reported as `FAIL <path>`; batch continues.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                edits: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string' },
-                            old_string: { type: 'string', description: 'Text to find (unique).' },
-                            new_string: { type: 'string', description: 'Replacement.' },
-                        },
-                        required: ['path', 'old_string', 'new_string'],
-                    },
-                    minItems: 1,
-                },
-            },
-            required: ['edits'],
-        },
-    },
+
     {
         name: 'diff',
         title: 'Unified Diff',
@@ -959,21 +830,59 @@ function resolveAgainstCwd(filePath, cwd) {
 // force single-threaded execution; the second attempt almost always
 // succeeds. rg exit code 1 is "no matches" — surfaced as empty stdout
 // rather than an error so callers can render "(no matches)" uniformly.
+// Spawn rg directly — bypass the shell so arbitrary bytes in `pattern`
+// (quotes, backticks, shell keywords like `read`) reach ripgrep verbatim.
+// shell-mode execAsync was the root cause of "'read' is not a command"
+// style failures on Windows cmd when a regex contained reserved words.
+function _spawnRg(argsList, execOptions) {
+    const timeoutMs = Number(execOptions?.timeout ?? 20000);
+    return new Promise((resolve, reject) => {
+        const proc = spawn('rg', argsList, {
+            cwd: execOptions?.cwd,
+            env: execOptions?.env || process.env,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+        }, timeoutMs);
+        proc.stdout.setEncoding('utf-8');
+        proc.stderr.setEncoding('utf-8');
+        proc.stdout.on('data', (d) => { stdout += d; });
+        proc.stderr.on('data', (d) => { stderr += d; });
+        proc.on('error', (err) => {
+            clearTimeout(timer);
+            reject(err);
+        });
+        proc.on('close', (code) => {
+            clearTimeout(timer);
+            if (timedOut) {
+                const e = new Error(`rg timed out after ${timeoutMs} ms`);
+                e.code = 'ETIMEDOUT';
+                return reject(e);
+            }
+            if (code === 0) return resolve(stdout);
+            if (code === 1) return resolve(''); // rg: no matches
+            const e = new Error(`rg exited with code ${code}: ${stderr.trim()}`);
+            e.code = code;
+            e.stderr = stderr;
+            reject(e);
+        });
+    });
+}
+
 async function runRg(argsList, execOptions = {}) {
-    const opts = { encoding: 'utf-8', timeout: 20000, ...execOptions };
-    const quote = (a) => `"${a}"`;
     try {
-        const { stdout } = await execAsync(`rg ${argsList.map(quote).join(' ')}`, opts);
-        return stdout;
+        return await _spawnRg(argsList, execOptions);
     } catch (err) {
-        const msg = String(err?.message || err?.code || '');
+        const msg = String(err?.message || err?.stderr || '');
         if (/EAGAIN/i.test(msg) && !argsList.includes('-j')) {
-            const retryArgs = ['-j', '1', ...argsList];
-            const { stdout } = await execAsync(`rg ${retryArgs.map(quote).join(' ')}`, opts);
-            return stdout;
+            return _spawnRg(['-j', '1', ...argsList], execOptions);
         }
-        // rg exits 1 when there are no matches — treat as empty result.
-        if (err?.code === 1 || /no matches|exit code 1/.test(msg)) return '';
         throw err;
     }
 }
@@ -1126,6 +1035,24 @@ export async function executeBuiltinTool(name, args, cwd) {
                 // win if they precede our override; we only set the locale
                 // pair, nothing else is mutated.
                 const spawnEnv = { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' };
+                // On Windows, when the resolved shell is bash/sh, the child
+                // inherits Node's cmd-shaped PATH and thus cannot find POSIX
+                // coreutils (grep / sed / head / awk / ...). Prepend Git Bash
+                // and MSYS tool dirs so shell scripts and one-liners that
+                // rely on coreutils behave the same as on POSIX.
+                if (process.platform === 'win32'
+                    && (shell.toLowerCase().includes('bash') || shell.toLowerCase().endsWith('sh.exe'))) {
+                    const toolDirs = [
+                        'C:\\Program Files\\Git\\usr\\bin',
+                        'C:\\Program Files\\Git\\mingw64\\bin',
+                        'C:\\Program Files (x86)\\Git\\usr\\bin',
+                        'C:\\msys64\\usr\\bin',
+                        'C:\\msys64\\mingw64\\bin',
+                    ];
+                    const existing = spawnEnv.PATH || spawnEnv.Path || '';
+                    const prefix = toolDirs.filter((p) => existsSync(p)).join(';');
+                    if (prefix) spawnEnv.PATH = prefix + (existing ? ';' + existing : '');
+                }
                 const result = spawnSync(shell, [shellArg, command], {
                     encoding: 'utf-8',
                     timeout,
@@ -1179,6 +1106,19 @@ export async function executeBuiltinTool(name, args, cwd) {
             }
         }
         case 'read': {
+            // Unified-read dispatch (v0.6.283+):
+            //   path: string[]              → multi_read (parallel per-file)
+            //   mode: 'head'|'tail'|'count' → head / tail / wc handlers
+            //   else                        → single-file read below.
+            // Single turn can touch many files or swap modes without
+            // the agent iterating across multiple tool names.
+            if (Array.isArray(args.path)) {
+                const reads = args.path.map((p) => (typeof p === 'string' ? { path: p } : p));
+                return executeBuiltinTool('multi_read', { reads }, workDir);
+            }
+            if (args.mode === 'head') return executeBuiltinTool('head', { path: args.path, n: args.n }, workDir);
+            if (args.mode === 'tail') return executeBuiltinTool('tail', { path: args.path, n: args.n }, workDir);
+            if (args.mode === 'count') return executeBuiltinTool('wc', { path: args.path }, workDir);
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
             if (!filePath)
@@ -1352,27 +1292,41 @@ export async function executeBuiltinTool(name, args, cwd) {
             const edits = Array.isArray(args.edits) ? args.edits : [];
             if (edits.length === 0) return 'Error: edits array is required';
             for (const e of edits) { if (e && typeof e === 'object') e.path = normalizeInputPath(e.path); }
-            // Cross-file sequential dispatch through the same `edit` case so
-            // size caps, isSafePath checks, and unique-match enforcement stay
-            // consistent across files. Sequential (not parallel) to avoid
-            // concurrent writes to the same path.
-            const lines = [];
-            for (const entry of edits) {
-                if (!entry || !entry.path) { lines.push('FAIL (missing-path): path is required'); continue; }
-                const body = await executeBuiltinTool('edit', entry, workDir);
-                const first = String(body).split('\n')[0] || '';
-                // `edit` returns either "Error: <msg>" (generic) or
-                // "Error [code N]: <msg>" (structured). Match either shape
-                // and surface the message portion verbatim.
-                if (/^Error(\s|\[)/.test(first)) {
-                    const colonIdx = first.indexOf(': ');
-                    const msg = colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
-                    lines.push(`FAIL ${normalizeOutputPath(entry.path)}: ${msg}`);
-                } else {
-                    lines.push(`OK ${normalizeOutputPath(entry.path)}`);
-                }
+            // Fan-out: group edits by path so different files run in parallel
+            // (Promise.all) while same-file edits stay sequential (via
+            // multi_edit) to avoid concurrent writes on the same target.
+            const groups = new Map();
+            const missingPath = [];
+            for (const e of edits) {
+                if (!e || !e.path) { missingPath.push(e); continue; }
+                if (!groups.has(e.path)) groups.set(e.path, []);
+                groups.get(e.path).push(e);
             }
-            return lines.join('\n');
+            const parseLeadError = (body) => {
+                const first = String(body).split('\n')[0] || '';
+                if (!/^Error(\s|\[)/.test(first)) return null;
+                const colonIdx = first.indexOf(': ');
+                return colonIdx !== -1 ? first.slice(colonIdx + 2) : first;
+            };
+            const groupResults = await Promise.all([...groups.entries()].map(async ([path, items]) => {
+                if (items.length === 1) {
+                    const body = await executeBuiltinTool('edit', items[0], workDir);
+                    const errMsg = parseLeadError(body);
+                    return errMsg
+                        ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
+                        : `OK ${normalizeOutputPath(path)}`;
+                }
+                const body = await executeBuiltinTool('multi_edit', {
+                    path,
+                    edits: items.map(({ path: _p, ...rest }) => rest),
+                }, workDir);
+                const errMsg = parseLeadError(body);
+                return errMsg
+                    ? `FAIL ${normalizeOutputPath(path)}: ${errMsg}`
+                    : `OK ${normalizeOutputPath(path)} (${items.length})`;
+            }));
+            const missingLines = missingPath.map(() => 'FAIL (missing-path): path is required');
+            return [...groupResults, ...missingLines].join('\n');
         }
         case 'write': {
             args.path = normalizeInputPath(args.path);
@@ -1411,6 +1365,33 @@ export async function executeBuiltinTool(name, args, cwd) {
             }
         }
         case 'edit': {
+            // Unified-edit dispatch (v0.6.283+):
+            //   edits array present → multi_edit (single file) or batch_edit
+            //     (multiple files), inferred from per-item path homogeneity.
+            //   Omitted path on an edit item falls back to top-level `path`.
+            //   Otherwise single-edit semantics below.
+            if (Array.isArray(args.edits) && args.edits.length > 0) {
+                const items = args.edits.map((e) => ({
+                    path: e?.path || args.path,
+                    old_string: e?.old_string,
+                    new_string: e?.new_string,
+                    replace_all: e?.replace_all,
+                }));
+                const paths = new Set(items.map((x) => x.path).filter(Boolean));
+                if (paths.size === 0) return 'Error: each edit requires a path (either on the item or at top level)';
+                if (paths.size === 1) {
+                    const onePath = [...paths][0];
+                    return executeBuiltinTool('multi_edit', {
+                        path: onePath,
+                        edits: items.map(({ path: _p, ...rest }) => rest),
+                    }, workDir);
+                }
+                return executeBuiltinTool('batch_edit', {
+                    edits: items.map((x) => ({
+                        path: x.path, old_string: x.old_string, new_string: x.new_string,
+                    })),
+                }, workDir);
+            }
             args.path = normalizeInputPath(args.path);
             const filePath = args.path;
             const oldStr = args.old_string;
@@ -1650,11 +1631,7 @@ export async function executeBuiltinTool(name, args, cwd) {
                 for (const rel of rels) rgArgs.push('--glob', rel);
                 rgArgs.push(root);
                 try {
-                    const { stdout } = await execAsync(`rg ${rgArgs.map(a => `"${a}"`).join(' ')}`, {
-                        encoding: 'utf-8',
-                        timeout: 10000,
-                        cwd: workDir,
-                    });
+                    const stdout = await runRg(rgArgs, { cwd: workDir, timeout: 10000 });
                     for (const line of stdout.split('\n')) {
                         const trimmed = line.trim();
                         if (trimmed) allFiles.push(trimmed);
@@ -1686,6 +1663,12 @@ export async function executeBuiltinTool(name, args, cwd) {
             return out;
         }
         case 'list': {
+            // Unified-list dispatch (v0.6.283+):
+            //   mode:'tree'  → tree handler (ASCII visualization)
+            //   mode:'find'  → find_files handler (name/size/mtime filter)
+            //   default      → list below (metadata rows).
+            if (args.mode === 'tree') return executeBuiltinTool('tree', args, workDir);
+            if (args.mode === 'find') return executeBuiltinTool('find_files', args, workDir);
             args.path = normalizeInputPath(args.path);
             const inputPath = args.path || '.';
             const depth = Math.min(Math.max(parseInt(args.depth ?? 1, 10) || 1, 1), 10);

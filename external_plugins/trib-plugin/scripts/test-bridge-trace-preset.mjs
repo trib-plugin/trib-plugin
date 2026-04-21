@@ -1,20 +1,29 @@
 /**
  * Test for bridge-trace.mjs — traceBridgePreset JSONL shape.
  *
- * Appends a synthetic preset_assign record to the live bridge-trace.jsonl
- * under the plugin data directory and verifies the last line matches the
- * documented shape:
+ * Writes preset_assign records to an isolated tmp data dir (not the live
+ * production bridge-trace.jsonl) and verifies the documented shape:
  *   { ts, sessionId, kind: 'preset_assign', role, preset_name, model, provider }
  *
- * Safe side-effect — the record has a unique sessionId so it cannot
- * collide with real telemetry, and we don't mutate or remove existing
- * lines.
+ * Isolation matters because run-all-tests.mjs sets TRIB_BRIDGE_TRACE_DISABLE=1
+ * to keep test fixture sessionIds out of the production trace. This test
+ * needs the writer enabled to verify the file shape, so it routes the
+ * write to a fresh tmp dir via CLAUDE_PLUGIN_DATA before module load and
+ * also clears the disable flag — neither production trace nor the
+ * disable-flag invariant for other tests is affected.
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { mkdtempSync, readFileSync, existsSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
-import { traceBridgePreset } from '../src/agent/orchestrator/bridge-trace.mjs';
-import { getPluginData } from '../src/agent/orchestrator/config.mjs';
+
+const tmpData = mkdtempSync(join(tmpdir(), 'trib-trace-test-'));
+process.env.CLAUDE_PLUGIN_DATA = tmpData;
+delete process.env.TRIB_BRIDGE_TRACE_DISABLE;
+
+const { traceBridgePreset } = await import('../src/agent/orchestrator/bridge-trace.mjs');
+
+const TRACE_PATH = join(tmpData, 'history', 'bridge-trace.jsonl');
 
 let passed = 0;
 let failed = 0;
@@ -23,7 +32,6 @@ function assert(cond, msg) {
     else { failed++; console.error(`  FAIL: ${msg}`); }
 }
 
-const TRACE_PATH = join(getPluginData(), 'history', 'bridge-trace.jsonl');
 const marker = `test-preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 // ── Call the tracer ────────────────────────────────────────────────────
@@ -35,13 +43,11 @@ traceBridgePreset({
     provider: 'anthropic-oauth',
 });
 
-// Give the fs a moment (synchronous append anyway, but guard).
 assert(existsSync(TRACE_PATH), 'bridge-trace.jsonl exists after first trace call');
 
 const lines = readFileSync(TRACE_PATH, 'utf8').split('\n').filter(Boolean);
 assert(lines.length > 0, 'trace file has at least one line');
 
-// Find our record by the unique marker.
 const ours = lines.slice(-5).map(l => {
     try { return JSON.parse(l); } catch { return null; }
 }).find(r => r && r.sessionId === marker);
@@ -60,7 +66,6 @@ if (ours) {
 const marker2 = `${marker}-nulls`;
 traceBridgePreset({
     sessionId: marker2,
-    // role / presetName / model / provider all missing on purpose
 });
 const linesAfter = readFileSync(TRACE_PATH, 'utf8').split('\n').filter(Boolean);
 const nulls = linesAfter.slice(-5).map(l => {
@@ -74,6 +79,8 @@ if (nulls) {
     assert(nulls.model === null, 'missing model serialized as null');
     assert(nulls.provider === null, 'missing provider serialized as null');
 }
+
+try { rmSync(tmpData, { recursive: true, force: true }); } catch {}
 
 console.log(`\nPASS ${passed}/${passed + failed}`);
 process.exit(failed > 0 ? 1 : 0);

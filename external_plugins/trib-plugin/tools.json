@@ -697,25 +697,50 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Read a file with cat -n line numbering, size cap, optional offset/limit. Big files (>30 KB or >600 lines) return a head+tail summary unless `full:true` or an explicit offset/limit is supplied.",
+    "description": "Read file(s). PREFER ARRAY `path` to read multiple files in ONE call — serial reads waste turns and are the #1 iter waste. `mode`: full (default) | head | tail | count. head/tail read the first/last `n` lines; count returns line/word/byte stats. Big files auto-return a head+tail summary unless `full:true` or offset/limit given — for in-file content search use `grep`, not a full read.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "File path, or array of paths for parallel read."
+        },
+        "mode": {
           "type": "string",
-          "description": "File path."
+          "enum": [
+            "full",
+            "head",
+            "tail",
+            "count"
+          ],
+          "description": "full (default) | head | tail | count."
+        },
+        "n": {
+          "type": "number",
+          "description": "Lines for head / tail mode. Default 20."
         },
         "offset": {
           "type": "number",
-          "description": "Start line (0-based)."
+          "description": "Start line for full mode (0-based)."
         },
         "limit": {
           "type": "number",
-          "description": "Max lines (default 2000)."
+          "description": "Max lines for full mode (default 2000)."
         },
         "full": {
           "type": "boolean",
-          "description": "Opt out of the smart head/tail cap for big files. Default false."
+          "description": "Opt out of the big-file head/tail cap. Default false."
         }
       },
       "required": [
@@ -734,28 +759,55 @@
       "idempotentHint": false,
       "openWorldHint": false
     },
-    "description": "Replace one unique occurrence of `old_string` with `new_string`. Must match exactly once.",
+    "description": "Replace text in file(s). PREFER MULTI-EDIT FORM — pass `edits` array to batch N edits in one call; same file applies sequentially, different files run in parallel. Single form (`path` + `old_string` + `new_string`) is for a one-off only; serial single edits waste iters. `replace_all:true` drops the uniqueness check.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "path": {
           "type": "string",
-          "description": "File path."
+          "description": "File path (single-edit form)."
         },
         "old_string": {
           "type": "string",
-          "description": "Text to find (exactly once)."
+          "description": "Text to find (single-edit form, unique unless replace_all)."
         },
         "new_string": {
           "type": "string",
-          "description": "Replacement."
+          "description": "Replacement (single-edit form)."
+        },
+        "replace_all": {
+          "type": "boolean",
+          "description": "Replace every occurrence instead of requiring unique match."
+        },
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Per-edit path. Omit to reuse the top-level path."
+              },
+              "old_string": {
+                "type": "string"
+              },
+              "new_string": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ]
+          },
+          "minItems": 1,
+          "description": "Multi-edit form: array of edits. Each item may specify its own path; if omitted, falls back to the top-level `path`."
         }
       },
-      "required": [
-        "path",
-        "old_string",
-        "new_string"
-      ]
+      "required": []
     },
     "module": "builtin"
   },
@@ -839,7 +891,7 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Execute a shell command. Destructive patterns (rm -rf /, force-push, format) are blocked.",
+    "description": "Execute a shell command. BATCH RELATED COMMANDS with `&&` (stop on fail) or `;` (always run) in a single call — two separate bash turns for dependent work waste a round-trip. Destructive patterns (rm -rf /, force-push, format) are blocked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -872,7 +924,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "ripgrep content search. `pattern` / `glob` accept string or array (OR-joined). Output modes: `files_with_matches` (default), `content`, `count`.",
+    "description": "ripgrep content search. PREFER ARRAY `pattern` and/or `glob` — OR-joined in ONE call instead of serial greps (biggest iter saver). Output modes: `files_with_matches` (default), `content`, `count`. Use `multiline:true` for patterns spanning lines.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -971,7 +1023,7 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "File path search via `rg --files`. `pattern` accepts string or array (OR-joined).",
+    "description": "File path search via `rg --files`. PREFER ARRAY `pattern` — OR-joined multi-pattern search in ONE call instead of serial globs. Use `grep` for in-file content search.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1002,104 +1054,6 @@
     "module": "builtin"
   },
   {
-    "name": "multi_edit",
-    "title": "Multi Edit",
-    "annotations": {
-      "title": "Multi Edit",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Apply ordered replacements to ONE file. Any match failure aborts the batch (no partial writes). `replace_all:true` drops uniqueness check.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path."
-        },
-        "edits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "old_string": {
-                "type": "string",
-                "description": "Text to find (unique unless replace_all)."
-              },
-              "new_string": {
-                "type": "string",
-                "description": "Replacement."
-              },
-              "replace_all": {
-                "type": "boolean",
-                "description": "Replace all, skip uniqueness."
-              }
-            },
-            "required": [
-              "old_string",
-              "new_string"
-            ]
-          },
-          "minItems": 1
-        }
-      },
-      "required": [
-        "path",
-        "edits"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "multi_read",
-    "title": "Multi Read",
-    "annotations": {
-      "title": "Multi Read",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Read several files in parallel. Returns `### <path>` sections; per-file errors inline.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "reads": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string",
-                "description": "File path."
-              },
-              "offset": {
-                "type": "number"
-              },
-              "limit": {
-                "type": "number"
-              },
-              "full": {
-                "type": "boolean",
-                "description": "Opt out of the big-file head/tail cap. Default false."
-              }
-            },
-            "required": [
-              "path"
-            ]
-          },
-          "minItems": 1
-        }
-      },
-      "required": [
-        "reads"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
     "name": "list",
     "title": "List Directory",
     "annotations": {
@@ -1109,17 +1063,26 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Directory listing with metadata (name, type, size, mtime). Faster + more useful than `bash ls` because it returns parseable rows and respects head_limit. For pure path-pattern search use `glob` (rg --files backend); for content search use `grep`. Defaults to depth 1 — increase for recursive walk.",
+    "description": "Directory inspection. `mode`: list (default, metadata rows: name/type/size/mtime) | tree (ASCII visualization) | find (filter by name/size/mtime). Use `glob` for pure path patterns and `grep` for content.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "path": {
           "type": "string",
-          "description": "Directory to list. Defaults to cwd. Supports `~` expansion."
+          "description": "Root directory. Defaults to cwd. Supports `~` expansion."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "list",
+            "tree",
+            "find"
+          ],
+          "description": "list (default) | tree | find."
         },
         "depth": {
           "type": "number",
-          "description": "Recursion depth (1 = direct children only, max 10). Default 1."
+          "description": "Recursion depth. list: 1 default, max 10. tree: 3 default, max 6."
         },
         "hidden": {
           "type": "boolean",
@@ -1132,7 +1095,7 @@
             "mtime",
             "size"
           ],
-          "description": "Sort key. Default name."
+          "description": "list mode sort key. Default name."
         },
         "type": {
           "type": "string",
@@ -1145,230 +1108,30 @@
         },
         "head_limit": {
           "type": "number",
-          "description": "Max rows. Default 200, 0 = unlimited."
-        }
-      },
-      "required": []
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "tree",
-    "title": "Directory Tree",
-    "annotations": {
-      "title": "Directory Tree",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "ASCII directory tree visualization. Quick way to grasp project shape before diving in. For metadata (size/mtime) use `list`; for content search use `grep`. Defaults to depth 3.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "Root directory. Defaults to cwd. Supports `~` expansion."
-        },
-        "depth": {
-          "type": "number",
-          "description": "Tree depth (1-6). Default 3."
-        },
-        "hidden": {
-          "type": "boolean",
-          "description": "Include dotfiles. Default false."
-        },
-        "head_limit": {
-          "type": "number",
-          "description": "Max lines. Default 200, 0 = unlimited."
-        }
-      },
-      "required": []
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "find_files",
-    "title": "Find Files (metadata filter)",
-    "annotations": {
-      "title": "Find Files",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Find files by metadata — name pattern, size range, modification time range, type. Complements `glob` (path patterns) and `grep` (content). Useful for \"files modified in the last 24h\", \"files larger than 10MB\", etc.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "Root directory. Defaults to cwd."
+          "description": "Max rows/lines. 0 = unlimited."
         },
         "name": {
           "type": "string",
-          "description": "Glob pattern for filename (e.g. `*.mjs`). Optional."
-        },
-        "type": {
-          "type": "string",
-          "enum": [
-            "any",
-            "file",
-            "dir"
-          ],
-          "description": "Entry type filter. Default any."
+          "description": "find mode: filename glob (e.g. `*.mjs`)."
         },
         "min_size": {
           "type": "number",
-          "description": "Minimum size in bytes (file only). Optional."
+          "description": "find mode: minimum size in bytes (file only)."
         },
         "max_size": {
           "type": "number",
-          "description": "Maximum size in bytes (file only). Optional."
+          "description": "find mode: maximum size in bytes (file only)."
         },
         "modified_after": {
           "type": "string",
-          "description": "ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`). Optional."
+          "description": "find mode: ISO 8601 date or relative `Nh`/`Nd` (e.g. `24h`, `7d`)."
         },
         "modified_before": {
           "type": "string",
-          "description": "ISO 8601 date or relative `Nh`/`Nd`. Optional."
-        },
-        "head_limit": {
-          "type": "number",
-          "description": "Max results. Default 100, 0 = unlimited."
+          "description": "find mode: ISO 8601 date or relative `Nh`/`Nd`."
         }
       },
       "required": []
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "head",
-    "title": "Head N Lines",
-    "annotations": {
-      "title": "Head N Lines",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Read the first N lines of a file. Cleaner than `read` with offset:0+limit:N when you just want a quick peek at the top of a file. For middle-of-file ranges use `read` with offset/limit.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path. Supports `~` expansion."
-        },
-        "n": {
-          "type": "number",
-          "description": "Number of lines to read from the top. Default 20."
-        }
-      },
-      "required": [
-        "path"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "tail",
-    "title": "Tail N Lines",
-    "annotations": {
-      "title": "Tail N Lines",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Read the last N lines of a file — typically used for log inspection. For full-file or specific ranges use `read`.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path. Supports `~` expansion."
-        },
-        "n": {
-          "type": "number",
-          "description": "Number of lines from the bottom. Default 20."
-        }
-      },
-      "required": [
-        "path"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "wc",
-    "title": "Word Count",
-    "annotations": {
-      "title": "Word Count",
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Count lines, words, and bytes of a file. Faster than reading the whole file when you just need size metrics. Word count is skipped for files exceeding the read cap (256 KB) — lines/bytes only.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "File path. Supports `~` expansion."
-        }
-      },
-      "required": [
-        "path"
-      ]
-    },
-    "module": "builtin"
-  },
-  {
-    "name": "batch_edit",
-    "title": "Batch Edit",
-    "annotations": {
-      "title": "Batch Edit",
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    },
-    "description": "Apply edits across multiple files. Per-entry failures reported as `FAIL <path>`; batch continues.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "edits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string"
-              },
-              "old_string": {
-                "type": "string",
-                "description": "Text to find (unique)."
-              },
-              "new_string": {
-                "type": "string",
-                "description": "Replacement."
-              }
-            },
-            "required": [
-              "path",
-              "old_string",
-              "new_string"
-            ]
-          },
-          "minItems": 1
-        }
-      },
-      "required": [
-        "edits"
-      ]
     },
     "module": "builtin"
   },

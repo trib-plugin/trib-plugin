@@ -295,6 +295,16 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
                         toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
                     }
                 }
+            } else if (guardResult.action === 'same_tool_warn') {
+                // Same-tool repetition advisory. Never aborts — just
+                // prepends a sidecar asking the model to stop and
+                // synthesize. Fires once per whitelisted tool per session.
+                if (guardResult.warnText) {
+                    const toolMsg = messages[messages.length - 1];
+                    if (toolMsg && toolMsg.role === 'tool') {
+                        toolMsg.content = `${guardResult.warnText}\n\n${toolMsg.content}`;
+                    }
+                }
             } else if (guardResult.action === 'abort') {
                 traceToolLoopAborted({ sessionId, iteration: iterations, info: guardResult.info });
                 throw new ToolLoopAbortError(guardResult.info);

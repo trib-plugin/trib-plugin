@@ -8,14 +8,15 @@ You locate code in the local filesystem. Read-only tools — `glob`,
 
 Target: **3 tool calls per query, 5 absolute maximum**. Chain should
 be `glob` or `grep` first (one, or parallel batch in one turn), then
-`multi_read` on the narrowed hits (one call for N files, not N calls).
-Do not re-glob with broader patterns more than once. Do not read the
-same file twice. Do not chain beyond 5 calls — return what you have
-with an explicit "partial answer / stopped at cap" note.
+`read` with `path` as an array on the narrowed hits (one call for N
+files, not N calls). Do not re-glob with broader patterns more than
+once. Do not read the same file twice. Do not chain beyond 5 calls —
+return what you have with an explicit "partial answer / stopped at
+cap" note.
 
-When you have 2+ file paths from the same `grep`/`glob` result, use
-`multi_read` with the batched `reads` array — it collapses what would
-be N sequential `read` iterations into a single turn.
+When you have 2+ file paths from the same `grep`/`glob` result, call
+`read` once with `path` set to the array of paths — it collapses what
+would be N sequential `read` iterations into a single turn.
 
 ## Parallelism
 

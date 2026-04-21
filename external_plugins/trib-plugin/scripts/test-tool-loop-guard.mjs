@@ -28,6 +28,7 @@ import {
     checkToolCall,
     ToolLoopAbortError,
     buildSoftWarn,
+    buildSameToolWarn,
     _internals,
 } from '../src/agent/orchestrator/tool-loop-guard.mjs';
 
@@ -213,6 +214,61 @@ const EDIT_ERR = 'Error: old_string did not match';
     assert(warn.includes('4 times in a row'), '13. warn mentions "4 times in a row"');
     assert(warn.includes('a fifth time WILL abort'), '13. warn mentions "a fifth time WILL abort"');
     assert(warn.includes('`Edit`'), '13. warn back-ticks the tool name');
+}
+
+// 14. Same-tool repetition — whitelisted tool fires soft-warn at threshold
+{
+    const g = createGuard();
+    let lastResult;
+    // First 11 calls return continue, 12th flips to same_tool_warn.
+    for (let i = 1; i <= 12; i++) {
+        lastResult = feed(g, 'search', { query: `q${i}` }, `result ${i}`, i);
+    }
+    assert(lastResult.action === 'same_tool_warn', '14. 12th whitelisted-tool call flips to same_tool_warn');
+    assert(lastResult.info?.toolName === 'search', '14. warn info.toolName === "search"');
+    assert(lastResult.info?.count === 12, '14. warn info.count === 12');
+    assert(typeof lastResult.warnText === 'string' && lastResult.warnText.includes('search'), '14. warnText mentions tool');
+}
+
+// 15. Same-tool repetition — warn fires once per tool per session
+{
+    const g = createGuard();
+    for (let i = 1; i <= 12; i++) feed(g, 'recall', { query: `r${i}` }, 'ok', i);
+    const r13 = feed(g, 'recall', { query: 'r13' }, 'ok', 13);
+    assert(r13.action === 'continue', '15. 13th call returns continue (already warned)');
+    const r14 = feed(g, 'recall', { query: 'r14' }, 'ok', 14);
+    assert(r14.action === 'continue', '15. 14th call still continue');
+}
+
+// 16. Different tool breaks the streak — counter resets
+{
+    const g = createGuard();
+    for (let i = 1; i <= 11; i++) feed(g, 'explore', { query: `e${i}` }, 'ok', i);
+    // Intermix with a non-whitelisted tool — streak resets.
+    feed(g, 'Read', { path: '/a' }, 'content', 12);
+    // Resume explore — count starts from 1 again.
+    let last;
+    for (let i = 13; i <= 23; i++) last = feed(g, 'explore', { query: `e${i}` }, 'ok', i);
+    assert(last.action === 'continue', '16. intermix breaks streak; 11 more explore calls stay continue');
+    // 24th is the 12th-in-a-row since reset → fires warn.
+    const r24 = feed(g, 'explore', { query: 'e24' }, 'ok', 24);
+    assert(r24.action === 'same_tool_warn', '16. fresh 12-streak after reset fires warn');
+}
+
+// 17. Non-whitelisted tools never fire same-tool warn
+{
+    const g = createGuard();
+    let last;
+    for (let i = 1; i <= 30; i++) last = feed(g, 'Read', { path: `/p${i}` }, 'content', i);
+    assert(last.action === 'continue', '17. 30 Read calls never fire same_tool_warn (not whitelisted)');
+}
+
+// 18. Same-tool warn text phrasing
+{
+    const text = buildSameToolWarn({ toolName: 'search', count: 12 });
+    assert(text.includes('`search`'), '18. warn back-ticks tool name');
+    assert(text.includes('12 times'), '18. warn mentions call count');
+    assert(text.includes('Advisory only'), '18. warn marks itself advisory (non-blocking)');
 }
 
 console.log(`test-tool-loop-guard: ${passed} pass / ${failed} fail`);
